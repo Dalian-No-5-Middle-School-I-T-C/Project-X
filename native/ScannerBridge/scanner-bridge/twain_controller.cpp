@@ -8,6 +8,10 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <cwctype>
+#include <iterator>
+#include <string>
+#include <vector>
 
 using DsmEntryProc = TW_UINT16(TW_CALLINGSTYLE*)(
     pTW_IDENTITY,
@@ -33,6 +37,97 @@ static std::string wideToUtf8(const wchar_t* w) {
     WideCharToMultiByte(CP_UTF8, 0, w, -1, out.data(), len, nullptr, nullptr);
     return out;
 }
+
+// ── 安全 R40：DSM 只从「规范化后的受信绝对路径」加载 ──────────────────────
+// 旧实现最后两个候选是裸名 TWAINDSM.dll / twain_32.dll，交给 LoadLibraryW 按默认
+// 搜索顺序解析（当前工作目录、PATH 都在里面）。扫描端的工作目录取决于启动方式，
+// 于是「往 CWD 或任何可写搜索目录丢一个同名 DLL」就能让扫描端加载并执行任意代码。
+// 现在候选一律先解析成绝对路径、确认是非空常规文件，再用 LoadLibraryExW 限制依赖搜索。
+namespace {
+
+std::wstring lowerW(std::wstring text) {
+    for (wchar_t& ch : text) ch = static_cast<wchar_t>(std::towlower(ch));
+    return text;
+}
+
+/** 只认「盘符:\…」与 UNC；相对路径一律拒绝，否则又会退回 CWD/搜索目录。 */
+bool isAbsoluteWinPath(const wchar_t* path) {
+    if (!path) return false;
+    if (path[0] == L'\\' && path[1] == L'\\') return true;
+    return path[0] != L'\0' && path[1] == L':' && (path[2] == L'\\' || path[2] == L'/');
+}
+
+/** 规范化成绝对路径（解掉 . / .. 与多余分隔符）；失败返回空串。 */
+std::wstring absolutePath(const std::wstring& path) {
+    if (path.empty()) return {};
+    DWORD need = GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
+    if (need == 0 || need >= 32768) return {};
+    std::wstring out(need, L'\0');
+    DWORD written = GetFullPathNameW(path.c_str(), need, out.data(), nullptr);
+    if (written == 0 || written >= need) return {};
+    out.resize(written);
+    return out;
+}
+
+/** 必须是存在且非空的常规文件；大小交给调用方写进诊断日志（打包完整性的最小证据）。 */
+bool isUsableDllFile(const std::wstring& path, unsigned long long* sizeOut) {
+    WIN32_FILE_ATTRIBUTE_DATA info{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info)) return false;
+    if (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) return false;
+    const unsigned long long size =
+        (static_cast<unsigned long long>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+    if (size == 0) return false;
+    if (sizeOut) *sizeOut = size;
+    return true;
+}
+
+/** 解析 junction / 符号链接之后的真实路径（小写、去掉 \\?\ 前缀）；失败返回空串。 */
+std::wstring finalLowerPath(const std::wstring& path) {
+    HANDLE file = CreateFileW(path.c_str(), 0,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return {};
+    wchar_t buffer[MAX_PATH * 2] = {};
+    const DWORD len = GetFinalPathNameByHandleW(file, buffer,
+                                                static_cast<DWORD>(std::size(buffer)),
+                                                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    CloseHandle(file);
+    if (len == 0 || len >= std::size(buffer)) return {};
+    std::wstring out(buffer, len);
+    static const std::wstring prefix = L"\\\\?\\";
+    if (out.size() > prefix.size() && out.compare(0, prefix.size(), prefix) == 0) {
+        out.erase(0, prefix.size());
+    }
+    return lowerW(out);
+}
+
+/** dir 必须是 path 的一个真实目录前缀（按路径分隔符断句，避免 C:\app 命中 C:\appdata）。 */
+bool isUnderDir(const std::wstring& pathLower, const std::wstring& dirLower) {
+    if (dirLower.empty() || pathLower.size() <= dirLower.size()) return false;
+    if (pathLower.compare(0, dirLower.size(), dirLower) != 0) return false;
+    return pathLower[dirLower.size()] == L'\\';
+}
+
+/** 安装包把 TWAINDSM.dll 与 scanner-bridge.exe 放在同一目录（build-scanner-bridge.bat）。 */
+std::wstring executableDirLower() {
+    wchar_t buffer[MAX_PATH] = {};
+    const DWORD len = GetModuleFileNameW(nullptr, buffer, static_cast<DWORD>(std::size(buffer)));
+    if (len == 0 || len >= std::size(buffer)) return {};
+    const std::wstring path(buffer, len);
+    const size_t slash = path.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return {};
+    return lowerW(path.substr(0, slash));
+}
+
+/** Windows 目录：系统自带或 TWAIN 工作组安装的 DSM 落在这里。 */
+std::wstring windowsDirLower() {
+    wchar_t buffer[MAX_PATH] = {};
+    const UINT len = GetSystemWindowsDirectoryW(buffer, static_cast<UINT>(std::size(buffer)));
+    if (len == 0 || len >= std::size(buffer)) return {};
+    return lowerW(std::wstring(buffer, len));
+}
+
+} // namespace
 
 namespace ScannerBridge {
 bool dsmLoaded() { return g_dsmLoaded; }
@@ -74,51 +169,92 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(
     static DsmEntryProc dsmEntry = nullptr;
 
     if (!dsmEntry) {
-        wchar_t envPath[MAX_PATH] = {};
-        DWORD envLen = GetEnvironmentVariableW(L"TWAIN_DSM_DLL", envPath, MAX_PATH);
-        const wchar_t* envCandidate = (envLen > 0 && envLen < MAX_PATH) ? envPath : nullptr;
-
-        // exe 同目录的 TWAINDSM.dll（build-scanner-bridge.bat 会把仓库内
-        // third_party 的 DSM 复制到产物目录）；不再硬编码 D:\ 绝对路径
-        wchar_t exeDir[MAX_PATH] = {};
-        GetModuleFileNameW(nullptr, exeDir, MAX_PATH);
-        if (wchar_t* slash = wcsrchr(exeDir, L'\\')) *slash = L'\0';
-        wchar_t dsmPathW[MAX_PATH] = {};
-        wsprintfW(dsmPathW, L"%s\\TWAINDSM.dll", exeDir);
-        // Windows paths stay UTF-16. LoadLibraryA interprets UTF-8 bytes as the
-        // system ANSI code page and cannot load a bundled DLL from Chinese paths.
-        const wchar_t* candidates[] = {
-            envCandidate,
-            dsmPathW,
-            L"TWAINDSM.dll",
-            L"twain_32.dll"
+        std::string tried;
+        auto note = [&tried](const std::string& text) {
+            if (!tried.empty()) tried += "; ";
+            tried += text;
         };
 
-        std::string tried;
-        for (const wchar_t* candidate : candidates) {
-            if (!candidate || !candidate[0]) continue;
+        // 候选顺序：显式环境覆盖 > 安装包自带 > 系统安装。全部是绝对路径。
+        std::vector<std::wstring> candidates;
+
+        wchar_t envPath[MAX_PATH] = {};
+        const DWORD envLen = GetEnvironmentVariableW(L"TWAIN_DSM_DLL", envPath,
+                                                     static_cast<DWORD>(std::size(envPath)));
+        if (envLen > 0 && envLen < std::size(envPath)) {
+            // 安全 R40：环境覆盖只接受绝对路径。相对值/裸名会被默认搜索顺序解释成
+            // 「CWD 或 PATH 里的同名 DLL」，正是要堵掉的那条路。
+            if (isAbsoluteWinPath(envPath)) {
+                const std::wstring resolved = absolutePath(envPath);
+                if (resolved.empty()) note("TWAIN_DSM_DLL -> 路径过长或无法规范化，已忽略");
+                else candidates.push_back(resolved);
+            } else {
+                note(std::string("TWAIN_DSM_DLL=") + wideToUtf8(envPath) +
+                     " -> 不是绝对路径，已忽略");
+            }
+        }
+
+        const std::wstring exeDir = executableDirLower();
+        const std::wstring winDir = windowsDirLower();
+        if (!exeDir.empty()) candidates.push_back(absolutePath(exeDir + L"\\TWAINDSM.dll"));
+        if (!winDir.empty()) {
+            candidates.push_back(absolutePath(winDir + L"\\TWAINDSM.dll"));
+            candidates.push_back(absolutePath(winDir + L"\\twain_32.dll"));
+        }
+
+        for (const std::wstring& candidate : candidates) {
+            if (candidate.empty()) continue;
+            unsigned long long size = 0;
+            if (!isUsableDllFile(candidate, &size)) {
+                note(wideToUtf8(candidate.c_str()) + " -> 不存在或不是非空常规文件，已跳过");
+                continue;
+            }
+            // 打包完整性：包内那份 DSM 必须真的还在包里。用 junction / 符号链接把它
+            // 指到别处时，规范化后的真实路径会落到安装目录之外，此时拒绝加载。
+            const std::wstring candidateLower = lowerW(candidate);
+            if (!exeDir.empty() && isUnderDir(candidateLower, exeDir)) {
+                const std::wstring real = finalLowerPath(candidate);
+                if (real.empty() || !isUnderDir(real, exeDir)) {
+                    note(wideToUtf8(candidate.c_str()) +
+                         " -> 解析后的真实路径已离开安装目录（疑似链接替换），已跳过");
+                    continue;
+                }
+            }
+
             SetLastError(0);
-            dsmModule = LoadLibraryW(candidate);
-            if (!dsmModule) {
-                DWORD err = GetLastError();
+            // 限制依赖搜索：DSM 自己的依赖也不再走 CWD / PATH
+            HMODULE module = LoadLibraryExW(candidate.c_str(), nullptr,
+                                            LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
+            if (!module && GetLastError() == ERROR_INVALID_PARAMETER) {
+                // 缺少 LOAD_LIBRARY_SEARCH_* 支持的老系统退回「按 DLL 自身目录改搜索顺序」，
+                // 它同样不搜 CWD。
+                SetLastError(0);
+                module = LoadLibraryExW(candidate.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+            }
+            if (!module) {
                 char line[64] = {};
-                sprintf_s(line, "err=%lu", static_cast<unsigned long>(err));
-                if (!tried.empty()) tried += "; ";
-                tried += wideToUtf8(candidate) + " -> LoadLibrary 失败(" + line + ")";
+                sprintf_s(line, "err=%lu", static_cast<unsigned long>(GetLastError()));
+                note(wideToUtf8(candidate.c_str()) + " -> LoadLibraryEx 失败(" + line + ")");
                 continue;
             }
 
-            dsmEntry = reinterpret_cast<DsmEntryProc>(GetProcAddress(dsmModule, "DSM_Entry"));
-            if (dsmEntry) {
-                g_dsmLoadedPath = wideToUtf8(candidate);
-                g_dsmLoaded = true;
-                break;
+            DsmEntryProc entry = reinterpret_cast<DsmEntryProc>(GetProcAddress(module, "DSM_Entry"));
+            if (!entry) {
+                note(wideToUtf8(candidate.c_str()) + " -> 已加载但缺少 DSM_Entry 导出");
+                FreeLibrary(module);
+                continue;
             }
 
-            if (!tried.empty()) tried += "; ";
-            tried += wideToUtf8(candidate) + " -> 已加载但缺少 DSM_Entry 导出";
-            FreeLibrary(dsmModule);
-            dsmModule = nullptr;
+            dsmModule = module;
+            dsmEntry = entry;
+            char sizeText[48] = {};
+            sprintf_s(sizeText, "%llu", size);
+            g_dsmLoadedPath = wideToUtf8(candidate.c_str()) + "（" + sizeText + " 字节）";
+            g_dsmLoaded = true;
+            break;
+        }
+        if (!g_dsmLoaded && tried.empty()) {
+            tried = "没有可用的 TWAINDSM.dll 绝对路径候选";
         }
         g_dsmLoadLog = tried;
     }
@@ -276,7 +412,9 @@ SourceEnumeration TwainController::listSourceDetails() {
             result.dsmSearchLog = g_dsmLoadLog;
             result.hint = "通常是 TWAINDSM.dll 缺失或被安全软件隔离。"
                           "请确认安装目录下 resources/native/win-" + std::string(bridgeArchName()) +
-                          "/TWAINDSM.dll 存在；仍失败时重装扫描端安装包。";
+                          "/TWAINDSM.dll 存在；仍失败时重装扫描端安装包。"
+                          "（安全 R40：只在安装目录与 Windows 目录内查找绝对路径，"
+                          "不再按当前目录或 PATH 搜索同名 DLL。）";
             return result;
         }
         result.code = "OPENDSM_FAILED";

@@ -2460,6 +2460,36 @@ async function main(): Promise<void> {
       check(/retireActiveScan\(sessionId\)/.test(bridgeSource)
         && !/activeScans\.delete\(sessionId\);\s*\n\s*\}/.test(bridgeSource.slice(bridgeSource.indexOf("child.on(\"close\""))),
         "close/error 走 retireActiveScan（清注册项 + 清兜底定时器），不再裸 delete");
+
+      // ── R40：TWAIN DSM 只从规范化后的受信绝对路径加载 ──
+      // 真机功能验证（Windows x64 + ia32 各自 list 出 KODAK i3000）见 SECURITY-AUDIT-NOTES；
+      // 这里锁源码不退化：一旦有人把裸名候选或 LoadLibraryW 加回来，CWD/PATH 又成了加载点。
+      const twainSource = readFileSync(
+        path.resolve("native/ScannerBridge/scanner-bridge/twain_controller.cpp"), "utf8");
+      const bridgeMainSource = readFileSync(
+        path.resolve("native/ScannerBridge/scanner-bridge/main.cpp"), "utf8");
+      check(!/LoadLibraryW\s*\(/.test(twainSource) && !/LoadLibraryA\s*\(/.test(twainSource),
+        "R40：不再用 LoadLibraryW/A 加载 DSM（它们会把裸名交给默认搜索顺序，含 CWD 与 PATH）");
+      check(/LoadLibraryExW\([^;]*LOAD_LIBRARY_SEARCH_DEFAULT_DIRS\s*\|\s*LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR/.test(twainSource),
+        "R40：DSM 依赖搜索被限制在受信目录（LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | DLL_LOAD_DIR）");
+      check(!/candidates\[\]\s*=\s*\{[\s\S]*?L"TWAINDSM\.dll"/.test(twainSource)
+        && /candidates\.push_back\(absolutePath\(/.test(twainSource),
+        "R40：候选全部由 absolutePath 生成，没有裸名 TWAINDSM.dll / twain_32.dll");
+      check(/isAbsoluteWinPath\(envPath\)/.test(twainSource)
+        && twainSource.indexOf("isAbsoluteWinPath(envPath)") < twainSource.indexOf("candidates.push_back(resolved)"),
+        "R40：TWAIN_DSM_DLL 环境覆盖必须是绝对路径，相对值/裸名被忽略并记进诊断");
+      check(/isUsableDllFile\(candidate/.test(twainSource) && /finalLowerPath\(candidate\)/.test(twainSource)
+        && /已离开安装目录/.test(twainSource),
+        "R40：包内 DSM 要求是非空常规文件，且 junction/符号链接解析后仍在安装目录内");
+      check(/SetDefaultDllDirectories\(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS\)/.test(bridgeMainSource)
+        && bridgeMainSource.indexOf("SetDefaultDllDirectories") < bridgeMainSource.indexOf("args.push_back(toUtf8(argv[i]))"),
+        "R40：桥接进程启动即收紧全局 DLL 搜索目录，早于任何命令分发");
+      for (const arch of ["win-x64", "win-ia32"] as const) {
+        const stagedDir = path.resolve("resources/native", arch);
+        if (!existsSync(path.join(stagedDir, "scanner-bridge.exe"))) continue;
+        check(existsSync(path.join(stagedDir, "TWAINDSM.dll")),
+          `R40：已打包的 ${arch} 产物目录里带着 TWAINDSM.dll（缺失时现场只能报错，不能退回搜索路径）`);
+      }
     }
 
     console.log(`\n关键安全验收：${passed} 通过，${failures.length} 失败`);
