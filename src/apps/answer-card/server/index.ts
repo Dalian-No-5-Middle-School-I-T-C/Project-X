@@ -2947,7 +2947,9 @@ export async function createApp(): Promise<express.Express> {
 
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error(error);
-    // 请求级上传预算（R28）已经给出 413 并销毁请求，随后 multer 抛出的断流错误不再改写响应
+    // 请求级上传预算（R28）已经给出 413 并销毁请求，随后 multer 抛出的断流错误不再改写响应。
+    // 已经结束/已销毁的响应连 `end()` 都不能调：那是对写完的 writable 再写一次，只会得到 write-after-end。
+    if (res.writableEnded || res.destroyed) return;
     if (res.headersSent) { res.end(); return; }
     // 上传类错误映射：multer 超限应 413、其它上传错误 400，而不是 500
     if (error && typeof error === "object" && (error as any)?.name === "MulterError") {

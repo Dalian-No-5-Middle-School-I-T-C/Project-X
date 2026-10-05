@@ -24,7 +24,7 @@ import {
   purgeStaleTmpUploads,
   readPaperQuota,
 } from "../paperQuota";
-import { requestUploadBudget } from "../../../../server/lib/uploadBudget";
+import { requestUploadBudget, isUploadAlreadyRejected } from "../../../../server/lib/uploadBudget";
 import { autoExtractPaperText, getFileMime, getPaperInputKind } from "../paper-ocr";
 import { PaperInputError } from "../paper-docx";
 import type { DbAdapter } from "../../../../server/db/mysql";
@@ -166,11 +166,13 @@ export function paperRoutes(): Router {
     (req: Request, res: Response, next) => {
       paperUpload.array("files", MAX_PAPER_FILES_PER_REQUEST)(req, res, (err) => {
         if (err) {
-          // 安全（R14）：multer 因体积/数量越界而报错时，已经落盘的兄弟文件不会经过
-          // 下面那个带 `finally` 的处理函数——这里必须自己清掉，否则每次越界尝试都在
-          // `_tmp` 里留下一份无人引用的副本（越界重试本身就是免费的磁盘填满攻击）。
+          // 安全（R14）：数量/体积越界时 multer 直接报错，已落盘的兄弟文件不会经过
+          // 下面带 `finally` 的处理函数——必须在这里清掉，否则越界重试会留下无人引用的副本。
           const partial = (req.files as Express.Multer.File[] | undefined) ?? (req.file ? [req.file] : []);
           void discardStoredPaths(partial.map((f) => f.path));
+          // PR #312 复核：请求预算是先回 413 再断开请求的，multer 的断流错误随后才到达。
+          // 这里若照样 res.status(400)，等于对已结束的响应二次写入，还会把 413 覆盖成误导的 400。
+          if (isUploadAlreadyRejected(req, res)) return;
           res.status(400).json({ error: err.message || "原卷上传失败" });
           return;
         }

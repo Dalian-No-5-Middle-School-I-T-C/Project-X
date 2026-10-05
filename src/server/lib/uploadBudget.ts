@@ -47,6 +47,23 @@ function reject(req: BudgetedRequest, res: Response, label: string, maxTotalByte
 }
 
 /**
+ * 这次请求是否**已经给出过答复**。
+ *
+ * 预算是在正文还没收完时就回 413 的，而 multer 已经在消费同一个流：`req.destroy()` 会让它
+ * 随后抛出 `LIMIT_FILE_SIZE`/断流错误，路由里的手写错误回调于是晚了半步。这时再
+ * `res.status(400).json(...)` 就是对一个已结束的响应二次写入（`ERR_HTTP_HEADERS_SENT`），
+ * 轻则把 413 改成客户端看不懂的 400，重则未捕获异常。
+ *
+ * 判据以预算位为准、`res` 的状态为辅：符号位是「本次拒绝」的事实本身，不依赖 Node 内部标志
+ * 在断开后是否还可靠；`headersSent / writableEnded / destroyed` 覆盖其它已答复路径。
+ * 注意只用于**跳过响应**——临时文件的回收必须在调用它之前做完。
+ */
+export function isUploadAlreadyRejected(rawReq: Request, res: Response): boolean {
+  return (rawReq as BudgetedRequest)[UPLOAD_BUDGET_EXCEEDED] === true
+    || res.headersSent || res.writableEnded || res.destroyed;
+}
+
+/**
  * 请求级上传预算中间件；挂在对应的 multer 处理之前。
  * 超限时请求被销毁，multer 会抛出断流错误，但响应已经给出 413，
  * 全局错误处理不再覆盖它（见 `index.ts` 的 headersSent 兜底）。

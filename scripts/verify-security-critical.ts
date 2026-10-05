@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Server } from "node:http";
@@ -891,6 +891,92 @@ async function main(): Promise<void> {
       await assertWrittenPaperWithinQuota(quotaDb, r10CardId, cr14Admission, { pages: 1, bytes: 6144 }, cr14Limits);
     } catch { cr14WithinQuota = false; }
     check(cr14WithinQuota, "实测仍在额度内时不触发回滚：放大是常态，不是拒绝的理由");
+
+    // ── 请求预算与 multer 错误回调的先后（PR #312 复核）：413 已经给出后不得再回一次 400
+    const expressModule = await import("express");
+    const multerModule = await import("multer");
+    const { isUploadAlreadyRejected } = await import("../src/server/lib/uploadBudget");
+    const doubleTmp = path.join(tempDir, "multer-double-tmp");
+    mkdirSync(doubleTmp, { recursive: true });
+    const doubleCallbacks: string[] = [];
+    const doubleApp = expressModule.default();
+    // 与 paper-routes.ts 完全同形的链：预算 → multer → 手写错误回调（先清临时件，再决定是否响应）
+    const mountGuardedUpload = (routePath: string, budgetBytes: number, fileSizeBytes: number): void => {
+      const upload = multerModule.default({ dest: doubleTmp, limits: { fileSize: fileSizeBytes, files: 8 } });
+      doubleApp.post(routePath, requestUploadBudget({ maxTotalBytes: budgetBytes, label: "回归上传" }),
+        (req: any, res: any, next: any) => {
+          upload.array("files", 8)(req, res, (err: unknown) => {
+            const partial: Array<{ path: string }> = req.files ?? (req.file ? [req.file] : []);
+            for (const file of partial) {
+              try { unlinkSync(file.path); } catch { /* multer 已回收或文件不存在 */ }
+            }
+            doubleCallbacks.push(`${routePath}|${err ? String((err as Error).message) : "ok"}|${res.headersSent ? "answered" : "fresh"}`);
+            if (err) {
+              if (isUploadAlreadyRejected(req, res)) return;
+              res.status(400).json({ error: String((err as Error).message) });
+              return;
+            }
+            next();
+          });
+        },
+        (_req: any, res: any) => { res.json({ ok: true }); });
+    };
+    mountGuardedUpload("/budget-first", 900, 4096);
+    mountGuardedUpload("/filesize-first", 100_000, 500);
+    const doubleServer = doubleApp.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => doubleServer.once("listening", resolve));
+    const doublePort = (doubleServer.address() as { port: number }).port;
+    const rawHttp = await import("node:http");
+    const multipartPart = (boundary: string, bytes: number, last: boolean): Buffer => Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="p${bytes}.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`),
+      Buffer.alloc(bytes, 97),
+      Buffer.from(last ? `\r\n--${boundary}--\r\n` : "\r\n"),
+    ]);
+    // 分块发送且不报 Content-Length：预算只能在流式接收中途判负，这才撞得上 multer 的断流回调
+    const chunkedUpload = (routePath: string, parts: Buffer[]): Promise<{ status: number; text: string }> =>
+      new Promise((resolve) => {
+        const outbound = rawHttp.request({
+          host: "127.0.0.1", port: doublePort, path: routePath, method: "POST",
+          // 每条请求各用一条连接：上一条被预算断开后，keep-alive 池里那只半死的 socket
+          // 会被复用，客户端只会看到 ECONNRESET——那测的是连接复用，不是这里要的响应行为。
+          agent: false,
+          headers: { "Content-Type": "multipart/form-data; boundary=pxdouble", "Transfer-Encoding": "chunked" },
+        }, (incoming) => {
+          let text = "";
+          incoming.setEncoding("utf8");
+          incoming.on("data", (chunk) => { text += chunk; });
+          incoming.on("end", () => resolve({ status: incoming.statusCode ?? 0, text }));
+        });
+        outbound.on("error", () => resolve({ status: 0, text: "" }));
+        for (const part of parts) outbound.write(part);
+        outbound.end();
+      });
+    const budgetFirst = await chunkedUpload("/budget-first", [
+      multipartPart("pxdouble", 800, false), multipartPart("pxdouble", 800, false), multipartPart("pxdouble", 800, true),
+    ]);
+    check(budgetFirst.status === 413
+      && (JSON.parse(budgetFirst.text || "{}") as { code?: string }).code === "UPLOAD_BUDGET_EXCEEDED",
+      "预算中途判负后客户端拿到的是 413 而不是被 multer 断流错误改写成 400");
+    check(doubleCallbacks.some((entry) => entry.startsWith("/budget-first|") && entry.endsWith("|answered")),
+      "危险是真存在的：multer 的断流回调确实在 413 之后才到达（守卫不是在防一个不会发生的分支）");
+    const fileSizeFirst = await chunkedUpload("/filesize-first", [multipartPart("pxdouble", 800, true)]);
+    check(fileSizeFirst.status === 400
+      && (JSON.parse(fileSizeFirst.text || "{}") as { error?: string }).error?.includes("File too large") === true,
+      `multer 自己的单文件上限仍然照旧回 400（守卫没有把正常拒绝一起吞掉，实际 ${fileSizeFirst.status}/${fileSizeFirst.text.slice(0, 40) || "无正文"})`);
+    const stillAlive = await chunkedUpload("/budget-first", [multipartPart("pxdouble", 100, true)]);
+    check(stillAlive.status === 200 && stillAlive.text.includes("true"),
+      "二次响应被挡下后服务进程照常可用（ERR_HTTP_HEADERS_SENT 打穿的就是这一条）");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const doubleResidue = readdirSync(doubleTmp, { withFileTypes: true }).filter((entry) => entry.isFile()).length;
+    doubleServer.close();
+    check(doubleResidue === 0,
+      "跳过响应并不跳过临时件回收：被预算拒掉的请求依旧不在 _tmp 留副本（R14 与「不要二次响应」互不影响）");
+    const paperRouteSrc = readFileSync(path.join(process.cwd(), "src/apps/answer-card/server/routes/paper-routes.ts"), "utf8");
+    const guardAt = paperRouteSrc.indexOf("isUploadAlreadyRejected(req, res)");
+    const rejectAt = paperRouteSrc.indexOf("原卷上传失败");
+    check(guardAt > 0 && rejectAt > guardAt
+      && paperRouteSrc.indexOf("discardStoredPaths") < guardAt,
+      "真实原卷路由同形：临时件清理在前、守卫在 400 之前（回归链与线上代码不是两套写法）");
 
     // ── AI 计费与并发配额（安全 R11）
     const {
