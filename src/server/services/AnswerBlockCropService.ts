@@ -35,6 +35,7 @@ type CropRow = {
   claimed_by?: number | null;
   claimed_at?: string | null;
   claim_count?: number;
+  review_round?: number | null;
 };
 
 export type PersistAnswerBlockCropsParams = {
@@ -85,7 +86,8 @@ function toAnswerBlockCrop(row: CropRow): AnswerBlockCrop {
     maxScore: row.max_score ?? null,
     claimedBy: row.claimed_by ?? null,
     claimedAt: row.claimed_at ?? null,
-    claimCount: row.claim_count ?? 0
+    claimCount: row.claim_count ?? 0,
+    reviewRound: Number(row.review_round ?? 0)
   };
 }
 

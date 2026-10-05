@@ -12,10 +12,11 @@
  *  R13 学生不得读取未参与的已公布天梯
  *  R47 争议复评按评阅人去重，不叠加票数
  *  R06 删除/解绑答题卡只作用于与考试有组织归属关系的行
+ *  PR #312 CR1/CR6/CR9 复核轮次跨切片可承接、清单与切块原图按题块+逐生收敛、领取锁预算
  *
  * 用法: npm run verify:permission-scope
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
@@ -33,7 +34,7 @@ for (const key of [
   "PROJECTX_UPLOAD_MAX_CROPS_PER_REQUEST", "PROJECTX_UPLOAD_MAX_CROP_IMAGE_MIB",
   "PROJECTX_UPLOAD_MAX_CROPS_TOTAL_MIB", "PROJECTX_UPLOAD_MAX_PAGE_REQUEST_TOTAL_MIB",
   "PROJECTX_UPLOAD_MAX_BATCH_FILES", "PROJECTX_UPLOAD_MAX_BATCH_TOTAL_MIB",
-  "PROJECTX_REVIEW_MAX_HELD_PER_BLOCK", "PROJECTX_REVIEW_MAX_HELD_TOTAL"
+  "PROJECTX_REVIEW_MAX_HELD_PER_BLOCK", "PROJECTX_REVIEW_MAX_HELD_TOTAL", "PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS"
 ]) delete process.env[key];
 
 let passed = 0;
@@ -386,6 +387,121 @@ async function main(): Promise<void> {
   const archivedRecord = await get(`/api/scanner/record/rec-p1`, tokenA);
   ok(archivedRecord.status === 404, `考试归档后按记录 ID 读原卷同样 404（实际 ${archivedRecord.status}）`);
   db.prepare("DELETE FROM exam_archives WHERE exam_id = ?").run(examScan);
+
+  console.log("\n== PR #312 CR1/CR6/CR9 试卷池的复核轮次与读取范围 ==");
+  const { isClaimableForAssignedSet } = await import("../src/server/services/ReviewPoolService");
+  // 双评的第二评人：同一场、同一题块、同一班，但逐生切片与 teacherA 互不重叠（A=9001 / D=9003）。
+  // 修复前复核轮次仍按切片过滤 → 首评人被评分历史挡住、其他人被切片挡住，第二评永远无人可领。
+  const teacherD = await users.createUser({ username: "t-second", password: "pass-1234", name: "同题块二评教师", role_id: 2, teacher_role: "subject_teacher", subject: "数学" });
+  db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, '数学')").run(teacherD.id, classA);
+  db.prepare("INSERT INTO review_assignments (exam_id, block_id, teacher_id, student_count, assigned_student_ids) VALUES (?, 'B1', ?, 1, ?)")
+    .run(examA, teacherD.id, JSON.stringify([sids["9003"]]));
+  // 无人被分配到的学生卷子：既不该被自动领取，也不该出现在任何人的清单与原图里
+  db.prepare(
+    `INSERT INTO answer_block_crops (id, card_id, exam_id, student_id, student_number, source_type, source_record_id, block_id, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi, status, review_round)
+     VALUES ('pc-b1-9002', ?, ?, ?, 'S5', 'test', 'rec-pc-b1-9002', 'B1', 'subjective', 1, 0, '[21]', '{}', '', 0, 0, 300, 'ready', 0)`
+  ).run(cardId, examA, sids["9002"]);
+  // 9003 的 B1 小题满分行：夹具只给它建过 student_scores，逐题判分范围按 question_scores 取值
+  db.prepare("INSERT INTO question_scores (exam_id, student_id, question_number, score, max_score, score_type, block_id) VALUES (?,?,?,?,?,'subjective','B1')")
+    .run(examA, sids["9003"], 21, 20, 20);
+  const cropImageFile = path.join(tmpDir, "crop-image.png");
+  writeFileSync(cropImageFile, "not-a-real-png");
+  db.prepare("UPDATE answer_block_crops SET image_path = ? WHERE id LIKE 'pc-b1-%' OR id = 'pc-b2-9001'").run(cropImageFile);
+  db.prepare(
+    `INSERT INTO block_grading_config (exam_id, block_id, dispute_threshold, rounding, review_mode, auto_reassign_no_arb, scoring_mode)
+     VALUES (?, 'B1', 1, 'none', 2, 0, 'per_question')`
+  ).run(examA);
+
+  const cropA1 = await claimSpecificPaper(examA, "B1", "pc-b1-9001", teacherA.id);
+  ok(cropA1.id === "pc-b1-9001" && cropA1.claimedBy === teacherA.id, "首评教师领取自己切片内的卷子");
+  const cr1First = await submitReviewCropScores({
+    examId: examA, cropId: "pc-b1-9001", userId: teacherA.id,
+    scores: [{ questionNumber: 21, scoreType: "subjective", score: 12 }]
+  });
+  ok(cr1First.ok === true && cr1First.status === "pending", `首评后卷子回到池中等待第二评（实际 ${cr1First.status}）`);
+  await assert.rejects(
+    () => claimSpecificPaper(examA, "B1", "pc-b1-9001", teacherA.id),
+    (err: unknown) => err instanceof ReviewPoolError && err.message.includes("已批阅过"),
+    "同一人不重复评同一份卷子（复核轮次也不例外）"
+  );
+  ok(
+    isClaimableForAssignedSet({ studentId: sids["9001"], status: "ready", reviewRound: 0 }, new Set([sids["9003"]])) === false
+    && isClaimableForAssignedSet({ studentId: sids["9001"], status: "pending", reviewRound: 1 }, new Set([sids["9003"]])) === true
+    && isClaimableForAssignedSet({ studentId: sids["9001"], status: "ready", reviewRound: 0 }, null) === true,
+    "放行只针对离开首评队列的卷子：切片外首评仍拒、待复核放行、整块可阅不受限"
+  );
+  // 切片内的首评优先：他人待复核的卷子按学号排在前头时，也不该挤掉本人未开评的首评工作量
+  const autoOwnSlice = await claimNextPaper(examA, "B1", teacherD.id);
+  ok(autoOwnSlice.id === "pc-b1-9003", `自动领取优先本人切片内的首评卷（实际 ${autoOwnSlice.id}）`);
+  await assert.rejects(
+    () => claimSpecificPaper(examA, "B1", "pc-b1-9002", teacherD.id),
+    (err: unknown) => err instanceof ReviewPoolScopeError,
+    "切片外且尚未首评的卷子依旧拒绝指定领取（放行不覆盖首评队列）"
+  );
+
+  // CR6：清单读取同样要过题块级正向授权
+  const teacherC = await users.createUser({ username: "t-pe", password: "pass-1234", name: "同场非本题块教师", role_id: 2, teacher_role: "subject_teacher", subject: "数学" });
+  db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, '数学')").run(teacherC.id, classA);
+  const tokenC = (await authService.login("t-pe", "pass-1234")).token!;
+  const tokenD = (await authService.login("t-second", "pass-1234")).token!;
+  const poolForeign = await get(`/api/review-pool/exams/${examA}/blocks/B1`, tokenC);
+  ok(poolForeign.status === 403, `未分配本题块的教师读取试卷池清单被 403（实际 ${poolForeign.status}）`);
+  ok(!JSON.stringify(poolForeign.body).includes(String(sids["9001"])), "越权清单不返回学生 ID");
+  const poolIdsOf = async (token: string): Promise<string[]> =>
+    ((await get(`/api/review-pool/exams/${examA}/blocks/B1`, token)).body?.data?.entries ?? [])
+      .map((e: { id: string }) => e.id);
+  const poolIds = await poolIdsOf(tokenA);
+  ok(poolIds.includes("pc-b1-9001") && !poolIds.includes("pc-b1-9002") && !poolIds.includes("pc-b1-9003"),
+    `首评人清单只含本人切片（实际 ${JSON.stringify(poolIds)}）`);
+  const secondIds = await poolIdsOf(tokenD);
+  ok(secondIds.includes("pc-b1-9003") && secondIds.includes("pc-b1-9001") && !secondIds.includes("pc-b1-9002"),
+    `二评人清单同时含本人首评卷与跨切片待复核卷（实际 ${JSON.stringify(secondIds)}）`);
+
+  // CR6：切块原图入口按 cropId 直连，此前只校验权限位，不校验考试与题块范围
+  ok((await get(`/api/answer-block-crops/pc-b1-9001/image`, tokenA)).status === 200, "本人切片内的切块原图可读");
+  const imgNoOwner = await get(`/api/answer-block-crops/pc-b1-9002/image`, tokenA);
+  ok(imgNoOwner.status === 403, `无人被分配的首评切块原图不会被顺带读到（实际 ${imgNoOwner.status}）`);
+  const imgForeignSlice = await get(`/api/answer-block-crops/pc-b1-9003/image`, tokenA);
+  ok(imgForeignSlice.status === 403, `切片外仍待首评的切块原图被 403，即使已被他人领取（实际 ${imgForeignSlice.status}）`);
+  ok((await get(`/api/answer-block-crops/pc-b1-9001/image`, tokenD)).status === 200,
+    "跨切片但已离开首评队列的切块原图可读（与领取/清单同一谓词）");
+  const imgForeignTeacher = await get(`/api/answer-block-crops/pc-b1-9001/image`, tokenC);
+  ok(imgForeignTeacher.status === 403, `未分配本题块的教师按 cropId 直读原图被 403（实际 ${imgForeignTeacher.status}）`);
+  ok((await get(`/api/answer-block-crops/pc-b1-9001/image`, tokenS1)).status === 200, "学生读取本人切块原图不受影响");
+  ok((await get(`/api/answer-block-crops/pc-b2-9001/image`, tokenA)).status === 200,
+    "该题块完全没有分配数据时按旧部署放行（兼容回退不误拦）");
+
+  // CR1 全流程：跨切片承接第二评 → 首评人再承接另一份的第二评，双评走得完
+  const crossClaim = await claimSpecificPaper(examA, "B1", "pc-b1-9001", teacherD.id);
+  ok(crossClaim.claimedBy === teacherD.id && crossClaim.status === "pending",
+    `切片外的教师领取待复核卷子成功（实际 claimedBy=${crossClaim.claimedBy}）`);
+  const crossSubmit = await submitReviewCropScores({
+    examId: examA, cropId: "pc-b1-9001", userId: teacherD.id,
+    scores: [{ questionNumber: 21, scoreType: "subjective", score: 12 }]
+  });
+  ok(crossSubmit.ok === true && crossSubmit.status === "reviewed", `双评流程走通（实际 ${crossSubmit.status}）`);
+  await submitReviewCropScores({
+    examId: examA, cropId: "pc-b1-9003", userId: teacherD.id,
+    scores: [{ questionNumber: 21, scoreType: "subjective", score: 15 }]
+  });
+  const autoCross = await claimNextPaper(examA, "B1", teacherA.id);
+  ok(autoCross.id === "pc-b1-9003", `自动领取能拿到切片外的待复核卷（实际 ${autoCross.id}）`);
+  const autoSubmit = await submitReviewCropScores({
+    examId: examA, cropId: "pc-b1-9003", userId: teacherA.id,
+    scores: [{ questionNumber: 21, scoreType: "subjective", score: 15 }]
+  });
+  ok(autoSubmit.ok === true && autoSubmit.status === "reviewed", `两份卷子都完成双评（实际 ${autoSubmit.status}）`);
+  ok(
+    db.prepare("SELECT 1 FROM answer_block_crops WHERE id = 'pc-b1-9002' AND claimed_by IS NOT NULL").get() === undefined,
+    "无人被分配到的首评卷始终没有被切片外教师顺手领走"
+  );
+
+  // CR9：持有量预留的临界区预算与既有配额共用同一套三档设计
+  ok(limits.CLAIM_LOCK_TIMEOUT_MS === 3000, "默认领取锁等待预算 3000 毫秒");
+  assert.equal(limits.resolveReviewPoolLimits({ PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS: "500" }).limits.claimLockTimeoutMs, 500);
+  assert.equal(limits.resolveReviewPoolLimits({ PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS: "0" }).limits.claimLockTimeoutMs, 3000);
+  assert.equal(limits.resolveReviewPoolLimits({ PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS: "999999" }).limits.claimLockTimeoutMs, 30000);
+  ok(limits.describeReviewPoolLimits().includes("claimLockTimeoutMs=3000"), "锁预算进入启动摘要");
 
   console.log("\n== R06 删除答题卡不得改写/点名范围外考试（破坏性步骤，放在最后） ==");
   const referencedCount = (db.prepare("SELECT COUNT(*) AS n FROM exams WHERE card_id = ?").get(cardId) as { n: number }).n;

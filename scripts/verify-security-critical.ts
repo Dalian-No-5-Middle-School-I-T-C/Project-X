@@ -22,7 +22,7 @@ const uploadEnvVarsClearedHere = [
   "PROJECTX_UPLOAD_MAX_BATCH_FILES", "PROJECTX_UPLOAD_MAX_BATCH_TOTAL_MIB"
 ];
 // 试卷池持有量配额（安全 R15）同样是「默认值 + 环境变量 + 天花板」三档，宿主机变量会污染默认档位断言。
-const reviewPoolEnvVarsClearedHere = ["PROJECTX_REVIEW_MAX_HELD_PER_BLOCK", "PROJECTX_REVIEW_MAX_HELD_TOTAL"];
+const reviewPoolEnvVarsClearedHere = ["PROJECTX_REVIEW_MAX_HELD_PER_BLOCK", "PROJECTX_REVIEW_MAX_HELD_TOTAL", "PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS"];
 // 备份恢复解压预算（安全 R43）同样是「默认值 + 环境变量 + 天花板」三档，宿主机变量会污染按默认预算的断言。
 const restoreZipEnvVarsClearedHere = [
   "PROJECTX_RESTORE_ZIP_MAX_ENTRIES", "PROJECTX_RESTORE_ZIP_MAX_ENTRY_MIB", "PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB"
@@ -559,7 +559,7 @@ async function main(): Promise<void> {
 
     // ── 试卷池持有量配额（安全 R15）：与上传上限同一套三档设计
     const {
-      MAX_HELD_PAPERS_PER_BLOCK, MAX_HELD_PAPERS_TOTAL,
+      MAX_HELD_PAPERS_PER_BLOCK, MAX_HELD_PAPERS_TOTAL, CLAIM_LOCK_TIMEOUT_MS,
       resolveReviewPoolLimits, DEFAULT_REVIEW_POOL_LIMITS, REVIEW_POOL_ENV_VARS, describeReviewPoolLimits
     } = await import("../src/shared/reviewPoolLimits");
     const poolEnvNames = Object.values(REVIEW_POOL_ENV_VARS);
@@ -568,14 +568,21 @@ async function main(): Promise<void> {
       "脚本清理的试卷池配额变量名单与限制表逐一对应，宿主机变量不会渗入默认档位断言");
     check(MAX_HELD_PAPERS_PER_BLOCK === DEFAULT_REVIEW_POOL_LIMITS.maxHeldPapersPerBlock
       && MAX_HELD_PAPERS_TOTAL === DEFAULT_REVIEW_POOL_LIMITS.maxHeldPapersTotal
+      && CLAIM_LOCK_TIMEOUT_MS === DEFAULT_REVIEW_POOL_LIMITS.claimLockTimeoutMs
       && resolveReviewPoolLimits({}).notices.length === 0,
-      "未配置时按默认持有量配额生效（题块 20 份 / 全局 60 份）");
+      "未配置时按默认持有量配额与领取锁预算生效（题块 20 份 / 全局 60 份 / 锁等待 3000 毫秒）");
     check(resolveReviewPoolLimits({ PROJECTX_REVIEW_MAX_HELD_PER_BLOCK: "3" }).limits.maxHeldPapersPerBlock === 3
       && resolveReviewPoolLimits({ PROJECTX_REVIEW_MAX_HELD_TOTAL: "-1" }).limits.maxHeldPapersTotal === 60
       && resolveReviewPoolLimits({ PROJECTX_REVIEW_MAX_HELD_TOTAL: "999999" }).limits.maxHeldPapersTotal === 2000,
       "持有量配额可收紧、非法值回落默认、超天花板被夹紧（放宽有上界）");
-    check(describeReviewPoolLimits().includes("maxHeldPapersPerBlock=20"),
-      "试卷池配额进入启动摘要，与上传上限一致的可见性");
+    check(resolveReviewPoolLimits({ PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS: "500" }).limits.claimLockTimeoutMs === 500
+      && resolveReviewPoolLimits({ PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS: "0" }).limits.claimLockTimeoutMs === 3000
+      && resolveReviewPoolLimits({ PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS: "abc" }).notices[0].includes("按默认值")
+      && resolveReviewPoolLimits({ PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS: "999999" }).limits.claimLockTimeoutMs === 30000,
+      "领取锁预算同样三档：可收紧、设 0 不会关掉临界区、超天花板被夹紧");
+    check(describeReviewPoolLimits().includes("maxHeldPapersPerBlock=20")
+      && describeReviewPoolLimits().includes("claimLockTimeoutMs=3000"),
+      "试卷池配额与锁预算进入启动摘要，与上传上限一致的可见性");
 
     // ── 备份恢复解压预算与运维错误脱敏（安全 R43 / R25）
     const {

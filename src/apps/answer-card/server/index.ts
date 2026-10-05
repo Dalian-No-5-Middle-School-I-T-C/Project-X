@@ -141,8 +141,10 @@ import {
 import {
   makeGate, getVisibleExamIds, requireExamAccess,
   validateExamIdsAccess, setAuthEnforced, hasViewPermission, makeViewPermissionGate, isTeacherPermittedForWholeExam,
-  requirePermissionCompat, requireWholeExamGradingAccess, canManageExamOrganization, hasExamOrganizationAffinity
+  requirePermissionCompat, requireWholeExamGradingAccess, canManageExamOrganization, hasExamOrganizationAffinity,
+  canGradeBlock, isExamSoftDeleted
 } from "./middleware";
+import { getAssignedStudentIdSet, isClaimableForAssignedSet } from "../../../server/services/ReviewPoolService";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
 import { paperRoutes } from "./routes/paper-routes";
@@ -1679,9 +1681,17 @@ export async function createApp(): Promise<express.Express> {
     try {
       const cropId = safeId(paramValue(req.params.cropId));
       const cropRow = await getMysqlDb().get(
-        "SELECT image_path, student_id FROM answer_block_crops WHERE id = ?",
+        "SELECT image_path, student_id, exam_id, block_id, status, review_round, claimed_by FROM answer_block_crops WHERE id = ?",
         cropId
-      ) as { image_path: string; student_id: number | null } | undefined;
+      ) as {
+        image_path: string;
+        student_id: number | null;
+        exam_id: number | null;
+        block_id: string | null;
+        status: string | null;
+        review_round: number | null;
+        claimed_by: number | null;
+      } | undefined;
       const targetPath = cropRow?.image_path ?? await getAnswerBlockCropFile(cropId);
       if (!cropRow || !targetPath || !existsSync(targetPath)) {
         res.status(404).json({ message: "作答切块图片不存在" });
@@ -1696,6 +1706,43 @@ export async function createApp(): Promise<express.Express> {
       ) {
         res.status(403).json({ message: "权限不足" });
         return;
+      }
+      // PR #312 CR6：切块 ID 是 UUID 也不是授权。此前只有 cropGate 的权限位，
+      // 任何拿到 grade:read 的教师都能按 cropId 读别场考试、别人题块的原图。
+      if (enforceAuth && req.user && req.user.role_name === "teacher") {
+        const examId = Number(cropRow.exam_id);
+        if (!examId) {
+          res.status(403).json({ message: "权限不足" });
+          return;
+        }
+        if (await isExamSoftDeleted(examId)) {
+          res.status(404).json({ message: "作答切块图片不存在" });
+          return;
+        }
+        const visibleIds = await getVisibleExamIds(req.user);
+        if (visibleIds !== null && !visibleIds.includes(examId)) {
+          res.status(403).json({ message: "权限不足：无权访问此考试" });
+          return;
+        }
+        const blockId = String(cropRow.block_id ?? "");
+        if (blockId && !(await canGradeBlock(req.user, examId, blockId))) {
+          res.status(403).json({ message: "权限不足：你未被分配批改该题块" });
+          return;
+        }
+        // 逐生分配下仍按可阅范围收敛图片：未开评的切片外卷子读不到原图；
+        // 一旦离开首评队列（待二评/争议/已评完）本块教师都可回看，与领取/清单同一谓词
+        const assignedIds = await getAssignedStudentIdSet(examId, blockId, Number(req.user.id));
+        if (!isClaimableForAssignedSet(
+          {
+            studentId: cropRow.student_id,
+            status: cropRow.status,
+            reviewRound: cropRow.review_round,
+          },
+          assignedIds
+        ) && cropRow.claimed_by !== req.user.id) {
+          res.status(403).json({ message: "权限不足：该切块不在你的阅卷范围内" });
+          return;
+        }
       }
       res.setHeader("Content-Type", "image/png");
       res.sendFile(targetPath);

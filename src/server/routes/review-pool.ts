@@ -42,6 +42,9 @@ router.get(
   "/exams/:examId/blocks/:blockId",
   requireExamAccess,
   requirePermission(PERMISSIONS.GRADE_READ),
+  // PR #312 CR6：清单带学生姓名/学号与领取人，读取同样要过题块级正向授权——
+  // 此前只有 claim/release 挂了范围门，未被分配本题块的教师可以把整块清单连人带卷读走。
+  requireGradingScope,
   async (req, res) => {
     try {
       const examId = Number(req.params.examId);
@@ -58,7 +61,7 @@ router.get(
         blockId,
         {
           ...(mine && teacherId ? { claimedBy: teacherId } : {}),
-          ...(assignedIds ? { onlyStudentIds: assignedIds } : {})
+          ...(assignedIds ? { assignedStudentIds: assignedIds } : {})
         }
       );
       res.json({ ok: true, data: { summary, entries } });

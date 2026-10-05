@@ -10,6 +10,9 @@ async function main(): Promise<void> {
   assert.equal(process.env.PROJECTX_MARIADB_DATABASE, "projectx_ci", "Only projectx_ci is allowed");
   assert.ok(process.env.PROJECTX_MARIADB_USER, "Set PROJECTX_MARIADB_USER explicitly");
   assert.ok(process.env.PROJECTX_MARIADB_PASSWORD, "Set PROJECTX_MARIADB_PASSWORD explicitly");
+  // 试卷池配额在模块加载时定档，必须早于任何应用模块导入。CI 用 2 份/题块，
+  // 让「5 个并发领取」能在几秒内把配额打满（见 CR9 并发领取回归）。
+  process.env.PROJECTX_REVIEW_MAX_HELD_PER_BLOCK = "2";
   // 管理员引导文件写在「数据库路径」的同目录；MariaDB 模式下把该指针指向临时目录，
   // 避免测试往仓库 data/ 里落真实的 bootstrap-admin.txt。
   const bootstrapTmpDir = mkdtempSync(path.join(tmpdir(), "projectx-mariadb-bootstrap-"));
@@ -351,6 +354,77 @@ async function main(): Promise<void> {
     await db.run("DELETE FROM answer_cards WHERE id = 'blocks_ci'");
     await db.run("DELETE FROM users WHERE id IN (?, ?)", blocksStudentId, otherStudentId);
     console.log("PASS: review block listing (per-block max score, half-point, R03 block scope)");
+
+    // ===== PR #312 CR9：并发领取的「计数 + 占卷」必须落在同一个临界区 =====
+    // 只做普通事务并不原子：MariaDB 下 5 个并发领取各自读到同一个旧持有量
+    // （COUNT 走一致性快照，看不见对方未提交的 UPDATE），题块 2 份的配额能被领成 5 份。
+    // 命名锁按教师加，且只在 MariaDB 侧需要（SQLite 单连接同步驱动，事务本身互斥）。
+    const { claimNextPaper, ReviewPoolError, ReviewPoolScopeError, countHeldPapers } =
+      await import("../src/server/services/ReviewPoolService");
+    await db.run("INSERT INTO answer_cards (id, title) VALUES ('claim_ci', '并发领取回归')");
+    const claimExam = await db.run("INSERT INTO exams (name, card_id) VALUES ('并发领取回归', 'claim_ci')");
+    const claimExamId = Number(claimExam.lastInsertRowid);
+    const claimTeacher = await db.run(
+      "INSERT INTO users (username, password_hash, name, role_id) VALUES ('claim_ci_teacher', 'test-only', '并发领取教师', 2)",
+    );
+    const claimTeacherId = Number(claimTeacher.lastInsertRowid);
+    const claimStudent = await db.run(
+      "INSERT INTO users (username, password_hash, name, role_id, student_number) VALUES ('claim_ci_student', 'test-only', '并发领取生', 3, '93010003')",
+    );
+    const claimStudentId = Number(claimStudent.lastInsertRowid);
+    for (let seq = 1; seq <= 5; seq++) {
+      await db.run(
+        `INSERT INTO answer_block_crops (${cropCols})
+         VALUES (?, 'claim_ci', ?, ?, 'scan', ?, 'C1', '第 21 题', 'subjective', 1, 0, '[]', '{}', ?, 100, 200, 300, 'ready', 0)`,
+        `claim_ci_${seq}`, claimExamId, claimStudentId,
+        `claim_ci_rec_${seq}`, `data/claim_ci/claim_ci_${seq}.png`,
+      );
+    }
+    const claimLockName = `px_review_claim_${claimTeacherId}`;
+    // 前置体检：锁在突发前必须无人持有。命名锁是**连接级**状态，进程挂着不放锁时
+    // 连接回池也不会释放它——本机就曾被一个「等 3000 秒」的旧会话占住同名锁，
+    // 让后面每次领取都只看到「等待锁超时」，把配额回归误判成临界区失效。
+    const holderBefore = await db.get<{ holder: number | null }>("SELECT IS_USED_LOCK(?) AS holder", claimLockName);
+    assert.equal(holderBefore?.holder, null,
+      `并发突发前该教师的领取锁无人持有（若失败：连接 ${holderBefore?.holder} 泄漏了锁，与本题无关）`);
+    const attempts = await Promise.allSettled(
+      Array.from({ length: 5 }, () => claimNextPaper(claimExamId, "C1", claimTeacherId, db)),
+    );
+    const succeeded = attempts.filter((a) => a.status === "fulfilled").length;
+    const rejected = attempts.filter((a) => a.status === "rejected") as PromiseRejectedResult[];
+    const heldAfter = await countHeldPapers(claimTeacherId, { examId: claimExamId, blockId: "C1" }, db);
+    assert.equal(succeeded, 2,
+      `并发领取的成功数不超过题块持有量配额（拒绝原因：${rejected.map((a) => (a.reason as Error).message).join(" | ")}）`);
+    assert.equal(heldAfter.inBlock, 2, "并发下实际持有量与配额一致（修复前会超发）");
+    assert.equal(
+      attempts.filter((a) => a.status === "rejected" && a.reason instanceof ReviewPoolScopeError).length, 3,
+      "其余领取以「持有量超限」明确拒绝，而不是静默少领",
+    );
+    const lockHolder = await db.get<{ holder: number | null }>("SELECT IS_USED_LOCK(?) AS holder", claimLockName);
+    assert.equal(lockHolder?.holder, null, "领取结束后命名锁已释放（泄漏会让后续领取白等一个超时预算）");
+    // 锁被占用时：等满预算后报错让客户端重试，绝不「拿不到锁就照常写」
+    let claimLockWaitedMs = 0;
+    await db.transaction(async (tx) => {
+      const grabbed = await tx.get<{ locked: number }>("SELECT GET_LOCK(?, 0) AS locked", claimLockName);
+      assert.equal(Number(grabbed?.locked), 1, "夹具可先占住该教师的领取锁");
+      const startedAt = Date.now();
+      await assert.rejects(
+        () => claimNextPaper(claimExamId, "C1", claimTeacherId, db),
+        (err: unknown) => err instanceof ReviewPoolError && err.message.includes("请重试"),
+        "等锁超时返回可重试的错误，而不是绕过临界区继续领取",
+      );
+      // GET_LOCK 的等待参数单位是「秒」：曾把毫秒预算原样传入，3000 毫秒变成 3000 秒，
+      // 一次并发挤兑就足以挂住请求并占满连接池。预算 3000 毫秒 → 判定必须落在几秒内。
+      claimLockWaitedMs = Date.now() - startedAt;
+      assert.ok(claimLockWaitedMs >= 2000 && claimLockWaitedMs < 6000,
+        `等锁时长跟随毫秒预算（实际 ${claimLockWaitedMs} 毫秒）`);
+      await tx.get("SELECT RELEASE_LOCK(?) AS released", claimLockName);
+    });
+    await db.run("DELETE FROM answer_block_crops WHERE exam_id = ?", claimExamId);
+    await db.run("DELETE FROM exams WHERE id = ?", claimExamId);
+    await db.run("DELETE FROM answer_cards WHERE id = 'claim_ci'");
+    await db.run("DELETE FROM users WHERE id IN (?, ?)", claimTeacherId, claimStudentId);
+    console.log(`PASS: review pool claim reservation (named lock, quota under concurrency, lock-timeout in ${claimLockWaitedMs}ms)`);
 
     const upsert = buildUpsertSQL(db.dialect, "system_settings", ["key", "value"], ["key"]);
     const readValue = () => db.get<{ value: string }>("SELECT `value` FROM system_settings WHERE `key` = ?", "ci_test");
