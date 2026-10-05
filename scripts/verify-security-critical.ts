@@ -25,7 +25,8 @@ const uploadEnvVarsClearedHere = [
 const reviewPoolEnvVarsClearedHere = ["PROJECTX_REVIEW_MAX_HELD_PER_BLOCK", "PROJECTX_REVIEW_MAX_HELD_TOTAL", "PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS"];
 // 备份恢复解压预算（安全 R43）同样是「默认值 + 环境变量 + 天花板」三档，宿主机变量会污染按默认预算的断言。
 const restoreZipEnvVarsClearedHere = [
-  "PROJECTX_RESTORE_ZIP_MAX_ENTRIES", "PROJECTX_RESTORE_ZIP_MAX_ENTRY_MIB", "PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB"
+  "PROJECTX_RESTORE_ZIP_MAX_ENTRIES", "PROJECTX_RESTORE_ZIP_MAX_ENTRY_MIB", "PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB",
+  "PROJECTX_RESTORE_ZIP_MAX_RATIO"
 ];
 // 原卷累计容量（R10/R14）、AI 配额（R11）、微信出站档位（R20）共用同一套三档设计：
 // 宿主机若设置了任一档位，本脚本「按默认边界」的断言全部失真，必须先清掉，
@@ -588,7 +589,7 @@ async function main(): Promise<void> {
     // ── 备份恢复解压预算与运维错误脱敏（安全 R43 / R25）
     const {
       resolveRestoreZipLimits, DEFAULT_RESTORE_ZIP_LIMITS, RESTORE_ZIP_ENV_VARS, describeRestoreZipLimits,
-      MAX_RESTORE_ZIP_ENTRIES, MAX_RESTORE_ZIP_ENTRY_BYTES, MAX_RESTORE_ZIP_TOTAL_BYTES
+      MAX_RESTORE_ZIP_ENTRIES, MAX_RESTORE_ZIP_ENTRY_BYTES, MAX_RESTORE_ZIP_TOTAL_BYTES, MAX_RESTORE_ZIP_RATIO
     } = await import("../src/shared/restoreZipLimits");
     check(RESTORE_ZIP_ENV_VARS.slice().sort().join() === restoreZipEnvVarsClearedHere.slice().sort().join()
       && RESTORE_ZIP_ENV_VARS.every((name) => !(name in process.env)),
@@ -602,10 +603,19 @@ async function main(): Promise<void> {
       && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_ENTRY_MIB: "999999" }).limits.maxEntryUncompressedBytes
         === 8192 * 1024 * 1024,
       "解压预算可收紧、非法值回落默认、超天花板被夹紧（一个拼错的数字关不掉保护）");
-    check(describeRestoreZipLimits().includes("≤20000") && describeRestoreZipLimits().includes("6144MiB"),
-      "解压预算进入启动摘要");
+    check(MAX_RESTORE_ZIP_RATIO === DEFAULT_RESTORE_ZIP_LIMITS.maxCompressionRatio
+      && MAX_RESTORE_ZIP_RATIO === 1032
+      && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_RATIO: "8" }).limits.maxCompressionRatio === 8
+      && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_RATIO: "0" }).limits.maxCompressionRatio === 1032
+      && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_RATIO: "abc" }).notices[0].includes("按默认值")
+      && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_RATIO: "999999" }).limits.maxCompressionRatio === 1032
+      && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_RATIO: "999999" }).notices[0].includes("天花板"),
+      "最坏展开比同样三档：可收紧、设 0 与非法值不会关掉预估、超天花板被夹紧（1032:1 是 DEFLATE 的物理上界，放宽没有意义）");
+    check(describeRestoreZipLimits().includes("≤20000") && describeRestoreZipLimits().includes("6144MiB")
+      && describeRestoreZipLimits().includes("1032"),
+      "解压预算与最坏展开比进入启动摘要");
     const {
-      classifyEntryName, resolveEntryDest, checkEntryBudget, extractZipWithinBudget, RestoreZipError
+      classifyEntryName, resolveEntryDest, checkEntryBudget, worstCaseEntryBytes, extractZipWithinBudget, RestoreZipError
     } = await import("../src/server/services/restoreZip");
     const { sanitizeOpsMessage, containsHostPath } = await import("../src/server/lib/opsErrorMessage");
     const AdmZip = (await import("adm-zip")).default;
@@ -659,6 +669,58 @@ async function main(): Promise<void> {
       const state = { entries: 0, bytes: 0 };
       checkEntryBudget(state, 1, 1, MAX_RESTORE_ZIP_ENTRY_BYTES + 1);
     }) === 413, "头部声明很小、实际读出体积巨大的谎报条目同样被拦下");
+    // PR #312 CR13：把「解压后体积」这一栏改成 0，就是解压炸弹的谎报签名——解压库把输出上限
+    // 设为声明值，声明 0 等于不封顶（adm-zip 0.6.0 的 Inflater 正是只在声明值 >0 时才设上限，
+    // 0.6.1 才有 1 字节地板；本仓库不依赖库版本，预估越界就在 getData() 之前拒掉）。
+    // 写入端永远写诚实头部，所以谎报只能靠改 ZIP 字节伪造：偏移量在头结构里是定长 4 字节字段，
+    // 归零不改动长度，其余偏移与 CRC 全部保持自洽，adm-zip 仍能正常索引出这一条。
+    const wipeUncompressedSize = (zipBuf: Buffer): Buffer => {
+      const out = Buffer.from(zipBuf);
+      const wipe = (signature: number[], fieldOffset: number) => {
+        const sig = Buffer.from(signature);
+        for (let at = out.indexOf(sig); at >= 0; at = out.indexOf(sig, at + 1)) out.writeUInt32LE(0, at + fieldOffset);
+      };
+      wipe([0x50, 0x4b, 0x01, 0x02], 24); // 中央目录：解压后体积
+      wipe([0x50, 0x4b, 0x03, 0x04], 22); // 本地头：同一栏
+      return out;
+    };
+    // 2 MiB 伪随机负载压不动（DEFLATE 输出≈原体积），所以它的压缩栏是诚实的大数，解压栏被谎报为 0。
+    const liarPayload = Buffer.alloc(2 * 1024 * 1024);
+    for (let i = 0; i < liarPayload.length; i += 4) liarPayload.writeUInt32LE((i * 2654435761) >>> 0, i);
+    const liarZip = (() => {
+      const pack = new AdmZip();
+      pack.addFile("liar.bin", liarPayload);
+      return pack.toBuffer();
+    })();
+    const liarEntries = new AdmZip(wipeUncompressedSize(liarZip)).getEntries();
+    check(liarEntries.length === 1 && Number(liarEntries[0].header.size) === 0
+      && Number(liarEntries[0].header.compressedSize) > 1024 * 1024,
+      "伪造包仍被 adm-zip 索引为一条「声明 0 字节、压缩负载 2 MiB」的条目（伪造没有把包直接解坏）");
+    const r43LiarDir = path.join(tempDir, "r43-liar");
+    mkdirSync(r43LiarDir, { recursive: true });
+    let liarError: RestoreZipError | null = null;
+    try {
+      extractZipWithinBudget(wipeUncompressedSize(liarZip), r43LiarDir);
+    } catch (err) {
+      liarError = err instanceof RestoreZipError ? err : null;
+      if (!liarError) throw err;
+    }
+    check(liarError !== null && liarError.status === 413 && !containsHostPath(liarError.message),
+      "谎报条目在进入解压前就被 413 拒掉，而不是解完才发现（状态码 413 而非库自身封顶的 400，证明确实拦在 getData 之前）");
+    check(liarError !== null && liarError.message.includes("声明为 0") && !liarError.message.includes("liar.bin"),
+      "拒绝消息说明是谎报签名，且不带条目名以外的主机路径信息");
+    check(!existsSync(path.join(r43LiarDir, "liar.bin")) && readdirSync(r43LiarDir).length === 0,
+      "被拒的谎报包没有落盘任何文件");
+    check(worstCaseEntryBytes(8, 1024, 0) === 1024 * MAX_RESTORE_ZIP_RATIO
+      && worstCaseEntryBytes(0, 1024, 0) === 1024
+      && worstCaseEntryBytes(8, 1024, 5) === 5
+      && worstCaseEntryBytes(99, 1024, 0) === 0,
+      "最坏展开预估只在「声明为 0」时生效：DEFLATE 按倍率、STORED 按负载本身、诚实声明照声明算、未知方法不预估");
+    const r43HonestDir = path.join(tempDir, "r43-honest");
+    mkdirSync(r43HonestDir, { recursive: true });
+    check(rejectStatus(() => extractZipWithinBudget(liarZip, r43HonestDir)) === 0
+      && readFileSync(path.join(r43HonestDir, "liar.bin")).equals(liarPayload),
+      "同一份包只要头部诚实就照常恢复（收紧只针对谎报，不误伤真实备份）");
     const corruptStatus = rejectStatus(() =>
       extractZipWithinBudget(Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(512, 0x41)]), r43Dir));
     check(corruptStatus === 400 || corruptStatus === 0,

@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   MAX_RESTORE_ZIP_ENTRIES,
   MAX_RESTORE_ZIP_ENTRY_BYTES,
+  MAX_RESTORE_ZIP_RATIO,
   MAX_RESTORE_ZIP_TOTAL_BYTES,
   describeRestoreZipLimits,
 } from "../../shared/restoreZipLimits";
@@ -12,8 +13,8 @@ import {
 /**
  * 备份恢复 ZIP 的解压闸门（安全 R43）。
  *
- * 独立成 service 而不是留在路由里，是为了让验证脚本能直接 import 这三个纯判定
- * （`classifyEntryName` / `checkEntryBudget` / `extractZipWithinBudget`）而不必起 Express。
+ * 独立成 service 而不是留在路由里，是为了让验证脚本能直接 import 这几个纯判定
+ * （`classifyEntryName` / `checkEntryBudget` / `worstCaseEntryBytes` / `extractZipWithinBudget`）而不必起 Express。
  *
  * 抛出的 `RestoreZipError.message` **必须只含数量与限额，不含任何主机路径**：
  * 这些消息会原样返回给管理员（R25 要求恢复接口不回显主机文件系统信息）。
@@ -110,11 +111,33 @@ export function checkEntryBudget(state: BudgetState, entryCount: number, declare
   state.bytes += counted;
 }
 
+/** ZIP 条目方法号（`entry.header.method`）：只有这两类会真的产出字节。 */
+const ZIP_METHOD_STORED = 0;
+const ZIP_METHOD_DEFLATED = 8;
+
+/**
+ * 一个条目在解压时**最坏**会占用多少内存（纯函数，便于单测）。
+ *
+ * 正常条目照头部声明算：解压库把输出上限设为声明值，谎报则由 `checkEntryBudget`
+ * 用实际读出的字节数补刀。危险的是把解压后体积声明成 0 的条目——「按声明封顶」此时
+ * 等于不封顶（adm-zip 0.6.0 的 Inflater 只在声明值 >0 时才设上限，0.6.1 才有 1 字节地板），
+ * 一个几百 KiB 的压缩负载能先展开成 GB 级 Buffer，再轮到体积检查。这类条目因此改按
+ * 「压缩负载 × 最坏展开比」预估：DEFLATE 的物理上界约 1032:1，STORED 的输出恰等于负载本身。
+ * 预估越界就在调用 `getData()` 之前拒掉，内存与磁盘都拿不到那份谎报的体积。
+ */
+export function worstCaseEntryBytes(method: number, compressedBytes: number, declaredBytes: number): number {
+  if (declaredBytes > 0) return declaredBytes;
+  if (method === ZIP_METHOD_STORED) return compressedBytes;
+  if (method === ZIP_METHOD_DEFLATED) return compressedBytes * MAX_RESTORE_ZIP_RATIO;
+  return 0; // 加密或未知方法在 getData() 里就会失败，不必为它预估
+}
+
 /**
  * 从 Buffer 解压 ZIP 到目标目录：条目名安全 + 三道体积/数量预算（R43）。
  *
- * 失败即抛错，调用方负责清理已落盘的临时目录；预算内的内存占用受单条上限约束，
- * 因此仍沿用「全内存读取」的稳定写法（`entry.getData()`）。
+ * 失败即抛错，调用方负责清理已落盘的临时目录。预算内的内存占用受单条上限约束，
+ * 因此仍沿用「全内存读取」的稳定写法（`entry.getData()`）——前提是谎报声明为 0 的条目
+ * 先被 `worstCaseEntryBytes` 拦在分配之前，否则单条上限约束的是声明而非实际。
  */
 export function extractZipWithinBudget(zipBuffer: Buffer, destDir: string): void {
   let zip: AdmZip;
@@ -124,12 +147,25 @@ export function extractZipWithinBudget(zipBuffer: Buffer, destDir: string): void
     throw new RestoreZipError("备份文件解析失败：ZIP 结构损坏或格式不受支持", 400);
   }
   const entries = zip.getEntries();
+  if (entries.length === 0) {
+    // adm-zip 对头部不自洽的包是「静默解出 0 条」而不是抛错：若照原样走完，恢复会报告成功、
+    // 实际一个字节都没写回去。真实备份至少含 metadata.json，空包一律判非法。
+    throw new RestoreZipError("备份文件解析失败：ZIP 内没有任何可恢复条目", 400);
+  }
   const state: BudgetState = { entries: 0, bytes: 0 };
   entries.forEach((entry, index) => {
     const declared = Number(entry.header?.size ?? 0);
-    // 头部声明已超单条上限时先拦下，不给它分配内存的机会。
-    if (Number.isFinite(declared) && declared > MAX_RESTORE_ZIP_ENTRY_BYTES) {
-      checkEntryBudget(state, index + 1, declared, 0);
+    const compressed = Number(entry.header?.compressedSize ?? 0);
+    const method = Number(entry.header?.method ?? -1);
+    // 分配内存之前先按最坏情况估体积：声明已越界的条目、以及谎报为 0 的炸弹都在这里拦下。
+    const worst = worstCaseEntryBytes(method, compressed, declared);
+    if (worst > MAX_RESTORE_ZIP_ENTRY_BYTES || state.bytes + worst > MAX_RESTORE_ZIP_TOTAL_BYTES) {
+      throw new RestoreZipError(
+        declared > 0
+          ? `备份内存在解压后体积 ${formatBytes(worst)} 的单个文件，超过解压预算 ${formatBytes(MAX_RESTORE_ZIP_ENTRY_BYTES)}`
+          : `备份内有文件把解压后体积声明为 0，按最坏展开预估达 ${formatBytes(worst)}，超过解压预算（${describeRestoreZipLimits()}）`,
+        413,
+      );
     }
     const destPath = resolveEntryDest(destDir, entry.entryName);
     if (entry.isDirectory) {
