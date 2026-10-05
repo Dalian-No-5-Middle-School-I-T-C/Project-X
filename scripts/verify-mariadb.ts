@@ -232,6 +232,23 @@ async function main(): Promise<void> {
       [{ exam_id: exam.lastInsertRowid, student_id: student.lastInsertRowid }]);
     assert.equal((await findSavedScannerOwners(db, "session_ci", "group_ci", "09210002", "receipt_ci")).length, 0);
     assert.equal((await findSavedScannerOwners(db, "session_ci", "group_ci", "09210001", "other_card")).length, 0);
+    // 复核 CR2/CR4：「按回执判定页面归属」与「归档考试不算未绑定」两条新谓词必须在真库可执行。
+    const { savedReceiptOwnerOfPage } = await import("../src/server/services/scannerSubmissions");
+    await db.run("UPDATE scanner_submissions SET pages_json = ? WHERE session_id = 'session_ci' AND group_id = 'group_ci'",
+      JSON.stringify([{ recordId: "page_ci", pageNum: 1, side: "front", layoutPage: 1 }]));
+    assert.deepEqual(await savedReceiptOwnerOfPage("session_ci", "page_ci"),
+      { exam_id: Number(exam.lastInsertRowid), group_id: "group_ci", student_number: "09210001" });
+    assert.equal(await savedReceiptOwnerOfPage("session_ci", "other_page"), null);
+    const { resolveScannerExam } = await import("../src/server/services/scannerExam");
+    const unarchived = await resolveScannerExam("receipt_ci", "session_ci");
+    assert.deepEqual(unarchived.exams.map(row => Number(row.id)), [Number(exam.lastInsertRowid)]);
+    await db.run("INSERT INTO exam_archives (exam_id, is_deleted, deleted_at) VALUES (?, 1, CURRENT_TIMESTAMP)", exam.lastInsertRowid);
+    const archivedScan = await resolveScannerExam("receipt_ci", "session_ci");
+    assert.equal(archivedScan.exams.length, 0, "归档考试不得进入候选范围");
+    assert.deepEqual(archivedScan.allExamIds, [Number(exam.lastInsertRowid)],
+      "归档考试仍要留下痕迹，供「软删除不等于未绑定」判定（CR4）");
+    await db.run("DELETE FROM exam_archives WHERE exam_id = ?", exam.lastInsertRowid);
+    console.log("PASS: saved-receipt page ownership and archive-aware scanner exam resolution (CR2/CR4)");
     // 使用真实成绩修改路由，防止另一条学生搜索路径重新引入反斜杠 ESCAPE。
     const { default: express } = await import("express");
     const { default: scoreEditingRouter } = await import("../src/server/routes/score-editing");
