@@ -17,18 +17,21 @@
 
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
 const packaging: {
+  applyUnixExecBits: (zip: unknown) => void;
   buildPackage: () => void;
   createDeployReadme: () => string;
   createInstallScript: () => string;
   createRuntimePackageJson: () => Record<string, unknown>;
   createStartScript: () => string;
   createSystemdUnit: () => string;
+  ZIP_MADE_BY_UNIX: number;
+  ZIP_UNIX_EXEC_MODE: number;
 } = require("../scripts/package-server-ubuntu.cjs");
 
 const packagingSource = readFileSync(
@@ -163,9 +166,10 @@ ok(/chown -R root:"\$SERVICE_GROUP" "\$APP_DIR"/.test(install)
   "代码目录归 root、服务账号只读+可执行（g+rX 保留原有执行位，不会把 .venv/bin/python 改坏）");
 ok(/chmod 0750 "\$APP_DIR"/.test(install), "代码目录本身 0750");
 ok(/if \[ "\$SRC_DIR" != "\$APP_DIR" \]; then/.test(install), "就地升级时跳过自我复制（cp 自己到自己会报错）");
-ok(/install -D -m 0644 "\$APP_DIR\/systemd\/\$UNIT_NAME" "\$UNIT_DST"/.test(install)
-  && /UNIT_DST="\/etc\/systemd\/system\/\$UNIT_NAME"/.test(install),
-  "单元装到 /etc/systemd/system 且 0644");
+ok(/UNIT_SRC="\$APP_DIR\/systemd\/\$UNIT_NAME"/.test(install)
+  && /UNIT_DST="\/etc\/systemd\/system\/\$UNIT_NAME"/.test(install)
+  && /chmod 0644 "\$UNIT_DST"/.test(install),
+  "单元从装好的包体里取出、写到 /etc/systemd/system 并置 0644");
 ok(/systemctl daemon-reload/.test(install) && /systemctl enable "\$UNIT_NAME"/.test(install) && /systemctl restart "\$UNIT_NAME"/.test(install),
   "daemon-reload + enable + restart 三步都在（升级后单元内容变化必须 daemon-reload）");
 ok(/systemctl --no-pager show "\$UNIT_NAME" -p User -p Group -p UMask/.test(install),
@@ -182,15 +186,19 @@ ok(/systemctl --no-pager show "\$UNIT_NAME" -p User -p Group -p UMask/.test(inst
   ok(appDefault === first("WorkingDirectory"), `install.sh 默认安装目录（${appDefault}）与单元 WorkingDirectory 一致`);
   ok(unit.includes(`${dataDefault}/projectx.db`) && unit.includes(`${dataDefault}/answer-card`),
     `install.sh 默认数据目录（${dataDefault}）覆盖单元里的库路径与答题卡路径`);
-  ok(/sed -e "s\/\^User=projectx\$\/User=\$SERVICE_USER\/"/.test(install),
-    "自定义账号名时用 sed 重写单元里的 User=/Group=，不会装出一份身份对不上的单元");
+  ok(/awk -v app="\$APP_DIR" -v data="\$DATA_DIR"/.test(install)
+    && !/sed -e "s\/\^User=projectx/.test(install),
+  "重写用 awk 按键名整行生成，不再用 sed（路径里的 & 与 \\ 在 sed 替换串里是元字符）");
 }
 
 section("5. start.sh 与部署说明");
 ok(/\[ "\$\(id -u\)" = "0" \]/.test(start) && /systemd\/install\.sh/.test(start),
   "start.sh 以 root 运行时给出警告并指向 install.sh（前台试跑仍可用，但不留「就这么跑生产」的错觉）");
 ok(/exec node dist\/server\/index\.mjs/.test(start), "start.sh 的启动命令未变");
-ok(/sudo systemd\/install\.sh/.test(readme), "部署说明改用 sudo systemd/install.sh");
+ok(/sudo bash systemd\/install\.sh/.test(readme) && /bash systemd\/install\.sh/.test(install),
+  "部署说明与 install.sh 自身的报错提示都改用 `bash systemd/install.sh`（执行位是否保住都能装）");
+ok(!/sudo systemd\/install\.sh/.test(readme) && !/sudo systemd\/install\.sh/.test(unit) && !/sudo systemd\/install\.sh/.test(start),
+  "没有任何一处还在教人直接执行脚本文件（CR #313 P2-8：Windows 打包的 ZIP 里没有 Unix 执行位）");
 ok(!/sudo cp -a \. \/opt\/project-x-server\//.test(readme),
   "手工 `sudo cp -a . /opt/...` 那套流程已从文档移除（它既不改属主也不改权限）");
 ok(/MemoryDenyWriteExecute/.test(readme) && /SystemCallFilter=@system-service/.test(readme),
@@ -246,6 +254,123 @@ section("7. 生成物行尾与 shell 语法");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  }
+}
+
+section("8. 单元路径跟随自定义目录（CR #313 P2-9）");
+{
+  // install.sh 里那对标记之间的片段只读 6 个变量，因此能在临时目录中真跑一遍。
+  // 纯文本断言查不出「文档说能改目录、systemd 却仍从 /opt 起服务」这类静默错配。
+  const begin = install.indexOf("# INSTALL-REWRITE-BEGIN");
+  const end = install.indexOf("# INSTALL-REWRITE-END");
+  ok(begin >= 0 && end > begin, "install.sh 标出了可独立执行的重写片段");
+  const snippet = begin >= 0 && end > begin ? install.slice(install.indexOf("\n", begin) + 1, end) : "";
+  const haveShell = spawnSync("bash", ["-c", "command -v awk"], { encoding: "utf8" }).status === 0;
+  if (!snippet || haveShell !== true) {
+    console.log("  - 片段未标出或本机没有 bash+awk，跳过重写实跑（CI 的 ubuntu 作业会真正跑到）");
+  } else {
+    const dir = mkdtempSync(path.join(tmpdir(), "projectx-p2-9-"));
+    // bash（含 Git Bash）把 `C:\Users\...` 里的反斜杠当转义读，路径必须给正斜杠形式
+    const forBash = (value: string): string => value.replace(/\\/g, "/");
+    try {
+      const src = forBash(path.join(dir, "project-x-server.service"));
+      const dst = forBash(path.join(dir, "installed.service"));
+      // 片段必须落成文件再交给 bash：Git Bash 走 Windows 命令行传参时，会把片段里的
+      // 反斜杠续行与引号重新解析，`"$APP_DIR"` 到了 awk 那里变成空串——真实 install.sh
+      // 是文件，验收脚本不该用一个真机上不存在的路径去跑它。
+      const scriptFile = forBash(path.join(dir, "run-rewrite.sh"));
+      const run = (vars: Record<string, string>, unitText: string): { status: number; out: string; err: string } => {
+        writeFileSync(src, unitText, { encoding: "utf8" });
+        const script = [
+          "#!/usr/bin/env bash",
+          "set -euo pipefail",
+          `UNIT_SRC=${JSON.stringify(src)}`,
+          `UNIT_DST=${JSON.stringify(dst)}`,
+          ...Object.entries(vars).map(([key, value]) => `${key}=${JSON.stringify(value)}`),
+          snippet,
+          "echo REWRITE-OK"
+        ].join("\n");
+        writeFileSync(scriptFile, script, { encoding: "utf8" });
+        const res = spawnSync("bash", [scriptFile], { encoding: "utf8" });
+        return {
+          status: res.status ?? -1,
+          out: res.stdout ?? "",
+          err: res.stderr ?? ""
+        };
+      };
+
+      for (const [app, data, user, group] of [
+        ["/srv/project-x", "/srv/project-x-data", "px", "pxgrp"],
+        // 默认目录也必须走同一条重写：等价改写才说明锚点没有只对外配生效
+        ["/opt/project-x-server", "/var/lib/project-x", "projectx", "projectx"]
+      ] as const) {
+        const runResult = run({ APP_DIR: app, DATA_DIR: data, SERVICE_USER: user, SERVICE_GROUP: group }, unit);
+        ok(runResult.status === 0 && runResult.out.includes("REWRITE-OK"),
+          `自定义目录 ${app} / ${data}：重写 + 自检全部通过${runResult.status === 0 ? "" : `（${runResult.err.trim().slice(0, 160)}）`}`);
+        const rewritten = existsSync(dst) ? readFileSync(dst, "utf8") : "";
+        if (!rewritten) {
+          ok(false, `自定义目录 ${app} / ${data}：没有产出重写后的单元，后续逐行核对无法进行`);
+          continue;
+        }
+        for (const line of [
+          `User=${user}`,
+          `Group=${group}`,
+          `WorkingDirectory=${app}`,
+          `Environment=HOME=${data}`,
+          `Environment=PROJECTX_DB_PATH=${data}/projectx.db`,
+          `Environment=ANSWER_CARD_DATA_DIR=${data}/answer-card`,
+          `Environment=ANSWER_CARD_CLIENT_DIST=${app}/dist/web`
+        ]) {
+          ok(rewritten.split("\n").includes(line), `重写后的单元含「${line}」`);
+        }
+        ok(new RegExp(`^ExecStart=\\S+ ${app.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/dist/server/index\\.mjs$`, "m").test(rewritten),
+          `ExecStart 指向 ${app}/dist/server/index.mjs（node 可执行路径沿用包内那条）`);
+        ok(/Environment=PORT=5174/.test(rewritten) && /ProtectSystem=full/.test(rewritten)
+          && /RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK/.test(rewritten),
+          "重写只动路径：端口与沙箱指令原样保留（漏改/多改都会在这里露出来）");
+      }
+
+      // 反向对照：单元里的键名一旦与重写规则漂移，安装必须以非零退出失败，
+      // 而不是装出一个仍从默认路径起服务、却报告成功的单元。
+      const drifted = unit.replace(/^WorkingDirectory=/m, "WorkDirectory=");
+      const driftedRun = run({ APP_DIR: "/srv/project-x", DATA_DIR: "/srv/project-x-data", SERVICE_USER: "px", SERVICE_GROUP: "px" }, drifted);
+      ok(driftedRun.status !== 0, "反向对照：单元键名漂移时自检拒绝安装（不会静默留下默认路径）");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+}
+
+section("9. ZIP 内脚本的 Unix 执行位（CR #313 P2-8）");
+{
+  const AdmZip = require("adm-zip");
+  ok(/applyUnixExecBits\(zip\)/.test(packagingSource), "createZip 里接了 applyUnixExecBits（只写函数不接线等于没修）");
+  const dir = mkdtempSync(path.join(tmpdir(), "projectx-p2-8-"));
+  try {
+    mkdirSync(path.join(dir, "systemd"), { recursive: true });
+    writeFileSync(path.join(dir, "start.sh"), "#!/usr/bin/env bash\n", { encoding: "utf8" });
+    writeFileSync(path.join(dir, "systemd", "install.sh"), "#!/usr/bin/env bash\n", { encoding: "utf8" });
+    writeFileSync(path.join(dir, "package.json"), "{}\n", { encoding: "utf8" });
+    const zip = new AdmZip();
+    zip.addLocalFolder(dir, "pkg");
+    const shellEntries = zip.getEntries().filter((entry: any) => !entry.isDirectory && entry.entryName.endsWith(".sh"));
+    ok(shellEntries.length === 2, `临时包里确实有 start.sh 与 systemd/install.sh（找到 ${shellEntries.length} 个）`);
+    ok(shellEntries.every((entry: any) => ((entry.attr >> 16) & 0o111) === 0),
+      "反向对照：未打补丁时 .sh 条目不带执行位（Windows 打包机的 stat 就是这样，这条验收不是空跑）");
+    packaging.applyUnixExecBits(zip);
+    const file = path.join(dir, "out.zip");
+    zip.writeZip(file);
+    const readBack = new AdmZip(file);
+    for (const entry of readBack.getEntries()) {
+      if (entry.isDirectory || !entry.entryName.endsWith(".sh")) continue;
+      ok(((entry.attr >> 16) & 0o7777) === 0o755, `${entry.entryName} 在 ZIP 里带着 0755`);
+      ok(((entry.header.made >> 8) & 0xff) === 3,
+        `${entry.entryName} 的 made-by 标成 Unix（unzip/tar/Python 就是看这个字节决定信不信那 16 位 mode）`);
+    }
+    const plainFile = readBack.getEntries().find((entry: any) => entry.entryName === "pkg/package.json");
+    ok(!!plainFile && ((plainFile.attr >> 16) & 0o111) === 0, "只给 .sh 补执行位，普通文件没有被顺手改成可执行");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
