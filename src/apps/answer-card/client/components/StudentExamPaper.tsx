@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, FileText, Images, RefreshCw } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
+import { retryMediaTicketImage } from "../lib/mediaTicketRetry";
 import type { AnswerBlockCrop } from "../../../../shared/types";
 import {
   Button,
@@ -72,7 +73,11 @@ function PaperImage({ src, alt }: { src: string; alt: string }) {
       src={src}
       alt={alt}
       loading="lazy"
-      onError={() => setFailed(true)}
+      onError={(event) => {
+        // 票据被服务端淘汰时先静默重签一次；仍然失败才落到「加载失败」占位
+        if (retryMediaTicketImage(event.currentTarget)) return;
+        setFailed(true);
+      }}
       className="w-full rounded-md border border-border-subtle bg-card object-contain"
     />
   );

@@ -6,6 +6,7 @@ import { AnnotationOverlay } from "./AnnotationOverlay";
 import type { ReviewBlockCropItem, ReviewAnnotation, ReviewSubmitResult } from "../../../../shared/types";
 import { Button, EmptyState, Kbd } from "./ui/v2";
 import { cn } from "../lib/utils";
+import { retryMediaTicketImage } from "../lib/mediaTicketRetry";
 
 interface Props {
   examId: number;
@@ -334,6 +335,8 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
                   alt={current.blockTitle || "作答切块"}
                   className="block max-h-[65vh] max-w-full"
                   draggable={false}
+                  // 跨源模式回看早期切块时，缓存的票据可能已被服务端淘汰 → 重签一次再试
+                  onError={(event) => { retryMediaTicketImage(event.currentTarget); }}
                 />
                 <AnnotationOverlay
                   cropId={current.id}
