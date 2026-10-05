@@ -81,11 +81,17 @@ bool isUsableDllFile(const std::wstring& path, unsigned long long* sizeOut) {
     return true;
 }
 
-/** 解析 junction / 符号链接之后的真实路径（小写、去掉 \\?\ 前缀）；失败返回空串。 */
+/**
+ * 解析 junction / 符号链接之后的真实路径（小写、去掉 \\?\ 前缀）；失败返回空串。
+ *
+ * 打开方式必须是 `FILE_READ_ATTRIBUTES + FILE_FLAG_BACKUP_SEMANTICS`：目录句柄不带
+ * backup 语义时 CreateFileW 一律失败（实测 ERROR_ACCESS_DENIED / gle=5），而这里既要解析
+ * DLL 也要解析安装目录。只读属性不需要任何特权，也不会因此获得文件内容的访问权。
+ */
 std::wstring finalLowerPath(const std::wstring& path) {
-    HANDLE file = CreateFileW(path.c_str(), 0,
+    HANDLE file = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                              nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     if (file == INVALID_HANDLE_VALUE) return {};
     wchar_t buffer[MAX_PATH * 2] = {};
     const DWORD len = GetFinalPathNameByHandleW(file, buffer,

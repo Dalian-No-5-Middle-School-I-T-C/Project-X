@@ -54,6 +54,25 @@
 三条判定口径（为什么读剪贴板不放行、为什么宽度不改、为什么目录侧允许退回而 DLL 侧不允许）写在
 `readus/SECURITY-AUDIT-NOTES-2026-10-04.md` 第九节。
 
+**全量复检（同日，返修之后）**：把 CI 跑过的与 CI 没跑的都过了一遍——`npm run typecheck`、
+**56 套 `verify:*`**（SQLite 全量，另加 5 套 `--mariadb` 走本机临时实例）、LLM 边车两套 Python 回归
+（21 + 18 条），以及 `scanner-bridge.vcxproj` 的 Release/x64 构建。三条结论：
+
+1. **抓到一处真缺陷并已修**：P2-6 那句「两边都解析成真实路径」当时只是纸面成立——解析用的
+   `CreateFileW(…, 0, …, FILE_ATTRIBUTE_NORMAL, …)` **打不开目录**（目录句柄需要 `FILE_FLAG_BACKUP_SEMANTICS`，
+   本机最小探针实测 gle=5），目录侧永远退回逻辑路径，junction 安装照样被误拒。改为
+   `FILE_READ_ATTRIBUTES + FILE_FLAG_BACKUP_SEMANTICS`，并补一条锁住该标志组合的断言
+   （`verify:security-critical` 现为 **478 / 0**）。源码形状断言看不出这类问题，是本轮复检的价值所在。
+2. **CI 之外的脚本里有一条长期空转**：`verify:round5-groupby`（A2 的三处 GROUP BY 等价性）自建的最小夹具
+   缺 `exams.card_id`、`grades`、`classes`、`class_students.joined_at`，脚本在**第一条断言之前**就崩，
+   等于一直没守住。补齐夹具后 **9 / 0**。
+3. **仍有一条本地红**：`verify:a3` 在原生识别环节报「未找到二维码」。本轮 12 项改动不在识别链路上
+   （`recognition.ts` 未被触碰，`.cpp` 改动也没进那个 2026-10-05 12:10 的预编译 exe），判为本地构建产物问题，
+   需要重建识别器后在真机复验；它不在 CI 里，所以既不是本轮回归，也不能算已验证通过。
+
+顺带记一条判据：复检首轮 MariaDB 报了 4 条红，换一个**干净的临时实例**后 5 套全绿——旧数据目录处于
+「表查得到但 `SHOW TABLES` 不列」的不一致状态。本机 MariaDB 的红先排除实例污染，再怀疑代码。
+
 ## 2026-10-05：导出 PDF 与答题卡版本绑定（安全审查第五批 C · R45）
 
 答题卡是 1200ms 防抖自动保存的，而 PDF 是从**库里当前值**渲染的。老师点「导出」时手上那一版可能还没落库，

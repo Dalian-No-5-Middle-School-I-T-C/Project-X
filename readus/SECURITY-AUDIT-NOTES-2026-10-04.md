@@ -659,11 +659,21 @@ Authenticode 签名，发布时也没有任何校验和。收件方看到的是�
   只在**目录**解析失败时退回逻辑路径；**DLL 自身解析失败仍然拒绝加载**。
   不对称同样是有意的：误判随包 DLL 为外部文件会让扫描端找不到设备（现场无法自证），
   而放过一个身份不明的 DLL 是不可接受的风险交换。
+- **全量复检改了一处**：`finalLowerPath` 原本以 `CreateFileW(path, 0, …, FILE_ATTRIBUTE_NORMAL, …)` 打开句柄，
+  这个形态**打不开目录**——目录句柄必须带 `FILE_FLAG_BACKUP_SEMANTICS`。本机用一段最小 C++ 探针实测
+  （真实目录、指向它的 junction、junction 下的文件各一次）：旧写法对目录一律 `ERROR_ACCESS_DENIED`（gle=5），
+  改成 `FILE_READ_ATTRIBUTES + FILE_FLAG_BACKUP_SEMANTICS` 后目录与文件都能解析，且 junction 正确还原成目标目录。
+  也就是说 P2-6 第一版「两边都解析」只是纸面成立：目录侧永远解析失败、永远退回逻辑路径，
+  junction 安装照样被误拒——源码层面的断言看不出这件事，因为它只比字符串形状。
+  现在只用**只读属性**权限打开（不需要任何特权，也不会顺带获得文件内容访问权），
+  并补一条锁住该标志组合的断言，防止下一次重构又把它改回 `FILE_ATTRIBUTE_NORMAL`。
 
 **边界**：这两条都是源码层面的验收（`verify-security-critical` 里按语句形态与先后顺序断言），
 **不等于真机通过**。native 侧改动必须 `npm run native:build:x64` / `:ia32` 重建才会落到
 `resources/native/` 的产物里；本轮包内 exe 仍是改动前的构建，P2-5/P2-6 的实际效果要等重建 +
 真机（含一个 junction 安装目录与一张 top-down BMP）才能确认。
+全量复检只做到「能编过」：`scanner-bridge.vcxproj` 以 Release/x64 单独构建（输出目录重定向到临时目录，
+不动仓库里的 `resources/native/`）退出码 0；目录解析的那段判定另有上面那段最小探针为证。
 
 ### 3. P2-3 票据缓存：客户端只能保证「不超过」，不能保证「不失效」
 

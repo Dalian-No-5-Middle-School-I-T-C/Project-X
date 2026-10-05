@@ -3307,6 +3307,14 @@ async function main(): Promise<void> {
         "P2-6：随包 DSM 的归属判断比的是「真实路径 vs 真实路径」（拿逻辑目录比，junction 安装会误拒合法随包 DLL）");
       check(/if \(real\.empty\(\) \|\| !isUnderDir\(real, realExeDir\)\)/.test(p2TwainSource),
         "P2-6：DLL 侧解析失败仍然拒绝加载——只有目录侧允许退回逻辑路径");
+      // 全量复检补的一条：finalLowerPath 原先用 (0, FILE_ATTRIBUTE_NORMAL) 打开句柄，
+      // 目录句柄不带 backup 语义时 CreateFileW 直接失败（本机实测 ERROR_ACCESS_DENIED / gle=5），
+      // 于是 realInstallDirLower 永远退回逻辑路径——「两边都解析成真实路径」只是纸面成立，
+      // junction 安装目录照样被误拒。断言锁住打开方式，别让下一次重构又把它改回去。
+      const p2FinalPathFn = (p2TwainSource.match(/std::wstring finalLowerPath[\s\S]*?\n\}/) ?? [""])[0];
+      check(/FILE_READ_ATTRIBUTES/.test(p2FinalPathFn) && /FILE_FLAG_BACKUP_SEMANTICS/.test(p2FinalPathFn)
+        && !/FILE_ATTRIBUTE_NORMAL/.test(p2FinalPathFn),
+        "P2-6：真实路径解析按「只读属性 + backup 语义」打开（无此语义打不开目录，junction 修复形同未修）");
 
       // P2-7：默认拒绝里只留「可信来源 + 写剪贴板」这一条白名单
       check(/const TRUSTED_PERMISSIONS = new Set\(\["clipboard-sanitized-write", "clipboard-write"\]\);/.test(p2ElectronSource)
