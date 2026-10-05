@@ -41,7 +41,7 @@ import { CardRepository } from "../repositories/CardRepository";
 import { ExamRepository } from "../repositories/ExamRepository";
 import { ensureExamParticipants, listMissingParticipants } from "../services/examParticipants";
 import { recomputeExamRankings } from "../services/rankingUpdate";
-import { processScannerSession, enqueueScannerSubmission, findSavedScannerOwners, invalidateScanRecognition } from "../services/scannerSubmissions";
+import { processScannerSession, enqueueScannerSubmission, findSavedScannerOwners, invalidateScanRecognition, savedReceiptOwnerOfPage } from "../services/scannerSubmissions";
 import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
 import { groupSessionPages } from "../../apps/answer-card/server/scanner/session-results";
 import { scannerLegacyRecoveryRouter } from "./scanner-legacy-recovery";
@@ -315,6 +315,16 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
       res.status(409).json({ message: "该扫描会话已完成，页面不可再改写；请新建扫描会话后重新上传" });
       return;
     }
+    // 安全（PR #312 复核 CR2）：/complete 部分失败时已保存的分组既没有 completed 会话也没有
+    // completed 页面，只看状态会漏掉它们——那一页的成绩其实已经入库。改看回执归属。
+    const savedOwner = await savedReceiptOwnerOfPage(String(sessionId), token);
+    if (savedOwner) {
+      res.status(409).json({
+        message: "该扫描页的成绩已入库，不能由上传直接改写；请在阅卷端撤回或订正后重新扫描",
+        code: "SCAN_PAGE_SAVED", examId: savedOwner.exam_id,
+      });
+      return;
+    }
     let recognition: z.infer<typeof recognitionSchema> | undefined;
     if (req.body.recognition) {
       try { recognition = recognitionSchema.parse(JSON.parse(req.body.recognition)); }
@@ -393,6 +403,11 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, cropUploadBu
     if (!session) { res.status(404).json({ message: "会话不存在" }); return; }
     if (session.status === "completed") {
       res.status(409).json({ message: "该扫描会话已完成，切块不可再改写；请新建扫描会话后重新上传" });
+      return;
+    }
+    // 安全（PR #312 复核 CR2）：切块是阅卷人实际看到的图，同样不能覆盖已入库回执的页面。
+    if (await savedReceiptOwnerOfPage(sessionId, recordId)) {
+      res.status(409).json({ message: "该扫描页的成绩已入库，切块不可再由上传改写", code: "SCAN_PAGE_SAVED" });
       return;
     }
 

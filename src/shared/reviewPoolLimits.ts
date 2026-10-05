@@ -12,16 +12,18 @@
 interface LimitDef {
   key: ReviewPoolLimitKey;
   env: string;
-  unit: "份";
+  unit: ReviewPoolLimitUnit;
   defaultValue: number;
   ceiling: number;
 }
 
-export type ReviewPoolLimitKey = "maxHeldPapersPerBlock" | "maxHeldPapersTotal";
+export type ReviewPoolLimitKey = "maxHeldPapersPerBlock" | "maxHeldPapersTotal" | "claimLockTimeoutMs";
+export type ReviewPoolLimitUnit = "份" | "毫秒";
 
 export const REVIEW_POOL_ENV_VARS: Record<ReviewPoolLimitKey, string> = {
   maxHeldPapersPerBlock: "PROJECTX_REVIEW_MAX_HELD_PER_BLOCK",
-  maxHeldPapersTotal: "PROJECTX_REVIEW_MAX_HELD_TOTAL"
+  maxHeldPapersTotal: "PROJECTX_REVIEW_MAX_HELD_TOTAL",
+  claimLockTimeoutMs: "PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS"
 };
 
 const LIMIT_DEFS: LimitDef[] = [
@@ -38,6 +40,15 @@ const LIMIT_DEFS: LimitDef[] = [
     unit: "份",
     defaultValue: 60,
     ceiling: 2000
+  },
+  {
+    // PR #312 CR9：持有量「计数 + 领取」必须落在同一个临界区，等待锁的时间就是它的预算。
+    // 0 等于关掉预留（并发下可超配额），因此与配额一样只允许在天花板内收紧。
+    key: "claimLockTimeoutMs",
+    env: REVIEW_POOL_ENV_VARS.claimLockTimeoutMs,
+    unit: "毫秒",
+    defaultValue: 3000,
+    ceiling: 30000
   }
 ];
 
@@ -45,7 +56,8 @@ export type ReviewPoolLimits = Record<ReviewPoolLimitKey, number>;
 
 export const DEFAULT_REVIEW_POOL_LIMITS: ReviewPoolLimits = {
   maxHeldPapersPerBlock: 20,
-  maxHeldPapersTotal: 60
+  maxHeldPapersTotal: 60,
+  claimLockTimeoutMs: 3000
 };
 
 export interface ResolvedReviewPoolLimits {
@@ -95,6 +107,8 @@ for (const notice of resolved.notices) {
 export const MAX_HELD_PAPERS_PER_BLOCK = resolved.limits.maxHeldPapersPerBlock;
 /** 单教师跨全部考试/题块可同时持有的卷子上限（防止占池导致他人无法开工） */
 export const MAX_HELD_PAPERS_TOTAL = resolved.limits.maxHeldPapersTotal;
+/** 领取临界区的命名锁等待预算（毫秒），超时返回 409 让客户端重试 */
+export const CLAIM_LOCK_TIMEOUT_MS = resolved.limits.claimLockTimeoutMs;
 
 /** 当前生效的试卷池闸门，用于启动日志 */
 export function describeReviewPoolLimits(): string {

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -23,10 +23,11 @@ const uploadEnvVarsClearedHere = [
   "PROJECTX_UPLOAD_MAX_BATCH_FILES", "PROJECTX_UPLOAD_MAX_BATCH_TOTAL_MIB"
 ];
 // 试卷池持有量配额（安全 R15）同样是「默认值 + 环境变量 + 天花板」三档，宿主机变量会污染默认档位断言。
-const reviewPoolEnvVarsClearedHere = ["PROJECTX_REVIEW_MAX_HELD_PER_BLOCK", "PROJECTX_REVIEW_MAX_HELD_TOTAL"];
+const reviewPoolEnvVarsClearedHere = ["PROJECTX_REVIEW_MAX_HELD_PER_BLOCK", "PROJECTX_REVIEW_MAX_HELD_TOTAL", "PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS"];
 // 备份恢复解压预算（安全 R43）同样是「默认值 + 环境变量 + 天花板」三档，宿主机变量会污染按默认预算的断言。
 const restoreZipEnvVarsClearedHere = [
-  "PROJECTX_RESTORE_ZIP_MAX_ENTRIES", "PROJECTX_RESTORE_ZIP_MAX_ENTRY_MIB", "PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB"
+  "PROJECTX_RESTORE_ZIP_MAX_ENTRIES", "PROJECTX_RESTORE_ZIP_MAX_ENTRY_MIB", "PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB",
+  "PROJECTX_RESTORE_ZIP_MAX_RATIO"
 ];
 // 原卷累计容量（R10/R14）、AI 配额（R11）、微信出站档位（R20）共用同一套三档设计：
 // 宿主机若设置了任一档位，本脚本「按默认边界」的断言全部失真，必须先清掉，
@@ -37,7 +38,8 @@ const paperStorageEnvVarsClearedHere = [
 ];
 const aiQuotaEnvVarsClearedHere = [
   "PROJECTX_AI_MAX_ACTIVE_JOBS_PER_USER", "PROJECTX_AI_MAX_ACTIVE_JOBS_GLOBAL",
-  "PROJECTX_AI_MAX_RUNS_PER_HOUR", "PROJECTX_AI_MAX_TOKENS_PER_DAY"
+  "PROJECTX_AI_MAX_RUNS_PER_HOUR", "PROJECTX_AI_MAX_TOKENS_PER_DAY",
+  "PROJECTX_AI_ACTIVE_RUN_STALE_MS", "PROJECTX_AI_ADMISSION_LOCK_TIMEOUT_MS"
 ];
 const wechatEnvVarsClearedHere = [
   "PROJECTX_WECHAT_TIMEOUT_MS", "PROJECTX_WECHAT_BIND_MAX_PER_HOUR",
@@ -674,7 +676,7 @@ async function main(): Promise<void> {
 
     // ── 试卷池持有量配额（安全 R15）：与上传上限同一套三档设计
     const {
-      MAX_HELD_PAPERS_PER_BLOCK, MAX_HELD_PAPERS_TOTAL,
+      MAX_HELD_PAPERS_PER_BLOCK, MAX_HELD_PAPERS_TOTAL, CLAIM_LOCK_TIMEOUT_MS,
       resolveReviewPoolLimits, DEFAULT_REVIEW_POOL_LIMITS, REVIEW_POOL_ENV_VARS, describeReviewPoolLimits
     } = await import("../src/shared/reviewPoolLimits");
     const poolEnvNames = Object.values(REVIEW_POOL_ENV_VARS);
@@ -683,19 +685,26 @@ async function main(): Promise<void> {
       "脚本清理的试卷池配额变量名单与限制表逐一对应，宿主机变量不会渗入默认档位断言");
     check(MAX_HELD_PAPERS_PER_BLOCK === DEFAULT_REVIEW_POOL_LIMITS.maxHeldPapersPerBlock
       && MAX_HELD_PAPERS_TOTAL === DEFAULT_REVIEW_POOL_LIMITS.maxHeldPapersTotal
+      && CLAIM_LOCK_TIMEOUT_MS === DEFAULT_REVIEW_POOL_LIMITS.claimLockTimeoutMs
       && resolveReviewPoolLimits({}).notices.length === 0,
-      "未配置时按默认持有量配额生效（题块 20 份 / 全局 60 份）");
+      "未配置时按默认持有量配额与领取锁预算生效（题块 20 份 / 全局 60 份 / 锁等待 3000 毫秒）");
     check(resolveReviewPoolLimits({ PROJECTX_REVIEW_MAX_HELD_PER_BLOCK: "3" }).limits.maxHeldPapersPerBlock === 3
       && resolveReviewPoolLimits({ PROJECTX_REVIEW_MAX_HELD_TOTAL: "-1" }).limits.maxHeldPapersTotal === 60
       && resolveReviewPoolLimits({ PROJECTX_REVIEW_MAX_HELD_TOTAL: "999999" }).limits.maxHeldPapersTotal === 2000,
       "持有量配额可收紧、非法值回落默认、超天花板被夹紧（放宽有上界）");
-    check(describeReviewPoolLimits().includes("maxHeldPapersPerBlock=20"),
-      "试卷池配额进入启动摘要，与上传上限一致的可见性");
+    check(resolveReviewPoolLimits({ PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS: "500" }).limits.claimLockTimeoutMs === 500
+      && resolveReviewPoolLimits({ PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS: "0" }).limits.claimLockTimeoutMs === 3000
+      && resolveReviewPoolLimits({ PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS: "abc" }).notices[0].includes("按默认值")
+      && resolveReviewPoolLimits({ PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS: "999999" }).limits.claimLockTimeoutMs === 30000,
+      "领取锁预算同样三档：可收紧、设 0 不会关掉临界区、超天花板被夹紧");
+    check(describeReviewPoolLimits().includes("maxHeldPapersPerBlock=20")
+      && describeReviewPoolLimits().includes("claimLockTimeoutMs=3000"),
+      "试卷池配额与锁预算进入启动摘要，与上传上限一致的可见性");
 
     // ── 备份恢复解压预算与运维错误脱敏（安全 R43 / R25）
     const {
       resolveRestoreZipLimits, DEFAULT_RESTORE_ZIP_LIMITS, RESTORE_ZIP_ENV_VARS, describeRestoreZipLimits,
-      MAX_RESTORE_ZIP_ENTRIES, MAX_RESTORE_ZIP_ENTRY_BYTES, MAX_RESTORE_ZIP_TOTAL_BYTES
+      MAX_RESTORE_ZIP_ENTRIES, MAX_RESTORE_ZIP_ENTRY_BYTES, MAX_RESTORE_ZIP_TOTAL_BYTES, MAX_RESTORE_ZIP_RATIO
     } = await import("../src/shared/restoreZipLimits");
     check(RESTORE_ZIP_ENV_VARS.slice().sort().join() === restoreZipEnvVarsClearedHere.slice().sort().join()
       && RESTORE_ZIP_ENV_VARS.every((name) => !(name in process.env)),
@@ -709,10 +718,19 @@ async function main(): Promise<void> {
       && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_ENTRY_MIB: "999999" }).limits.maxEntryUncompressedBytes
         === 8192 * 1024 * 1024,
       "解压预算可收紧、非法值回落默认、超天花板被夹紧（一个拼错的数字关不掉保护）");
-    check(describeRestoreZipLimits().includes("≤20000") && describeRestoreZipLimits().includes("6144MiB"),
-      "解压预算进入启动摘要");
+    check(MAX_RESTORE_ZIP_RATIO === DEFAULT_RESTORE_ZIP_LIMITS.maxCompressionRatio
+      && MAX_RESTORE_ZIP_RATIO === 1032
+      && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_RATIO: "8" }).limits.maxCompressionRatio === 8
+      && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_RATIO: "0" }).limits.maxCompressionRatio === 1032
+      && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_RATIO: "abc" }).notices[0].includes("按默认值")
+      && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_RATIO: "999999" }).limits.maxCompressionRatio === 1032
+      && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_RATIO: "999999" }).notices[0].includes("天花板"),
+      "最坏展开比同样三档：可收紧、设 0 与非法值不会关掉预估、超天花板被夹紧（1032:1 是 DEFLATE 的物理上界，放宽没有意义）");
+    check(describeRestoreZipLimits().includes("≤20000") && describeRestoreZipLimits().includes("6144MiB")
+      && describeRestoreZipLimits().includes("1032"),
+      "解压预算与最坏展开比进入启动摘要");
     const {
-      classifyEntryName, resolveEntryDest, checkEntryBudget, extractZipWithinBudget, RestoreZipError
+      classifyEntryName, resolveEntryDest, checkEntryBudget, worstCaseEntryBytes, extractZipWithinBudget, RestoreZipError
     } = await import("../src/server/services/restoreZip");
     const { sanitizeOpsMessage, containsHostPath } = await import("../src/server/lib/opsErrorMessage");
     const AdmZip = (await import("adm-zip")).default;
@@ -766,6 +784,58 @@ async function main(): Promise<void> {
       const state = { entries: 0, bytes: 0 };
       checkEntryBudget(state, 1, 1, MAX_RESTORE_ZIP_ENTRY_BYTES + 1);
     }) === 413, "头部声明很小、实际读出体积巨大的谎报条目同样被拦下");
+    // PR #312 CR13：把「解压后体积」这一栏改成 0，就是解压炸弹的谎报签名——解压库把输出上限
+    // 设为声明值，声明 0 等于不封顶（adm-zip 0.6.0 的 Inflater 正是只在声明值 >0 时才设上限，
+    // 0.6.1 才有 1 字节地板；本仓库不依赖库版本，预估越界就在 getData() 之前拒掉）。
+    // 写入端永远写诚实头部，所以谎报只能靠改 ZIP 字节伪造：偏移量在头结构里是定长 4 字节字段，
+    // 归零不改动长度，其余偏移与 CRC 全部保持自洽，adm-zip 仍能正常索引出这一条。
+    const wipeUncompressedSize = (zipBuf: Buffer): Buffer => {
+      const out = Buffer.from(zipBuf);
+      const wipe = (signature: number[], fieldOffset: number) => {
+        const sig = Buffer.from(signature);
+        for (let at = out.indexOf(sig); at >= 0; at = out.indexOf(sig, at + 1)) out.writeUInt32LE(0, at + fieldOffset);
+      };
+      wipe([0x50, 0x4b, 0x01, 0x02], 24); // 中央目录：解压后体积
+      wipe([0x50, 0x4b, 0x03, 0x04], 22); // 本地头：同一栏
+      return out;
+    };
+    // 2 MiB 伪随机负载压不动（DEFLATE 输出≈原体积），所以它的压缩栏是诚实的大数，解压栏被谎报为 0。
+    const liarPayload = Buffer.alloc(2 * 1024 * 1024);
+    for (let i = 0; i < liarPayload.length; i += 4) liarPayload.writeUInt32LE((i * 2654435761) >>> 0, i);
+    const liarZip = (() => {
+      const pack = new AdmZip();
+      pack.addFile("liar.bin", liarPayload);
+      return pack.toBuffer();
+    })();
+    const liarEntries = new AdmZip(wipeUncompressedSize(liarZip)).getEntries();
+    check(liarEntries.length === 1 && Number(liarEntries[0].header.size) === 0
+      && Number(liarEntries[0].header.compressedSize) > 1024 * 1024,
+      "伪造包仍被 adm-zip 索引为一条「声明 0 字节、压缩负载 2 MiB」的条目（伪造没有把包直接解坏）");
+    const r43LiarDir = path.join(tempDir, "r43-liar");
+    mkdirSync(r43LiarDir, { recursive: true });
+    let liarError: RestoreZipError | null = null;
+    try {
+      extractZipWithinBudget(wipeUncompressedSize(liarZip), r43LiarDir);
+    } catch (err) {
+      liarError = err instanceof RestoreZipError ? err : null;
+      if (!liarError) throw err;
+    }
+    check(liarError !== null && liarError.status === 413 && !containsHostPath(liarError.message),
+      "谎报条目在进入解压前就被 413 拒掉，而不是解完才发现（状态码 413 而非库自身封顶的 400，证明确实拦在 getData 之前）");
+    check(liarError !== null && liarError.message.includes("声明为 0") && !liarError.message.includes("liar.bin"),
+      "拒绝消息说明是谎报签名，且不带条目名以外的主机路径信息");
+    check(!existsSync(path.join(r43LiarDir, "liar.bin")) && readdirSync(r43LiarDir).length === 0,
+      "被拒的谎报包没有落盘任何文件");
+    check(worstCaseEntryBytes(8, 1024, 0) === 1024 * MAX_RESTORE_ZIP_RATIO
+      && worstCaseEntryBytes(0, 1024, 0) === 1024
+      && worstCaseEntryBytes(8, 1024, 5) === 5
+      && worstCaseEntryBytes(99, 1024, 0) === 0,
+      "最坏展开预估只在「声明为 0」时生效：DEFLATE 按倍率、STORED 按负载本身、诚实声明照声明算、未知方法不预估");
+    const r43HonestDir = path.join(tempDir, "r43-honest");
+    mkdirSync(r43HonestDir, { recursive: true });
+    check(rejectStatus(() => extractZipWithinBudget(liarZip, r43HonestDir)) === 0
+      && readFileSync(path.join(r43HonestDir, "liar.bin")).equals(liarPayload),
+      "同一份包只要头部诚实就照常恢复（收紧只针对谎报，不误伤真实备份）");
     const corruptStatus = rejectStatus(() =>
       extractZipWithinBudget(Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(512, 0x41)]), r43Dir));
     check(corruptStatus === 400 || corruptStatus === 0,
@@ -888,25 +958,168 @@ async function main(): Promise<void> {
     check(r14Residue === 0,
       "multer 越界拒绝后临时目录不留已落盘文件（越界重试不再是免费的填满磁盘攻击）");
 
+    // ── CR14：暂存区不计入长期容量
+    const { paperTmpDir } = await import("../src/apps/answer-card/server/storage");
+    check(paperTmpDir === r14TmpDir
+      && path.dirname(paperTmpDir) === path.join(process.env.ANSWER_CARD_DATA_DIR!, "papers"),
+      "暂存目录由 storage 单点定义，且确实落在容量扫描的根目录里（跳过它才是真跳过，而不是路径拼错）");
+    const cr14BeforeStaging = await readPapersTotalBytes();
+    const cr14StagingFile = path.join(paperTmpDir, "cr14-staging.tmp");
+    writeFileSync(cr14StagingFile, Buffer.alloc(4096, 3));
+    invalidatePaperUsageCache();
+    const cr14AfterStaging = await readPapersTotalBytes();
+    writeFileSync(path.join(r10Dir, "original-3.jpg"), Buffer.alloc(4096, 5));
+    invalidatePaperUsageCache();
+    const cr14AfterRealPage = await readPapersTotalBytes();
+    rmSync(cr14StagingFile);
+    invalidatePaperUsageCache();
+    check(cr14AfterStaging.bytes === cr14BeforeStaging.bytes
+      && cr14AfterRealPage.bytes >= cr14BeforeStaging.bytes + 4096,
+      "同体积的两份数据：暂存件不计入全局容量、已落盘页计入（否则并发上传会把自己算两次，把别人挤在门外）");
+
+    // ── CR14：转换后按实测复测并回滚
+    const { assertWrittenPaperWithinQuota, PaperQuotaRollbackError } = await import("../src/apps/answer-card/server/paperQuota");
+    const cr14Limits = {
+      maxPaperPagesPerCard: 60,
+      maxPaperBytesPerCard: 1024 * 1024,
+      maxPaperBytesTotal: 204800 * 1024 * 1024,
+    };
+    const cr14EmptyCard = { cardPages: 0, cardBytes: 0, totalBytes: 0, totalExact: true };
+    // 评审给的真实观测：844 KiB 的 JPEG 输入落成 jpg + 配对 PDF 后实测约 1.41 MiB
+    const cr14ByInput = evaluatePaperQuota(cr14EmptyCard, { pages: 1, bytes: 844 * 1024 }, cr14Limits);
+    const cr14ByOutput = evaluatePaperQuota(cr14EmptyCard, { pages: 1, bytes: Math.round(1.41 * 1024 * 1024) }, cr14Limits);
+    check(cr14ByInput.ok === true && cr14ByOutput.ok === false && cr14ByOutput.reason === "card-bytes",
+      "同一份上传：按输入 844KiB 放行、按落盘实测 1.41MiB 拒绝（放大倍数没法估，只能写完再量）");
+    const cr14Admission = await readPaperQuota(quotaDb, r10CardId);
+    let cr14Rollback: unknown = null;
+    try {
+      await assertWrittenPaperWithinQuota(quotaDb, r10CardId, cr14Admission,
+        { pages: 1, bytes: 6144 },
+        { ...cr14Limits, maxPaperBytesPerCard: 4096 });
+    } catch (error) { cr14Rollback = error; }
+    check(cr14Rollback instanceof PaperQuotaRollbackError
+      && (cr14Rollback as { reason?: string }).reason === "card-bytes"
+      && !containsHostPath((cr14Rollback as Error).message),
+      "落盘后复测越界 → 抛出带回滚原因的专属错误（路由据此撤销事务、删掉已写文件并回 413）");
+    let cr14WithinQuota = true;
+    try {
+      await assertWrittenPaperWithinQuota(quotaDb, r10CardId, cr14Admission, { pages: 1, bytes: 6144 }, cr14Limits);
+    } catch { cr14WithinQuota = false; }
+    check(cr14WithinQuota, "实测仍在额度内时不触发回滚：放大是常态，不是拒绝的理由");
+
+    // ── 请求预算与 multer 错误回调的先后（PR #312 复核）：413 已经给出后不得再回一次 400
+    const expressModule = await import("express");
+    const multerModule = await import("multer");
+    const { isUploadAlreadyRejected } = await import("../src/server/lib/uploadBudget");
+    const doubleTmp = path.join(tempDir, "multer-double-tmp");
+    mkdirSync(doubleTmp, { recursive: true });
+    const doubleCallbacks: string[] = [];
+    const doubleApp = expressModule.default();
+    // 与 paper-routes.ts 完全同形的链：预算 → multer → 手写错误回调（先清临时件，再决定是否响应）
+    const mountGuardedUpload = (routePath: string, budgetBytes: number, fileSizeBytes: number): void => {
+      const upload = multerModule.default({ dest: doubleTmp, limits: { fileSize: fileSizeBytes, files: 8 } });
+      doubleApp.post(routePath, requestUploadBudget({ maxTotalBytes: budgetBytes, label: "回归上传" }),
+        (req: any, res: any, next: any) => {
+          upload.array("files", 8)(req, res, (err: unknown) => {
+            const partial: Array<{ path: string }> = req.files ?? (req.file ? [req.file] : []);
+            for (const file of partial) {
+              try { unlinkSync(file.path); } catch { /* multer 已回收或文件不存在 */ }
+            }
+            doubleCallbacks.push(`${routePath}|${err ? String((err as Error).message) : "ok"}|${res.headersSent ? "answered" : "fresh"}`);
+            if (err) {
+              if (isUploadAlreadyRejected(req, res)) return;
+              res.status(400).json({ error: String((err as Error).message) });
+              return;
+            }
+            next();
+          });
+        },
+        (_req: any, res: any) => { res.json({ ok: true }); });
+    };
+    mountGuardedUpload("/budget-first", 900, 4096);
+    mountGuardedUpload("/filesize-first", 100_000, 500);
+    const doubleServer = doubleApp.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => doubleServer.once("listening", resolve));
+    const doublePort = (doubleServer.address() as { port: number }).port;
+    const rawHttp = await import("node:http");
+    const multipartPart = (boundary: string, bytes: number, last: boolean): Buffer => Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="p${bytes}.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`),
+      Buffer.alloc(bytes, 97),
+      Buffer.from(last ? `\r\n--${boundary}--\r\n` : "\r\n"),
+    ]);
+    // 分块发送且不报 Content-Length：预算只能在流式接收中途判负，这才撞得上 multer 的断流回调
+    const chunkedUpload = (routePath: string, parts: Buffer[]): Promise<{ status: number; text: string }> =>
+      new Promise((resolve) => {
+        const outbound = rawHttp.request({
+          host: "127.0.0.1", port: doublePort, path: routePath, method: "POST",
+          // 每条请求各用一条连接：上一条被预算断开后，keep-alive 池里那只半死的 socket
+          // 会被复用，客户端只会看到 ECONNRESET——那测的是连接复用，不是这里要的响应行为。
+          agent: false,
+          headers: { "Content-Type": "multipart/form-data; boundary=pxdouble", "Transfer-Encoding": "chunked" },
+        }, (incoming) => {
+          let text = "";
+          incoming.setEncoding("utf8");
+          incoming.on("data", (chunk) => { text += chunk; });
+          incoming.on("end", () => resolve({ status: incoming.statusCode ?? 0, text }));
+        });
+        outbound.on("error", () => resolve({ status: 0, text: "" }));
+        for (const part of parts) outbound.write(part);
+        outbound.end();
+      });
+    const budgetFirst = await chunkedUpload("/budget-first", [
+      multipartPart("pxdouble", 800, false), multipartPart("pxdouble", 800, false), multipartPart("pxdouble", 800, true),
+    ]);
+    check(budgetFirst.status === 413
+      && (JSON.parse(budgetFirst.text || "{}") as { code?: string }).code === "UPLOAD_BUDGET_EXCEEDED",
+      "预算中途判负后客户端拿到的是 413 而不是被 multer 断流错误改写成 400");
+    check(doubleCallbacks.some((entry) => entry.startsWith("/budget-first|") && entry.endsWith("|answered")),
+      "危险是真存在的：multer 的断流回调确实在 413 之后才到达（守卫不是在防一个不会发生的分支）");
+    const fileSizeFirst = await chunkedUpload("/filesize-first", [multipartPart("pxdouble", 800, true)]);
+    check(fileSizeFirst.status === 400
+      && (JSON.parse(fileSizeFirst.text || "{}") as { error?: string }).error?.includes("File too large") === true,
+      `multer 自己的单文件上限仍然照旧回 400（守卫没有把正常拒绝一起吞掉，实际 ${fileSizeFirst.status}/${fileSizeFirst.text.slice(0, 40) || "无正文"})`);
+    const stillAlive = await chunkedUpload("/budget-first", [multipartPart("pxdouble", 100, true)]);
+    check(stillAlive.status === 200 && stillAlive.text.includes("true"),
+      "二次响应被挡下后服务进程照常可用（ERR_HTTP_HEADERS_SENT 打穿的就是这一条）");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const doubleResidue = readdirSync(doubleTmp, { withFileTypes: true }).filter((entry) => entry.isFile()).length;
+    doubleServer.close();
+    check(doubleResidue === 0,
+      "跳过响应并不跳过临时件回收：被预算拒掉的请求依旧不在 _tmp 留副本（R14 与「不要二次响应」互不影响）");
+    const paperRouteSrc = readFileSync(path.join(process.cwd(), "src/apps/answer-card/server/routes/paper-routes.ts"), "utf8");
+    const guardAt = paperRouteSrc.indexOf("isUploadAlreadyRejected(req, res)");
+    const rejectAt = paperRouteSrc.indexOf("原卷上传失败");
+    check(guardAt > 0 && rejectAt > guardAt
+      && paperRouteSrc.indexOf("discardStoredPaths") < guardAt,
+      "真实原卷路由同形：临时件清理在前、守卫在 400 之前（回归链与线上代码不是两套写法）");
+
     // ── AI 计费与并发配额（安全 R11）
     const {
       AI_QUOTA_ENV_VARS, DEFAULT_AI_QUOTA_LIMITS, resolveAiQuotaLimits, describeAiQuotaLimits,
-      MAX_AI_ACTIVE_JOBS_PER_USER, MAX_AI_ACTIVE_JOBS_GLOBAL, MAX_AI_RUNS_PER_USER_HOUR, MAX_AI_TOKENS_PER_USER_DAY
+      MAX_AI_ACTIVE_JOBS_PER_USER, MAX_AI_ACTIVE_JOBS_GLOBAL, MAX_AI_RUNS_PER_USER_HOUR, MAX_AI_TOKENS_PER_USER_DAY,
+      AI_ACTIVE_RUN_STALE_MS, AI_ADMISSION_LOCK_TIMEOUT_MS
     } = await import("../src/shared/aiQuotaLimits");
     check(AI_QUOTA_ENV_VARS.slice().sort().join() === aiQuotaEnvVarsClearedHere.slice().sort().join()
       && AI_QUOTA_ENV_VARS.every((name) => !(name in process.env)),
       "脚本清理的 PROJECTX_AI_* 名单与配额表逐一对应，宿主机变量不会渗入默认配额断言");
     check(MAX_AI_ACTIVE_JOBS_PER_USER === DEFAULT_AI_QUOTA_LIMITS.maxActiveJobsPerUser
-      && MAX_AI_TOKENS_PER_USER_DAY === 1000000,
-      "未配置时按默认 AI 配额生效（单用户 2 个未完成任务 / 24 小时 100 万 tokens）");
+      && MAX_AI_TOKENS_PER_USER_DAY === 1000000
+      && AI_ACTIVE_RUN_STALE_MS === DEFAULT_AI_QUOTA_LIMITS.activeRunStaleMs
+      && AI_ADMISSION_LOCK_TIMEOUT_MS === DEFAULT_AI_QUOTA_LIMITS.admissionLockTimeoutMs,
+      "未配置时按默认 AI 配额生效（单用户 2 个在途 / 24 小时 100 万 tokens / 占位 5 分钟失效 / 等锁 2 秒）");
     check(resolveAiQuotaLimits({ PROJECTX_AI_MAX_RUNS_PER_HOUR: "3" }).limits.maxRunsPerUserHour === 3
       && resolveAiQuotaLimits({ PROJECTX_AI_MAX_TOKENS_PER_DAY: "0" }).limits.maxTokensPerUserDay
         === DEFAULT_AI_QUOTA_LIMITS.maxTokensPerUserDay
-      && resolveAiQuotaLimits({ PROJECTX_AI_MAX_ACTIVE_JOBS_GLOBAL: "99999" }).limits.maxActiveJobsGlobal === 100,
-      "AI 配额可收紧、非法值回落默认、超天花板被夹紧");
-    check(describeAiQuotaLimits().includes("≤2") && describeAiQuotaLimits().includes("1000000"),
-      "AI 配额档位进入启动摘要");
-    const { evaluateAiQuota, readAiQuotaSnapshot, AiQuotaError } = await import("../src/server/services/aiQuota");
+      && resolveAiQuotaLimits({ PROJECTX_AI_MAX_ACTIVE_JOBS_GLOBAL: "99999" }).limits.maxActiveJobsGlobal === 100
+      && resolveAiQuotaLimits({ PROJECTX_AI_ACTIVE_RUN_STALE_MS: "60000" }).limits.activeRunStaleMs === 60000
+      && resolveAiQuotaLimits({ PROJECTX_AI_ACTIVE_RUN_STALE_MS: "-1" }).limits.activeRunStaleMs
+        === DEFAULT_AI_QUOTA_LIMITS.activeRunStaleMs
+      && resolveAiQuotaLimits({ PROJECTX_AI_ADMISSION_LOCK_TIMEOUT_MS: "999999" }).limits.admissionLockTimeoutMs === 30000,
+      "AI 配额可收紧、非法值回落默认、超天花板被夹紧（含在途失效窗口与等锁预算两档新档位）");
+    check(describeAiQuotaLimits().includes("≤2") && describeAiQuotaLimits().includes("1000000")
+      && describeAiQuotaLimits().includes("300 秒") && describeAiQuotaLimits().includes("2 秒"),
+      "AI 配额档位（含在途占位窗口与等锁预算）进入启动摘要");
+    const { evaluateAiQuota, readAiQuotaSnapshot, reserveAiCall, AiQuotaError } = await import("../src/server/services/aiQuota");
     check(evaluateAiQuota({
       activeJobsForUser: MAX_AI_ACTIVE_JOBS_PER_USER - 1, activeJobsGlobal: 0, runsLastHour: 0, tokensLastDay: 0
     }).ok === true, "未到并发线的用户照常提交分析（配额没有变成默认拒绝）");
@@ -938,26 +1151,46 @@ async function main(): Promise<void> {
     const r11Base = await readAiQuotaSnapshot(quotaDb, teacher.id);
     // 观测记录的 created_at 有两种真实形态：列默认值（SQLite 写空格分隔的 UTC）与应用侧 ISO。
     // 窗口判定必须都算进来，否则配额在 SQLite 上「看着生效、实际恒为 0」。
+    // success 显式给 1：这些行代表「已结算的历史用量」，只进计费维度，不占并发名额。
     const r11RunIds: number[] = [];
     const insertR11Run = (tokensIn: number, tokensOut: number, createdAtSql: string, ...extra: unknown[]): void => {
       r11RunIds.push(Number(db.prepare(
-        `INSERT INTO ai_analysis_runs (user_id, feature, tokens_in, tokens_out, created_at) VALUES (?,?,?,?,${createdAtSql})`)
+        `INSERT INTO ai_analysis_runs (user_id, feature, success, tokens_in, tokens_out, created_at) VALUES (?,?,1,?,?,${createdAtSql})`)
         .run(teacher.id, "exam_analysis", tokensIn, tokensOut, ...extra).lastInsertRowid));
     };
-    // 观测记录的 created_at 有两种真实形态：列默认值（SQLite 写空格分隔的 UTC）与应用侧 ISO。
-    // 窗口判定必须都算进来，否则配额在 SQLite 上「看着生效、实际恒为 0」。
     insertR11Run(1200, 300, "CURRENT_TIMESTAMP");
     insertR11Run(500, 200, "?", new Date().toISOString());
     // 窗口外的两条（24 小时之外）：证明统计是真窗口而不是全表
     insertR11Run(90000, 90000, "?", new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString());
     insertR11Run(80000, 80000, "?",
       new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19));
+    // 在途行（success IS NULL）：PR #312 CR8 后它就是同步调用占住的名额
+    const r11PendingRun = Number(db.prepare(
+      "INSERT INTO ai_analysis_runs (user_id, feature, stage, success) VALUES (?, 'knowledge_points', 'request', NULL)")
+      .run(teacher.id).lastInsertRowid);
+    r11RunIds.push(r11PendingRun);
     const r11Snapshot = await readAiQuotaSnapshot(quotaDb, teacher.id);
-    check(r11Snapshot.activeJobsForUser >= MAX_AI_ACTIVE_JOBS_PER_USER
+    // 该教师此时有：1 个 queued 任务、1 个 running 任务、1 条在途运行行。
+    // 名额必须是 2 而不是 3——running 任务行不自己占位，它占的是那条在途运行行（CR8 的分工）。
+    check(r11Snapshot.queuedJobs!.user === r11Base.queuedJobs!.user
+      && r11Snapshot.inFlightRuns!.user === r11Base.inFlightRuns!.user + 1
+      && r11Snapshot.activeJobsForUser === r11Snapshot.queuedJobs!.user + r11Snapshot.inFlightRuns!.user
+      && r11Snapshot.activeJobsForUser === r11Base.activeJobsForUser + 1
       && r11Snapshot.activeJobsGlobal >= r11Snapshot.activeJobsForUser
-      && r11Snapshot.runsLastHour === r11Base.runsLastHour + 2
+      && r11Snapshot.runsLastHour === r11Base.runsLastHour + 3
       && r11Snapshot.tokensLastDay === r11Base.tokensLastDay + 2200,
-      "配额账本读的是已落库事实：两种时间格式都计入、窗口外的两条不计（SQLite 与 MariaDB 同一口径）");
+      "并发名额 = 排队任务 + 在途调用（running 的任务行由它的运行行接手，不重复占位）；已结算行只进计费维度，两种时间格式都计入、窗口外的两条不计");
+    // 崩溃残留的在途行（没人回填 success）不能永久压着名额：超过失效窗口就不再占用，
+    // 但它确实发起过一次调用，计费账本里仍然算数。
+    const r11ZombieRun = Number(db.prepare(
+      "INSERT INTO ai_analysis_runs (user_id, feature, success, created_at) VALUES (?,?,NULL,?)")
+      .run(teacher.id, "knowledge_points", new Date(Date.now() - (AI_ACTIVE_RUN_STALE_MS + 60_000)).toISOString())
+      .lastInsertRowid);
+    const r11ZombieSnapshot = await readAiQuotaSnapshot(quotaDb, teacher.id);
+    check(r11ZombieSnapshot.inFlightRuns!.user === r11Snapshot.inFlightRuns!.user
+      && r11ZombieSnapshot.activeJobsForUser === r11Snapshot.activeJobsForUser
+      && r11ZombieSnapshot.runsLastHour === r11Snapshot.runsLastHour + 1,
+      "在途占位有失效窗口：超时残留不再压着并发名额，但依然计入调用次数");
     check((await readAiQuotaSnapshot(quotaDb, null)).activeJobsForUser === 0
       && (await readAiQuotaSnapshot(quotaDb, -1)).tokensLastDay === 0,
       "无身份调用不虚构他人账本（读的是 0，而不是把全表当成某人用量）");
@@ -997,8 +1230,52 @@ async function main(): Promise<void> {
     for (const jobId of r11StudentJobs) db.prepare("DELETE FROM ai_analysis_jobs WHERE id=?").run(jobId);
     db.prepare("DELETE FROM student_scores WHERE exam_id=?").run(r11StuExam);
     db.prepare("DELETE FROM exams WHERE id=?").run(r11StuExam);
-    db.prepare("DELETE FROM ai_analysis_runs WHERE id IN (?,?,?,?)").run(...r11RunIds);
+    db.prepare(`DELETE FROM ai_analysis_runs WHERE id IN (${[...r11RunIds, r11ZombieRun].map(() => "?").join(",")})`)
+      .run(...r11RunIds, r11ZombieRun);
     check(AiQuotaError.name === "AiQuotaError", "配额错误类型可被路由单独识别（不会与 AI 服务故障混为一谈）");
+
+    // ── PR #312 CR9：并发准入必须原子「检查 + 占位」
+    // 旧的写法是先 assertAiQuota 再建任务：一波并发请求读到的是同一份空账本，
+    // 12 个请求会全部放行（评审实测活动任务达到 11，上限 8）。现在只有名额内的能成。
+    check((await readAiQuotaSnapshot(quotaDb, teacher.id)).activeJobsForUser === 0,
+      "并发突发前教师账本已清空（否则下面数的是残留而不是突发）");
+    const { reserveAiAnalysisJob } = await import("../src/server/services/aiAnalysisJobs");
+    const { finalizeAiRun } = await import("../src/server/services/aiTelemetry");
+    const r11BurstSize = MAX_AI_ACTIVE_JOBS_PER_USER + 4;
+    const r11JobBurst = await Promise.allSettled(
+      Array.from({ length: r11BurstSize }, () => reserveAiAnalysisJob({ examId: visibleExam, createdBy: teacher.id }))
+    );
+    const admittedValue = (r: PromiseSettledResult<number>): number | null => (r.status === "fulfilled" ? r.value : null);
+    const r11JobAdmitted = r11JobBurst.map(admittedValue).filter((v): v is number => v !== null);
+    const r11QueuedNow = Number((db.prepare(
+      "SELECT COUNT(*) AS c FROM ai_analysis_jobs WHERE created_by = ? AND status = 'queued'")
+      .get(teacher.id) as { c: number }).c);
+    check(r11JobAdmitted.length === MAX_AI_ACTIVE_JOBS_PER_USER && r11QueuedNow === MAX_AI_ACTIVE_JOBS_PER_USER
+      && r11JobBurst.every((r) => r.status === "fulfilled" || r.reason instanceof AiQuotaError),
+      `并发提交 ${r11BurstSize} 次只放行名额内的 ${r11JobAdmitted.length} 个，其余以配额错误拒绝且不落任务行`);
+    // 同步入口（不建任务行）走的是同一条准入链，两个维度共用同一份名额
+    const r11SyncBurst = await Promise.allSettled(
+      Array.from({ length: r11BurstSize }, () => reserveAiCall(quotaDb, teacher.id, { feature: "knowledge_points" }))
+    );
+    const r11PendingRows = Number((db.prepare(
+      "SELECT COUNT(*) AS c FROM ai_analysis_runs WHERE user_id = ? AND success IS NULL")
+      .get(teacher.id) as { c: number }).c);
+    check(r11SyncBurst.every((r) => r.status === "rejected") && r11PendingRows === 0,
+      `任务名额被突发占满时，同步调用同样被挡在门外且不写占位行（实际放行 ${r11SyncBurst.filter((r) => r.status === "fulfilled").length} 个）`);
+    for (const jobId of r11JobAdmitted) db.prepare("DELETE FROM ai_analysis_jobs WHERE id=?").run(jobId);
+    const r11SyncBurst2 = await Promise.allSettled(
+      Array.from({ length: r11BurstSize }, () => reserveAiCall(quotaDb, teacher.id, { feature: "knowledge_points" }))
+    );
+    const r11SyncAdmitted = r11SyncBurst2.map(admittedValue).filter((v): v is number => v !== null);
+    check(r11SyncAdmitted.length === MAX_AI_ACTIVE_JOBS_PER_USER
+      && r11SyncBurst2.every((r) => r.status === "fulfilled" || r.reason instanceof AiQuotaError)
+      && Number((db.prepare("SELECT COUNT(*) AS c FROM ai_analysis_runs WHERE user_id = ? AND success IS NULL")
+        .get(teacher.id) as { c: number }).c) === MAX_AI_ACTIVE_JOBS_PER_USER,
+      `清空任务名额后再突发同步调用：只放行 ${MAX_AI_ACTIVE_JOBS_PER_USER} 个在途占位（CR8：它们过去完全不占名额）`);
+    for (const runId of r11SyncAdmitted) await finalizeAiRun(runId, { success: true, latencyMs: 1 });
+    check((await readAiQuotaSnapshot(quotaDb, teacher.id)).activeJobsForUser === 0,
+      "在途行回填即释放名额：完成/失败的回填不只是埋点");
+    db.prepare("DELETE FROM ai_analysis_runs WHERE user_id = ? AND feature = 'knowledge_points'").run(teacher.id);
 
     // ── 微信出站超时、并发与绑定配额（安全 R20）
     const {
@@ -1056,26 +1333,95 @@ async function main(): Promise<void> {
       }, 60);
     });
     const hangProbe = nodeHttp.createServer(() => { /* 永不响应：模拟微信侧半挂连接 */ });
+    // 响应头立刻给出、正文 60 毫秒后才结束：只有「槽位一直占到正文读完」才不会让并发闸门形同虚设
+    const splitProbe = nodeHttp.createServer((_req, res) => {
+      observedConcurrent += 1;
+      peakConcurrent = Math.max(peakConcurrent, observedConcurrent);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.write('{"errcode":');
+      setTimeout(() => {
+        res.end("0}");
+        observedConcurrent -= 1;
+      }, 60);
+    });
     await new Promise<void>((resolve) => wechatProbe.listen(0, "127.0.0.1", resolve));
     await new Promise<void>((resolve) => hangProbe.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) => splitProbe.listen(0, "127.0.0.1", resolve));
     const wechatProbePort = (wechatProbe.address() as { port: number }).port;
     const hangProbePort = (hangProbe.address() as { port: number }).port;
+    const splitProbePort = (splitProbe.address() as { port: number }).port;
     await Promise.all(Array.from({ length: WECHAT_MAX_CONCURRENT_REQUESTS * 3 }, async () => {
       const response = await wechatThrottle.wechatFetch(`http://127.0.0.1:${wechatProbePort}/token`);
       await response.json();
     }));
     check(peakConcurrent > 1 && peakConcurrent <= WECHAT_MAX_CONCURRENT_REQUESTS,
       "批量公布时的出站呼叫确实受并发闸门约束（超过微信频控只会换来 45009，受害的是全校推送）");
+    observedConcurrent = 0;
+    peakConcurrent = 0;
+    await Promise.all(Array.from({ length: WECHAT_MAX_CONCURRENT_REQUESTS * 3 }, async () => {
+      const response = await wechatThrottle.wechatFetch(`http://127.0.0.1:${splitProbePort}/token`);
+      await response.json();
+    }));
+    check(peakConcurrent <= WECHAT_MAX_CONCURRENT_REQUESTS,
+      "「响应头先到、正文后到」的请求依旧只占一个槽位（闸门若在读体前放行，服务端会同时看到 12 条在途连接）");
     let timeoutError: unknown = null;
     const timeoutStarted = Date.now();
     try {
       await wechatThrottle.wechatFetch(`http://127.0.0.1:${hangProbePort}/jscode2session`, {}, 400);
     } catch (error) { timeoutError = error; }
-    wechatProbe.close();
-    hangProbe.close();
     check(timeoutError instanceof wechatThrottle.WechatTimeoutError
       && Date.now() - timeoutStarted < 3000,
       "半挂连接在预算内被判超时（此前不带信号的 fetch 会永久占住这个请求）");
+
+    // ── CR15：响应头给得出来、正文永不结束的呼叫
+    // 打桩 fetch 而不是再造一个 server：这条断言要证明的是「截止点由读侧自己守着」，
+    // 一个完全不理会 AbortSignal 的响应体才是唯一能排除传输层侥幸的样本。
+    const realGlobalFetch = globalThis.fetch;
+    const stallBudgetMs = 250;
+    let stubInvocations = 0;
+    const headOnlyStub = (async () => {
+      stubInvocations += 1;
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"errcode":')); /* 永不 close */ },
+      }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    const healthyStub = (async () => {
+      stubInvocations += 1;
+      return new Response('{"errcode":0}', { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    globalThis.fetch = headOnlyStub;
+    const stallStarted = Date.now();
+    try {
+      const stallResults = await Promise.allSettled(
+        Array.from({ length: WECHAT_MAX_CONCURRENT_REQUESTS + 2 }, () =>
+          wechatThrottle.wechatFetch("https://wechat.invalid/cgi-bin/token", {}, stallBudgetMs))
+      );
+      const stallElapsed = Date.now() - stallStarted;
+      check(stallResults.every((r) => r.status === "rejected"
+        && r.reason instanceof wechatThrottle.WechatTimeoutError
+        && (r.reason as Error).message.includes("正文")),
+        "只给响应头、正文半挂的微信呼叫照样按预算判超时（超时此前只覆盖到响应头）");
+      // 「闸门覆盖正文」由上面 splitProbe 那条按连接数实测的断言负责；这里要守的是另一半：
+      // 预算是「排队 + 请求」的总预算，排在后面的请求不会因为排队就拿到第二份时间。
+      check(stubInvocations === WECHAT_MAX_CONCURRENT_REQUESTS + 2
+        && stallElapsed >= stallBudgetMs && stallElapsed < stallBudgetMs * 3,
+        `半挂的正文按预算整体判负（${stallElapsed}ms / ${stubInvocations} 路），既不无限等待也不逐波累加`);
+      // 失败路径必须归还槽位：把闸门装满一次，若泄漏这里会永远等下去。
+      globalThis.fetch = healthyStub;
+      const refilled = Promise.all(Array.from({ length: WECHAT_MAX_CONCURRENT_REQUESTS }, () =>
+        wechatThrottle.wechatFetch("https://wechat.invalid/cgi-bin/token", {}, 2000).then((r) => r.json())));
+      const revived = await Promise.race([
+        refilled,
+        new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 3000)),
+      ]);
+      check(revived !== "hung" && Array.isArray(revived) && revived.length === WECHAT_MAX_CONCURRENT_REQUESTS,
+        "正文超时的失败路径把槽位归还了闸门（占着的槽位不回收 = 之后全校推送都发不出去）");
+    } finally {
+      globalThis.fetch = realGlobalFetch;
+      wechatProbe.close();
+      hangProbe.close();
+      splitProbe.close();
+    }
 
     // ── R04：记录/会话级接口收敛到考试范围（critical-card 被可见/越权两场考试复用）
     const r04Session = await newScanSession();
@@ -1140,6 +1486,37 @@ async function main(): Promise<void> {
       method: "POST", headers: scannerKeyHeaders, body: replayCropForm
     });
     check(replayCrops.status === 409, "会话完成后的切块上传也被 409 拒绝（阅卷图不可静默替换）");
+
+    // ── CR2（PR #312 复核）：/complete 部分失败的中间态里，已入库成绩的页面同样不可被上传改写
+    // 只看 session.status / record.ocr_status 会漏掉这一态：分组已 saved，会话却没进终态。
+    const partialSession = await newScanSession();
+    const partialStatus = (db.prepare("SELECT ocr_status FROM twain_scan_records WHERE id=?").get(partialSession.token) as { ocr_status: string }).ocr_status;
+    db.prepare("INSERT INTO scanner_submissions (exam_id, session_id, group_id, student_number, state, pages_json) VALUES (?,?,?,?,'saved',?)")
+      .run(visibleExam, partialSession.sessionId, "0", "S1001",
+        JSON.stringify([{ recordId: partialSession.token, pageNum: 1, side: "front", layoutPage: 1 }]));
+    const partialSessionRow = db.prepare("SELECT status FROM twain_scan_sessions WHERE id=?").get(partialSession.sessionId) as { status: string };
+    check(partialSessionRow.status !== "completed" && partialStatus !== "completed",
+      `夹具自校验：会话停留在部分失败中间态（会话 ${partialSessionRow.status} / 页面 ${partialStatus}）`);
+    const savedPageForm = new FormData();
+    savedPageForm.append("image", new Blob([pngBytes], { type: "image/png" }), "page.png");
+    savedPageForm.append("token", partialSession.token);
+    savedPageForm.append("pageNum", "1");
+    const savedPageReplay = await fetch(`${base}/api/scanner/upload/sessions/${partialSession.sessionId}/pages`, {
+      method: "POST", headers: scannerKeyHeaders, body: savedPageForm
+    });
+    const savedPageBody = await savedPageReplay.json() as { code?: string; message?: string; examId?: number };
+    check(savedPageReplay.status === 409 && savedPageBody.code === "SCAN_PAGE_SAVED",
+      `已入库回执的页面上传被 409 SCAN_PAGE_SAVED（实际 ${savedPageReplay.status} ${savedPageBody.code ?? ""}）`);
+    check(Number(savedPageBody.examId) === visibleExam, "拒绝响应带上归属考试编号，扫描端能定位是哪场考试的成绩已入库");
+    const savedCropForm = new FormData();
+    savedCropForm.append("crops", new Blob([pngBytes], { type: "image/png" }), "crop.png");
+    savedCropForm.append("manifest", JSON.stringify([validManifest("crop.png")]));
+    const savedCrops = await fetch(cropsUrl(partialSession.sessionId, partialSession.token), {
+      method: "POST", headers: scannerKeyHeaders, body: savedCropForm
+    });
+    check(savedCrops.status === 409, "同页切块上传也被拒（阅卷人看到的图不可静默替换）");
+    check((db.prepare("SELECT ocr_status FROM twain_scan_records WHERE id=?").get(partialSession.token) as { ocr_status: string }).ocr_status === partialStatus,
+      "被拒的上传不产生任何改写，已入库成绩对应的页面原样保留");
 
     // ── R07：切块清单字段收敛，落盘路径由服务端决定
     const r07Session = await newScanSession();

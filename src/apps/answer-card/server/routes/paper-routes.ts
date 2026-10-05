@@ -2,11 +2,9 @@ import { Router } from "express";
 import multer from "multer";
 import path from "node:path";
 import { existsSync, unlinkSync } from "node:fs";
-import { ensurePaperDir, paperDir, papersDir, safeId } from "../storage";
+import { ensurePaperDir, paperDir, paperTmpDir, safeId } from "../storage";
 import {
   validatePaperFile,
-
-
   storePaperPageFile,
   discardStoredPaths,
 } from "../paper-converter";
@@ -18,8 +16,15 @@ import {
   MAX_PAPER_PAGES_PER_CARD,
   MAX_PAPER_REQUEST_BYTES,
 } from "../../../../shared/paperStorageLimits";
-import { evaluatePaperQuota, invalidatePaperUsageCache, purgeStaleTmpUploads, readPaperQuota } from "../paperQuota";
-import { requestUploadBudget } from "../../../../server/lib/uploadBudget";
+import {
+  assertWrittenPaperWithinQuota,
+  evaluatePaperQuota,
+  invalidatePaperUsageCache,
+  PaperQuotaRollbackError,
+  purgeStaleTmpUploads,
+  readPaperQuota,
+} from "../paperQuota";
+import { requestUploadBudget, isUploadAlreadyRejected } from "../../../../server/lib/uploadBudget";
 import { autoExtractPaperText, getFileMime, getPaperInputKind } from "../paper-ocr";
 import { PaperInputError } from "../paper-docx";
 import type { DbAdapter } from "../../../../server/db/mysql";
@@ -29,9 +34,9 @@ import { KnowledgePointRepository } from "../../../../server/repositories/Knowle
 import type { Request, Response } from "express";
 import { readFile, readdir } from "node:fs/promises";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "../llm-client";
-import { recordAiRun, finalizeAiRun } from "../../../../server/services/aiTelemetry";
-// 安全（R11）：AI 计费与并发配额；安全（R25）：对外错误摘要脱敏
-import { AiQuotaError, assertAiQuota } from "../../../../server/services/aiQuota";
+import { finalizeAiRun } from "../../../../server/services/aiTelemetry";
+// 安全（R11）：AI 计费与并发配额（占位与判定原子完成）；安全（R25）：对外错误摘要脱敏
+import { AiQuotaError, reserveAiCall } from "../../../../server/services/aiQuota";
 import { sanitizeOpsMessage } from "../../../../server/lib/opsErrorMessage";
 import { decryptField } from "../../../../server/lib/field-crypto";
 import { isVisionProvider, resolveKnowledgePointMode } from "../llm-capabilities";
@@ -58,9 +63,7 @@ type AiProviderRow = {
   is_system?: number;
 };
 
-/** multer 的暂存目录：请求中断/被拒时留下的临时件由 `purgeStaleTmpUploads` 兜底清理（安全 R14）。 */
-export const paperTmpDir = path.join(papersDir, "_tmp");
-
+/** multer 的暂存目录在 storage 里定义：容量扫描要把这棵子树整棵排除，两边必须指向同一个路径。 */
 const paperUpload = multer({
   dest: paperTmpDir,
   // 安全 R10：单文件与单次文件数都走「默认 + 环境变量 + 天花板」三档，不再是硬编码 50MB/40 个
@@ -163,11 +166,13 @@ export function paperRoutes(): Router {
     (req: Request, res: Response, next) => {
       paperUpload.array("files", MAX_PAPER_FILES_PER_REQUEST)(req, res, (err) => {
         if (err) {
-          // 安全（R14）：multer 因体积/数量越界而报错时，已经落盘的兄弟文件不会经过
-          // 下面那个带 `finally` 的处理函数——这里必须自己清掉，否则每次越界尝试都在
-          // `_tmp` 里留下一份无人引用的副本（越界重试本身就是免费的磁盘填满攻击）。
+          // 安全（R14）：数量/体积越界时 multer 直接报错，已落盘的兄弟文件不会经过
+          // 下面带 `finally` 的处理函数——必须在这里清掉，否则越界重试会留下无人引用的副本。
           const partial = (req.files as Express.Multer.File[] | undefined) ?? (req.file ? [req.file] : []);
           void discardStoredPaths(partial.map((f) => f.path));
+          // PR #312 复核：请求预算是先回 413 再断开请求的，multer 的断流错误随后才到达。
+          // 这里若照样 res.status(400)，等于对已结束的响应二次写入，还会把 413 覆盖成误导的 400。
+          if (isUploadAlreadyRejected(req, res)) return;
           res.status(400).json({ error: err.message || "原卷上传失败" });
           return;
         }
@@ -216,12 +221,11 @@ export function paperRoutes(): Router {
           return;
         }
 
-        // ── 累计容量闸门（安全 R10）：按上传件字节数估计本次增量，真实占盘在下一次读取时反映 ──
+        // ── 累计容量闸门（安全 R10）：admission 只能按上传件字节数**估算**，真实产物在下述
+        //    落盘后用 assertWrittenPaperWithinQuota 复测——原卷转换会变大（jpg + 配对 PDF）。
         const incomingBytes = validFiles.reduce((sum, item) => sum + Math.max(0, item.file.size), 0);
-        const quota = evaluatePaperQuota(
-          await readPaperQuota(db, cardId),
-          { pages: validFiles.length, bytes: incomingBytes }
-        );
+        const usageBefore = await readPaperQuota(db, cardId);
+        const quota = evaluatePaperQuota(usageBefore, { pages: validFiles.length, bytes: incomingBytes });
         if (!quota.ok) {
           res.status(413).json({
             code: "PAPER_QUOTA_EXCEEDED",
@@ -246,6 +250,8 @@ export function paperRoutes(): Router {
           ) as { mx: number } | undefined;
           let nextIndex = (maxRow?.mx ?? 0) + 1;
 
+          let writtenPages = 0;
+          let writtenBytes = 0;
           for (const { file, originalname } of validFiles) {
             const pageIndex = nextIndex;
             nextIndex += 1;
@@ -253,6 +259,8 @@ export function paperRoutes(): Router {
             const stored = await storePaperPageFile(file.path, originalname, dir, pageIndex);
             // 先登记再入库：这一页此刻还没有任何 DB 行引用，失败时必须由本路由删掉（安全 R14）
             storedPaths.push(...stored.writtenPaths);
+            writtenPages += 1;
+            writtenBytes += stored.bytes;
 
             // UNIQUE(card_id, page_index) 约束保证不会重复写入
             await tx.run(
@@ -265,6 +273,10 @@ export function paperRoutes(): Router {
             }
             uploaded.push({ pageIndex, filename: stored.diskFilename });
           }
+          // 提交前用**实际落盘体积**复测容量（PR #312 CR14）：上面的 admission 只能按输入字节估，
+          // 而原卷转换会变大（jpg + 配对 PDF）。越界就在这里抛错——事务回滚掉这批页行，
+          // 已写出的文件由下面的 catch 逐个删除，不会留下「按输入算合格、按产物算超限」的占盘。
+          await assertWrittenPaperWithinQuota(tx, cardId, usageBefore, { pages: writtenPages, bytes: writtenBytes });
         });
         // 事务已提交：这些文件正式被 DB 行引用，回滚窗口到此结束
         storedPaths.length = 0;
@@ -295,6 +307,17 @@ export function paperRoutes(): Router {
       } catch (err: any) {
         // 事务未提交就失败：本轮落地的文件没有任何 DB 行引用，全部删掉（安全 R14）
         if (storedPaths.length > 0) await discardStoredPaths(storedPaths);
+        if (err instanceof PaperQuotaRollbackError) {
+          // 落盘后复测越界（CR14）：页行已随事务回滚、文件已删，这里给出与 admission 同一形状的 413
+          res.status(413).json({
+            code: "PAPER_QUOTA_EXCEEDED",
+            reason: err.reason,
+            error: err.message,
+            measuredAfterConversion: true,
+            limits: { pagesPerCard: MAX_PAPER_PAGES_PER_CARD, bytesPerCard: MAX_PAPER_BYTES_PER_CARD, bytesTotal: MAX_PAPER_BYTES_TOTAL },
+          });
+          return;
+        }
         console.error("[paper] upload failed:", err);
         res.status(500).json({ error: err.message || "上传失败" });
       } finally {
@@ -557,13 +580,11 @@ export function paperRoutes(): Router {
         return;
       }
 
-      // 安全（R11）：先过配额，再留观测记录——否则被拒的请求会在 ai_analysis_runs
-      // 里留下永远无法结算的幽灵行，把「谁在打模型」的账本本身污染掉。
-      await assertAiQuota(db, req.user?.id ?? null);
-
-      // 观测：逻辑任务层（原卷知识点分析），后续 3 处边车调用以 runId 关联实际层
-      runId = await recordAiRun({
-        userId: req.user?.id ?? null,
+      // 安全（R11 + PR #312 CR8/CR9）：知识点分析是同步打模型的，它过去只出现在
+      // 计费账本里、不占并发名额——同一用户可以把「单用户在途 ≤2」刷成任意多个并行调用。
+      // 现在判定与占位（一条 success IS NULL 的运行行）在同一临界区里原子完成；
+      // 被拒时事务回滚，不会留下无法结算的幽灵行污染「谁在打模型」的账本。
+      runId = await reserveAiCall(db, req.user?.id ?? null, {
         feature: "knowledge_points",
         model: provider.model ?? null,
         stage: "request"

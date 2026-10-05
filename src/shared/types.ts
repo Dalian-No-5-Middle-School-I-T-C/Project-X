@@ -437,6 +437,8 @@ export type AnswerBlockCrop = {
   claimedAt?: string | null;
   /** Issue #174: 累计领取次数（复核轮次参考） */
   claimCount?: number;
+  /** 已完成的评分轮数（0=尚待首评）。双评/三评的复核轮次据此判定，见 #312 CR1 */
+  reviewRound?: number;
 };
 
 /** 网上阅卷题块汇总 */

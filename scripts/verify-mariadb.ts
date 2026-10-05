@@ -10,6 +10,9 @@ async function main(): Promise<void> {
   assert.equal(process.env.PROJECTX_MARIADB_DATABASE, "projectx_ci", "Only projectx_ci is allowed");
   assert.ok(process.env.PROJECTX_MARIADB_USER, "Set PROJECTX_MARIADB_USER explicitly");
   assert.ok(process.env.PROJECTX_MARIADB_PASSWORD, "Set PROJECTX_MARIADB_PASSWORD explicitly");
+  // 试卷池配额在模块加载时定档，必须早于任何应用模块导入。CI 用 2 份/题块，
+  // 让「5 个并发领取」能在几秒内把配额打满（见 CR9 并发领取回归）。
+  process.env.PROJECTX_REVIEW_MAX_HELD_PER_BLOCK = "2";
   // 管理员引导文件写在「数据库路径」的同目录；MariaDB 模式下把该指针指向临时目录，
   // 避免测试往仓库 data/ 里落真实的 bootstrap-admin.txt。
   const bootstrapTmpDir = mkdtempSync(path.join(tmpdir(), "projectx-mariadb-bootstrap-"));
@@ -232,6 +235,23 @@ async function main(): Promise<void> {
       [{ exam_id: exam.lastInsertRowid, student_id: student.lastInsertRowid }]);
     assert.equal((await findSavedScannerOwners(db, "session_ci", "group_ci", "09210002", "receipt_ci")).length, 0);
     assert.equal((await findSavedScannerOwners(db, "session_ci", "group_ci", "09210001", "other_card")).length, 0);
+    // 复核 CR2/CR4：「按回执判定页面归属」与「归档考试不算未绑定」两条新谓词必须在真库可执行。
+    const { savedReceiptOwnerOfPage } = await import("../src/server/services/scannerSubmissions");
+    await db.run("UPDATE scanner_submissions SET pages_json = ? WHERE session_id = 'session_ci' AND group_id = 'group_ci'",
+      JSON.stringify([{ recordId: "page_ci", pageNum: 1, side: "front", layoutPage: 1 }]));
+    assert.deepEqual(await savedReceiptOwnerOfPage("session_ci", "page_ci"),
+      { exam_id: Number(exam.lastInsertRowid), group_id: "group_ci", student_number: "09210001" });
+    assert.equal(await savedReceiptOwnerOfPage("session_ci", "other_page"), null);
+    const { resolveScannerExam } = await import("../src/server/services/scannerExam");
+    const unarchived = await resolveScannerExam("receipt_ci", "session_ci");
+    assert.deepEqual(unarchived.exams.map(row => Number(row.id)), [Number(exam.lastInsertRowid)]);
+    await db.run("INSERT INTO exam_archives (exam_id, is_deleted, deleted_at) VALUES (?, 1, CURRENT_TIMESTAMP)", exam.lastInsertRowid);
+    const archivedScan = await resolveScannerExam("receipt_ci", "session_ci");
+    assert.equal(archivedScan.exams.length, 0, "归档考试不得进入候选范围");
+    assert.deepEqual(archivedScan.allExamIds, [Number(exam.lastInsertRowid)],
+      "归档考试仍要留下痕迹，供「软删除不等于未绑定」判定（CR4）");
+    await db.run("DELETE FROM exam_archives WHERE exam_id = ?", exam.lastInsertRowid);
+    console.log("PASS: saved-receipt page ownership and archive-aware scanner exam resolution (CR2/CR4)");
     // 使用真实成绩修改路由，防止另一条学生搜索路径重新引入反斜杠 ESCAPE。
     const { default: express } = await import("express");
     const { default: scoreEditingRouter } = await import("../src/server/routes/score-editing");
@@ -334,6 +354,197 @@ async function main(): Promise<void> {
     await db.run("DELETE FROM answer_cards WHERE id = 'blocks_ci'");
     await db.run("DELETE FROM users WHERE id IN (?, ?)", blocksStudentId, otherStudentId);
     console.log("PASS: review block listing (per-block max score, half-point, R03 block scope)");
+
+    // ===== PR #312 CR7：参与子集过滤必须在真库跑通（SQL 报错 = 静默放行）=====
+    // checkLadderParticipation 捕获异常后回退成「不过滤」（为的是没有 exam_participants 表的存量库），
+    // 所以这条 SQL 一旦在 MariaDB 方言下语法不过（派生表缺别名、UNION 两侧列数不齐）
+    // 就等于天梯参与收敛整条失效，而且没有任何错误日志可看见。SQLite 回归证不了这件事。
+    const { AnalysisRepository: PartRepo } = await import("../src/server/repositories/AnalysisRepository");
+    await db.run("INSERT INTO answer_cards (id, title) VALUES ('part_ci', '参与收敛回归')");
+    const partExamIds: number[] = [];
+    for (const [idx, name] of [["1-仅快照", "roster"], ["2-仅成绩", "score"], ["3-都没参加", "none"]] as Array<[string, string]>) {
+      const r = await db.run("INSERT INTO exams (name, card_id) VALUES (?, 'part_ci')", `${name}${idx}`);
+      partExamIds.push(Number(r.lastInsertRowid));
+    }
+    const [pSnap, pScore, pNone] = partExamIds;
+    const partStudent = await db.run(
+      "INSERT INTO users (username, password_hash, name, role_id, student_number) VALUES ('part_ci_student', 'test-only', '参与回归生', 3, '93010009')",
+    );
+    const partStudentId = Number(partStudent.lastInsertRowid);
+    await db.run("INSERT INTO exam_participants (exam_id, student_id, source) VALUES (?, ?, 'roster')", pSnap, partStudentId);
+    await db.run(
+      "INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?, ?, 0, 50, 50)",
+      pScore, partStudentId,
+    );
+    const participated = await new PartRepo().filterParticipatedExamIds([...partExamIds].reverse(), partStudentId);
+    assert.deepEqual(participated, [pScore, pSnap], "真库：快照与成绩两条出路都算参与，且保持调用方给的顺序");
+    assert.deepEqual(await new PartRepo().filterParticipatedExamIds([pNone], partStudentId), [], "真库：未参与的场次被剔除");
+    assert.deepEqual(await new PartRepo().filterParticipatedExamIds([], partStudentId), [], "真库：空集合不触发查询");
+    await db.run("DELETE FROM exam_participants WHERE student_id = ?", partStudentId);
+    await db.run("DELETE FROM student_scores WHERE student_id = ?", partStudentId);
+    await db.run("DELETE FROM exams WHERE id IN (?, ?, ?)", pSnap, pScore, pNone);
+    await db.run("DELETE FROM users WHERE id = ?", partStudentId);
+    await db.run("DELETE FROM answer_cards WHERE id = 'part_ci'");
+    console.log("PASS: ladder participation subset (exam_participants UNION student_scores)");
+
+    // ===== PR #312 CR9：并发领取的「计数 + 占卷」必须落在同一个临界区 =====
+    // 只做普通事务并不原子：MariaDB 下 5 个并发领取各自读到同一个旧持有量
+    // （COUNT 走一致性快照，看不见对方未提交的 UPDATE），题块 2 份的配额能被领成 5 份。
+    // 命名锁按教师加，且只在 MariaDB 侧需要（SQLite 单连接同步驱动，事务本身互斥）。
+    const { claimNextPaper, ReviewPoolError, ReviewPoolScopeError, countHeldPapers } =
+      await import("../src/server/services/ReviewPoolService");
+    await db.run("INSERT INTO answer_cards (id, title) VALUES ('claim_ci', '并发领取回归')");
+    const claimExam = await db.run("INSERT INTO exams (name, card_id) VALUES ('并发领取回归', 'claim_ci')");
+    const claimExamId = Number(claimExam.lastInsertRowid);
+    const claimTeacher = await db.run(
+      "INSERT INTO users (username, password_hash, name, role_id) VALUES ('claim_ci_teacher', 'test-only', '并发领取教师', 2)",
+    );
+    const claimTeacherId = Number(claimTeacher.lastInsertRowid);
+    const claimStudent = await db.run(
+      "INSERT INTO users (username, password_hash, name, role_id, student_number) VALUES ('claim_ci_student', 'test-only', '并发领取生', 3, '93010003')",
+    );
+    const claimStudentId = Number(claimStudent.lastInsertRowid);
+    for (let seq = 1; seq <= 5; seq++) {
+      await db.run(
+        `INSERT INTO answer_block_crops (${cropCols})
+         VALUES (?, 'claim_ci', ?, ?, 'scan', ?, 'C1', '第 21 题', 'subjective', 1, 0, '[]', '{}', ?, 100, 200, 300, 'ready', 0)`,
+        `claim_ci_${seq}`, claimExamId, claimStudentId,
+        `claim_ci_rec_${seq}`, `data/claim_ci/claim_ci_${seq}.png`,
+      );
+    }
+    const claimLockName = `px_review_claim_${claimTeacherId}`;
+    // 前置体检：锁在突发前必须无人持有。命名锁是**连接级**状态，进程挂着不放锁时
+    // 连接回池也不会释放它——本机就曾被一个「等 3000 秒」的旧会话占住同名锁，
+    // 让后面每次领取都只看到「等待锁超时」，把配额回归误判成临界区失效。
+    const holderBefore = await db.get<{ holder: number | null }>("SELECT IS_USED_LOCK(?) AS holder", claimLockName);
+    assert.equal(holderBefore?.holder, null,
+      `并发突发前该教师的领取锁无人持有（若失败：连接 ${holderBefore?.holder} 泄漏了锁，与本题无关）`);
+    const attempts = await Promise.allSettled(
+      Array.from({ length: 5 }, () => claimNextPaper(claimExamId, "C1", claimTeacherId, db)),
+    );
+    const succeeded = attempts.filter((a) => a.status === "fulfilled").length;
+    const rejected = attempts.filter((a) => a.status === "rejected") as PromiseRejectedResult[];
+    const heldAfter = await countHeldPapers(claimTeacherId, { examId: claimExamId, blockId: "C1" }, db);
+    assert.equal(succeeded, 2,
+      `并发领取的成功数不超过题块持有量配额（拒绝原因：${rejected.map((a) => (a.reason as Error).message).join(" | ")}）`);
+    assert.equal(heldAfter.inBlock, 2, "并发下实际持有量与配额一致（修复前会超发）");
+    assert.equal(
+      attempts.filter((a) => a.status === "rejected" && a.reason instanceof ReviewPoolScopeError).length, 3,
+      "其余领取以「持有量超限」明确拒绝，而不是静默少领",
+    );
+    const lockHolder = await db.get<{ holder: number | null }>("SELECT IS_USED_LOCK(?) AS holder", claimLockName);
+    assert.equal(lockHolder?.holder, null, "领取结束后命名锁已释放（泄漏会让后续领取白等一个超时预算）");
+    // 锁被占用时：等满预算后报错让客户端重试，绝不「拿不到锁就照常写」
+    let claimLockWaitedMs = 0;
+    await db.transaction(async (tx) => {
+      const grabbed = await tx.get<{ locked: number }>("SELECT GET_LOCK(?, 0) AS locked", claimLockName);
+      assert.equal(Number(grabbed?.locked), 1, "夹具可先占住该教师的领取锁");
+      const startedAt = Date.now();
+      await assert.rejects(
+        () => claimNextPaper(claimExamId, "C1", claimTeacherId, db),
+        (err: unknown) => err instanceof ReviewPoolError && err.message.includes("请重试"),
+        "等锁超时返回可重试的错误，而不是绕过临界区继续领取",
+      );
+      // GET_LOCK 的等待参数单位是「秒」：曾把毫秒预算原样传入，3000 毫秒变成 3000 秒，
+      // 一次并发挤兑就足以挂住请求并占满连接池。预算 3000 毫秒 → 判定必须落在几秒内。
+      claimLockWaitedMs = Date.now() - startedAt;
+      assert.ok(claimLockWaitedMs >= 2000 && claimLockWaitedMs < 6000,
+        `等锁时长跟随毫秒预算（实际 ${claimLockWaitedMs} 毫秒）`);
+      await tx.get("SELECT RELEASE_LOCK(?) AS released", claimLockName);
+    });
+    await db.run("DELETE FROM answer_block_crops WHERE exam_id = ?", claimExamId);
+    await db.run("DELETE FROM exams WHERE id = ?", claimExamId);
+    await db.run("DELETE FROM answer_cards WHERE id = 'claim_ci'");
+    await db.run("DELETE FROM users WHERE id IN (?, ?)", claimTeacherId, claimStudentId);
+    console.log(`PASS: review pool claim reservation (named lock, quota under concurrency, lock-timeout in ${claimLockWaitedMs}ms)`);
+
+    // ===== PR #312 CR8/CR9：AI 名额的原子准入与在途占位（真库跨连接） =====
+    // 进程内的串行链挡得住同进程突发，挡不住跨连接/跨进程：MariaDB 下两个请求各自读到
+    // 同一份旧账本（COUNT 走一致性快照，看不见对方未提交的 INSERT），上限 8 能放进 11 个任务。
+    // 命名锁 px_ai_admission 才是跨连接那一层保证，只有在真库里才测得到。
+    const { reserveAiAnalysisJob } = await import("../src/server/services/aiAnalysisJobs");
+    const { reserveAiCall, readAiQuotaSnapshot, AiQuotaError } = await import("../src/server/services/aiQuota");
+    const { finalizeAiRun, markInterruptedAiRuns } = await import("../src/server/services/aiTelemetry");
+    const { MAX_AI_ACTIVE_JOBS_PER_USER, AI_ACTIVE_RUN_STALE_MS, AI_ADMISSION_LOCK_TIMEOUT_MS } =
+      await import("../src/shared/aiQuotaLimits");
+    const aiTeacher = await db.run(
+      "INSERT INTO users (username, password_hash, name, role_id) VALUES ('ai_ci_teacher', 'test-only', 'AI 并发准入教师', 2)"
+    );
+    const aiTeacherId = Number(aiTeacher.lastInsertRowid);
+    const aiExam = await db.run("INSERT INTO exams (name) VALUES ('AI 并发准入回归')");
+    const aiExamId = Number(aiExam.lastInsertRowid);
+    const aiLockName = "px_ai_admission";
+    // 前置体检与试卷池同款教训：命名锁是**连接级**状态，泄漏的旧会话会让每次准入只看到等锁超时，
+    // 把名额回归误判成临界区失效。
+    const aiHolderBefore = await db.get<{ holder: number | null }>("SELECT IS_USED_LOCK(?) AS holder", aiLockName);
+    assert.equal(aiHolderBefore?.holder, null,
+      `并发突发前 AI 准入锁无人持有（若失败：连接 ${aiHolderBefore?.holder} 泄漏了锁，与本题无关）`);
+    const aiBurstSize = MAX_AI_ACTIVE_JOBS_PER_USER + 4;
+    const aiAttempts = await Promise.allSettled(
+      Array.from({ length: aiBurstSize }, () => reserveAiAnalysisJob({ examId: aiExamId, createdBy: aiTeacherId }))
+    );
+    const aiAdmitted = aiAttempts.filter((a) => a.status === "fulfilled").length;
+    const aiRejected = aiAttempts.filter((a) => a.status === "rejected") as PromiseRejectedResult[];
+    const aiQueued = Number((await db.get<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM ai_analysis_jobs WHERE created_by = ? AND status = 'queued'", aiTeacherId))?.c ?? 0);
+    assert.equal(aiAdmitted, MAX_AI_ACTIVE_JOBS_PER_USER,
+      `并发提交 ${aiBurstSize} 次分析只放行名额内的 ${MAX_AI_ACTIVE_JOBS_PER_USER} 个（拒绝原因：${aiRejected.map((a) => (a.reason as Error).message).join(" | ")}）`);
+    assert.equal(aiQueued, MAX_AI_ACTIVE_JOBS_PER_USER, "真库并发下排队任务数与名额一致（修复前会超发）");
+    assert.equal(aiRejected.filter((a) => a.reason instanceof AiQuotaError).length, aiBurstSize - MAX_AI_ACTIVE_JOBS_PER_USER,
+      "其余请求以配额错误明确拒绝（429 语义），而不是静默少建任务");
+    // 锁被别的连接占住时：等满毫秒预算后给出可重试的拒绝，绝不「拿不到锁就照常写」
+    let aiLockWaitedMs = 0;
+    await db.transaction(async (tx) => {
+      const grabbed = await tx.get<{ locked: number }>("SELECT GET_LOCK(?, 0) AS locked", aiLockName);
+      assert.equal(Number(grabbed?.locked), 1, "夹具可先占住 AI 准入锁");
+      const startedAt = Date.now();
+      await assert.rejects(
+        () => reserveAiAnalysisJob({ examId: aiExamId, createdBy: aiTeacherId }),
+        (err: unknown) => err instanceof AiQuotaError && err.message.includes("请重试"),
+        "等锁超时返回可重试的 429，而不是绕过临界区继续建任务"
+      );
+      // GET_LOCK 的等待参数单位是「秒」：把毫秒预算原样传入等于等 AI_ADMISSION_LOCK_TIMEOUT_MS 秒。
+      aiLockWaitedMs = Date.now() - startedAt;
+      assert.ok(aiLockWaitedMs >= Math.floor(AI_ADMISSION_LOCK_TIMEOUT_MS / 1000) * 1000
+        && aiLockWaitedMs < AI_ADMISSION_LOCK_TIMEOUT_MS + 4000,
+        `等锁时长跟随毫秒预算（预算 ${AI_ADMISSION_LOCK_TIMEOUT_MS} 毫秒，实际 ${aiLockWaitedMs} 毫秒）`);
+      assert.equal(Number((await db.get<{ c: number }>(
+        "SELECT COUNT(*) AS c FROM ai_analysis_jobs WHERE created_by = ?", aiTeacherId))?.c ?? 0), aiQueued,
+        "等锁失败期间没有写入任何任务行");
+      await tx.get("SELECT RELEASE_LOCK(?) AS released", aiLockName);
+    });
+    const aiLockReleased = await db.get<{ holder: number | null }>("SELECT IS_USED_LOCK(?) AS holder", aiLockName);
+    assert.equal(aiLockReleased?.holder, null, "准入结束后命名锁已释放（泄漏会让后续请求白等一个超时预算）");
+    await db.run("DELETE FROM ai_analysis_jobs WHERE created_by = ?", aiTeacherId);
+    // CR8：同步入口不建任务行，它以 success IS NULL 的运行行占位；回填即释放
+    const aiReserved = await reserveAiCall(db, aiTeacherId, { feature: "knowledge_points" });
+    assert.equal((await readAiQuotaSnapshot(db, aiTeacherId)).inFlightRuns?.user, 1,
+      "同步调用的占位行计入在途名额（真库）");
+    await finalizeAiRun(aiReserved, { success: true, latencyMs: 5 });
+    assert.equal((await readAiQuotaSnapshot(db, aiTeacherId)).activeJobsForUser, 0,
+      "回填后名额立即释放（真库）");
+    // 崩溃残留：超过失效窗口的 success IS NULL 行不再压着名额，但仍留在计费账本里。
+    // created_at 用 NOW() 回退写入——真库里直接绑带 `T` 的 ISO 会被 Incorrect datetime value 拒绝。
+    const aiRunsBeforeZombie = (await readAiQuotaSnapshot(db, aiTeacherId)).runsLastHour;
+    await db.run(
+      `INSERT INTO ai_analysis_runs (user_id, feature, stage, created_at)
+       VALUES (?, 'knowledge_points', 'request', DATE_SUB(NOW(), INTERVAL ? SECOND))`,
+      aiTeacherId, Math.ceil(AI_ACTIVE_RUN_STALE_MS / 1000) + 60
+    );
+    const aiZombie = await readAiQuotaSnapshot(db, aiTeacherId);
+    assert.equal(aiZombie.inFlightRuns?.user, 0, "超过失效窗口的崩溃残留不再占用并发名额（真库）");
+    assert.equal(aiZombie.runsLastHour, aiRunsBeforeZombie + 1, "残留仍计入 1 小时调用次数（它确实发起过）");
+    await markInterruptedAiRuns(db);
+    assert.equal(Number((await db.get<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM ai_analysis_runs WHERE user_id = ? AND success IS NULL", aiTeacherId))?.c ?? 0), 0,
+      "启动清理把残留的在途行判为中断，不靠失效窗口兜底");
+    assert.equal((await db.get<{ error_code: string }>(
+      "SELECT error_code FROM ai_analysis_runs WHERE user_id = ? ORDER BY id DESC LIMIT 1", aiTeacherId))?.error_code,
+      "INTERRUPTED", "清理写明中断原因，控制台成功率不会把它算成成功");
+    await db.run("DELETE FROM ai_analysis_runs WHERE user_id = ?", aiTeacherId);
+    await db.run("DELETE FROM exams WHERE id = ?", aiExamId);
+    await db.run("DELETE FROM users WHERE id = ?", aiTeacherId);
+    console.log(`PASS: ai admission reservation (named lock, quota under concurrency, in-flight placeholder, lock-timeout in ${aiLockWaitedMs}ms)`);
 
     const upsert = buildUpsertSQL(db.dialect, "system_settings", ["key", "value"], ["key"]);
     const readValue = () => db.get<{ value: string }>("SELECT `value` FROM system_settings WHERE `key` = ?", "ci_test");

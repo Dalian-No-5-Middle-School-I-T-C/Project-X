@@ -13,8 +13,8 @@ import {
 } from "../../apps/answer-card/server/middleware";
 import { fetchLlmClient } from "../../apps/answer-card/server/llm-client";
 import { trackAnalysisCall } from "../services/aiTelemetry";
-// 安全（R11）：AI 计费与并发配额
-import { AiQuotaError, assertAiQuota } from "../services/aiQuota";
+// 安全（R11）：AI 计费与并发配额（判定与占位原子完成）
+import { AiQuotaError, reserveAiCall } from "../services/aiQuota";
 import type { SubjectWeaknessItem, StudentTrendPoint } from "../../shared/types";
 import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropService";
 import {
@@ -267,15 +267,21 @@ router.post("/me/exams/:examId/ai-analysis", async (req: Request, res: Response)
   const classId = await resolveStudentPrimaryClassId(req.user!.id);
 
   try {
-    // 安全（R11）：学生侧 AI 分析是同步打模型的，配额闸门必须在这一行之前。
-    await assertAiQuota(getMysqlDb(), req.user?.id ?? null);
+    // 安全（R11 + PR #312 CR8/CR9）：学生侧 AI 分析是同步打模型的，它不建任务行，
+    // 早先完全绕开了并发维度。现在准入直接把占位行（success IS NULL 的运行记录）
+    // 写进同一个临界区：判定与占位原子完成，调用结束时由 trackAnalysisCall 回填即释放。
     // 复用统一的 llmclient 转发封装（自动拉起 sidecar + 内部鉴权头），
     // 避免与 llm-client.ts 的环境变量命名（LLMCLIENT_URL/LLMCLIENT_INTERNAL_API_KEY）不一致。
     const model = typeof req.body?.model === "string" ? req.body.model : undefined;
+    const reservedRunId = await reserveAiCall(getMysqlDb(), req.user?.id ?? null, {
+      feature: "student_analysis",
+      model: model ?? null,
+    });
     const response = await trackAnalysisCall({
       userId: req.user!.id,
       feature: "student_analysis",
       model: model ?? null,
+      reservedRunId,
       doCall: (runId) => fetchLlmClient("/analysis/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

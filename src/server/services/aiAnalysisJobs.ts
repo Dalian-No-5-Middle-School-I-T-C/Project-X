@@ -11,7 +11,8 @@
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { fetchLlmClient } from "../../apps/answer-card/server/llm-client";
-import { trackAnalysisCall } from "./aiTelemetry";
+import { trackAnalysisCall, markInterruptedAiRuns } from "./aiTelemetry";
+import { checkAiQuotaInAdmission, runInAiAdmission } from "./aiQuota";
 import type { AiAnalysisResponse, AiJobPollResponse, AiJobState } from "../../shared/types";
 
 export interface AiJobSpec {
@@ -52,7 +53,14 @@ function rowToPoll(row: any): AiJobPollResponse {
   };
 }
 
-/** 执行一次 LLM 学情分析（同步阻塞，由后台队列串行调用）。 */
+/**
+ * 执行一次 LLM 学情分析（同步阻塞，由后台队列串行调用）。
+ *
+ * 这里只写观测、不再判一次配额：准入在建任务时已经做过（`reserveAiAnalysisJob`），
+ * 任务行在进入队列时占用名额、转入 running 后由这条 `success IS NULL` 的运行行接手
+ * （PR #312 CR8 的分工，两者相加才是不重复的在途数）。若在此重新准入，
+ * 排队中的任务会把自己挡住。
+ */
 export async function runAiAnalysis(spec: AiJobSpec): Promise<AiAnalysisResponse> {
   const model = spec.model ?? null;
   // AI 调用观测（逻辑任务层 + 实际模型调用层双层埋点），埋点失败不影响业务调用
@@ -101,6 +109,9 @@ export async function markInterruptedJobsFailed(db: DbAdapter): Promise<void> {
   await db.run(
     `UPDATE ai_analysis_jobs SET status = 'error', error = '服务重启中断，任务未完成' WHERE status IN ('queued', 'running')`
   );
+  // PR #312 CR8：运行行的 success IS NULL 现在同时是并发名额的占位，
+  // 崩溃残留若不清掉会一直压着名额，直到失效窗口过去。
+  await markInterruptedAiRuns(db);
 }
 
 /** 服务启动时调用：把上次进程残留的 queued/running 任务标记为 failed。 */
@@ -109,8 +120,7 @@ export async function cleanupInterruptedAiJobs(): Promise<void> {
 }
 
 /** 创建任务并立即返回 jobId。 */
-export async function createAiAnalysisJob(input: AiJobCreateInput): Promise<number> {
-  const db = getMysqlDb();
+export async function createAiAnalysisJob(input: AiJobCreateInput, db: DbAdapter = getMysqlDb()): Promise<number> {
   const info = await db.run(
     `INSERT INTO ai_analysis_jobs (exam_id, group_id, class_id, status, model, created_by)
      VALUES (?, ?, ?, 'queued', ?, ?)`,
@@ -121,6 +131,22 @@ export async function createAiAnalysisJob(input: AiJobCreateInput): Promise<numb
     input.createdBy ?? null,
   );
   return info.lastInsertRowid;
+}
+
+/**
+ * 建任务 + 过配额，合成一个原子步骤（PR #312 CR9）。
+ *
+ * 旧写法是 `assertAiQuota()` 之后 `createAiAnalysisJob()`：两步之间没有互斥，
+ * 一波并发请求读到同一份「还有名额」的旧账本，上限 8 照样能放进 11 个任务。
+ * 现在判定与 `queued` 行写入在同一把锁的同一个事务里——任务行本身就是占位。
+ * 超限时抛 `AiQuotaError`（路由渲染为 429 + Retry-After），事务回滚，不落任务行。
+ */
+export async function reserveAiAnalysisJob(input: AiJobCreateInput): Promise<number> {
+  const db = getMysqlDb();
+  return runInAiAdmission(db, async (tx) => {
+    await checkAiQuotaInAdmission(tx, input.createdBy ?? null);
+    return createAiAnalysisJob(input, tx);
+  });
 }
 
 /** 将任务入队执行（fire-and-forget，调用方负责 catch 日志）。 */

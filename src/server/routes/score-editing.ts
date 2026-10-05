@@ -116,13 +116,12 @@ router.get(
     return;
   }
 
-  // 仅持有题块级授权的教师不得读取整卷详情（见 isBlockedToOwnGradingBlocks 的语义）
+  // 仅持有**题块级阅卷授权**的教师不得读取整卷详情（CR11：没有任何阅卷授权的只读教师不受此门约束，
+  // 其读取权由上面的 GRADE_READ + 两个查看门决定）
   const blockScope = await isBlockedToOwnGradingBlocks(req.user, examId);
   if (blockScope !== null) {
     res.status(403).json({
-      message: blockScope.length === 0
-        ? "权限不足：你在这场考试没有被授权的题块，无法查看整卷成绩详情"
-        : "权限不足：你仅有题块级阅卷授权，请从题块网阅界面查看，整卷成绩详情需要整卷授权"
+      message: "权限不足：你仅有题块级阅卷授权，请从题块网阅界面查看，整卷成绩详情需要整卷授权"
     });
     return;
   }

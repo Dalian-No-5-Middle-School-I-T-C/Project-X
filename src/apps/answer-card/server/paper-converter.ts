@@ -171,12 +171,12 @@ export interface StoredPaperPage {
   bytes: number;
 }
 
+/**
+ * 刚写盘的文件实测大小。读不出来就抛错：这一数字是累计容量闸门的**唯一依据**
+ * （PR #312 CR14 用它替代按输入体积估算），静默算成 0 等于让越界的写入蒙混过关。
+ */
 async function sizeOf(filePath: string): Promise<number> {
-  try {
-    return (await stat(filePath)).size;
-  } catch {
-    return 0;
-  }
+  return (await stat(filePath)).size;
 }
 
 /** 删除本次写入的文件（忽略不存在/无权删除的项）；用于失败回滚（安全 R14）。 */

@@ -149,8 +149,10 @@ import {
 import {
   makeGate, getVisibleExamIds, requireExamAccess,
   validateExamIdsAccess, setAuthEnforced, hasViewPermission, makeViewPermissionGate, isTeacherPermittedForWholeExam,
-  requirePermissionCompat, requireWholeExamGradingAccess, canManageExamOrganization, hasExamOrganizationAffinity
+  requirePermissionCompat, requireWholeExamGradingAccess, canManageExamOrganization, hasExamOrganizationAffinity,
+  canGradeBlock, isExamSoftDeleted
 } from "./middleware";
+import { getAssignedStudentIdSet, isClaimableForAssignedSet } from "../../../server/services/ReviewPoolService";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
 import { paperRoutes } from "./routes/paper-routes";
@@ -1709,9 +1711,17 @@ export async function createApp(): Promise<express.Express> {
     try {
       const cropId = safeId(paramValue(req.params.cropId));
       const cropRow = await getMysqlDb().get(
-        "SELECT image_path, student_id FROM answer_block_crops WHERE id = ?",
+        "SELECT image_path, student_id, exam_id, block_id, status, review_round, claimed_by FROM answer_block_crops WHERE id = ?",
         cropId
-      ) as { image_path: string; student_id: number | null } | undefined;
+      ) as {
+        image_path: string;
+        student_id: number | null;
+        exam_id: number | null;
+        block_id: string | null;
+        status: string | null;
+        review_round: number | null;
+        claimed_by: number | null;
+      } | undefined;
       const targetPath = cropRow?.image_path ?? await getAnswerBlockCropFile(cropId);
       if (!cropRow || !targetPath || !existsSync(targetPath)) {
         res.status(404).json({ message: "作答切块图片不存在" });
@@ -1726,6 +1736,43 @@ export async function createApp(): Promise<express.Express> {
       ) {
         res.status(403).json({ message: "权限不足" });
         return;
+      }
+      // PR #312 CR6：切块 ID 是 UUID 也不是授权。此前只有 cropGate 的权限位，
+      // 任何拿到 grade:read 的教师都能按 cropId 读别场考试、别人题块的原图。
+      if (enforceAuth && req.user && req.user.role_name === "teacher") {
+        const examId = Number(cropRow.exam_id);
+        if (!examId) {
+          res.status(403).json({ message: "权限不足" });
+          return;
+        }
+        if (await isExamSoftDeleted(examId)) {
+          res.status(404).json({ message: "作答切块图片不存在" });
+          return;
+        }
+        const visibleIds = await getVisibleExamIds(req.user);
+        if (visibleIds !== null && !visibleIds.includes(examId)) {
+          res.status(403).json({ message: "权限不足：无权访问此考试" });
+          return;
+        }
+        const blockId = String(cropRow.block_id ?? "");
+        if (blockId && !(await canGradeBlock(req.user, examId, blockId))) {
+          res.status(403).json({ message: "权限不足：你未被分配批改该题块" });
+          return;
+        }
+        // 逐生分配下仍按可阅范围收敛图片：未开评的切片外卷子读不到原图；
+        // 一旦离开首评队列（待二评/争议/已评完）本块教师都可回看，与领取/清单同一谓词
+        const assignedIds = await getAssignedStudentIdSet(examId, blockId, Number(req.user.id));
+        if (!isClaimableForAssignedSet(
+          {
+            studentId: cropRow.student_id,
+            status: cropRow.status,
+            reviewRound: cropRow.review_round,
+          },
+          assignedIds
+        ) && cropRow.claimed_by !== req.user.id) {
+          res.status(403).json({ message: "权限不足：该切块不在你的阅卷范围内" });
+          return;
+        }
       }
       res.setHeader("Content-Type", "image/png");
       res.sendFile(targetPath);
@@ -2848,6 +2895,9 @@ export async function createApp(): Promise<express.Express> {
       }
 
       let ids: number[];
+      // 安全 CR12：403 只能回显**调用者本来就给了**的标识，不能把范围外学生的姓名/学号查出来拼进消息。
+      // 走 studentNumbers 入口时用请求里的学号回显，走 studentIds 入口时用请求里的 ID 回显。
+      const numberById = new Map<number, string>();
       if (hasIds) {
         ids = [...new Set((body.studentIds as unknown[]).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
         if (ids.length === 0 && (body.studentIds as unknown[]).length > 0) {
@@ -2871,6 +2921,7 @@ export async function createApp(): Promise<express.Express> {
             return;
           }
           ids = [...new Set(rows.map((r) => r.id))];
+          for (const r of rows) if (r.student_number) numberById.set(Number(r.id), r.student_number);
         }
       }
 
@@ -2892,16 +2943,15 @@ export async function createApp(): Promise<express.Express> {
       if (ids.length > 0) {
         const outside = await findStudentsOutsideParticipantScope(
           db,
+          examId,
           { class_id: exam.class_id, grade_id: exam.grade_id },
           ids,
           await getAccessibleClassIds(req.user)
         );
         if (outside.length > 0) {
-          const rows = await db.all(
-            `SELECT id, name, student_number FROM users WHERE id IN (${outside.map(() => "?").join(",")})`,
-            ...outside
-          ) as Array<{ id: number; name: string; student_number: string | null }>;
-          const labels = rows.map((r) => r.student_number ? `${r.name}(${r.student_number})` : r.name);
+          // PR #312 CR12：回显只取调用者自己提交过的标识（学号或 ID），
+          // 原先把范围外学生的「姓名(学号)」查出来拼进消息，等于用一次拒绝换取身份。
+          const labels = outside.map((id) => numberById.get(id) ?? String(id));
           res.status(403).json({
             message: `以下学生不在本考试的应考范围内，或你不具备其所在班级的管理权限：${labels.join("、")}`,
             code: "PARTICIPANT_OUT_OF_SCOPE",
@@ -2985,7 +3035,9 @@ export async function createApp(): Promise<express.Express> {
     // 安全（R30）：错误对象里可能带着完整 URL（侧车/第三方接口失败时 message 常含请求地址），
     // 落日志前先打码凭据类查询参数。
     console.error(safeErrorForLog(error));
-    // 请求级上传预算（R28）已经给出 413 并销毁请求，随后 multer 抛出的断流错误不再改写响应
+    // 请求级上传预算（R28）已经给出 413 并销毁请求，随后 multer 抛出的断流错误不再改写响应。
+    // 已经结束/已销毁的响应连 `end()` 都不能调：那是对写完的 writable 再写一次，只会得到 write-after-end。
+    if (res.writableEnded || res.destroyed) return;
     if (res.headersSent) { res.end(); return; }
     // 上传类错误映射：multer 超限应 413、其它上传错误 400，而不是 500
     if (error && typeof error === "object" && (error as any)?.name === "MulterError") {

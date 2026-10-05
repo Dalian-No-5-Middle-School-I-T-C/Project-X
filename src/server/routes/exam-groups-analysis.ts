@@ -7,9 +7,7 @@ import { competitionRank } from "../../shared/ranking";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
 import { getAnalysisThresholds } from "../services/analysisConfig";
 import { decryptField } from "../lib/field-crypto";
-import { createAiAnalysisJob, enqueueAiAnalysisJob, getLatestAiAnalysisJob } from "../services/aiAnalysisJobs";
-// 安全（R11）：AI 计费与并发配额闸门
-import { assertAiQuota } from "../services/aiQuota";
+import { enqueueAiAnalysisJob, getLatestAiAnalysisJob, reserveAiAnalysisJob } from "../services/aiAnalysisJobs";
 import type { AiJobCreateResponse } from "../../shared/types";
 import { EXAM_NOT_SOFT_DELETED_SQL, GROUP_MEMBER_NOT_SOFT_DELETED_SQL, makeGroupViewPermissionGate } from "../../apps/answer-card/server/middleware";
 import {
@@ -234,11 +232,9 @@ router.post("/ai-analysis", requireReadableGroup, requireGroupViewCharts, async 
       // api_key 已加密存储（F-7），透传前解密
       providerOverride = { provider_type: prov.provider_type, base_url: prov.base_url, api_key: decryptField(prov.api_key) ?? "" };
     }
-    // 安全（R11）：与单场考试分析同源的配额闸门，放在建任务之前；
-    // AiQuotaError 经 next(error) 渲染为 429 + Retry-After。
-    await assertAiQuota(getMysqlDb(), req.user?.id ?? null);
-    // 建议 5：先建任务立即返回 jobId，后台串行队列执行
-    const jobId = await createAiAnalysisJob({
+    // 安全（R11 + PR #312 CR9）：与单场考试分析同源的配额闸门，判定与任务行写入在同一临界区内；
+    // AiQuotaError 经 next(error) 渲染为 429 + Retry-After，超限时不落任务行。
+    const jobId = await reserveAiAnalysisJob({
       groupId,
       model: typeof req.body?.model === "string" ? req.body.model : undefined,
       providerOverride,

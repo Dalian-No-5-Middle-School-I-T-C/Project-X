@@ -10,7 +10,7 @@
  */
 
 // 安全（R20）：所有出站呼叫统一走带超时 + 并发闸门的封装，不再裸用 fetch
-import { wechatFetch } from "./wechatThrottle";
+import { wechatFetch, type WechatFetchResponse } from "./wechatThrottle";
 import { describeWechatLimits } from "../../shared/wechatLimits";
 
 type WechatSessionResponse = {
@@ -127,7 +127,7 @@ export function logWechatSubscriptionStatus(): void {
   console.log(`[wechat] 成绩发布订阅推送已启用 (miniprogram_state=${miniprogramState}, page=${page})`);
 }
 
-async function readWechatJson<T>(response: globalThis.Response): Promise<T> {
+async function readWechatJson<T>(response: WechatFetchResponse): Promise<T> {
   if (!response.ok) {
     throw new WechatApiError(`WeChat API request failed with status ${response.status}`, null);
   }

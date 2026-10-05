@@ -11,9 +11,8 @@ import { getMysqlDb, buildUpsertSQL } from "../../../../server/db";
 import { AnalysisRepository } from "../../../../server/repositories/AnalysisRepository";
 import { KnowledgePointRepository } from "../../../../server/repositories/KnowledgePointRepository";
 import { analysisCache } from "../../../../server/services/analysisCache";
-import { createAiAnalysisJob, enqueueAiAnalysisJob, getAiAnalysisJobWithCreator, getLatestAiAnalysisJob } from "../../../../server/services/aiAnalysisJobs";
-// 安全（R11）：AI 计费与并发配额闸门
-import { assertAiQuota } from "../../../../server/services/aiQuota";
+import { enqueueAiAnalysisJob, getAiAnalysisJobWithCreator, getLatestAiAnalysisJob, reserveAiAnalysisJob } from "../../../../server/services/aiAnalysisJobs";
+// 安全（R11 + PR #312 CR9）：AI 计费与并发配额——判定与占位在同一临界区内完成
 import { suggestForCard } from "../../../../server/services/knowledgeSuggester";
 import { ApiError } from "../../../../server/api-error";
 import { numberArray, optionalPositiveNumber } from "../helpers";
@@ -790,13 +789,11 @@ router.post("/exams/:examId/ai-analysis", requireExamAccess, requireViewCharts, 
       };
     }
 
-    // 安全（R11）：任务一旦入队就会真的打向模型，配额闸门必须放在「建任务之前」。
-    // 抛出的 AiQuotaError 由下面的 catch → next(error) 交给全局错误处理，
-    // 渲染为 429 + Retry-After。
-    await assertAiQuota(getMysqlDb(), req.user?.id ?? null);
-
-    // 建议 5：先建任务立即返回 jobId，后台串行队列执行（不再同步阻塞最长 120s）
-    const jobId = await createAiAnalysisJob({
+    // 安全（R11 + PR #312 CR9）：配额判定与任务行写入必须落在同一个临界区里。
+    // 分成「先查配额、再建任务」两步时，一波并发请求读到的是同一份旧账本，
+    // 上限 8 的名额能放进 11 个任务。超限时事务回滚、不落任务行，抛出的 AiQuotaError
+    // 由下面的 catch → next(error) 交给全局错误处理，渲染为 429 + Retry-After。
+    const jobId = await reserveAiAnalysisJob({
       examId,
       classId,
       model: typeof req.body?.model === "string" ? req.body.model : undefined,
