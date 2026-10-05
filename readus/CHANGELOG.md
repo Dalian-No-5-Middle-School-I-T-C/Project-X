@@ -558,9 +558,14 @@ Electron 主进程、TWAIN 桥接子进程、答题卡识别器子进程。共�
 > ① **v57 已删除并永久空置**：原「以 `score_published` 为准把 `status` 推回 `closed`」把主线允许的合法状态当脏数据改写（阅卷期间可先公布部分成绩，公布接口本就接受 `status IN ('grading','closed')`）。实测升级后再次扫描入库直接报「答题卡未关联可阅卷的考试，成绩未入库」，因为 `scannerExam.ts:9` 的取考试条件会过滤 `closed`。展示层错位早由 `toExamStatus()` 的发布标志优先解决，不需要改数据。
 > ② **双面扫描页码被改坏**：原 B13 修法「已有页数 + index + 1」把偏移按**图片**累加，而 native 的 `page` 是**物理纸张号**（`twain_controller.cpp:473`/`:513` 正反写同一个 `pageNum`），两份双面卷的分组从 `[0,0,1,1]` 变成 `[0,1,2,3]`，正反面被拆到相邻两张纸上，学号继承与完整性校验随之失效。现改为「偏移按纸累加」，见 `scanPages.ts:assignScanRecordPageNums`。
 > ③ **撤回路径的嵌套事务**：`withdraw()` 收到的恒为调用方事务适配器，再开 `transaction()` 在 SQLite 抛 `cannot start a transaction within a transaction`、在 MariaDB 会对 `PoolConnection` 调用不存在的 `getConnection()`；实测原有 `scripts/scanner-batch-results-smoke.ts` 主线通过、返修前在重复卷接口 **500（本应 409）**。现合并为传入适配器上的单条 UPDATE，原子性由外层事务保证。另更正本人此前的说法：主线 `withdraw()` 开头早已调用 `markScoreMutated()`，不存在「漏撤公布」。
-> ④ **「一人一班」的全量删除会抹掉历史班级**：写入路径与 v58 迁移都无条件 `DELETE FROM class_students WHERE student_id = ?`，而归档班级的关联是刻意保留的历史关系（`verify-class-archive.ts:84` 就断言归档后该行仍在）。现统一为只清「当前归属」（班级与其年级均未归档），见 `activeClassScope.ts:clearActiveStudentClassLinks`。
+> ④ **「一人一班」的全量删除会抹掉历史班级**：写入路径与 v58 迁移都无条件 `DELETE FROM class_students WHERE student_id = ?`，而归档班级的关联是刻意保留的历史关系（`verify-class-archive.ts:84` 就断言归档后该行仍在）。当时的收窄方案是只清「当前归属」（`clearActiveStudentClassLinks`）；**该方案已被二次评审 ⑦ 进一步推翻**——在读多班关联同样不得清，写入侧改为纯增量、v58 停用删除，函数已移除。
 > ⑤ **60 秒默认超时没进安装包**：只改了 `twain_controller.hpp`，而两个随包 `resources/native/win-{ia32,x64}/scanner-bridge.exe` 与主线逐字节相同，打包链路不重编扫描桥且优先使用这些二进制 → 现场仍跑旧 exe 的 15s。现由服务端调用链恒定传 `--page-timeout-ms`（已检出两个 exe 内含该开关字串，故无需重编译即可生效）。
 > ⑥ **UCRT 查找路径拼错**：`findUcrtDir()` 把 `Redist\ucrt\DLLs` 的第一层（其实是 `x64`/`x86`/`arm` 架构目录）当 SDK 版本目录，再追加一次架构去找 `DLLs\x86\x86` 这种不存在的路径，返回 null 后只能回退系统目录——而 System32 只有 `ucrtbase.dll`、没有 15 个转发桩，正好补不齐第 2 条要解决的问题。现同时探测 `Redist\<版本>\ucrt\DLLs\<arch>` 与 `Redist\ucrt\DLLs\<arch>` 两种真实布局，并按完整性（`ucrtbase.dll` + 15 个 `api-ms-win-crt-*`）筛目录。
+>
+> **二次评审返修（2026-10-03，针对 #304/#305/#308 三 PR 复核的 3 条发现）**：
+> ⑦ **[P1]「一人一个在读班」与 #308 明确保留多班成员的行为冲突**：v58 迁移与加入班级/重导入/调班写入仍把在读关联收缩成一条，会把合法的多班在读成员当脏数据删除（评审实测：执行 v58 后同一学生的两条在读班级关联变成一条）。现放弃该不变量：v58 **停用删除（号位保留，与 v57 同款占号注释）**；`addStudent`/`addStudents` 与重导入改为**纯增量** INSERT IGNORE，`moveStudent`（显式调班）只移除原班关联；`activeClassScope.ts` 的 `clearActiveStudentClassLinks` 随之删除。多行关联的归班歧义全部由读取侧口径消解（见 ⑧⑨）。
+> ⑧ **[P2] 成绩表和导出的去重仍会选中归档旧班**：`getScoreTableData`/`getExportData` 按 `c.id ASC` 取每生首行，已转入新班的学生命中 id 更小的归档旧班，未筛选成绩表与导出显示旧班及其班排（评审实测：旧班班排 2，筛选新班才是 1）。排序键改为 `DISPLAY_CLASS_ORDER`：**在读班级优先**（班级与年级均未归档）→ `joined_at` 最新 → 同刻取 `class_id` 最大；学生关联全部归档时回落最新归档归属，毕业班级的历史导出仍有班级可看。班排仍按各班完整成员计算。修复落在 #308 分支（缺陷由其引入），本分支经合并继承。
+> ⑨ **[P2] 「当前班级」查询没有排除归档关系**：`CURRENT_CLASS_SUBQUERY` / `CURRENT_CLASS_JOIN_SUBQUERY`、大考归班两处排序与逐题下钻展示班，原只按 `joined_at DESC, class_id DESC` 选取——加入时间相同且归档班 id 更大时会选中归档班，学生成长曲线的班均分因此取到归档班（评审实测：应为 30 显示 73.3）。现统一为「在读优先（班级与其年级均未归档）→ joined_at 最新 → class_id 最大」，与 ⑧ 的展示班级同优先级。
 
 ### 1. 扫进 100 张只显示 1 份（双因叠加）
 - **成因 A（页间超时过短）**：`twain_controller.hpp` 的 `pageTimeoutMs` 默认 **15000ms**，而 UI「等纸超时」留 0 时整条链路回落到该值。300/600dpi 的 ADF 页间机械进纸 + 高分辨率传输常超过 15s，第 2 页起 `waitForState(6)` 提前超时 → 每会话恒 `pages=1`（日志中 `pages=` 只出现过 `1`）。**修复（返修后）**：默认值改由**服务端调用链恒定给出**——`scanner/index.ts` 的 `normalizePageTimeoutMs()` 把缺省/非法/越界一律兜底为 `PAGE_TIMEOUT_DEFAULT_MS = 60_000` 并始终传 `--page-timeout-ms`；`twain_controller.hpp` 的 60s 只作为重编译后的同源默认值保留。之所以不能只改头文件：随包的 `resources/native/win-{ia32,x64}/scanner-bridge.exe` 是预编译二进制、打包链路不重编它，而两个 exe 内都检得到 `--page-timeout-ms` 开关，显式传参无需重编译即可生效。仍可经 UI 覆盖。
@@ -581,7 +586,7 @@ Electron 主进程、TWAIN 桥接子进程、答题卡识别器子进程。共�
 
 ### 5. 学生名单回到调班前的班级
 - 根因：`class_students` 主键是 `(class_id, student_id)`，**一人可多行**。各写入路径（重新导入 / 加入班级）只 `INSERT IGNORE` 新关联、**从不删旧行**，于是调班后旧班关联残留；而成绩分析部分查询按 `MIN(class_id)`（最旧）取班，必然命中旧班。与下钻详情的 `joined_at DESC`（最新）口径不一致，导致同一学生在不同页面显示不同班级。（另已排除「考号重复」：`users.student_number` 为 UNIQUE，且现场确认无多班就读学生。）
-- **修复**：① `AnalysisRepository` 新增 `CURRENT_CLASS_SUBQUERY` / `CURRENT_CLASS_JOIN_SUBQUERY` 统一「当前班 = `joined_at DESC, class_id DESC`」，并替换全部 `MIN(class_id)` 站点（含 `ScoreRepository` 成长曲线），两处排序改为 `cs.joined_at DESC`；② `ClassRepository.addStudent/addStudents` 与 `UserRepository` 重导入路径**先清该生的当前分班关联再绑新班**，恢复「当前归属一人一行」不变量，`moveStudent` 同样归一。**返修收紧**：清理范围由「该生全部关联」改为「班级与其年级均未归档的当前归属」（`activeClassScope.ts:clearActiveStudentClassLinks`）——归档班级的关联是刻意保留的历史关系，无条件全删会让「归档旧班 → 加入新班」当场抹掉学生读过的历史班级，与本仓库既有的归档断言直接矛盾；③ 新增迁移 **v58**（原 v54）清理存量残留，同样只作用于当前归属（保留 `joined_at` 最新行、同刻取 `class_id` 最大，与查询口径一致），SQLite/MariaDB 双方言各一版。多班/同名班的读取侧防御由 #308 一并覆盖（`getScoreTableData` 与 `getExportData` 双路）。
+- **修复（二次评审后定稿）**：① `AnalysisRepository` 新增 `CURRENT_CLASS_SUBQUERY` / `CURRENT_CLASS_JOIN_SUBQUERY` 统一归班口径，并替换全部 `MIN(class_id)` 站点（含 `ScoreRepository` 成长曲线）；口径为**「在读优先（班级与年级均未归档）→ joined_at 最新 → 同刻取 class_id 最大」**，全部关联归档时回落最新归档归属（见二次评审 ⑨，先前只按 `joined_at DESC` 会在同刻被 id 更大的归档班抢先）；② 写入侧**不再删除任何班级关联**（见二次评审 ⑦）：`ClassRepository.addStudent/addStudents` 与 `UserRepository` 重导入为纯增量 INSERT IGNORE（多班在读合法），`moveStudent` 只移除原班关联，显式退班走 `removeStudent`；③ 原定的清理迁移 **v58 停用删除**（SQLite/MariaDB 双侧均改为占号注释，号位保留）——多班在读成员合法（#308 按学生去重排名、保留各班完整成员），调班残留与有意的多班关联在数据上不可区分，不得按「一人一班」批量删除；成绩表/导出的展示班级去重见二次评审 ⑧（`DISPLAY_CLASS_ORDER`，#308 分支修复、本分支继承）。
 
 ### 6. 学校网络传不到服务器
 - 判定为**现场网络问题**（非代码缺陷），未改代码。附带发现上传 `413 File too large` 会触发约 40 次**无上限重试**，已记录为后续待办。
@@ -591,18 +596,18 @@ Electron 主进程、TWAIN 桥接子进程、答题卡识别器子进程。共�
 
 ### 验证
 - `npm run typecheck` 全绿。
-- v58（原 v54）去重 SQL 与 `CURRENT_CLASS_SUBQUERY` 两种形态均以隔离 x64 better-sqlite3 实测通过；B13 归组用例反向对照确认旧行为复现 bug、新行为修复。
+- `CURRENT_CLASS_SUBQUERY` / `DISPLAY_CLASS_ORDER` 两种口径形态均以隔离 x64 better-sqlite3 实测通过；B13 归组用例反向对照确认旧行为复现 bug、新行为修复。（v58 自二次评审起停用删除，见返修 ⑦。）
 - 返修新增/扩展的回归（2026-10-03，本机 SQLite 全绿，并已接入 CI `typecheck-and-test`）：
   - `npm run verify:scan-page-numbering`——双面共享纸张号、跨进程按纸累计、单面逐张递增、无效纸张号兜底，并含「按图片下标递增会把分组拆成 `[0,1,2,3]`」的反向对照与调用点静态接线检查。
   - `npm run verify:scanner-page-timeout`——缺省/非法值兜底 60s、合法区间透传、调用链恒定传参，并**直接扫描两个随包 exe 确认内含 `--page-timeout-ms` 开关**（这是「无需重编译也能生效」的证据），同时断言 `twain_controller.hpp` 默认值与服务端同源。
   - `npm run verify:grading-published-exam`——重复执行全部迁移后 `grading + score_published=1` 的考试状态不变、仍被 `resolveScannerExam` 选为入库目标；并静态校验两套方言迁移版本号无重复、v57 在两侧均空置、强制结考语句已彻底移除。
-  - `npm run verify:class-archive`（新增 `--mariadb` 变体并接入 CI 的 `mariadb-test` 作业）——归档旧班后把学生加入新班、`moveStudent`、以及重跑 v58 三条路径都**必须保留归档班级的历史关联**，同时维持当前归属一人一行。
+  - `npm run verify:class-archive`（新增 `--mariadb` 变体并接入 CI 的 `mariadb-test` 作业）——归档旧班后把学生加入新班、`moveStudent`、以及重跑 v58 的路径都**必须保留归档班级的历史关联**；同时断言在读多班关联不被清空（加入第二个在读班两条都保留）、`moveStudent` 只移除原班、v58 重跑不删任何行、「当前班级」在归档班 id 更大且同刻时仍选中在读班（二次评审 ⑦⑨）。
   - `npm run verify:stage-vc-runtime`——用临时目录搭出 SDK 的两种真实布局，断言 x64/ia32 分别命中 `DLLs\x64` / `DLLs\x86`（而非旧拼法的 `DLLs\x86\x86`）、多版本取最新、缺转发桩的目录不采用。
   - `scripts/verify-ladder-students.ts`（随 #308 一并进入本分支）改为**双方言**：默认仍是临时 SQLite，`--mariadb` 走与归档套件相同的空库门禁；另加夹具自检（多班学生在库里必须真的落成 5 行关联），避免断言在空场景假绿。
   - `npm run verify:scanner-batch-results`——重复卷/重试撤回路径返修前 **500**、返修后回到 **409**（已做反向对照：把嵌套事务写回去即精确复现 500）。
 - **MariaDB 实跑（2026-10-03 追加，更正上一条「本机无 MariaDB」的说法）**：本机装有 MariaDB 12.3.2。已用**独立临时实例**（专用 datadir、`127.0.0.1:13306`、一次性 `projectx_ci` / `projectx_class_archive_test` / `projectx_ladder_test` 三库，跑完销毁；只复用本机已安装的二进制，既有的 MariaDB 服务与其中数据未读取、未写入）把 MariaDB 侧一次补齐：
   - `npm run verify:mariadb` 九段全通过；`schema_migrations` 落库 43 行、`COUNT(*) = COUNT(DISTINCT version)`，50–58 区间实到 50/51/52/53/54/55/56/58——**v57 空置与「不撞号」在真实 MariaDB 上得到确认**。
-  - `npm run verify:class-archive:mariadb` 全通过，含「重跑 v58 去重只作用于当前归属、归档班级的历史关联保留」。
+  - `npm run verify:class-archive:mariadb` 全通过（针对二次评审**前**的「只清当前归属」行为；该行为已被 ⑦ 推翻，MariaDB 侧结论以本轮之后的 CI `mariadb-test` 作业为准）。
   - `npx tsx scripts/verify-ladder-students.ts --mariadb`（#308 评审 P1 新增的双方言变体）全通过。
   - 两条根因取证：在真 MariaDB 的已开启事务里再调 `transaction()` → `TypeError: this.executor.getConnection is not a function`（CR②，与 SQLite 侧的 `cannot start a transaction within a transaction` 各对应一条失败路径）；未设 `dateStrings` 时 `DATETIME` 返回 JS `Date`、`.slice(0,10)` 抛 `v.slice is not a function`，设 `dateStrings: true` 后返回 `'2026-10-03'` 字符串（#305 修复的机制在真库上成立）。
   - **版本差异不可忽略**：本机 12.3.2 比 CI 的 `mariadb:10.11` 新，优化器与部分 SQL 行为不同源，CI 仍是最终裁判。这次实跑排除的是「MariaDB 分支从未执行过」这一档风险，不替代 CI 作业。

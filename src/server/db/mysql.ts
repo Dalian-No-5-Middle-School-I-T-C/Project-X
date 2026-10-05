@@ -1038,33 +1038,13 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
   // 阅卷期间可以先公布部分成绩。改成 closed 后该考试不再接受扫描入库，
   // 展示层口径已由 `toExamStatus()` 的发布标志优先解决，无需改数据。留注释占号避免复用歧义。
 
-  // v58: 清理存量「一名学生在**当前归属**上有多份关联」残留（与 SQLite v58 对齐）
-  // **只清理当前归属**：归档（班级或其所属年级归档）的关联是刻意保留的历史关系
-  // （verify-class-archive.ts:84 断言归档后 class_students 行仍在），全表去重会把学生读过的
-  // 历史班级一并抹掉。「当前归属」= 班级与年级均未归档，与
-  // services/activeClassScope.ts:clearActiveStudentClassLinks 的写入端口径一致。
-  // 保留策略：在当前归属里保留 joined_at 最新的一行（同刻并列取 class_id 最大者），
-  // 与 CURRENT_CLASS_SUBQUERY 口径一致。
-  // MariaDB 不允许直接在 DELETE 的子查询里引用被删表，故用派生表包一层。
-  mariadbMigrations.push({ version: 58, name: "dedupe-class-students", sqls: [
-    `DELETE cs FROM class_students cs
-     JOIN classes c ON c.id = cs.class_id
-     JOIN grades gc ON gc.id = c.grade_id
-     JOIN (
-       SELECT student_id,
-              (SELECT cs_keep.class_id FROM class_students cs_keep
-                 JOIN classes c_keep ON c_keep.id = cs_keep.class_id
-                 JOIN grades g_keep ON g_keep.id = c_keep.grade_id
-                WHERE cs_keep.student_id = cs_all.student_id
-                  AND c_keep.archived_at IS NULL AND g_keep.archived_at IS NULL
-                ORDER BY cs_keep.joined_at DESC, cs_keep.class_id DESC LIMIT 1) AS keep_class_id
-       FROM (SELECT DISTINCT cs2.student_id FROM class_students cs2
-               JOIN classes c2 ON c2.id = cs2.class_id
-               JOIN grades g2 ON g2.id = c2.grade_id
-              WHERE c2.archived_at IS NULL AND g2.archived_at IS NULL) cs_all
-     ) k ON k.student_id = cs.student_id AND cs.class_id <> k.keep_class_id
-     WHERE c.archived_at IS NULL AND gc.archived_at IS NULL`,
-  ] });
+  // v58：**故意留空（不执行任何删除）**，与 SQLite v58 同号注释对齐。原方案按
+  // 「保留 joined_at 最新一行」清理学生在读班级的多份关联，但多班在读成员本身是
+  // 合法状态（#308 排名/导出按学生去重并保留各班完整成员），调班残留与有意的
+  // 多班关联在数据上不可区分，删除会破坏多班场景（评审实测：执行后同一学生的
+  // 两条在读关联变成一条）。归班歧义由读取侧「在读优先 → joined_at 最新 →
+  // class_id 最大」口径消解（AnalysisRepository 的 CURRENT_CLASS_* 与
+  // DISPLAY_CLASS_ORDER）；显式调班走 moveStudent 只移除原班关联。留注释占号。
 
   // v59: 答题卡保存计数器（与 SQLite v59 对齐，安全 R45）。导出 PDF 要把打印件与阅卷坐标布局
   // 绑到同一次保存上；updated_at 是秒级精度、且 PUT 返回的 updatedAt 来自 normalizeCard 的

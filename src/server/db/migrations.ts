@@ -1290,36 +1290,15 @@ MIGRATIONS.push({ version: 56, name: "block-title-locked", up(db) {
 // 「已公布仍显示阅卷中」属展示层口径，由 `toExamStatus()` 的发布标志优先已修复，无需改数据。
 // 留此注释占号，避免后续复用同号造成判重歧义。
 
-// v58: 清理存量「一名学生在**读班级**上有多份关联」残留，恢复「当前归属一人一行」不变量。
-// 历史缺陷：UserRepository 重新导入已存在学生、ClassRepository.addStudent(s) 只 INSERT IGNORE
-// 新关联、从不删除旧行，导致调班后 class_students 残留旧班行；成绩分析按 MIN(class_id) 归班时
-// 会命中旧班，表现为「名单回到调班前的班级」。
-// **只清理当前归属**：归档（班级本身或其所属年级归档）的关联是刻意保留的历史关系
-// （verify-class-archive.ts:84 明确断言归档后 `class_students` 行仍在），全表去重会把
-// 学生读过的历史班级一并抹掉——评审实测复现的「归档旧班 → 加入新班，旧班关联立即消失」。
-// 「当前归属」= 班级与年级均未归档，与 services/activeClassScope.ts:clearActiveStudentClassLinks
-// 的写入端口径一致；迁移为避免依赖可变模块，此处内联展开同一条件。
-// 保留策略：在当前归属里保留 joined_at 最新的一行（同刻并列取 class_id 最大者），
-// 与 CURRENT_CLASS_SUBQUERY 口径一致。
-MIGRATIONS.push({ version: 58, name: "dedupe-class-students", up(db) {
-  db.exec(`DELETE FROM class_students
-           WHERE class_id IN (
-             SELECT c.id FROM classes c
-             JOIN grades g ON g.id = c.grade_id
-             WHERE c.archived_at IS NULL AND g.archived_at IS NULL
-           )
-             AND EXISTS (
-               SELECT 1 FROM class_students newer
-               JOIN classes nc ON nc.id = newer.class_id
-               JOIN grades ng ON ng.id = nc.grade_id
-               WHERE nc.archived_at IS NULL AND ng.archived_at IS NULL
-                 AND newer.student_id = class_students.student_id
-                 AND (
-                   newer.joined_at > class_students.joined_at
-                   OR (newer.joined_at = class_students.joined_at AND newer.class_id > class_students.class_id)
-                 )
-             )`);
-} });
+// v58：**故意留空（不执行任何删除）**。原方案是清理「一名学生在读班级上有多份关联」，
+// 按「保留 joined_at 最新一行」收缩当前归属；但**多班在读成员本身是合法状态**——
+// #308 的排名/导出口径明确按学生去重人数、同时保留各班完整成员，调班残留与有意
+// 加入的第二个在读班在数据上不可区分，把后者当脏数据删除会破坏多班场景
+// （评审实测：执行后同一学生的两条在读班级关联变成一条）。
+// 多行关联的归班歧义改由**读取侧**统一消解：当前班级/展示班级按「在读优先
+// （班级与年级均未归档）→ joined_at 最新 → class_id 最大」选取
+// （repositories/AnalysisRepository.ts 的 CURRENT_CLASS_* 与 DISPLAY_CLASS_ORDER），
+// 显式调班走 moveStudent 只移除原班关联。号位保留，避免复用造成判重歧义。
 
 // v59: 答题卡保存计数器（安全 R45）。前端导出 PDF 时需要把「打印出来的这张卡」和「阅卷时用的坐标布局」
 // 绑到同一个版本上，否则自动保存竞态会让老师拿到旧版式的纸、学生答的却是新版式的格子。
