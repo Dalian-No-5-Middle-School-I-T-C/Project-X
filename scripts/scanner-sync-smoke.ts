@@ -91,7 +91,10 @@ function sleep(ms: number) { return new Promise<void>((r) => setTimeout(r, ms));
 async function main() {
   // Dynamic import after mocks
   const mod = await import("../src/apps/answer-card/client/lib/scannerSync.ts");
-  const { fetchCardsSynced, fetchCardByIdSynced, fetchExamGroupsSynced, fetchExamsSynced, fetchGradesSynced, startPolling, importCardLocally } = mod as any;
+  const { fetchCardsSynced, fetchCardDetailSynced, fetchExamGroupsSynced, fetchExamsSynced, fetchGradesSynced, startPolling, importCardLocally } = mod as any;
+  // 安全 R35 之后卡详情只暴露 fetchCardDetailSynced（必须交回 source/stale），旧名已删除
+  assert.strictEqual(typeof fetchCardDetailSynced, "function", "fetchCardDetailSynced 应存在（R35 之后不再有 fetchCardByIdSynced）");
+  assert.strictEqual(mod.fetchCardByIdSynced, undefined, "旧的 fetchCardByIdSynced 不应复活（它会丢掉来源信息）");
 
   console.log("== Scenario 1: 未配 serverUrl → local 分支 ==");
   {
@@ -112,13 +115,13 @@ async function main() {
   {
     store.clear();
     // serverUrl with trailing slash and spaces to test trim
-    store.set("projectx_server_url", "http://remote.test/ ");
+    store.set("projectx_server_url", "https://remote.test/ ");
     // store api key as JSON {v:1,k:...}
     store.set("projectx_api_key", JSON.stringify({ v: 1, k: "test-key-123", exp: Date.now() + 1e9 }));
     let sawRemote = false;
     let sawKey = "";
     fetchHandler = async (url, init) => {
-      if (url.startsWith("http://remote.test")) {
+      if (url.startsWith("https://remote.test")) {
         sawRemote = true;
         assert.ok(url.includes("/api/scanner/sync/cards"), `remote url should use /api/scanner/sync prefix got ${url}`);
         sawKey = getHeader(init, "X-Api-Key") ?? "";
@@ -137,12 +140,12 @@ async function main() {
   console.log("== Scenario 3: remote 失败回退 local ==");
   {
     store.clear();
-    store.set("projectx_server_url", "http://remote.test");
+    store.set("projectx_server_url", "https://remote.test");
     store.set("projectx_api_key", "test-key-123"); // raw string format
     let remoteHit = 0;
     let localHit = 0;
     fetchHandler = async (url, init) => {
-      if (url.startsWith("http://remote.test")) {
+      if (url.startsWith("https://remote.test")) {
         remoteHit++;
         // simulate network failure
         throw new Error("remote down");
@@ -162,7 +165,7 @@ async function main() {
     // also test remote returns 500 → fallback
     remoteHit = 0; localHit = 0;
     fetchHandler = async (url) => {
-      if (url.startsWith("http://remote.test")) {
+      if (url.startsWith("https://remote.test")) {
         remoteHit++;
         return mockResponse({ message: "server error" }, { status: 500, ok: false });
       }
@@ -176,32 +179,62 @@ async function main() {
     console.log("  ✓ scenario 3b (500) passed");
   }
 
-  console.log("== Scenario 4: fetchCardByIdSynced 404 抛带 status=404 ==");
+  console.log("== Scenario 4: fetchCardDetailSynced 404 抛带 status=404，且必须交出来源（R35） ==");
   {
     store.clear();
-    // without remote, local 404
+    // 未配远端：本机 404 直接抛
     fetchHandler = async () => mockResponse({ message: "not found" }, { status: 404, ok: false });
     let threw = false;
     try {
-      await fetchCardByIdSynced("missing-id");
+      await fetchCardDetailSynced("missing-id");
     } catch (e: any) {
       threw = true;
       assert.strictEqual(e.status, 404, `expected status 404 got ${e.status}`);
-      assert.ok(e.message?.toLowerCase().includes("not found") || e.message?.includes("404") || true, `message ${e.message}`);
     }
-    assert.ok(threw, "should throw 404");
+    assert.ok(threw, "本机 404 应抛出");
 
-    // with remote, both remote and local 404 → still 404
-    store.set("projectx_server_url", "http://remote.test");
-    fetchHandler = async (url) => mockResponse({ message: "not found" }, { status: 404, ok: false });
+    // 已配远端：远端 404 是「权威说这卡没了」，不能拿本机旧卡顶上
+    store.set("projectx_server_url", "https://remote.test");
+    let localHit = 0;
+    fetchHandler = async (url) => {
+      if (url.startsWith("https://remote.test")) {
+        return mockResponse({ message: "not found" }, { status: 404, ok: false });
+      }
+      localHit++;
+      return mockResponse({ id: "stale-local-card" });
+    };
     threw = false;
     try {
-      await fetchCardByIdSynced("missing-id");
+      await fetchCardDetailSynced("missing-id");
     } catch (e: any) {
       threw = true;
-      assert.strictEqual(e.status, 404);
+      assert.strictEqual(e.status, 404, `远端 404 应带 status=404 got ${e.status}`);
+      assert.strictEqual(e.remoteNotFound, true, "远端 404 应带 remoteNotFound，供调用方区分「没同步」与「卡被删」");
     }
-    assert.ok(threw, "remote+local 404 should throw");
+    assert.ok(threw, "remote 404 should throw");
+    assert.strictEqual(localHit, 0, "远端 404 不应回退本机");
+
+    // 远端网络故障：允许回退本机缓存，但 source/stale 必须说实话
+    localHit = 0;
+    fetchHandler = async (url) => {
+      if (url.startsWith("https://remote.test")) throw new Error("remote down");
+      localHit++;
+      return mockResponse({ id: "cached-card" });
+    };
+    const detail = await fetchCardDetailSynced("cached-id");
+    assert.strictEqual(localHit, 1, "远端网络故障应回退本机");
+    assert.strictEqual(detail.source, "offline-cache", `来源应为 offline-cache got ${detail.source}`);
+    assert.strictEqual(detail.stale, true, "回退到缓存时 stale 必须为 true（选择页据此拦截）");
+    assert.strictEqual(detail.card?.id, "cached-card");
+
+    // 远端正常：source=remote，不得把新鲜数据标成 stale
+    fetchHandler = async (url) => {
+      if (url.startsWith("https://remote.test")) return mockResponse({ id: "fresh-card" });
+      throw new Error(`unexpected local fetch ${url}`);
+    };
+    const fresh = await fetchCardDetailSynced("fresh-id");
+    assert.strictEqual(fresh.source, "remote");
+    assert.strictEqual(fresh.stale, false, "远端返回的数据 stale 必须为 false");
     console.log("  ✓ scenario 4 passed");
   }
 
@@ -272,13 +305,13 @@ async function main() {
   console.log("== Scenario 8: remote 401/404 不回退本地（权威失败） ==");
   {
     store.clear();
-    store.set("projectx_server_url", "http://remote.test");
+    store.set("projectx_server_url", "https://remote.test");
     store.set("projectx_api_key", "bad-key");
     let remoteHit = 0;
     let localHit = 0;
     // 401 should throw, not fallback
     fetchHandler = async (url) => {
-      if (url.startsWith("http://remote.test")) {
+      if (url.startsWith("https://remote.test")) {
         remoteHit++;
         return mockResponse({ message: "无效的 API Key" }, { status: 401, ok: false });
       }
@@ -293,7 +326,7 @@ async function main() {
     // 404 for single card should throw, not fallback
     remoteHit = 0; localHit = 0;
     fetchHandler = async (url) => {
-      if (url.startsWith("http://remote.test")) {
+      if (url.startsWith("https://remote.test")) {
         remoteHit++;
         return mockResponse({ message: "答题卡不存在" }, { status: 404, ok: false });
       }
@@ -301,7 +334,7 @@ async function main() {
       return mockResponse([{ id: "localCard" }]);
     };
     let threw404 = false;
-    try { await fetchCardByIdSynced("gone-id"); } catch (e: any) { threw404 = e.status === 404; }
+    try { await fetchCardDetailSynced("gone-id"); } catch (e: any) { threw404 = e.status === 404; }
     assert.ok(threw404, "404 should throw");
     assert.strictEqual(localHit, 0, "404 single card should not fallback");
     console.log("  ✓ scenario 8 passed");
@@ -332,6 +365,54 @@ async function main() {
     try { await importCardLocally(card as any); } catch (e: any) { threw500 = e.status === 500; }
     assert.ok(threw500, "导入失败应抛 status=500");
     console.log("  ✓ scenario 9 passed");
+  }
+
+  console.log("== Scenario 10: 跨机明文 HTTP（安全 R32）→ 不发 Key、不静默回退本地 ==");
+  {
+    store.clear();
+    store.set("projectx_server_url", "http://192.0.2.10:5174");
+    store.set("projectx_api_key", JSON.stringify({ v: 1, k: "test-key-123", exp: Date.now() + 1e9 }));
+    let remoteHit = 0;
+    let localHit = 0;
+    fetchHandler = async (url) => {
+      if (url.startsWith("http://192.0.2.10")) { remoteHit++; return mockResponse([{ id: "r1" }]); }
+      localHit++;
+      return mockResponse([{ id: "local" }]);
+    };
+    let blocked: any = null;
+    try { await fetchCardsSynced(); } catch (e: any) { blocked = e; }
+    assert.ok(blocked, "跨机明文应抛错，而不是静默回退本机缓存（回退会让老师误以为同步正常）");
+    assert.strictEqual(blocked.code, "INSECURE_REMOTE_TRANSPORT_BLOCKED", `expected gate code got ${blocked.code}`);
+    assert.strictEqual(blocked.noRetry, true, "闸门错误应标记 noRetry，让上传队列按配置错误处理");
+    assert.ok(String(blocked.message).includes("https"), `错误信息应给出 https 出路: ${blocked.message}`);
+    assert.strictEqual(remoteHit, 0, "API Key 不应出进程：远端一个请求都不该收到");
+    assert.strictEqual(localHit, 0, "也不该悄悄回退本地");
+    console.log("  ✓ scenario 10a (blocked, no credential left the process) passed");
+
+    // 显式勾选该 host:port 后：同一地址恢复远端同步（出路是显式的，不是偷偷放行）
+    store.set("projectx_insecure_http_hosts", JSON.stringify(["192.0.2.10:5174"]));
+    remoteHit = 0; localHit = 0;
+    const granted = await fetchCardsSynced();
+    assert.strictEqual(remoteHit, 1, "勾选后应真的发出远端请求");
+    assert.strictEqual(granted.source, "remote");
+    console.log("  ✓ scenario 10b (explicit allowance restores sync) passed");
+
+    // 回环明文不受限：单机模式必须照旧可用
+    store.clear();
+    store.set("projectx_server_url", "http://127.0.0.1:5174");
+    store.set("projectx_api_key", "test-key-123");
+    let loopbackKey = "";
+    fetchHandler = async (url, init) => {
+      if (url.startsWith("http://127.0.0.1")) {
+        loopbackKey = getHeader(init, "X-Api-Key") ?? "";
+        return mockResponse([{ id: "loop" }]);
+      }
+      throw new Error(`unexpected local fetch ${url}`);
+    };
+    const loopRes = await fetchCardsSynced();
+    assert.strictEqual(loopRes.source, "remote");
+    assert.strictEqual(loopbackKey, "test-key-123", "回环明文照常带 Key（本地模式未被 R32 波及）");
+    console.log("  ✓ scenario 10c (loopback plaintext unaffected) passed");
   }
 
   console.log("scanner-sync-smoke: 全部通过");

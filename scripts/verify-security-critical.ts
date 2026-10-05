@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Server } from "node:http";
@@ -44,6 +45,15 @@ const wechatEnvVarsClearedHere = [
   "PROJECTX_WECHAT_TIMEOUT_MS", "PROJECTX_WECHAT_BIND_MAX_PER_HOUR",
   "PROJECTX_WECHAT_BIND_MAX_GLOBAL_PER_MINUTE", "PROJECTX_WECHAT_MAX_CONCURRENT"
 ];
+// 答题卡插图导入/上传预算（安全 R05）与媒体票据档位（安全 R30）同为三档设计，
+// 宿主机变量会污染「按默认边界」的断言，名单由各模块的 ENV_VARS 常量反向锁定。
+const cardAssetEnvVarsClearedHere = [
+  "PROJECTX_CARD_ASSET_MAX_MIB", "PROJECTX_CARD_ASSET_MAX_COUNT",
+  "PROJECTX_CARD_ASSET_TOTAL_MIB", "PROJECTX_CARD_ASSET_UPLOAD_MIB"
+];
+const mediaTicketEnvVarsClearedHere = [
+  "PROJECTX_MEDIA_TICKET_TTL_SEC", "PROJECTX_MEDIA_TICKET_MAX_PER_USER", "PROJECTX_MEDIA_TICKET_MAX_TOTAL"
+];
 for (const key of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
   "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST",
@@ -54,7 +64,9 @@ for (const key of [
   ...restoreZipEnvVarsClearedHere,
   ...paperStorageEnvVarsClearedHere,
   ...aiQuotaEnvVarsClearedHere,
-  ...wechatEnvVarsClearedHere
+  ...wechatEnvVarsClearedHere,
+  ...cardAssetEnvVarsClearedHere,
+  ...mediaTicketEnvVarsClearedHere
 ]) delete process.env[key];
 
 let passed = 0;
@@ -367,6 +379,17 @@ async function main(): Promise<void> {
     check((await middlewareResult(dualAuth, { authorization: `Bearer ${teacherToken}`, "x-api-key": "fake-key" })).status === 401, "JWT 与伪 Key 同时存在时不回退 JWT");
     check((await middlewareResult(dualAuth, { authorization: `Bearer ${studentToken}`, "x-api-key": "fake-key" })).status === 401, "学生 JWT 加伪 Key 返回 401");
     check((await middlewareResult(dualAuth, { "x-api-key": "key-wrong" })).status === 403, "错误 scope 的 Key 返回 403");
+    // 安全 R35：上传会话必须携带「扫描端正在用哪一版卡」，服务端拿自己那一版比对。
+    const { cardFingerprint, parseCardVersion } = await import("../src/shared/cardVersion");
+    const { CardRepository } = await import("../src/server/repositories/CardRepository");
+    const serverCardVersion = async (cardId: string): Promise<string> => {
+      const card = await new CardRepository().findById(cardId);
+      if (!card) throw new Error(`测试前置条件缺失：答题卡 ${cardId} 不存在`);
+      return cardFingerprint(card);
+    };
+    db.prepare("INSERT INTO answer_cards (id,title,subject,subject_label) VALUES (?,?,?,?)")
+      .run("critical-remote-card", "远程接入验收卡", "shuxue", "数学");
+    const remoteCardVersion = await serverCardVersion("critical-remote-card");
     const remoteUploadSession = await fetch(`${base}/api/scanner/upload/sessions`, {
       method: "POST",
       headers: {
@@ -375,7 +398,8 @@ async function main(): Promise<void> {
         "X-Api-Key": "key-scanner"
       },
       body: JSON.stringify({
-        cardId: "critical-card",
+        cardId: "critical-remote-card",
+        cardVersion: remoteCardVersion,
         name: "远程扫描接入验收",
         dpi: 300,
         paperSize: "A4",
@@ -394,6 +418,96 @@ async function main(): Promise<void> {
       "有效 scanner Key 可从环回来源创建远程上传会话"
     );
 
+    // ── R35：扫描端必须声明「正在用哪一版卡」，服务端拿自己那一版比对后才建会话
+    const createVersionedSession = async (cardVersion: unknown, cardId = "critical-remote-card") => {
+      const response = await fetch(`${base}/api/scanner/upload/sessions`, {
+        method: "POST",
+        headers: { Origin: scannerOrigin, "Content-Type": "application/json", "X-Api-Key": "key-scanner" },
+        body: JSON.stringify({ cardId, cardVersion, name: "R35 版本核验", dpi: 300, paperSize: "A4", pageCount: 1 })
+      });
+      const body = await response.json() as { code?: string; sessionId?: string };
+      return { status: response.status, code: body.code ?? "", sessionId: body.sessionId ?? "" };
+    };
+    const noVersion = await createVersionedSession(undefined);
+    check(noVersion.status === 400 && noVersion.code === "CARD_VERSION_REQUIRED" && noVersion.sessionId === "",
+      "不带 cardVersion 的会话请求被 400 拒绝（此前扫描端用哪一版卡服务器无从知晓）");
+    check((await createVersionedSession("")).status === 400, "空字符串 cardVersion 被 400 拒绝");
+    check((await createVersionedSession("v2.6.0")).status === 400, "非指纹格式 cardVersion 被 400 拒绝");
+    check((await createVersionedSession(remoteCardVersion.slice(0, 23))).status === 400
+      && (await createVersionedSession(remoteCardVersion + "0")).status === 400,
+      "长度不足或超出的 cardVersion 均被 400 拒绝（24 位十六进制之外一律不认）");
+    const flipped = remoteCardVersion[0] === "f" ? "0" + remoteCardVersion.slice(1) : "f" + remoteCardVersion.slice(1);
+    const mismatched = await createVersionedSession(flipped);
+    check(mismatched.status === 409 && mismatched.code === "CARD_VERSION_MISMATCH" && mismatched.sessionId === "",
+      "版本指纹对不上时返回 409（旧版卡识别出的成绩不允许入库）");
+    check((await createVersionedSession(remoteCardVersion, "critical-no-such-card")).status === 404,
+      "版本号合法但答题卡不存在时返回 404，不会被当作「版本一致」放行");
+    check((db.prepare("SELECT COUNT(*) count FROM twain_scan_sessions WHERE card_id='critical-remote-card'").get() as { count: number }).count === 1,
+      "被 R35 拒绝的请求没有留下半成品会话");
+    check(parseCardVersion(" " + remoteCardVersion.toUpperCase() + " ") === remoteCardVersion
+      && parseCardVersion("abc") === null && parseCardVersion(12345) === null && parseCardVersion(null) === null,
+      "parseCardVersion 容忍大小写与首尾空白，其余一律判非法");
+
+    // 指纹是「内容」的指纹：同一张卡两次计算一致，改答案/改布局会变，而本地导入重盖的时间戳不会
+    const remoteCardOnce = await new CardRepository().findById("critical-remote-card");
+    const fingerprintAgain = cardFingerprint(remoteCardOnce!);
+    check(fingerprintAgain === cardFingerprint(remoteCardOnce!) && fingerprintAgain === remoteCardVersion,
+      "同一张卡的指纹可重复计算，且与服务端核验用的值一致");
+    const restamped = { ...remoteCardOnce!, updatedAt: "1999-01-01 00:00:00" } as typeof remoteCardOnce;
+    check(cardFingerprint(restamped!) === remoteCardVersion,
+      "updatedAt 不参与指纹（扫描端本地导入会重盖时间戳，若参与则每次上传都会被误判为版本不一致）");
+    const editedKey = JSON.parse(JSON.stringify(remoteCardOnce!)) as typeof remoteCardOnce;
+    if (Array.isArray((editedKey as { bodyBlocks?: unknown }).bodyBlocks) && (editedKey as { bodyBlocks: unknown[] }).bodyBlocks.length > 0) {
+      ((editedKey as { bodyBlocks: Array<Record<string, unknown>> }).bodyBlocks[0]).changed = true;
+    } else {
+      (editedKey as { title?: string }).title = `${(editedKey as { title?: string }).title ?? ""}改`;
+    }
+    check(cardFingerprint(editedKey!) !== remoteCardVersion, "卡内容被改动后指纹随之改变");
+    check(cardFingerprint(editedKey!).length === 24 && /^[0-9a-f]{24}$/.test(cardFingerprint(editedKey!)),
+      "指纹为 24 位小写十六进制，可直接放进请求体与日志");
+
+    // 完成会话时再核一次：建会话之后服务器上的卡被改了，就不能把旧版结果落库
+    const completeWithVersion = async (sessionId: string, cardVersion: unknown) => {
+      const response = await fetch(`${base}/api/scanner/upload/sessions/${encodeURIComponent(sessionId)}/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Api-Key": "key-scanner" },
+        body: JSON.stringify(cardVersion === undefined ? {} : { cardVersion })
+      });
+      const body = await response.json() as { code?: string };
+      return { status: response.status, code: body.code ?? "" };
+    };
+    const versionedSession = await createVersionedSession(remoteCardVersion);
+    check(versionedSession.status === 201 && versionedSession.sessionId !== "", "版本一致的会话正常创建（201）");
+    const completeNoVersion = await completeWithVersion(versionedSession.sessionId, undefined);
+    check(completeNoVersion.status === 400 && completeNoVersion.code === "CARD_VERSION_REQUIRED",
+      "完成阶段缺少 cardVersion 同样被 400 拒绝");
+    const completeMismatch = await completeWithVersion(versionedSession.sessionId, flipped);
+    check(completeMismatch.status === 409 && completeMismatch.code === "CARD_VERSION_MISMATCH",
+      "完成阶段版本不一致返回 409，不会触发识别入库");
+    check(db.prepare("SELECT status FROM twain_scan_sessions WHERE id=?").get(versionedSession.sessionId)
+      && (db.prepare("SELECT status FROM twain_scan_sessions WHERE id=?").get(versionedSession.sessionId) as { status: string }).status !== "completed",
+      "被 R35 拦下的会话不会被标记为已完成");
+    db.prepare("DELETE FROM twain_scan_records WHERE session_id=?").run(versionedSession.sessionId);
+    db.prepare("DELETE FROM twain_scan_sessions WHERE id=?").run(versionedSession.sessionId);
+
+    // 扫描端接线：三处入口都要把「本机这一版卡的指纹」带上，否则服务端只能 400
+    const uploadManagerSource = readFileSync(path.resolve("src/apps/answer-card/client/lib/scannerUploadManager.ts"), "utf8");
+    const scannerPanelSource = readFileSync(path.resolve("src/apps/answer-card/client/components/ScannerPanel.tsx"), "utf8");
+    const scannerWorkspaceSource = readFileSync(path.resolve("src/apps/answer-card/client/components/ScannerWorkspace.tsx"), "utf8");
+    const scannerSyncSource = readFileSync(path.resolve("src/apps/answer-card/client/lib/scannerSync.ts"), "utf8");
+    const scannerAppSource = readFileSync(path.resolve("src/apps/answer-card/client/ScannerApp.tsx"), "utf8");
+    check(/cardVersion:\s*j\.cardVersion/.test(uploadManagerSource)
+      && /cardVersion:\s*string/.test(uploadManagerSource)
+      && /未能确定本机答题卡版本/.test(uploadManagerSource),
+      "上传管理器在建会话与完成会话时都带 cardVersion，缺失时先失败而不是静默上传");
+    check(/cardFingerprint\(card\)/.test(scannerPanelSource) && /cardVersion/.test(scannerPanelSource),
+      "扫描仪直扫入口按服务端返回的卡计算指纹后交给上传管理器");
+    check(/cardVersion:\s*cardFingerprint\(card\)/.test(scannerWorkspaceSource),
+      "导入图片入口同样携带卡版本指纹");
+    check(!/fetchCardByIdSynced\s*\(/.test(scannerSyncSource + scannerAppSource)
+      && /fetchCardDetailSynced/.test(scannerSyncSource) && /stale/.test(scannerAppSource),
+      "选卡走 fetchCardDetailSynced：命中离线缓存时先告知版本可能过期，而不是拿旧卡直接开工");
+
     section("考试组权限与事务");
     let grade = db.prepare("SELECT id FROM grades ORDER BY id LIMIT 1").get() as { id: number } | undefined;
     if (!grade) {
@@ -403,6 +517,7 @@ async function main(): Promise<void> {
     const classB = Number(db.prepare("INSERT INTO classes (grade_id,name) VALUES (?,?)").run(grade.id, "安全B班").lastInsertRowid);
     db.prepare("INSERT INTO teacher_classes (teacher_id,class_id,subject) VALUES (?,?,?)").run(teacher.id, classA, "数学");
     db.prepare("INSERT INTO answer_cards (id,title,subject,subject_label) VALUES (?,?,?,?)").run("critical-card", "安全验收卡", "shuxue", "数学");
+    const criticalCardVersion = await serverCardVersion("critical-card");
     const visibleExam = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,created_by) VALUES (?,?,?,?,?,'active',?)").run("可见考试", "critical-card", grade.id, classA, "数学", teacher.id).lastInsertRowid);
     const hiddenExam = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,created_by) VALUES (?,?,?,?,?,'active',?)").run("越权考试", "critical-card", grade.id, classB, "语文", leader.id).lastInsertRowid);
 
@@ -483,7 +598,7 @@ async function main(): Promise<void> {
         method: "POST",
         headers: { "Content-Type": "application/json", ...scannerKeyHeaders },
         body: JSON.stringify({
-          cardId: "critical-card", name: "安全批次验收", dpi: 300, paperSize: "A4",
+          cardId: "critical-card", cardVersion: criticalCardVersion, name: "安全批次验收", dpi: 300, paperSize: "A4",
           ...(pageCount === undefined ? {} : { pageCount })
         })
       });
@@ -2358,6 +2473,619 @@ async function main(): Promise<void> {
         adminCreatePolicy.status === 201 && adminCreatePolicyBody.retention_policy_id === policyId,
         "管理员创建考试显式指定保留策略成功且绑定生效"
       );
+    }
+
+    section("答题卡插图导入与资源端点（安全 R05）、URL 凭据收紧与单次票据（安全 R30）");
+    {
+      // ── R05：导入预算三档（默认 / 环境变量 / 天花板）──
+      const {
+        CARD_ASSET_ENV_VARS, DEFAULT_CARD_ASSET_LIMITS, resolveCardAssetLimits, describeCardAssetLimits,
+        MAX_CARD_ASSET_BYTES, MAX_CARD_ASSETS_PER_IMPORT, MAX_CARD_ASSETS_TOTAL_BYTES, MAX_CARD_ASSET_UPLOAD_BYTES
+      } = await import("../src/shared/cardAssetLimits");
+      const {
+        MEDIA_TICKET_ENV_VARS, DEFAULT_MEDIA_TICKET_LIMITS, resolveMediaTicketLimits, describeMediaTicketLimits,
+        MEDIA_TICKET_TTL_SECONDS
+      } = await import("../src/shared/mediaTicketLimits");
+      const MIB = 1024 * 1024;
+      check(CARD_ASSET_ENV_VARS.slice().sort().join() === cardAssetEnvVarsClearedHere.slice().sort().join()
+        && CARD_ASSET_ENV_VARS.every((name) => !(name in process.env)),
+        "脚本清理的 PROJECTX_CARD_ASSET_* 名单与限制表逐一对应，宿主机变量不会渗入默认档位断言");
+      check(MEDIA_TICKET_ENV_VARS.slice().sort().join() === mediaTicketEnvVarsClearedHere.slice().sort().join()
+        && MEDIA_TICKET_ENV_VARS.every((name) => !(name in process.env)),
+        "脚本清理的 PROJECTX_MEDIA_TICKET_* 名单与限制表逐一对应");
+      check(MAX_CARD_ASSET_BYTES === DEFAULT_CARD_ASSET_LIMITS.maxAssetBytes
+        && MAX_CARD_ASSETS_PER_IMPORT === DEFAULT_CARD_ASSET_LIMITS.maxAssetsPerImport
+        && MAX_CARD_ASSETS_TOTAL_BYTES === DEFAULT_CARD_ASSET_LIMITS.maxAssetsTotalBytes
+        && MAX_CARD_ASSET_UPLOAD_BYTES === DEFAULT_CARD_ASSET_LIMITS.maxAssetUploadBytes
+        && resolveCardAssetLimits({}).notices.length === 0,
+        "未配置时按默认预算生效：单图 6MiB / 单次导入 200 条 / 导入累计 8MiB / 上传 12MiB");
+      check(resolveCardAssetLimits({ PROJECTX_CARD_ASSET_MAX_MIB: "2", PROJECTX_CARD_ASSET_MAX_COUNT: "5" }).limits.maxAssetBytes === 2 * MIB
+        && resolveCardAssetLimits({ PROJECTX_CARD_ASSET_MAX_MIB: "2" }).limits.maxAssetBytes === 2 * MIB,
+        "PROJECTX_CARD_ASSET_* 在天花板内可覆盖默认值");
+      check(resolveCardAssetLimits({ PROJECTX_CARD_ASSET_MAX_MIB: "abc" }).limits.maxAssetBytes === DEFAULT_CARD_ASSET_LIMITS.maxAssetBytes
+        && resolveCardAssetLimits({ PROJECTX_CARD_ASSET_MAX_COUNT: "0" }).limits.maxAssetsPerImport === DEFAULT_CARD_ASSET_LIMITS.maxAssetsPerImport
+        && resolveCardAssetLimits({ PROJECTX_CARD_ASSET_MAX_COUNT: "-3" }).notices.length >= 1,
+        "非法覆盖值（非数字 / 0 / 负数）回落默认值并留告警，不会把闸门关掉");
+      check(resolveCardAssetLimits({ PROJECTX_CARD_ASSET_MAX_MIB: "999999" }).limits.maxAssetBytes === 512 * MIB
+        && resolveCardAssetLimits({ PROJECTX_CARD_ASSET_MAX_COUNT: "999999" }).limits.maxAssetsPerImport === 2000
+        && resolveCardAssetLimits({ PROJECTX_CARD_ASSET_UPLOAD_MIB: "999999" }).limits.maxAssetUploadBytes === 512 * MIB,
+        "超天花板的覆盖值被夹紧（512MiB / 2000 条 / 512MiB）");
+      check(describeCardAssetLimits().includes("单图 ≤6MiB") && describeCardAssetLimits().includes("上传 ≤12MiB"),
+        `启动摘要可读：${describeCardAssetLimits()}`);
+      check(resolveMediaTicketLimits({ PROJECTX_MEDIA_TICKET_TTL_SEC: "60" }).limits.ttlSeconds === 60
+        && resolveMediaTicketLimits({ PROJECTX_MEDIA_TICKET_TTL_SEC: "99999" }).limits.ttlSeconds === 3600
+        && resolveMediaTicketLimits({}).limits.ttlSeconds === DEFAULT_MEDIA_TICKET_LIMITS.ttlSeconds
+        && MEDIA_TICKET_TTL_SECONDS === DEFAULT_MEDIA_TICKET_LIMITS.ttlSeconds,
+        `票据寿命默认 300s、可覆盖、天花板 3600s；当前生效 ${describeMediaTicketLimits()}`);
+
+      // ── R05：判定函数——扩展名白名单 + 魔数一致，SVG/HTML 一律出局 ──
+      const { imageContentTypeFor, detectImageLabel, rejectReasonForImportedAsset } =
+        await import("../src/apps/answer-card/server/validate-upload");
+      const { cardAssetsDir } = await import("../src/apps/answer-card/server/storage");
+      const pngBytes = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 0x20)]);
+      const htmlBytes = Buffer.from("<script>fetch('/api/users',{headers:{authorization:x}})</script>", "utf8");
+      const jpegBytes = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("JFIF", "ascii"), Buffer.alloc(48, 0x20)]);
+      check(imageContentTypeFor("a.png") === "image/png" && imageContentTypeFor("a.jpeg") === "image/jpeg",
+        "图片扩展名映射到闭合的 Content-Type");
+      check(imageContentTypeFor("evil.html") === null && imageContentTypeFor("payload.svg") === null
+        && imageContentTypeFor("noext") === null,
+        "HTML/SVG/无扩展名不在映射内（SVG 本身即脚本载体，永久排除）");
+      check(detectImageLabel(pngBytes) === "PNG" && detectImageLabel(htmlBytes) === null,
+        "魔数识别只对图片返回标签");
+      check(rejectReasonForImportedAsset("ok.png", pngBytes) === null,
+        "扩展名与魔数一致的图片资源通过判定");
+      check(String(rejectReasonForImportedAsset("evil.html", htmlBytes)).includes("不支持的资源类型"),
+        "非图片扩展名被拒");
+      check(String(rejectReasonForImportedAsset("fake.png", htmlBytes)).includes("不是受支持的图片格式"),
+        "纯文本改名为 .png 因魔数不合格被拒");
+      check(String(rejectReasonForImportedAsset("lying.png", jpegBytes)).includes("JPEG")
+        && String(rejectReasonForImportedAsset("lying.png", jpegBytes)).includes(".png"),
+        "「扩展名与真实图片类型不一致」（JPEG 冒充 PNG）也被拒——魔数合格但扩展名说谎同样不合格");
+
+      // ── R05：真实导入端点（混合三类资源：合规图 / HTML 扩展名 / 伪装图）──
+      const exported = await fetch(`${base}/api/cards/CRITICALCARD001/export`, { headers: authHeaders(adminToken) });
+      check(exported.status === 200, "导出既有卡得到可回灌的 .projectx-card 信封");
+      const envelope = await exported.json() as { format: string; version: number; card: unknown; layout: unknown; assets?: Record<string, string> };
+      const cardCountBefore = (db.prepare("SELECT COUNT(*) count FROM answer_cards").get() as { count: number }).count;
+      const importResponse = await fetch(`${base}/api/cards/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(adminToken) },
+        body: JSON.stringify({
+          ...envelope,
+          card: { ...(envelope.card as { id?: string; title?: string; subject?: string; bodyBlocks?: unknown[] }), title: "R05 导入资源校验" },
+          assets: {
+            "ok.png": pngBytes.toString("base64"),
+            "evil.html": htmlBytes.toString("base64"),
+            "fake.png": htmlBytes.toString("base64"),
+            "lying.png": jpegBytes.toString("base64")
+          }
+        })
+      });
+      const importBody = await importResponse.json() as { id?: string; warnings?: { rejectedAssets?: Array<{ name: string; reason: string }> } };
+      const rejected = (importBody.warnings?.rejectedAssets ?? []).map((item) => item.name).sort().join(",");
+      check(importResponse.status === 201 && !!importBody.id, "导入本身成功（不合规资源只拒收该资源，不作废整张卡）");
+      check(rejected === "evil.html,fake.png,lying.png",
+        `不合规资源逐条拒收并回传原因（实际拒绝：${rejected || "无"}）`);
+      const importedAssetDir = cardAssetsDir(importBody.id ?? "none");
+      check(!!importBody.id && existsSync(path.join(importedAssetDir, "ok.png"))
+        && !existsSync(path.join(importedAssetDir, "evil.html"))
+        && !existsSync(path.join(importedAssetDir, "fake.png"))
+        && !existsSync(path.join(importedAssetDir, "lying.png")),
+        "落盘只剩合规图片，伪装/超限资源未进入数据目录");
+
+      // ── R05：资源端点——非图片扩展名 404，图片响应带 nosniff 与响应级 CSP ──
+      const assetCardId = importBody.id ?? "none";
+      const htmlAsset = await fetch(`${base}/api/assets/${assetCardId}/evil.html`, { headers: authHeaders(adminToken) });
+      check(htmlAsset.status === 404, "资源端点拒绝按非图片类型提供内容（历史脏数据也拿不到同源 HTML）");
+      const imageAsset = await fetch(`${base}/api/assets/${assetCardId}/ok.png`, { headers: authHeaders(adminToken) });
+      check(imageAsset.status === 200 && imageAsset.headers.get("x-content-type-options") === "nosniff"
+        && /default-src 'none'/.test(imageAsset.headers.get("content-security-policy") ?? "")
+        && imageAsset.headers.get("content-type") === "image/png",
+        "图片响应显式声明类型，并叠加 nosniff + 只出图的 CSP/sandbox");
+      const traversal = await fetch(`${base}/api/assets/${assetCardId}/..%2F..%2Fprojectx.db`, { headers: authHeaders(adminToken) });
+      check(traversal.status === 404 || traversal.status === 400, "资源端点的路径穿越尝试被拒");
+
+      // ── R05：条数上限在落库前判定，超预算不留半成品卡 ──
+      const overQuotaAssets: Record<string, string> = {};
+      for (let i = 0; i <= MAX_CARD_ASSETS_PER_IMPORT; i++) overQuotaAssets[`a${i}.png`] = pngBytes.toString("base64");
+      const overQuota = await fetch(`${base}/api/cards/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(adminToken) },
+        body: JSON.stringify({ ...envelope, assets: overQuotaAssets })
+      });
+      const cardCountAfter = (db.prepare("SELECT COUNT(*) count FROM answer_cards").get() as { count: number }).count;
+      check(overQuota.status === 413 && cardCountAfter === cardCountBefore + 1,
+        `超过 ${MAX_CARD_ASSETS_PER_IMPORT} 条的导入被 413 拒收且不落库（本次仅新增上一张合规卡那一行）`);
+
+      // ── R05：与请求体上限的关系（文档口径的技术佐证）──
+      // 单图默认预算 6MiB，base64 后约 8MiB，正好撞上全局 express.json 的 8mb：
+      // 也就是说「导入侧」真正的天花板是请求体，把本模块数字调大并不能导入更大的包。
+      const oversizedSingle = await fetch(`${base}/api/cards/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(adminToken) },
+        body: JSON.stringify({ ...envelope, assets: { "huge.png": Buffer.alloc(MAX_CARD_ASSET_BYTES + 96 * 1024, 0x41).toString("base64") } })
+      });
+      check(oversizedSingle.status === 413,
+        `单图超出请求体预算时先被 body-parser 判 413（实际 ${oversizedSingle.status}），与「放宽本模块数字无效」的说明一致`);
+
+      // ── R30：?token= 只承认媒体白名单 ──
+      const { isUrlCredentialAllowedPath } = await import("../src/server/lib/mediaAllowlist");
+      check(isUrlCredentialAllowedPath("/api/cards/CRITICALCARD001/export") && isUrlCredentialAllowedPath("/api/scanner/progress/s1")
+        && isUrlCredentialAllowedPath("/api/answer-block-crops/c1/image"),
+        "PDF/导出/SSE/切块图仍在只读媒体白名单内（浏览器自发请求不受影响）");
+      check(!isUrlCredentialAllowedPath("/api/users") && !isUrlCredentialAllowedPath("/api/scores/me/exams/1/paper/blocks/b1/image")
+        && !isUrlCredentialAllowedPath("/api/export/students.csv") && !isUrlCredentialAllowedPath("/api/health"),
+        "数据类 GET、无路由的路径与 CSV 导出（走请求头）都不接受 URL 凭据");
+      const tokenOnMedia = await fetch(`${base}/api/cards/CRITICALCARD001/export?token=${adminToken}`);
+      check(tokenOnMedia.status === 200, "白名单内端点仍可用 ?token=（PDF/图片/SSE 不因收紧而坏掉）");
+      const tokenOnData = await fetch(`${base}/api/users?token=${adminToken}`);
+      check(tokenOnData.status === 401, "同一枚主令牌用于非媒体 GET 被拒——一次 URL 泄漏不再等于全量只读权限");
+
+      // ── R30：单次资源票据的绑定关系（纯函数 + 真实签发端点）──
+      const {
+        issueMediaTicket, resolveMediaTicket, revokeMediaTicketsForUser, __resetMediaTicketsForTests
+      } = await import("../src/server/services/mediaTicket");
+      __resetMediaTicketsForTests();
+      const snapshot = {
+        id: 9001, username: "crit-ticket", name: "票据回归", role_id: 2, role_name: "teacher",
+        student_number: null, teacher_role: null, subject: null, password_change_required: false
+      };
+      const boundPath = "/api/cards/CRITICALCARD001/pdf";
+      const issued = issueMediaTicket(snapshot, boundPath);
+      check(!!issued && issued!.path === boundPath && issued!.ttlSeconds === MEDIA_TICKET_TTL_SECONDS,
+        "票据签发成功并绑定具体路径与寿命");
+      check(resolveMediaTicket(issued!.ticket, "GET", boundPath)?.id === 9001, "票据对其绑定路径放行");
+      check(resolveMediaTicket(issued!.ticket, "GET", "/api/cards/CRITICALCARD001/export") === null,
+        "同一票据改读另一条媒体路径被拒（票据不是缩小版的主令牌）");
+      check(resolveMediaTicket(issued!.ticket, "POST", boundPath) === null, "票据只读：写方法一律拒绝");
+      check(resolveMediaTicket(issued!.ticket, "GET", boundPath, Date.now() + (MEDIA_TICKET_TTL_SECONDS + 1) * 1000) === null,
+        "超过 TTL 后同一票据失效");
+      check(issueMediaTicket(snapshot, "/api/users") === null && issueMediaTicket(snapshot, "not-a-path") === null,
+        "非媒体路径与非法入参不签发票据");
+      const ticketProbe = { ...snapshot, id: 9002 };
+      const firstTicket = issueMediaTicket(ticketProbe, "/api/cards/CRITICALCARD001/pdf");
+      issueMediaTicket(ticketProbe, "/api/cards/CRITICALCARD001/layout");
+      check(revokeMediaTicketsForUser(9002) === 2
+        && resolveMediaTicket(firstTicket!.ticket, "GET", "/api/cards/CRITICALCARD001/pdf") === null,
+        "登出/改密作废该用户全部票据（已签出的 2 张一次清空）");
+      __resetMediaTicketsForTests();
+
+      const issueHttp = await fetch(`${base}/api/auth/media-ticket`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(adminToken) },
+        body: JSON.stringify({ path: "/api/cards/CRITICALCARD001/export" })
+      });
+      const issueHttpBody = await issueHttp.json() as { ticket?: string; path?: string };
+      check(issueHttp.status === 200 && !!issueHttpBody.ticket && issueHttpBody.path === "/api/cards/CRITICALCARD001/export",
+        "签发端点走完整鉴权链路，返回票据与绑定路径");
+      const viaTicket = await fetch(`${base}/api/cards/CRITICALCARD001/export?mt=${issueHttpBody.ticket}`);
+      check(viaTicket.status === 200, "凭票据访问其绑定路径成功（等价于该用户亲自请求）");
+      const ticketReplay = await fetch(`${base}/api/users?mt=${issueHttpBody.ticket}`);
+      check(ticketReplay.status === 401, "票据用于另一条路径被拒");
+      const badScope = await fetch(`${base}/api/auth/media-ticket`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(adminToken) },
+        body: JSON.stringify({ path: "/api/users" })
+      });
+      const badScopeBody = await badScope.json() as { code?: string };
+      check(badScope.status === 400 && badScopeBody.code === "MEDIA_TICKET_SCOPE_INVALID",
+        "请求为数据端点签发票据被 400 拒绝");
+      const anonymousIssue = await fetch(`${base}/api/auth/media-ticket`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: "/api/cards/1/pdf" })
+      });
+      check(anonymousIssue.status === 401, "未登录不能签发票据");
+
+      // ── R30：日志脱敏（URL 里的凭据不得进日志/错误堆栈）──
+      const { redactUrlCredentials, redactAuthorizationHeader, safeErrorForLog } = await import("../src/server/lib/logRedaction");
+      const redacted = redactUrlCredentials("GET /api/cards/1/pdf?token=abcdefghijklmnop&mt=qwertyuiopasdf 500");
+      check(redacted.includes("token=abcdef***") && redacted.includes("mt=qwerty***") && !redacted.includes("abcdefghijklmnop"),
+        `token/mt 值只留前 6 位：${redacted}`);
+      check(redactUrlCredentials("/api/x?a=1&b=2") === "/api/x?a=1&b=2", "无凭据的 URL 原样保留");
+      check(redactAuthorizationHeader(`Bearer ${adminToken}`) === `Bearer ${adminToken.slice(0, 6)}***`
+        && !redactAuthorizationHeader(`Bearer ${adminToken}`).includes(adminToken.slice(6)),
+        "Authorization 头值只保留前 6 位，日志里读不出完整令牌");
+      const rawError = new Error(`request failed https://x/api/auth/me?token=${adminToken}`);
+      const safeError = safeErrorForLog(rawError) as Error;
+      check(safeError.message !== rawError.message && !safeError.message.includes(adminToken)
+        && !(safeError.stack ?? "").includes(adminToken) && rawError.message.includes(adminToken),
+        "错误副本的 message 与 stack 均已脱敏，原始对象保持不变供上层判型");
+
+      // ── R17：前端 CSV 导出一律走 csvCell ──
+      const { csvCell } = await import("../src/shared/csv");
+      const downloadSource = readFileSync(path.resolve("src/apps/answer-card/client/util/download.ts"), "utf8");
+      check(csvCell("=SUM(1+1)") === "\"'=SUM(1+1)\"" && csvCell("8/10") === "\"'\t8/10\"" && csvCell("a\"b") === "\"a\"\"b\"",
+        "csvCell 对公式前缀加单引号、对「8/10」类日期歧义加制表符（前导 TAB 同样触发单引号防公式），并整体加引号转义");
+      check(/row\.map\(csvCell\)/.test(downloadSource) && !/function esc\(/.test(downloadSource),
+        "downloadCsv 已改用共享 csvCell，本地弱转义函数已移除");
+
+      // ── R44：逐题 optionLayout 在归一化中不再丢失 ──
+      const { normalizeObjectiveQuestions } = await import("../src/shared/grading");
+      const normalized = normalizeObjectiveQuestions({
+        id: "r44-block", type: "objective", title: "一、单选", mode: "single",
+        questionStart: 1, questionCount: 2, optionCount: 4, scorePerQuestion: 5, optionLayout: "horizontal",
+        questions: [
+          { questionNumber: 1, optionLayout: "vertical" },
+          { questionNumber: 2 }
+        ]
+      } as never);
+      check(normalized[0]?.optionLayout === "vertical" && normalized[1]?.optionLayout === "horizontal",
+        "逐题版式保留（第 1 题 vertical、第 2 题继承块级 horizontal），保存-读取往返不再压平");
+
+      // ── R46：不定项模式拼写的统一判定入口 ──
+      const { objectiveModeLabel, isMultiSelectMode } = await import("../src/shared/objectiveMode");
+      check(objectiveModeLabel("indefinite") === "不定项" && objectiveModeLabel("multiple") === "多选"
+        && objectiveModeLabel("single") === "单选" && objectiveModeLabel("indeterminate") === "不定项",
+        "名称映射同时认 canonical 与历史拼写（此前合法的不定项只能落到兜底「客观题」）");
+      check(isMultiSelectMode("indefinite") === true && isMultiSelectMode("indeterminate") === true
+        && isMultiSelectMode("single") === false,
+        "多选判定不再漏掉 canonical 的 indefinite 拼写");
+    }
+
+    section("Electron 渲染进程权限默认拒绝（安全 R23）与库路径诊断（安全 R31）");
+    {
+      // ── R23：三个权限处理器一律拒绝 + 主框架跨源导航收口 ──
+      const electronMain = readFileSync(path.resolve("electron/main.cjs"), "utf8");
+      execFileSync(process.execPath, ["--check", path.resolve("electron/main.cjs")], { windowsHide: true });
+      check(true, "electron/main.cjs 语法可解析（node --check）");
+
+      const policyBody = electronMain.slice(
+        electronMain.indexOf("function installDevicePermissionPolicy()"),
+        electronMain.indexOf("function createWindow"),
+      );
+      check(policyBody.length > 0 && policyBody.indexOf("function createWindow") === -1,
+        "installDevicePermissionPolicy 定义在 createWindow 之前");
+      check(/setPermissionRequestHandler\([\s\S]*?callback\(false\);/.test(policyBody)
+        && !/callback\(true\)/.test(policyBody),
+        "权限请求处理器一律 callback(false)（无放行分支）");
+      check(/setPermissionCheckHandler\([\s\S]*?return false;/.test(policyBody)
+        && /setDevicePermissionHandler\([\s\S]*?return false;/.test(policyBody),
+        "权限检查与设备授权处理器一律返回 false（USB/串口/摄像头等不落到默认放行）");
+      const readyBody = electronMain.slice(electronMain.indexOf("app.whenReady().then(async () => {"));
+      check(readyBody.indexOf("installDevicePermissionPolicy();") > -1
+        && readyBody.indexOf("installDevicePermissionPolicy();") < readyBody.indexOf("await createWindow();"),
+        "权限策略在 createWindow 之前安装（窗口加载页面时策略已生效）");
+      check(/contextIsolation: true/.test(electronMain) && /nodeIntegration: false/.test(electronMain)
+        && /sandbox: true/.test(electronMain),
+        "webPreferences 仍是 contextIsolation + sandbox + 关闭 nodeIntegration");
+      const navBody = electronMain.slice(electronMain.indexOf('mainWindow.webContents.on("will-navigate"'));
+      check(navBody.indexOf("event.preventDefault();") > -1
+        && /const ALLOWED_EXTERNAL_SCHEMES = new Set\(\["https:"\]\)/.test(electronMain),
+        "主框架跨源导航被拦下，只有 https 交系统浏览器（与 setWindowOpenHandler 同一套口径）");
+      check(!/webContents\.on\("will-navigate"[\s\S]{0,200}?return;[\s\S]{0,80}?\}\);/.test(electronMain)
+        && !/setWindowOpenHandler\(\(\) => \(\{ action: "allow" \}\)\)/.test(electronMain),
+        "导航/新窗口处理没有退化成无条件放行");
+
+      // ── R31：默认库路径依赖 cwd，启动时必须把「用哪个库、是否存在」说出来 ──
+      const { diagnoseProjectDbPath, candidateProjectDbPaths, resolveProjectDbPath } = await import("../src/server/db/paths");
+      const savedDbPath = process.env.PROJECTX_DB_PATH;
+      const probeRoot = mkdtempSync(path.join(tempDir, "dbpath-"));
+      // 造一个「同机另有库」的目录树：probeRoot/data/projectx.db 与 probeRoot/app/data/projectx.db
+      mkdirSync(path.join(probeRoot, "data"), { recursive: true });
+      writeFileSync(path.join(probeRoot, "data", "projectx.db"), "");
+      const appDir = path.join(probeRoot, "app", "srv", "db");
+      mkdirSync(appDir, { recursive: true });
+      mkdirSync(path.join(probeRoot, "app", "data"), { recursive: true });
+      writeFileSync(path.join(probeRoot, "app", "data", "projectx.db"), "");
+
+      const candidates = candidateProjectDbPaths(appDir);
+      check(candidates.length === 4 && candidates.every((c) => path.isAbsolute(c) && c.endsWith(path.join("data", "projectx.db"))),
+        `向上四级探测候选库，全部为绝对路径（实际 ${candidates.length} 个）`);
+      check(candidates.includes(path.join(probeRoot, "data", "projectx.db"))
+        && candidates.includes(path.join(probeRoot, "app", "data", "projectx.db")),
+        "候选包含各级 data/projectx.db（不写死任何厂商路径）");
+
+      try {
+        // 显式指定 + 文件存在 → 无提示
+        process.env.PROJECTX_DB_PATH = path.join(probeRoot, "data", "projectx.db");
+        const explicitOk = diagnoseProjectDbPath({ searchFromDir: appDir });
+        check(explicitOk.explicit === true && explicitOk.exists === true && explicitOk.warnings.length === 0,
+          "显式 PROJECTX_DB_PATH 指向既有库 → 不产生提示");
+
+        // 显式指定但文件不存在 → 必须提示「将新建空库」
+        process.env.PROJECTX_DB_PATH = path.join(probeRoot, "data", "typo.db");
+        const explicitMissing = diagnoseProjectDbPath({ searchFromDir: appDir });
+        check(explicitMissing.exists === false
+          && explicitMissing.warnings.some((w) => w.includes("PROJECTX_DB_PATH") && w.includes("不存在")),
+          "显式路径指向不存在的文件 → 提示将新建空库（路径拼写/挂载点复核）");
+
+        // 未显式指定 + cwd 下没有库 → 必须同时提示「新建空库」与「同机另发现候选」
+        delete process.env.PROJECTX_DB_PATH;
+        const previousCwd = process.cwd();
+        process.chdir(mkdtempSync(path.join(tempDir, "cwd-")));
+        try {
+          const implicit = diagnoseProjectDbPath({ searchFromDir: appDir });
+          check(implicit.explicit === false && implicit.exists === false,
+            "未设置 PROJECTX_DB_PATH 时按 cwd 推导，且该路径当前不存在");
+          check(implicit.warnings.some((w) => w.includes("新建空库") && w.includes("PROJECTX_DB_PATH")),
+            "未显式指定且库不存在 → 提示将新建空库并给出显式设置 PROJECTX_DB_PATH 的处置");
+          check(implicit.candidates.length >= 2
+            && implicit.warnings.some((w) => w.includes(`同机另发现 ${implicit.candidates.length} 个`)),
+            `探测到 ${implicit.candidates.length} 个同机候选库 → 提示确认选中的是预期的那个`);
+          check(!implicit.candidates.includes(path.resolve(implicit.resolved)),
+            "候选列表不含当前解析出的路径本身（不自我重复提示）");
+          check(!existsSync(implicit.resolved) && !existsSync(path.dirname(implicit.resolved)),
+            "诊断是只读的：不创建目录、不新建库文件、不打开数据库");
+          check(resolveProjectDbPath() === path.join(process.cwd(), "data", "projectx.db"),
+            "诊断不改变解析结果（仍是 cwd 推导）");
+        } finally {
+          process.chdir(previousCwd);
+        }
+      } finally {
+        if (savedDbPath === undefined) delete process.env.PROJECTX_DB_PATH;
+        else process.env.PROJECTX_DB_PATH = savedDbPath;
+      }
+      check(resolveProjectDbPath() === path.resolve(savedDbPath ?? ""),
+        "断言结束后 PROJECTX_DB_PATH 已还原（不影响本脚本后续用例）");
+
+      // ── R31：getDatabase 必须在建库之前先打印诊断 ──
+      const dbIndexSource = readFileSync(path.resolve("src/server/db/index.ts"), "utf8");
+      const getDbBody = dbIndexSource.slice(dbIndexSource.indexOf("export function getDatabase()"));
+      check(getDbBody.indexOf("diagnoseProjectDbPath()") > -1
+        && getDbBody.indexOf("diagnoseProjectDbPath()") < getDbBody.indexOf("mkdirSync(")
+        && getDbBody.indexOf("diagnoseProjectDbPath()") < getDbBody.indexOf("new Database("),
+        "getDatabase 在 mkdirSync / new Database 之前打印 [db-path] 诊断（新建空库事后看不出原因）");
+      check(/\[db-path\]/.test(getDbBody), "诊断日志带 [db-path] 前缀，便于现场按标签过滤");
+
+      // ── R38：兜底强杀的身份校验断言在 verify:scanner-cancel 里，这里锁住源码不退化 ──
+      const bridgeSource = readFileSync(
+        path.resolve("src/apps/answer-card/server/scanner/twain-bridge.ts"), "utf8");
+      check(/taskkill/.test(bridgeSource)
+        && bridgeSource.indexOf("decideForceKill(") < bridgeSource.indexOf('execFile("taskkill"'),
+        "taskkill 之前必须先过 decideForceKill 判定（R38：认不出身份就不杀）");
+      check(/matchesBridgeProcess[\s\S]{0,600}?parentPid !== expected\.parentPid[\s\S]{0,400}?IDENTITY_TOLERANCE_MS/.test(bridgeSource),
+        "身份判定同时校验父 PID、可执行路径与启动时刻偏差");
+      check(/retireActiveScan\(sessionId\)/.test(bridgeSource)
+        && !/activeScans\.delete\(sessionId\);\s*\n\s*\}/.test(bridgeSource.slice(bridgeSource.indexOf("child.on(\"close\""))),
+        "close/error 走 retireActiveScan（清注册项 + 清兜底定时器），不再裸 delete");
+
+      // ── R40：TWAIN DSM 只从规范化后的受信绝对路径加载 ──
+      // 真机功能验证（Windows x64 + ia32 各自 list 出 KODAK i3000）见 SECURITY-AUDIT-NOTES；
+      // 这里锁源码不退化：一旦有人把裸名候选或 LoadLibraryW 加回来，CWD/PATH 又成了加载点。
+      const twainSource = readFileSync(
+        path.resolve("native/ScannerBridge/scanner-bridge/twain_controller.cpp"), "utf8");
+      const bridgeMainSource = readFileSync(
+        path.resolve("native/ScannerBridge/scanner-bridge/main.cpp"), "utf8");
+      check(!/LoadLibraryW\s*\(/.test(twainSource) && !/LoadLibraryA\s*\(/.test(twainSource),
+        "R40：不再用 LoadLibraryW/A 加载 DSM（它们会把裸名交给默认搜索顺序，含 CWD 与 PATH）");
+      check(/LoadLibraryExW\([^;]*LOAD_LIBRARY_SEARCH_DEFAULT_DIRS\s*\|\s*LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR/.test(twainSource),
+        "R40：DSM 依赖搜索被限制在受信目录（LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | DLL_LOAD_DIR）");
+      check(!/candidates\[\]\s*=\s*\{[\s\S]*?L"TWAINDSM\.dll"/.test(twainSource)
+        && /candidates\.push_back\(absolutePath\(/.test(twainSource),
+        "R40：候选全部由 absolutePath 生成，没有裸名 TWAINDSM.dll / twain_32.dll");
+      check(/isAbsoluteWinPath\(envPath\)/.test(twainSource)
+        && twainSource.indexOf("isAbsoluteWinPath(envPath)") < twainSource.indexOf("candidates.push_back(resolved)"),
+        "R40：TWAIN_DSM_DLL 环境覆盖必须是绝对路径，相对值/裸名被忽略并记进诊断");
+      check(/isUsableDllFile\(candidate/.test(twainSource) && /finalLowerPath\(candidate\)/.test(twainSource)
+        && /已离开安装目录/.test(twainSource),
+        "R40：包内 DSM 要求是非空常规文件，且 junction/符号链接解析后仍在安装目录内");
+      check(/SetDefaultDllDirectories\(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS\)/.test(bridgeMainSource)
+        && bridgeMainSource.indexOf("SetDefaultDllDirectories") < bridgeMainSource.indexOf("args.push_back(toUtf8(argv[i]))"),
+        "R40：桥接进程启动即收紧全局 DLL 搜索目录，早于任何命令分发");
+      for (const arch of ["win-x64", "win-ia32"] as const) {
+        const stagedDir = path.resolve("resources/native", arch);
+        if (!existsSync(path.join(stagedDir, "scanner-bridge.exe"))) continue;
+        check(existsSync(path.join(stagedDir, "TWAINDSM.dll")),
+          `R40：已打包的 ${arch} 产物目录里带着 TWAINDSM.dll（缺失时现场只能报错，不能退回搜索路径）`);
+      }
+
+      // ── R19：原生识别器在解码与矩阵分配之前必须自己收口 ──
+      // 真机功能验证（x64 + ia32 各自跑「超大图片/超大布局/越界 DPI 安全退出 + 三档约定」45 项）
+      // 在 `npm run verify:recognizer-limits`；这里锁构建接线与调用顺序，防止改了源码却漏掉模块或漏重建。
+      const limitsSource = readFileSync(
+        path.resolve("native/AnswerCardRecognizer/answer-card-recognizer/recognizer_limits.cpp"), "utf8");
+      const vcxprojSource = readFileSync(
+        path.resolve("native/AnswerCardRecognizer/answer-card-recognizer/answer-card-recognizer.vcxproj"), "utf8");
+      check(/<ClCompile Include="recognizer_limits\.cpp" \/>/.test(vcxprojSource)
+        && /<ClInclude Include="recognizer_limits\.hpp" \/>/.test(vcxprojSource),
+        "R19：recognizer_limits 已挂进 vcxproj（漏挂就等于静默编译出没有边界的识别器）");
+      const limitEnvNames = [...new Set(limitsSource.match(/PROJECTX_RECOGNIZER_[A-Z_]+/g) ?? [])].sort();
+      const readmeSource = readFileSync(path.resolve("README.md"), "utf8");
+      check(limitEnvNames.length === 7
+        && limitEnvNames.every((name) => readmeSource.includes(name)),
+        `R19：识别器 7 个档位环境变量与 README 表格一致（源码 ${limitEnvNames.length} 个）`);
+      const limitRows = [...limitsSource.matchAll(
+        /\{LimitKey::(\w+),\s*"(PROJECTX_RECOGNIZER_[A-Z_]+)",\s*"[^"]*",\s*([^,]+),\s*([^,}]+)\}/g)];
+      check(limitRows.length === 7 && limitRows.every((row) => row[2].startsWith("PROJECTX_RECOGNIZER_")),
+        `R19：7 个档位都写成「默认值 + 环境变量 + 天花板」三档（实际解析到 ${limitRows.length} 行）`);
+      const ceilingsBelowDefault = limitRows.filter((row) => {
+        const fallback = Number(row[3].replace(/LL/g, "").trim());
+        const ceiling = Number(row[4].replace(/LL/g, "").trim());
+        return Number.isFinite(fallback) && Number.isFinite(ceiling) && ceiling < fallback;
+      }).map((row) => row[2]);
+      check(ceilingsBelowDefault.length === 0,
+        `R19：每档的安全天花板都不低于默认值（否则默认值自己就会被夹紧：${ceilingsBelowDefault.join(", ") || "无"}）`);
+      check(/kIs64Bit \? 100000000LL : 40000000LL/.test(limitsSource),
+        "R19：像素档位按位宽分档（32 位扫描端只有 2GB 地址空间，档位必须更低）");
+      const recognizerVisionSource = readFileSync(
+        path.resolve("native/AnswerCardRecognizer/answer-card-recognizer/vision_utils.cpp"), "utf8");
+      check(!/std::istreambuf_iterator/.test(recognizerVisionSource)
+        && recognizerVisionSource.indexOf("read_capped_file(path, limits.max_image_bytes") >= 0
+        && recognizerVisionSource.indexOf("read_capped_file") < recognizerVisionSource.indexOf("cv::imdecode(buffer"),
+        "R19：图片先按字节上限整份读入、再按头部声明尺寸预检，最后才 imdecode");
+      check(recognizerVisionSource.indexOf("assert_pixel_budget") >= 0
+        && recognizerVisionSource.indexOf("assert_pixel_budget") < recognizerVisionSource.indexOf("cv::warpPerspective"),
+        "R19：warpPerspective 之前先过像素预算，输出尺寸不再由「布局 mm × DPI」直接决定");
+      const recognizerLayoutSource = readFileSync(
+        path.resolve("native/AnswerCardRecognizer/answer-card-recognizer/layout_io.cpp"), "utf8");
+      check(!/input >> layout/.test(recognizerLayoutSource)
+        && /read_capped_file\(layout_path, recognizer_limits\(\)\.max_layout_bytes/.test(recognizerLayoutSource),
+        "R19：布局 JSON 先按字节上限读入再解析，不再让 nlohmann 在任意大小文本上建 DOM");
+      check(recognizerLayoutSource.indexOf("assert_recognizer_dpi(dpi)") >= 0
+        && recognizerLayoutSource.indexOf("assert_recognizer_dpi(dpi)") < recognizerLayoutSource.indexOf("std::llround(width_mm"),
+        "R19：layout_pixel_size 先校 DPI 档位与毫米档位，再做 mm→px 换算（防 int 溢出成负尺寸）");
+      check((recognizerLayoutSource.match(/assert_array_size\(/g) ?? []).length >= 9,
+        "R19：布局里每个外部数组（pages/markers/blocks/items/options/questions/scoreCells/elements）都过条数上限");
+      const recognizerMainSource = readFileSync(
+        path.resolve("native/AnswerCardRecognizer/answer-card-recognizer/main.cpp"), "utf8");
+      check(/SetErrorMode\(SEM_FAILCRITICALERRORS \| SEM_NOGPFAULTERRORBOX\)/.test(recognizerMainSource)
+        && /\[recognizer-limits\]/.test(recognizerMainSource),
+        "R19：子进程禁用模态错误框（否则调用方白等 30s 超时）并把生效档位写到 stderr");
+      for (const arch of ["win-x64", "win-ia32"] as const) {
+        check(existsSync(path.resolve("resources/native", arch, "answer-card-recognizer.exe")),
+          `R19：${arch} 的识别器产物在包内（改了 C++ 记得 npm run native:build:${arch === "win-x64" ? "x64" : "ia32"} 重建）`);
+      }
+
+      // ── R32：跨机明文 HTTP 上不得发送账号与 API Key ──
+      // 运行时证据（真实 http 服务 + 本机局域网地址，断言「服务端一个请求都没收到」）
+      // 在 `npm run verify:insecure-remote-transport`；这里锁三个发送点都接了闸门，防止只改一处。
+      const transportSource = readFileSync(
+        path.resolve("src/apps/answer-card/client/lib/remoteCredentialTransport.ts"), "utf8");
+      const apiSource = readFileSync(path.resolve("src/apps/answer-card/client/auth/api.ts"), "utf8");
+      const uploadManagerSource = readFileSync(
+        path.resolve("src/apps/answer-card/client/lib/scannerUploadManager.ts"), "utf8");
+      const serverConfigSource = readFileSync(
+        path.resolve("src/apps/answer-card/client/components/ServerConfigDialog.tsx"), "utf8");
+      const scannerModeSource = readFileSync(
+        path.resolve("src/apps/answer-card/client/lib/scannerMode.ts"), "utf8");
+
+      // 用返回的 reason 字面量定序：isLoopbackHost/includes 在文件里还有定义处与白名单函数，
+      // 按标识符找会先撞上定义，看不出判定顺序。
+      const orderHttps = transportSource.indexOf('reason: "https"');
+      const orderLoopback = transportSource.indexOf('reason: "loopback"');
+      const orderAllowance = transportSource.indexOf('reason: "explicit-allowance"');
+      const orderBlocked = transportSource.indexOf('reason: "blocked-plaintext"');
+      check(orderHttps >= 0 && orderHttps < orderLoopback && orderLoopback < orderAllowance
+        && orderAllowance < orderBlocked,
+        "R32：判定顺序是 https → 回环 → 显式勾选，三档之外一律拒绝（blocked-plaintext 是兜底分支）");
+      check(!/grantedHosts\.some\(|startsWith\(target\.host|includes\(target\.host\.split/.test(transportSource)
+        && /return grantedHosts\.includes\(target\.host\);/.test(transportSource),
+        "R32：白名单按 host:port 全等比对，没有通配或同网段推断（换端口/换主机都不继承同意）");
+      check(/allowed: false,\s*\n\s*reason: "unparsable"/.test(transportSource)
+        && /if \(!target\) \{/.test(transportSource),
+        "R32：解析不出目标时按拒绝处理，不把 Key 送进看不懂的目标");
+
+      check(apiSource.indexOf("assertCredentialTransportAllowed(base)") >= 0
+        && apiSource.indexOf("assertCredentialTransportAllowed(base)") < apiSource.indexOf('headers.set("X-Api-Key", apiKey)'),
+        "R32：remoteScannerFetch 在附加 X-Api-Key 之前先过闸门");
+      check(/wantsCredential = Boolean\(apiKey\) \|\| headers\.has\("X-Api-Key"\) \|\| headers\.has\("Authorization"\)/.test(apiSource),
+        "R32：闸门认「任何凭据」，不只认自己塞的那把 Key（调用方自带的 Authorization 同样被拦）");
+      check(apiSource.indexOf("isRuntimeTransportAllowed") >= 0
+        && (apiSource.match(/isRuntimeTransportAllowed\(\)/g) ?? []).length >= 2,
+        "R32：URL 凭据（?mt= / ?token=）两条路径也过闸门——明文链路上宁可 401，也不把令牌写进 URL");
+      check(/function assertRuntimeConfiguredTransportAllowed\(\): void \{\s*\n\s*if \(isScannerBuild\(\)\) return;\s*\n\s*const runtimeBase = readServerUrl\(\);/.test(apiSource)
+        && /`VITE_PROJECTX_API_BASE` 不在此列/.test(apiSource),
+        "R32：闸门只管运行时填写的地址，构建期写死的 VITE_PROJECTX_API_BASE 不受影响（内网 Web 部署不会被堵死且无从勾选）");
+
+      check(uploadManagerSource.indexOf("assertCredentialTransportAllowed(j.remoteBase)") >= 0
+        && uploadManagerSource.indexOf("assertCredentialTransportAllowed(j.remoteBase)")
+          < uploadManagerSource.indexOf('headers.set("X-Api-Key", j.apiKey)'),
+        "R32：上传管理器的快照路径按**建任务时**的地址判定，先配 https 建任务再改 http 也绕不过去");
+      check(/return Promise\.reject\(error\);/.test(uploadManagerSource),
+        "R32：闸门失败走 rejected promise，不逃出队列的错误处理");
+
+      check(/decision\.reason === "blocked-plaintext" && !allowInsecure/.test(serverConfigSource)
+        && serverConfigSource.indexOf("blocked-plaintext") < serverConfigSource.indexOf("saveUrl(serverUrl)"),
+        "R32：跨机明文未勾选时「保存配置」直接拒绝，不会存下一个注定发不出 Key 的地址");
+      check(serverConfigSource.indexOf("revokeInsecureTransportAllowance()") >= 0
+        && serverConfigSource.indexOf("grantInsecureTransportAllowance(loadUrl())")
+          > serverConfigSource.indexOf("revokeInsecureTransportAllowance()"),
+        "R32：保存时先清空历史明文同意、再只给当前 host:port 记一笔（改回 https 即撤销）");
+      check(/setAllowInsecure\(false\);/.test(serverConfigSource) && /hostRef\.current === typedHost/.test(serverConfigSource),
+        "R32：地址 host 一变就清掉勾选——同意不随地址搬家");
+      check(/const sendKey = Boolean\(key\) && maySendCredential;/.test(serverConfigSource),
+        "R32：「测试连接」在未勾选时只做无凭据探测，不把 Key 试出去");
+
+      check(/return `http:\/\/\$\{trimmed\}`;/.test(scannerModeSource),
+        "R32：normalizeServerUrl 仍会为缺 scheme 的地址补 http://（v2.5.6 的现场修复不能因这条整改回退，明文由闸门负责拦）");
+
+      const deployGuideSource = readFileSync(path.resolve("deploy-guide.md"), "utf8");
+      check(deployGuideSource.includes("R32") && /扫描端接入必须走 HTTPS/.test(deployGuideSource),
+        "R32：部署指南写明扫描接入需 HTTPS，以及扫描端会拒绝明文发送 Key");
+    }
+
+    section("演示数据凭据与导入闸门（安全 R33/R48）");
+    {
+      // 运行时证据（真实建库、真实 bcrypt、零改动快照）在 `npm run verify:demo-credentials`；
+      // 这里锁的是「代码形状」：口令来源、教师角色、闸门位置、每个写块路径的归属判据，
+      // 以及文档里不再把公开口令当成生产可用值——这些都是回归时最容易被顺手改掉的点。
+      const policySource = readFileSync(path.resolve("src/server/services/demo/demoDataPolicy.ts"), "utf8");
+      const demoServiceSource = readFileSync(path.resolve("src/server/services/DemoDataService.ts"), "utf8");
+      const cardIdsSource = readFileSync(path.resolve("src/server/services/demo/demoCardIds.ts"), "utf8");
+      const backupRouteSource = readFileSync(path.resolve("src/server/routes/backup.ts"), "utf8");
+      const settingsPageSource = readFileSync(
+        path.resolve("src/apps/answer-card/client/components/GlobalSettingsPage.tsx"), "utf8");
+      const seedScriptSource = readFileSync(path.resolve("testdata/demo-exams/scripts/seed.ts"), "utf8");
+      const readmeSource = readFileSync(path.resolve("README.md"), "utf8");
+
+      // ── R33：口令来源与教师可见范围 ──
+      check(/password: fixedCredentials \? LEGACY_PUBLIC_DEMO_TEACHER_PASSWORD : generateBootstrapAdminPassword\(\)/
+        .test(demoServiceSource),
+        "R33：演示教师口令默认走随机生成，固定口令只在显式开关下使用（默认分支不是 teacher123）");
+      check(!demoServiceSource.includes('"teacher123"') && !demoServiceSource.includes("'teacher123'"),
+        "R33：DemoDataService 里没有硬编码的公开演示口令字面量");
+      check(/\.\.\.\(fixedCredentials \? \{ password: num \} : \{\}\)/.test(demoServiceSource),
+        "R33：演示学生口令只在固定凭据模式下才等于学号，默认交给 batchCreateStudents 随机生成");
+      check((demoServiceSource.match(/teacher_role/g) ?? []).length >= 3
+        && /"subject_teacher"/.test(demoServiceSource),
+        "R33：演示教师的 INSERT 与 UPDATE 都写 teacher_role='subject_teacher'（不再命中「未配置角色=全校可见」兼容分支）");
+      check(demoServiceSource.includes('"teacher_classes"')
+        && demoServiceSource.indexOf("insertTeacherClass, teacherId, class1.id") >= 0
+        && demoServiceSource.indexOf("insertTeacherClass, teacherId, class2.id") >= 0,
+        "R33：演示教师任课到两个演示班级——subject_teacher 的可见范围来自 teacher_classes，且恰好圈在演示数据里");
+      check(demoServiceSource.includes("encryptField(row.password)")
+        && demoServiceSource.includes("initial_password"),
+        "R33：随机口令加密存入 users.initial_password，管理员可从既有「导出账密」查回（不需要新的明文通道）");
+
+      // ── R33：开关默认关闭、非法值不放宽 ──
+      check(/if \(!raw\) return false;/.test(policySource)
+        && /if \(TRUTHY\.has\(raw\)\) return true;\s*\n\s*if \(FALSY\.has\(raw\)\) return false;/.test(policySource),
+        "R33：两个演示开关未设即关闭，取值只认 1/true/yes/on 与 0/false/no/off");
+      check(/warnOnce\(`bad-\$\{name\}`/.test(policySource) && /按关闭处理/.test(policySource),
+        "R33：开关取值非法时打印 [demo-policy] 并按关闭处理，绝不静默放宽");
+      check(/DEMO_POLICY_ENV_VARS/.test(policySource),
+        "R33：模块声明自己的环境变量清单，供 verify 脚本断言「清空的变量 == 声明的变量」");
+
+      // ── R33：闸门在任何写入之前 ──
+      const gateAt = demoServiceSource.indexOf("await assertDemoImportAllowed(db, options);");
+      check(gateAt >= 0
+        && gateAt < demoServiceSource.indexOf("await ensureCrossExamTables(db);")
+        && gateAt < demoServiceSource.indexOf("await cleanupDemoData(db);"),
+        "R33/R48：三道闸全部在建表与 cleanupDemoData 之前判完，拒绝时库里一个字节都没动");
+      check(/await assertDemoCardIdsFree\(db\);\s*\n\s*await assertDemoTeacherUsernamesAvailable\(db\);\s*\n\s*await assertDemoImportConfirmed\(db, options\?\.confirmedProductionImport\);/
+        .test(demoServiceSource),
+        "R33/R48：闸门按「卡号冲突 → 保留用户名被占 → 生产库需确认」顺序执行，三条都在同一个入口里");
+      check(/DEMO_CARD_ID_CONFLICT/.test(demoServiceSource) && /DEMO_TEACHER_USERNAME_TAKEN/.test(demoServiceSource)
+        && /DEMO_IMPORT_REQUIRES_CONFIRMATION/.test(demoServiceSource),
+        "R33/R48：三种拒绝各带独立错误码，前端与运维能区分处置");
+      check(/status: 409/.test(demoServiceSource),
+        "R33/R48：拒绝是 409（请求本身可修正），不是 500（看起来像服务坏了）");
+
+      // ── R33：接口与前端不把口令写进日志 ──
+      check(/teacherCredentials: stats\.teacherCredentials\.map\(\(\{ username, fixed \}\) => \(\{ username, fixed \}\)\)/
+        .test(backupRouteSource),
+        "R33：响应体的 stats 里剥掉口令明文，只在 message 里出现一次（避免同一份口令被抓包/前端日志带走两遍）");
+      check(!/console\.(log|warn|error)\([^)]*credentials/.test(backupRouteSource),
+        "R33：服务端日志不打印演示口令");
+      check(/confirm === DEMO_IMPORT_PRODUCTION_CONFIRM/.test(backupRouteSource),
+        "R33：确认串按常量比对，路由里没有第二份硬编码字面量");
+      check(settingsPageSource.includes("DEMO_IMPORT_REQUIRES_CONFIRMATION")
+        && settingsPageSource.includes("postImportDemo(err.confirm)"),
+        "R33：前端在 409 时二次确认并回传服务端给的确认串，不自己拼字面量");
+
+      // ── R48：卡号清单同源 + 每条写块路径都过归属判据 ──
+      check(/export const DEMO_CARD_IDS/.test(demoServiceSource)
+        && /DEMO_REVIEW_CARD_ID,/.test(demoServiceSource),
+        "R48：DemoDataService 导出全部演示卡号清单（含网阅卡），与闸门比对用的是同一份");
+      check(/"88000001"/.test(cardIdsSource) && /"88000002"/.test(cardIdsSource) && /"88000999"/.test(cardIdsSource),
+        "R48：固定演示卡号集中在 demoCardIds.ts 单一来源（此前散落在各 seeder 里，改一处漏三处）");
+      check(/Number\(row\.is_demo\) === 1/.test(cardIdsSource) && /SELECT is_demo FROM answer_cards WHERE id = \?/.test(cardIdsSource),
+        "R48：isDemoCard 只认 is_demo 归属标记，不按卡号前缀猜——真实卡拿到 88000001 也不算演示卡");
+      for (const file of ["essayDemo.ts", "fillBlankDemo.ts", "reviewDemo.ts"]) {
+        const src = readFileSync(path.resolve(`src/server/services/demo/${file}`), "utf8");
+        check(/if \(!\(await isDemoCard\(db, /.test(src),
+          `R48：${file} 在写演示题块前先过 isDemoCard（纵深防线，不只依赖导入前的整单拒绝）`);
+      }
+      check(demoServiceSource.indexOf("if (!(await isDemoCard(db, cardId))) return;") >= 0,
+        "R48：ensureDemoObjectiveBlock 同样跳过非演示卡——那正是会写入标准答案 A/B/C/D/A 的地方");
+
+      // ── 文档口径：公开口令不再被当成生产可用值 ──
+      check(!/\| `demo-teacher` \| `teacher123` \|/.test(readmeSource),
+        "R33：README 的登录表不再把 teacher123 列为演示教师口令");
+      check(readmeSource.includes("PROJECTX_DEMO_FIXED_CREDENTIALS")
+        && readmeSource.includes("PROJECTX_DEMO_ALLOW_PRODUCTION_IMPORT"),
+        "R33：README 写明两个演示开关及默认值（布尔开关，非法值按关闭处理）");
+      check(/仅限隔离测试库/.test(seedScriptSource) && /process\.env\[DEMO_FIXED_CREDENTIALS_ENV\] = "1"/.test(seedScriptSource),
+        "R33：只有测试数据包的 seed.ts 会打开固定凭据开关，且打印「仅限隔离测试库」警告");
     }
 
     console.log(`\n关键安全验收：${passed} 通过，${failures.length} 失败`);

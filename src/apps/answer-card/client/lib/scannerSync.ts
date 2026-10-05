@@ -49,6 +49,9 @@ async function fetchSynced<T>(localPath: string): Promise<{ data: T; source: Syn
       return { data: (await res.json()) as T, source: "remote" };
     } catch (e: any) {
       if (e?.remoteAuthFailed || e?.remoteNotFound || e?.status === 401 || e?.status === 403 || e?.status === 404) throw e;
+      // 安全（R32）：跨机明文被闸门拦下是**配置错误**，不是网络抖动。
+      // 静默回退本机会让老师看到「卡列表出来了」而以为同步正常，比直接报错更难查。
+      if (e?.code === "INSECURE_REMOTE_TRANSPORT_BLOCKED" || e?.code === "SERVER_URL_UNPARSABLE") throw e;
       // 网络错误 / 5xx / 超时 -> 静默回退本地
     }
   }
@@ -57,7 +60,24 @@ async function fetchSynced<T>(localPath: string): Promise<{ data: T; source: Syn
 }
 
 export const fetchCardsSynced = () => fetchSynced<any[]>("/api/cards?limit=500");
-export const fetchCardByIdSynced = async (id: string) => (await fetchSynced<any>(`/api/cards/${encodeURIComponent(id)}`)).data;
+
+export interface SyncedCardDetail {
+  card: any;
+  source: SyncSource;
+  /** 安全 R35：远端已配置但没连上，这份卡来自本机缓存，可能已经过期。 */
+  stale: boolean;
+}
+
+/**
+ * 安全 R35：卡详情**必须**把来源交出去。
+ * 此前 `fetchCardByIdSynced` 直接丢掉 source，网络掉线/5xx 时会静默返回本机缓存的旧卡，
+ * 选择页照旧进入工作区、按旧布局和旧答案判分——服务器改了卡也没人知道。
+ * 现在调用方必须自己决定：stale 时要么停下，要么让老师显式确认离线继续。
+ */
+export async function fetchCardDetailSynced(id: string): Promise<SyncedCardDetail> {
+  const { data, source } = await fetchSynced<any>(`/api/cards/${encodeURIComponent(id)}`);
+  return { card: data, source, stale: source === "offline-cache" };
+}
 
 /**
  * 选中卡片时把完整卡 upsert 进本机库（幂等，保留原 id）。

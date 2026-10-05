@@ -32,10 +32,13 @@ function makeRemoteMock(routes: Record<string, Step[]>) {
   return { fn: fn as unknown as (url: string, init?: RequestInit) => Promise<Response>, calls, counters, routes };
 }
 
+const TEST_CARD_VERSION = "0123456789abcdef01234567";
+
 function baseInput(pages: number): StartUploadInput {
   return {
     kind: "import",
     cardId: "card_1",
+    cardVersion: TEST_CARD_VERSION,
     name: "冒烟",
     pages: Array.from({ length: pages }, (_, i) => ({
       pageNum: i + 1,
@@ -76,6 +79,31 @@ async function main() {
   const SESSIONS = "/api/scanner/upload/sessions";
   const PAGES = "/pages";
   const COMPLETE = "/complete";
+
+  // R35：不知道本机在用哪一版卡就不要上传；建会话与提交完成都要把指纹交给服务器核验
+  {
+    const bodies: Array<{ url: string; body: string }> = [];
+    const mgr = createScannerUploadManager(deps({
+      remoteFetch: async (url, init) => {
+        bodies.push({ url: String(url), body: typeof init?.body === "string" ? init.body : "" });
+        if (String(url).endsWith(SESSIONS)) return jsonRes({ sessionId: "r35", uploadTokens: ["t1"] });
+        return jsonRes({ ok: true });
+      },
+    }));
+    const versionless = await waitTerminal(mgr, mgr.startUpload({ ...baseInput(1), cardVersion: "" }));
+    assert(versionless.status === "error" && versionless.message.includes("未能确定本机答题卡版本"),
+      `缺少卡版本指纹时任务立即失败并提示重新同步（实际 ${versionless.status}/${versionless.message}）`);
+    assert(!bodies.some((b) => b.url.endsWith(SESSIONS)), "版本未知的任务不会发出建会话请求");
+
+    bodies.length = 0;
+    assert((await waitTerminal(mgr, mgr.startUpload(baseInput(1)))).status === "done", "带指纹的上传正常完成");
+    const sessionBody = JSON.parse(bodies.find((b) => b.url.endsWith(SESSIONS))!.body);
+    const completeBody = JSON.parse(bodies.find((b) => b.url.endsWith(COMPLETE))!.body);
+    assert(sessionBody.cardVersion === TEST_CARD_VERSION && sessionBody.cardId === "card_1",
+      `建会话时上报本机卡版本指纹（实际 ${sessionBody.cardVersion}）`);
+    assert(completeBody.cardVersion === TEST_CARD_VERSION,
+      `提交完成时再报一次指纹，扫描途中服务器改卡即可被 409 拦下（实际 ${JSON.stringify(completeBody)}）`);
+  }
 
   // A local 413 must retain its status: retrying the same oversized image cannot
   // help. Other pages still finish, and manual retry may use a corrected image.

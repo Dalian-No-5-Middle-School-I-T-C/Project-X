@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     knowledge_points_text TEXT,                            -- v1.8.0
     created_by       INT,
     is_demo          TINYINT NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示答题卡
+    revision         INT NOT NULL DEFAULT 0,      -- v59: 保存计数器，导出 PDF 用它绑定快照（安全 R45）
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (created_by) REFERENCES users(id)

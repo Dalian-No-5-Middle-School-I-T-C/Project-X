@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { fetchJson, setAuthToken, getAuthToken } from "./api";
+import { fetchJson, getAuthToken, setAuthToken, clearMediaTicketCache } from "./api";
 import { permissionGrants, TEACHER_ROLE_LABELS, type AuthUser, type LoginResponse } from "./types";
 import { ForcedPasswordChange } from "./ForcedPasswordChange";
 
@@ -73,6 +73,15 @@ interface AuthContextValue {
   login: (identifier: string, password: string, isPersistent?: boolean) => Promise<string | undefined>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
+  /**
+   * 把「已成功写回服务端的字段」合并进本地用户快照（安全 R49）。
+   *
+   * 存在理由：皮肤/主题这类偏好是 fire-and-forget 的 PATCH，成功后本地 `user` 仍停在登录快照。
+   * 于是 A→B→A 的最后一步会被「与登录快照相同就不用回写」的判断跳过，账号最终留在 B——
+   * 重登或换设备恢复出用户并没有选的那个皮肤。写回成功后必须更新权威状态，失败时调用方
+   * 应改用 `refreshUser()` 以服务端为准。
+   */
+  patchUserLocal: (partial: Partial<AuthUser>) => void;
   hasPermission: (perm: string) => boolean;
   isAdmin: boolean;
   isTeacher: boolean;
@@ -165,6 +174,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     setAuthToken(null);
     setUser(null);
+    // 安全（R30）：服务端登出会作废该用户的全部资源票据，本地票据缓存同步清空，
+    // 否则下一个会话可能拿旧票据拼出注定 401 的 URL。
+    clearMediaTicketCache();
     // 清除「会话内显式皮肤选择」标记（见 readus/SKIN-THEME.md §二）：
     // 共享设备上下一账号登录时以账号偏好为准，不继承上一账号的皮肤。
     try { sessionStorage.removeItem("projectx-skin-chosen"); } catch { /* ignore */ }
@@ -177,6 +189,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     [user]
   );
+
+  const patchUserLocal = useCallback((partial: Partial<AuthUser>) => {
+    setUser((prev) => (prev ? { ...prev, ...partial } : prev));
+  }, []);
 
   const setPersona = useCallback((p: AppPersona) => {
     setPersonaState(p);
@@ -206,6 +222,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       logout,
       refreshUser,
+      patchUserLocal,
       hasPermission,
       isAdmin: user?.role_name === "admin",
       isTeacher: user?.role_name === "teacher",
@@ -223,7 +240,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       availablePersonas,
       canSwitchPersona,
     }),
-    [user, loading, login, logout, refreshUser, hasPermission, teacherRole, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona]
+    [user, loading, login, logout, refreshUser, patchUserLocal, hasPermission, teacherRole, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona]
   );
 
   return (

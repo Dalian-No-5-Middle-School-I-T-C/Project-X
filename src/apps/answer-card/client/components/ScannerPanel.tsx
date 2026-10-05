@@ -19,6 +19,7 @@ import type { ScanBatchResponse, ScanBatchFailure, ScanBatchResult, ScanConflict
 import type { ScannerSourcesResult, ScanProgressEvent } from "../../server/scanner/scanner-types";
 import { ScanPreviewModal } from "./ScanPreviewModal";
 import type { AnswerCard } from "../../../../shared/types";
+import { cardFingerprint } from "../../../../shared/cardVersion";
 import {
   Badge,
   Button,
@@ -106,6 +107,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const resultsBusyRef = useRef(false);
   const [resultMessage, setResultMessage] = useState("");
   const [uploadJobs, setUploadJobs] = useState<Record<string, string>>({});
+  /** 安全 R35：本机这份答题卡的版本指纹，随上传交给服务器核验（空 = 还没读到卡） */
+  const [cardVersion, setCardVersion] = useState<string>("");
   const uploadState = useSyncExternalStore(scannerUploadManager.subscribe, scannerUploadManager.getState);
   const [activeStudent, setActiveStudent] = useState<StudentResult | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -141,6 +144,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         if (active) {
           setPaperSize(card.paper?.size === "A3" ? "A3" : "A4");
           setDuplex(card.sided === "double");
+          // 安全 R35：上传时带上「本机正在用哪一版卡」，由服务器比对，避免用旧布局/旧答案判分后静默入库。
+          setCardVersion(cardFingerprint(card));
         }
       })
       .catch(() => undefined);
@@ -391,6 +396,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           nextJobs[result.groupId] = scannerUploadManager.startUpload({
             identityMode: sessionLegacyIdentity ? "legacy" : "strict",
             kind: "scan", cardId, name: `扫描_${result.studentId}`, dpi, paperSize,
+            cardVersion,
             pages: result.pages.map(page => ({
               pageNum: page.pageNum, side: page.side, groupId: result.groupId,
               layoutPage: page.layoutPage, studentId: result.studentId,

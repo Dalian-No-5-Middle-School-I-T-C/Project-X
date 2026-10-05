@@ -16,7 +16,7 @@ function startJob() {
   const payload = { blob: new Blob([new Uint8Array(1024 * 1024)]) };
   const ref = new WeakRef(payload);
   const id = manager.startUpload({
-    kind: "scan", cardId: "release-test", name: "release-test",
+    kind: "scan", cardId: "release-test", cardVersion: "0123456789abcdef01234567", name: "release-test",
     pages: [{ pageNum: 1, side: "front", getBlob: async () => payload.blob }],
   });
   return { id, ref };

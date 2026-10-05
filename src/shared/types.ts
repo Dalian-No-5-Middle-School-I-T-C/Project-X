@@ -163,6 +163,12 @@ export type AnswerCard = {
   sided: "single" | "double";
   layoutVersion: 1 | 2;
   updatedAt: string;
+  /**
+   * 服务端维护的保存计数器：每次 PUT 落库 +1，客户端只读。
+   * 导出 PDF 时回传这个值，服务端据此确认「打印的这版」和「阅卷坐标布局这版」是同一次保存。
+   * 不能改用 updatedAt——它只有秒级精度，同一秒内的两次保存分不开。
+   */
+  revision?: number;
 };
 
 export type CardSummary = {
@@ -700,7 +706,7 @@ export type OptionStat = {
 
 export type OptionAnalysisQuestion = {
   questionNumber: number;
-  /** single / multiple / indeterminate */
+  /** single / multiple / indefinite（历史数据里出现过 indeterminate 拼写，判定时见 shared/objectiveMode.ts） */
   mode: string;
   optionCount: number;
   maxScore: number;

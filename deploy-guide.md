@@ -69,6 +69,76 @@ server {
 - 静态站点若部署于 Nginx 根目录，**严禁将项目根目录或 `data/`（含 SQLite 库）作为站点根目录**，否则数据库文件可被直接下载
 - 如需 HSTS，可在 443 server 块内追加 `add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;`
 - 如果前端网页和后端使用**同一域名**，需要把前端静态文件也放到这个 Nginx 配置中（见下一节）
+- **扫描端接入必须走 HTTPS**（安全 R32）：开启 `PROJECTX_ENABLE_SCANNER_CLIENT_API=1` 后，
+  扫描端在「服务器连接」里填的地址若是**跨机明文 http**，客户端会**拒绝发送 API Key**，
+  上传按配置错误立即失败（这把 Key 能向服务器写入扫描结果，明文过网段等于交给同网段任何人）。
+  因此对外提供扫描接入的部署必须配好 443 与证书，把 `https://` 地址发给扫描端；
+  只有本机 `127.0.0.1` / `localhost` 的明文地址不受限。隔离的内网测试环境可由操作者在扫描端
+  显式勾选「允许向该地址明文发送凭据」，该许可按 `host:port` 记录、换地址不继承。
+  不带凭据的 `/api/app/health` 探测始终放行，所以扫描端仍能区分「服务器不可达」与「服务器可达但凭据被拦下」。
+
+---
+
+### 2.3 以非 root 账号常驻运行（安全 R37）
+
+后端进程持有全校成绩、扫描件与数据库文件，不该以 root 身份常驻：进程内一旦出现任意文件读写，
+root 身份直接等于整机沦陷。Ubuntu 服务器包内置了幂等安装脚本：
+
+```bash
+cd project-x-server-ubuntu24-<version>
+npm install --omit=dev
+sudo systemd/install.sh
+```
+
+它会建一个 nologin 系统账号 `projectx`，把代码铺到 `/opt/project-x-server`（root 所有、
+服务账号只读+可执行），把 `/var/lib/project-x`（SQLite 库、答题卡图片、自动备份）交给
+`projectx` 并置 `0750`，再安装带沙箱指令的 systemd 单元（`UMask=0027`、`NoNewPrivileges=yes`、
+`ProtectSystem=full`、`ProtectHome`、`PrivateTmp`、`PrivateDevices`、空 `CapabilityBoundingSet`
+等）并 `daemon-reload + enable + restart`。升级时重跑同一条命令即可：属主与权限会被重新纠正，
+不会退回 root。
+
+装完自检（第三条命令**不该**有输出）：
+
+```bash
+systemctl show project-x-server -p User -p Group -p UMask
+sudo -u projectx test -r /var/lib/project-x/projectx.db && echo "服务账号可读数据库"
+sudo -u nobody test -r /var/lib/project-x/projectx.db && echo "数据目录对 other 可读，权限没收紧"
+```
+
+`npm run dev` 与 `./start.sh` 只适合前台试跑；`start.sh` 发现自己以 root 运行时会打印警告并指向安装脚本。
+
+单元里刻意**没有**两条常见加固指令，原因写在单元注释与部署说明里：`MemoryDenyWriteExecute=yes`
+会让 V8 的 JIT 起不来，`SystemCallFilter=@system-service` 在 Node/Python 版本漂移下容易变成生产崩溃循环
+（需要时用 drop-in 打开，再用 `systemd-analyze security project-x-server` 复核）。
+
+### 2.4 换机器 / 搬数据目录：整目录一起搬，搬完对数（安全 R39）
+
+卡片的**元数据**（标题、题块、分值、标准答案）在数据库里，而**坐标布局 JSON、上传的配图、原卷文件、
+答案卷、识别裁图全在答题卡数据目录下**（`ANSWER_CARD_DATA_DIR`，默认 `<工作目录>/data/answer-card`，
+其下 `cards/` `layouts/` `assets/` `papers/` `answer-keys/` `recognition/crops/`）。
+只改环境变量或换了工作目录、却没有把目录一起搬走，表现不是报错而是
+「列表里答题卡都在，点进去原卷 404、配图不见了」——看起来像数据丢了。
+
+```bash
+# 1) 停服，整目录搬迁（不要只改环境变量）
+sudo systemctl stop project-x-server
+sudo mv /var/lib/project-x/answer-card /data/project-x/answer-card
+
+# 2) 新位置写进 unit（或 drop-in），不要让数据目录跟着工作目录走
+sudo systemctl edit project-x-server   # 加 Environment=ANSWER_CARD_DATA_DIR=/data/project-x/answer-card
+sudo chown -R projectx:projectx /data/project-x/answer-card
+sudo chmod -R g+rX,o-rwx /data/project-x/answer-card
+sudo systemctl daemon-reload && sudo systemctl start project-x-server
+
+# 3) 对数：两个数字应当同量级（layouts 里每张已保存的卡各一份）
+ls /data/project-x/answer-card/layouts | wc -l
+sqlite3 /var/lib/project-x/projectx.db "SELECT COUNT(*) FROM answer_cards"   # MariaDB 同样执行 SELECT COUNT(*) FROM answer_cards;
+```
+
+服务端**故意不做**「自动去找另一个数据目录」或「目录空着就告警」这两件事，与 R31 同一个理由：
+静默改用一个别的数据目录，和静默新建一个空目录，是同一类错误而且更难发现；而「新目录是空的、
+库里却有 N 张卡」这个信号对**迁移过来的全新装**同样成立，按它告警会在最该安静的场合喊狼。
+判据要可靠，得先在数据目录里落一份清单文件（记录卡号集合），有了它才能谈启动时拒绝或警告。
 
 ---
 
@@ -108,6 +178,21 @@ location /api/ {
 }
 ```
 
+媒体资源（图片 / PDF / SSE）在跨域模式下只能用 URL 携带凭据，后端已把它收紧为**短命、绑定路径的单次票据**
+（`?mt=…`，默认 5 分钟；默认主令牌 `?token=` 仅对白名单媒体路径放行，其余接口一律要求 `Authorization` 头）。
+票据与令牌仍会出现在查询串里，而 nginx 的 `access_log` 默认记录完整请求行，因此**请把查询串从访问日志里去掉**：
+
+```nginx
+# 只记路径、不记查询串：避免票据与历史 ?token= 落进日志
+log_format px_noquery '$remote_addr - $remote_user [$time_local] '
+                      '"$request_method $scheme://$host$uri $server_protocol" '
+                      '$status $body_bytes_sent rt=$request_time';
+access_log /var/log/nginx/access.log px_noquery;
+```
+
+后端自身的日志已对 `token` / `mt` / `api_key` 等查询参数与 `Authorization` 头做截断脱敏，
+但代理日志归部署方管。可用档位与行为口径见 [README.md](README.md) 的「URL 凭据换成单次媒体票据」。
+
 访问地址：
 ```
 https://your-domain.com/Grade-Analysis-System-mobile.html
@@ -123,11 +208,17 @@ PROJECTX_CORS_ORIGIN=https://your-frontend-domain.com
 
 未设置时默认仅允许本机调试地址。学生端小程序使用原生 `wx.request` / `downloadFile`，不受浏览器 CORS 限制，无需加入白名单。
 
-并在 `Grade-Analysis-System-mobile.html` 的 URL 中通过 `?api_base=...` 指定后端地址：
+并在 `Grade-Analysis-System-mobile.html` 里**由部署方写死后端地址**（安全 R12）：编辑该文件头部的
+`<meta name="px-api-base">`，把 `content` 填成你的 API 域名；同源部署留空即可。
 
+```html
+<!-- 跨源部署：写死 https 后端地址 -->
+<meta name="px-api-base" content="https://your-api-domain.com">
 ```
-https://your-frontend-domain.com/Grade-Analysis-System-mobile.html?api_base=https://your-api-domain.com
-```
+
+> **不要用 URL 参数指定后端**。页面曾支持 `?api_base=...`，而它会把浏览器本地保存的会话令牌
+> 以 Bearer 发往该参数指定的主机——任何人转发一条带 `api_base` 的链接，就能收走点开它的人的凭据。
+> 现在该参数一律被忽略，页面会在底部提示「api_base 参数已被忽略」；非 https 的跨源配置同样被拒绝。
 
 ---
 
@@ -253,6 +344,17 @@ GET /api/analysis/exams/1/questions
 3. **数据隐私**：学生成绩属于敏感数据，小程序审核时可能需要提供「隐私保护协议」
 4. **访问控制**：确保后端 `PROJECTX_AUTH_ENFORCE=1` 已开启，防止未授权访问成绩数据
 5. **备案**：国内服务器必须完成 ICP 备案，否则微信会拒绝业务域名配置
+6. **生产库不要留演示数据**（安全 R33/R48）：演示账号口令默认每次导入随机换发、演示教师范围收敛为
+   「任课教师 + 两个演示班级」，但演示数据本身就是 16 个可登录账号，验收完请用「清除演示数据」移除。
+   `PROJECTX_DEMO_FIXED_CREDENTIALS`（恢复文档里的 `teacher123` / 口令=学号）与
+   `PROJECTX_DEMO_ALLOW_PRODUCTION_IMPORT`（跳过「库中已有真实数据」的二次确认）**只应在隔离测试环境打开**；
+   生产环境保持未设即可，两个开关取值非法时一律按关闭处理。
+7. **最小权限运行**（安全 R37）：后端不要用 root 常驻。Ubuntu 包里的 `sudo systemd/install.sh`
+   会建专用系统账号、把数据目录置 `0750` 并安装带沙箱指令的 systemd 单元；升级重跑同一条命令即可，
+   详见 2.3 节。手工 `sudo node dist/server/index.mjs` 或 `sudo ./start.sh` 的部署应改为该脚本安装。
+8. **数据目录跟着库一起走**（安全 R39）：答题卡的原卷、配图与坐标布局在 `ANSWER_CARD_DATA_DIR` 下，
+   不在数据库里。只改环境变量或换工作目录而不搬目录，表现为「答题卡还在、文件打不开」而不是报错；
+   `PROJECTX_DB_PATH` 与 `ANSWER_CARD_DATA_DIR` 都要显式写进 unit，搬完按 2.4 节对数。
 
 ---
 

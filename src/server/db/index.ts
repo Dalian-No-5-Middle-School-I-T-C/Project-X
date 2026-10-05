@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runMigrations } from "./migrations";
-import { resolveProjectDbPath } from "./paths";
+import { diagnoseProjectDbPath, resolveProjectDbPath } from "./paths";
 import { seedDefaultData } from "./seeds";
 import { detectDialect, getMysqlDb, initMariadbSchema, buildInsertIgnore } from "./mysql";
 import type { DbAdapter } from "./mysql";
@@ -22,6 +22,9 @@ function schemaPath(): string {
 export function getDatabase(): Database.Database {
   if (!dbInstance) {
     const dbPath = resolveProjectDbPath();
+    // 安全 R31：先说清「即将用哪个库、它是否已存在」，再创建文件——新建空库在事后是看不出原因的。
+    const diagnosis = diagnoseProjectDbPath();
+    for (const warning of diagnosis.warnings) console.warn(`[db-path] ${warning}`);
     mkdirSync(path.dirname(dbPath), { recursive: true });
     dbInstance = new Database(dbPath);
     dbInstance.pragma("journal_mode = WAL");
@@ -382,7 +385,7 @@ export async function migrateLegacyPlaintextApiKeys(db: DbAdapter): Promise<void
 }
 
 export { runMigrations };
-export { resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath } from "./paths";
+export { resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, diagnoseProjectDbPath, candidateProjectDbPaths } from "./paths";
 
 // ── 跨方言 DB 适配器 ──────────────────────────────────
 export {

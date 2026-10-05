@@ -2,6 +2,8 @@ import type { Request, Response, NextFunction } from "express";
 import { authService } from "../services/AuthService";
 import { permissionsForRole, roleHasPermission, type Permission } from "../auth/permissions";
 import { isAuthEnforced } from "../lib/authEnforce";
+import { isUrlCredentialAllowedPath } from "../lib/mediaAllowlist";
+import { resolveMediaTicket } from "../services/mediaTicket";
 
 export const AUTH_COOKIE_NAME = "projectx_auth_token";
 
@@ -50,30 +52,70 @@ export function extractToken(req: Request): string | null {
   }
   // 兼容查询参数（用于 SSE / PDF 等无法设置请求头的场景）。
   // 仅 GET/HEAD 接受 ?token=，避免写操作 token 泄漏进 URL/代理日志。
+  //
+  // 安全（R30）：进一步收紧——`?token=` 携带的是**主会话令牌**，而 URL 会进浏览器历史、
+  // 代理与访问日志。原先任何 GET 都能用它，于是「一次泄漏 = 整份只读权限」。
+  // 现在只有媒体白名单（图片/PDF/导出/SSE，见 server/lib/mediaAllowlist.ts）接受它；
+  // 其它端点必须用 Authorization 头、Cookie，或改走单次资源票据 `?mt=`。
   if (req.method === "GET" || req.method === "HEAD") {
     const queryToken = req.query.token;
     if (typeof queryToken === "string" && queryToken) {
-      return queryToken;
+      const pathname = req.baseUrl ? req.baseUrl + req.path : req.path;
+      if (isUrlCredentialAllowedPath(pathname)) {
+        return queryToken;
+      }
+      // 记在请求对象上（不是模块变量）：并发请求之间不能互相冒领这条状态。
+      (req as Request & { mediaUrlTokenRejected?: boolean }).mediaUrlTokenRejected = true;
     }
   }
   return null;
 }
 
+/** 本请求是否「想用 ?token= 但端点不在媒体白名单」——用于给出可操作的 401 文案。 */
+export function urlTokenRejectedFor(req: Request): boolean {
+  return Boolean((req as Request & { mediaUrlTokenRejected?: boolean }).mediaUrlTokenRejected);
+}
+
 async function attachUser(req: Request, token: string): Promise<boolean> {
   const user = await authService.getUserByToken(token);
   if (!user) return false;
-  req.user = {
-    id: user.id,
-    username: user.username,
-    name: user.name,
-    role_id: user.role_id,
-    role_name: user.role_name ?? "unknown",
-    student_number: user.student_number ?? null,
-    teacher_role: (user as any).teacher_role ?? null,
-    subject: (user as any).subject ?? null,
-    password_change_required: Boolean((user as any).password_change_required)
-  };
+  attachUserSnapshot(req, user);
   return true;
+}
+
+function attachUserSnapshot(req: Request, user: Record<string, unknown>): void {
+  req.user = {
+    id: user.id as number,
+    username: user.username as string,
+    name: user.name as string,
+    role_id: user.role_id as number,
+    role_name: (user.role_name as string) ?? "unknown",
+    student_number: (user.student_number as string) ?? null,
+    teacher_role: (user.teacher_role as string) ?? null,
+    subject: (user.subject as string) ?? null,
+    password_change_required: Boolean(user.password_change_required)
+  };
+}
+
+/**
+ * 认证解析的统一入口（安全 R30）：先认单次资源票据 `?mt=`，再退回常规令牌。
+ * 票据在签发时就绑定了「本请求路径 + 只读方法 + 时限」，所以命中即等价于该用户亲自请求。
+ */
+async function authenticateRequest(req: Request): Promise<"ticket" | "token" | "invalid" | "none"> {
+  const rawTicket = req.query.mt;
+  if (typeof rawTicket === "string" && rawTicket) {
+    if (req.method === "GET" || req.method === "HEAD") {
+      const pathname = req.baseUrl ? req.baseUrl + req.path : req.path;
+      const user = resolveMediaTicket(rawTicket, req.method, pathname);
+      if (user) {
+        req.user = { ...user };
+        return "ticket";
+      }
+    }
+  }
+  const token = extractToken(req);
+  if (!token) return "none";
+  return (await attachUser(req, token)) ? "token" : "invalid";
 }
 
 /**
@@ -81,19 +123,23 @@ async function attachUser(req: Request, token: string): Promise<boolean> {
  * 用法：router.use(authMiddleware) 或在单条路由前挂载。
  */
 export async function authMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const token = extractToken(req);
-  if (!token) {
+  const via = await authenticateRequest(req);
+  if (via === "invalid") {
+    res.status(401).json({ message: "认证令牌无效或已过期" });
+    return;
+  }
+  if (via === "none") {
     // 未强制鉴权模式下（与 optionalAuth / makeGate 一致）：无 token 也放行，
     // 保持“未登录即可使用”的兼容；开启强制模式时必须有有效令牌。
     if (!isAuthEnforced()) {
       next();
       return;
     }
-    res.status(401).json({ message: "未提供认证令牌" });
-    return;
-  }
-  if (!(await attachUser(req, token))) {
-    res.status(401).json({ message: "认证令牌无效或已过期" });
+    res.status(401).json({
+      message: urlTokenRejectedFor(req)
+        ? "该接口不接受 URL 中的 token 参数，请改用 Authorization 头；图片/PDF/SSE 可先 POST /api/auth/media-ticket 换取 ?mt= 单次票据"
+        : "未提供认证令牌"
+    });
     return;
   }
   next();
@@ -104,10 +150,7 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
  * 用于在“未强制登录”阶段仍然记录 created_by / 区分匿名访问。
  */
 export async function optionalAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
-  const token = extractToken(req);
-  if (token) {
-    await attachUser(req, token);
-  }
+  await authenticateRequest(req);
   next();
 }
 

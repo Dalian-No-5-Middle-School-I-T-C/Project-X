@@ -2,6 +2,333 @@
 
 > **项目起点：2026-06-07 建库**（GitHub 仓库创建，`Initial commit` 于同一分钟提交）。本文件只记录建库之后的真实提交与发版；建库之前的任何日期/版本均为误记，已删除。
 
+## 2026-10-05：导出 PDF 与答题卡版本绑定（安全审查第五批 C · R45）
+
+答题卡是 1200ms 防抖自动保存的，而 PDF 是从**库里当前值**渲染的。老师点「导出」时手上那一版可能还没落库，
+PDF 真开始生成时随后一次防抖又可能把它覆盖成另一版——于是**打印出来的答题卡**和**阅卷用的坐标布局**
+可以来自不同的两次保存：纸上的题格与判分位置对不上，且全程没有任何提示。
+前端其实一直在传 `?v=`，但 `/pdf` 路由**从来不读它**；而且传的是 `updatedAt`——它由 `CURRENT_TIMESTAMP`
+写入只有秒级精度，同一秒内的两次保存取到同一个值，PUT 响应里那个又来自 `new Date()`，本来就当不了版本令牌。
+
+- **R45 加单调版本号**：`answer_cards` 新增 `revision`（迁移 **v59**，SQLite / MariaDB 各一份，
+  三份建库语句同步）。自增写在 SQL 里（`revision = revision + 1`）而不是读—改—写，避免并发丢号。
+- **请求体自带的 revision 一律不采信**：接口返回的版本号取自落库结果。PUT 一个 `revision: 9999`
+  既改不了库里的值，也拿不到与之匹配的 PDF。
+- **`/pdf` 在渲染前过闸门**：版本相等放行，不等回 **409 `CARD_REVISION_MISMATCH`**（带两个版本号），
+  畸形回 **400 `CARD_REVISION_INVALID`**；三种结果都带 `X-Card-Revision`，且响应头在判定之前设置，
+  被拦时调用方也能看到服务器当前是第几版。`?v=` 保持可选（部署冒烟与修复基准工具不带它，不在这个竞态里），
+  但**传了就必须是合法整数**——旧客户端的 ISO 时间戳判为无效而不是静默放行，否则这条整改会被绕过。
+- **前端三处配合**：导出前有界收敛待存改动（最多 3 轮，用户持续敲键时明确放弃而不是无限重试）；
+  `?v=` 改传 revision；并先 `GET` 一次卡本地比对——PDF 在新标签页打开，服务端的 409 客户端接不到，
+  只会让人看到一个渲染失败的空白页。
+- **R36 / R39 本轮是给处置而不是改代码**，判定与**重新评估的触发条件**写在
+  `readus/SECURITY-AUDIT-NOTES-2026-10-04.md` 第八节：赞助接口返回的是运营方自己的收款渠道、
+  不含任何校务数据，判为按设计公开（路径穿越与越权读文件两条已逐条核对为不成立，现场可用
+  `enabled: false` 或反代屏蔽收口）；数据目录换位置导致「答题卡还在、文件打不开」这条，
+  服务端没有可靠的判别依据（「新目录是空的而库里有卡」对合法迁移同样成立），
+  给的是整目录搬迁 + 显式路径 + 对数自检的运维口径。
+
+**验证**：`npm run verify:card-export-revision` 在 SQLite 与本地 MariaDB 12.3.2 临时实例上各 **66 通过 / 0 失败**。
+关键几条是量出来的：连发 25 次保存得到 25 个互不相同的 `revision`，同期 `updated_at` 只有 1 个取值，
+并断言其格式无小数位——直接证明秒级时间戳当不了版本令牌；伪造 `5027` 与 `-1` 后库里仍按 +1 递增；
+摘掉列与迁移记录重跑迁移，存量卡回填 0（老卡升级后首次导出不会被误拦）。闸门是纯函数，穷举 20 种畸形取值。
+**验证脚本抓到两个真问题**：数组形式的 `?v=` 原先会被 join 后可能被解析成合法值（同一个参数传两次，
+取哪个都是猜，现在一律判无效，且不做 `String()` 兜底，否则 `toString()` 返回 `"7"` 的对象能冒充版本号）；
+以及 MariaDB 模式下脚本跑完不退出——`closeDatabase()` 只关 SQLite 实例，连接池要靠 `resetAdapter()` 才 `end()`，
+否则 CI 步骤会挂到超时，同批的 `verify-demo-credentials.ts` 有同样毛病，一并修了。
+CI 增加 SQLite 与 MariaDB 两步（新库 `projectx_card_revision_test`）。`npm run typecheck` 通过，
+`verify:security-critical` 仍 407 / 0。
+**边界**：闸门只保证「导出那一刻」版本一致，不解决多写者丢更新——两个窗口同时改一张卡，
+后保存的仍会覆盖先保存的且都不报错。要做严是 PUT 层乐观锁（`If-Match`），但它会让「两个标签页开同一张卡」
+这种日常操作频繁报错，属产品决策，本轮未做。
+
+## 2026-10-05：发布产物完整性凭据（安全审查第五批 C · R42）
+
+扫描端的 exe / msi 一直是**未签名**的（`build.win.signAndEditExecutable` 是 `false`），发布时也没有任何
+校验和：收件方看到的是一个「未知发布者」的可执行文件，而且**没办法判断手上这份有没有被改过**——
+这个客户端持有能向服务器写入扫描结果的 API Key。没有证书就签不了名，证书更不能入库，
+所以这一条的处置不是「补上签名」，而是把未签名变成**可验证、可交代**。
+
+- **R42 打包即产出完整性清单**：新增 `scripts/hash-release-artifacts.cjs`（`npm run release:hash`），
+  在 `release/` 下生成 `SHA256SUMS.txt`（`sha256sum -c` 兼容、LF、按路径排序，跳过构建中间物与
+  `*-unpacked/`）与 `BUILD-INTEGRITY.txt`（版本、构建提交、是否 dirty、每个产物的校验和与**签名状态**、
+  未签名的原因与现场后果、两种校验方法）。`--check` 模式给收件方：篡改一个字节、清单外多出文件、
+  清单里有而目录里缺文件，三种情况都退出码 1 并点名。
+- **五条打包命令全部接线**：`electron:dist` / `electron:dist:ia32` / `electron:msi` / `electron:msi:ia32` /
+  `package:server:ubuntu24` 都以 `npm run release:hash` 收尾，产物不可能在没有清单的情况下被打出来；
+  `electron:pack`（`--dir`，产物是目录不是分发物）刻意不接。Ubuntu 包内部署说明也加了 Package Integrity 一节。
+- **签名状态是量出来的，不是从配置推的**：脚本用 PowerShell `Get-AuthenticodeSignature` 逐个 exe/msi 取状态；
+  产物名是中文，所以文件清单写成 UTF-8 文件让 PowerShell 自己读、结果落文件再取回（直接拼 `-Command`
+  会被控制台代码页吃掉）。本机把 `release/win-ia32-unpacked/答题卡扫描端.exe`（180 MB 真实产物）交给它，
+  返回 **`NotSigned`**。
+- **「以为签了」的守卫**：环境里给了 `CSC_LINK`/`WIN_CSC_LINK` 但 `signAndEditExecutable` 仍是 `false` 时打印警告
+  ——这种情况下 electron-builder 不会用那张证书，产物照样未签名。
+- **顺带查清了开关来历**：`signAndEditExecutable: false` 是 2026-06-14 提交 `c4cdb02`（修图标显示异常）
+  顺带加上的规避手段，不是一个签名决策。README 新增「Windows 扫描端安装包：未签名与完整性校验（安全 R42）」
+  一节，写明现状、`certutil` 与 `--check` 两种校验方法、以及拿到证书后启用签名的步骤与前置检查
+  （图标与非 ASCII `executableName` 在 rcedit 环节要重新确认）。
+
+**验证**：`npm run verify:release-integrity` 61 通过 / 0 失败——一次性临时目录里真跑生成与校验，
+覆盖改一字节 → 失败、改回 → 通过、塞入清单外文件 → 失败、删掉清单内文件 → 失败、
+目录里没有清单 → 失败且不静默通过、空目录 → 不生成空清单冒充「已校验」，产物名刻意用中文；
+Windows 上另断言报告里的签名状态是逐个产物的真实值而不是笼统的「无法检测」。
+CI 增加 `Release artifact integrity manifest (R42)`。
+**边界**：校验通过只说明「与打包机产出时相同」，不等于已签名——它防传输途中的篡改与拿错包，
+防不了发布方本身被攻破。这句话同时写在 `BUILD-INTEGRITY.txt` 与 README 里。
+
+## 2026-10-05：Ubuntu 服务器包不再以 root 运行（安全审查第五批 C · R37）
+
+第五批 C 前两条收的是「凭据怎么过网段」「演示数据能不能进生产库」，这一条收的是**部署形态**：
+服务以谁的身份跑、数据目录谁能读。改动全部做在打包脚本里，现场不需要记任何新规则。
+
+- **R37 生成的 systemd 单元从 root 改为专用系统账号**：原来单元里只有
+  `Type`/`WorkingDirectory`/`Environment`/`ExecStart`/`Restart`，systemd 默认以 **root** 启动，
+  而部署说明教的又是 `sudo cp -a . /opt/project-x-server/`——一个持有全校成绩、答题卡扫描件与
+  SQLite 库的进程以 root 常驻，数据目录还是解压时的 `0777&umask`。现在单元带
+  `User=projectx`/`Group=projectx`/`NoNewPrivileges=yes`/`UMask=0027`，外加
+  `ProtectSystem=full`、`ProtectHome`、`PrivateTmp`、`PrivateDevices`、
+  `ProtectKernel{Tunables,Modules,Logs}`、`ProtectControlGroups`、`ProtectClock`、`RestrictNamespaces`、
+  `RestrictSUIDSGID`、`RestrictRealtime`、`LockPersonality`、空 `CapabilityBoundingSet`、
+  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`（少了 `AF_NETLINK` 会让 glibc
+  的 `getifaddrs` 失败）、`SystemCallArchitectures=native`；`HOME` 指到数据目录，
+  `After`/`Wants` 改用 `network-online.target`（MariaDB 远端模式下路由未就绪会直接起不来）。
+- **新增幂等 `systemd/install.sh`，安装与升级走同一条命令**：建 nologin 系统账号 →
+  铺包体到 `/opt/project-x-server`（root 所有、`g+rX,o-rwx`、目录 `0750`，用 `g+rX` 而不是统一
+  `chmod 0640` 是为了不改坏 `node_modules/.bin`、`dist/server/index.mjs`、`.venv/bin/python` 的执行位）→
+  `/var/lib/project-x`（库 / 答题卡 / 自动备份）交给服务账号并 `0750` → 安装单元 +
+  `daemon-reload`/`enable`/`restart` → 回显 `User`/`Group`/`UMask`。因此「升级时不小心退回 root」
+  这条路不存在，旧的 root 手工安装重跑一次即完成迁移。账号名与路径可用
+  `PROJECTX_SERVICE_USER`/`PROJECTX_SERVICE_GROUP`/`PROJECTX_APP_DIR`/`PROJECTX_DATA_DIR` 覆盖，
+  自定义账号名时脚本会 `sed` 重写单元里的 `User=`/`Group=`。`start.sh` 以 root 运行时打印警告并指向它。
+- **两条常见加固刻意不启用，理由写在单元注释与部署说明里**：`MemoryDenyWriteExecute=yes` 会让
+  V8 的 JIT 起不来（node 启动阶段即崩）；`SystemCallFilter=@system-service` 在 Node 与 Python sidecar
+  的系统调用集随版本漂移的前提下容易变成生产崩溃循环——单元里给出 drop-in 启用示例与
+  `systemd-analyze security project-x-server` 复核命令。`ProtectSystem` 同理用 `full` 而不是 `strict`：
+  AI sidecar 的 `.venv` 与 `llmclient/.env` 就在 `/opt/project-x-server` 下。部署说明因此也改了
+  venv 的创建位置——**必须在最终位置建**，临时目录里建好的 venv 复制过去后 console script 的
+  shebang 会指向失效路径。
+- **顺带修掉一个会让整条整改失效的既有缺陷**：`scripts/package-server-ubuntu.cjs` 在 Windows 上是
+  CRLF 检出，模板字面量把 `\r\n` 带进生成物——`start.sh`（以及新的 `install.sh`）的 shebang 会变成
+  `/usr/bin/env bash\r`，Ubuntu 上直接 `bad interpreter`，单元的 `Environment=PORT=5174` 也会多个尾随 `\r`。
+  四个生成器统一过 `toLf()`；打包动作收进 `buildPackage()` 并由 `require.main === module` 触发，
+  这样验证脚本不需要 `dist/` 就能 require 生成器。
+
+**验证**：`npm run verify:systemd-hardening` 77 通过 / 0 失败——渲染四份生成物做静态断言，含两条**否定**断言
+（不得出现 `MemoryDenyWriteExecute`、不得有生效的 `SystemCallFilter`）、单元身份与安装脚本默认值逐项一致、
+数据目录三处 `0750`、代码目录 `g+rX,o-rwx`，并对 `install.sh`/`start.sh` 跑 `bash -n` 语法检查、
+断言四份生成物都不含 `\r`。CI 增加 `Ubuntu server package systemd hardening (R37)`，另加一个
+`continue-on-error` 的 `systemd-analyze verify` 作参考输出。**未验证的部分**：打包机是 Windows，
+本机跑不了 systemd，「服务真的以 `projectx` 身份起来、上传/字体/备份在沙箱里都能写」没有实测证据，
+靠部署说明里的 `systemctl show` 与三条 `sudo -u` 自检命令在现场兜底。
+文档同步：`deploy-guide.md` 新增 2.3 节与第九节第 7 条，包内部署说明的 Contents / AI Service /
+Systemd Service 三节重写，`readus/SECURITY-AUDIT-NOTES-2026-10-04.md` 第八节记录判定与边界。
+
+## 2026-10-04：演示数据凭据与导入闸门（安全审查第五批 C · R33/R48）
+
+演示数据本来是给现场演示用的，但它有两个副作用会**直接落到生产库上**：导入即安装一套口令写在公开文档里的
+教师账号，以及固定演示卡号可能撞上一张真实答题卡、然后静默改写它。这两条都不再靠「记得别在生产库点」。
+
+- **R33 演示口令随机换发，教师可见范围收敛**：`demo-teacher` / `demo-teacher-2` 的口令曾固定为
+  README、`testdata/README.md`、`readus/演示数据.md`、`manifest.json` 里公开写着的 `teacher123`，
+  16 名演示学生的口令等于学号；而这两个教师账号建号时**没有 `teacher_role`**，正好命中
+  `routes/scores.ts` 的兼容分支「未配置角色的教师＝全校可见」。合起来就是：生产库导入过一次演示数据，
+  任何读过 README 的人都能用公开口令登录并看到全校成绩。现在教师口令用 R01 那套
+  `generateBootstrapAdminPassword()`（16 位四类字符）每次导入随机换发，学生口令走批量导入既有的
+  随机初始密码；口令只在导入响应的 `message` 里出现一次，并用 `encryptField` 存入 `users.initial_password`
+  （管理员从既有「导出账密」即可查回，**不需要新的明文通道**，也不进服务端日志）。
+  同时补上 `teacher_role='subject_teacher'` 并任课「演示1班 / 演示2班」——`subject_teacher` 的可见班级
+  来自 `teacher_classes`，挂演示班级后可见范围恰好圈在演示数据里；网阅演示不受影响（阅卷访问按
+  `review_assignments` 判）。v1.9.8 之前崩溃残留的同名账号（`is_demo=0`）照旧收编，但一律换发口令、
+  补角色、打 `is_demo=1`，因此**升级后 `teacher123` 当场失效**（与 R01 同口径）。
+- **R33 导入闸门**：新增单一来源 `src/server/services/demo/demoDataPolicy.ts` 与两个布尔开关——
+  `PROJECTX_DEMO_FIXED_CREDENTIALS`（恢复固定口令，**仅限隔离测试环境**；`testdata/demo-exams/scripts/seed.ts`
+  会自己打开它并打印警告，好让 `verify.ts` 能按 `manifest.json` 逐条登录断言）与
+  `PROJECTX_DEMO_ALLOW_PRODUCTION_IMPORT`（免逐次确认）。开关取值非法一律**按关闭处理**并打印
+  `[demo-policy] …`，绝不静默放宽。库里已有真实考试或真实账号（`admin` 除外）时，
+  `POST /api/db/import-demo` 返回 **409 `DEMO_IMPORT_REQUIRES_CONFIRMATION`** 并带回确认串
+  `IMPORT_DEMO_INTO_PRODUCTION`，前端二次确认后回传；若 `demo-teacher` / `demo-teacher-2` 已被
+  **在用**的真实教师占用（任课真实班级 / 被分配过阅卷 / 创建过考试）则返回
+  **409 `DEMO_TEACHER_USERNAME_TAKEN`**，不改一个真实账号的口令与角色。
+- **R48 演示卡号撞真实卡：整单拒绝而不是静默改写**：演示用固定卡号（`88000001`/`88000002`/`88000999`
+  与周报晨测卡号），而真实卡号由 `generateCardId()` 产出、落在 `10000000~99999999`——**同一区间**。
+  建卡用的是 `INSERT … IGNORE`，撞号不报错：演示考试会静默挂到那张真实卡上，再给它补一个标准答案为
+  `A/B/C/D/A` 的 5 题选择题块、作文/填空块、知识点与 `assets/<cardId>/fig-demo.png`，
+  **真实考试从此按演示答案判分**且界面看不出异常。现在 `assertDemoCardIdsFree` 在导入前比对全部演示卡号，
+  命中即 **409 `DEMO_CARD_ID_CONFLICT`**（错误里点名卡号与卡标题，处置＝删除或重建那几张真实卡）；
+  三道闸全部在 `ensureCrossExamTables` / `cleanupDemoData` **之前**判完，拒绝时库里一个字节都没动。
+  另有纵深防线 `isDemoCard()`（`src/server/services/demo/demoCardIds.ts`，卡号单一来源）挡在
+  `ensureDemoObjectiveBlock`、`essayDemo`、`fillBlankDemo`、`reviewDemo` 四条写题块路径前面，
+  判据**只看 `is_demo` 归属标记、不按卡号前缀猜**。
+- **文档口径同步**：README 的登录表不再把 `teacher123` 列为演示教师口令，改为「一次性随机口令」，
+  并新增一节写明两个开关；`testdata/README.md`、`testdata/demo-exams/README.md`、`manifest.json`、
+  `readus/演示数据.md`（新增「演示账号口令口径」小节）、`readus/ADMIN-GUIDE.md`、
+  `user guide/Project-X用户使用说明.md`、`docs/视觉检查方法论与依赖.md`、`deploy-guide.md` 一并更正。
+  `verify.ts` 的演示口令改由 `PROJECTX_DEMO_TEACHER_PASSWORD` / `PROJECTX_DEMO_STUDENT_PASSWORD`
+  覆盖，登录失败时直接给出「用 seed.ts 重新导入或传入口令」的提示，而不是含糊的 ✗。
+
+**验证**：新增 `npm run verify:demo-credentials`（SQLite **84 通过 / 0 失败**，MariaDB 同一脚本
+`--mariadb` 跑同一套断言，CI 两个 job 各加一步）——默认导入下两名教师口令互不相同、长度 ≥16、
+用 `teacher123` 校验**失败**、`teacher_role='subject_teacher'`、`teacher_classes` 恰好 2 条且全部指向
+`is_demo=1` 的班级（指向真实班级为 0 条）、`decryptField(initial_password)` 等于返回口令；
+16 名演示学生逐条 bcrypt 校验，**用学号登录成功的数量为 0**；重复导入后上一轮口令立即失效且账号不叠加；
+开关 `=1` 时 `teacher123` 确实能登录（证明开关生效而非被静默忽略）、`=maybe` 按关闭处理；
+生产闸门与卡号冲突两条都断言**拒绝时零改动**（用户/考试/答题卡/年级/题块计数逐项比对、
+真实卡上的 `subjective_blocks` 与 `knowledge_points` 为 0、没有「演示-」考试挂到真实卡上）；
+保留名被占用时 `password_hash` / `is_demo` / `teacher_role` 原样不动，三条「在用」判据逐条触发拒绝；
+并断言脚本接管的变量清单与 `DEMO_POLICY_ENV_VARS` 全等。`verify:security-critical` **406 通过 / 0 失败**
+（新增 26 条 R33/R48 静态断言：口令来源、教师角色、闸门位置与顺序、错误码、响应体剥离口令明文、
+四条写块路径的 `isDemoCard`、文档不再列公开口令）；`verify:demo-safety` 23 通过 / 0 失败
+（其中「与演示 id 重叠会主键冲突，无法构造」那句旧注释是错的——`INSERT IGNORE` 根本不报冲突，已更正）。
+
+## 2026-10-04：跨机明文凭据闸门（安全审查第五批 C · R32）
+
+第五批 A 收浏览器侧、B 收原生进程，C 收的是**部署与现场配置**：地址怎么填、包怎么装、
+演示数据能不能进生产库。本批第一条 R32 直接对着 v2.5.6 那条现场修复的副作用来。
+
+- **R32 跨机明文 HTTP 默认不再发送凭据**：服务器地址由老师手输，少写一个 `s` 就是明文；
+  v2.5.6 为了修「填 `192.168.1.10:5174` 连不上」给缺 scheme 的输入自动补 `http://`，
+  那条修复要留（不能要求每台内网机都装证书），但**明文不能继续是送 Key 的默认路径**。
+  新增单一来源 `src/apps/answer-card/client/lib/remoteCredentialTransport.ts`，判定顺序固定为
+  `https` → 回环 → 老师按 `host:port` 显式放行 → 拒绝；`api.ts`（`fetchJson`/`authFetch`/
+  `remoteScannerFetch`/带 token 的媒体地址）、`scannerUploadManager`（按**建单时快照**的
+  `remoteBase` 判定，否则「先 https 建单再切 http」可绕过）、`scannerSync`（被拦是配置错误，
+  **不静默回退本机缓存**）三处接同一份判定。回环识别只认 `localhost`、完整四段 `127.0.0.0/8`、
+  `::1`，`127.1`/`128.127.0.0.1` 一律按远端 fail-closed。构建期的 `VITE_PROJECTX_API_BASE`
+  **不在闸门内**（部署方的显式选择，Web 端没有界面可放行）。
+  无凭据的 `/api/app/health` 探测照常放行，所以「测试连接」能分清「连不上」与「连得上但明文被拦」；
+  被拦的错误带 `noRetry` + `code`，上传队列不会把它当网络抖动重试。
+  `ServerConfigDialog` 增加「隔离内网测试环境」勾选框，**地址一改勾选就自动取消**，
+  保存时先撤销旧放行再按当前地址记账；`ScannerWorkspace` 在已连接状态下把明文风险直接写在界面上。
+  三份用户文档的 `http://192.168.x.x` 示例全部换成 `https://`（示例就是现场照抄的东西）。
+
+**验证**：`npm run verify:insecure-remote-transport` 57 通过 / 0 失败——起真实 HTTP 服务并从
+`os.networkInterfaces()` 取 LAN 地址，跨机明文发带 Key 请求时**服务端观察到 0 个请求**
+（证明凭据没离开进程），去 Key 的健康探测通过，放行后 Key 送达、撤销后再次被拦，
+回环明文在空放行列表下仍可用；`verify:security-critical` 380 通过 / 0 失败（新增 R32 静态断言：
+判定顺序、精确匹配、闸门在 `X-Api-Key` 之前、快照 base、保存拒绝先于 `saveUrl`、
+勾选框随主机变化取消、`normalizeServerUrl` 的 http 补全不得回退）；`scanner-sync-smoke` 全部通过
+（新增场景 10 锁 R32 行为，并顺手修好第五批 B 起就红着的场景 4/8——R35 把
+`fetchCardByIdSynced` 改名成 `fetchCardDetailSynced`，smoke 当时漏跑没发现）。
+CI 增加 `Plaintext remote transport guard (R32)` 步骤。
+
+## 2026-10-04：扫描端与原生进程边界（安全审查第五批 B · R19/R23/R31/R34/R35/R38/R40）
+
+前四批加的都是**服务端**闸门，第五批 A 收的是浏览器侧。本批改的是三个 **Windows 原生进程**：
+Electron 主进程、TWAIN 桥接子进程、答题卡识别器子进程。共同点是「一旦出错就不是 4xx，
+而是崩溃、误杀进程、把答卷挂到别人名下，或加载到别人的 DLL」，所以每条都配了真机或双架构证据。
+识别器的新档位仍按前四批定下的三档口径交付（默认值 + `PROJECTX_*` 环境变量 + 安全天花板，
+非法值回落、超天花板夹紧、生效档位打印出来），只是打印目标是 **stderr**——`stdout` 必须只有那一份 JSON。
+
+- **R19 识别器解码与布局无资源边界**：识别器原先用 `std::istreambuf_iterator` 把整张图片读进内存再交
+  `cv::imdecode`，布局 JSON 同样不设限、`width` 写 `1e9` 或 `--dpi` 写 `1e9` 都会一路走到
+  `std::llround` 的整型溢出；#280 只在服务端夹了 dpi，**子进程这一侧完全没有闸门**。
+  新增 `recognizer_limits.{hpp,cpp}` 作为单一来源，七档：`MAX_IMAGE_BYTES`、`MAX_IMAGE_PIXELS`、
+  `MAX_LAYOUT_BYTES`、`MAX_LAYOUT_ITEMS`、`MAX_LAYOUT_MM`、`MIN_DPI`、`MAX_DPI`。
+  图片走**三段**：压缩字节上限 → **解码前**按容器头声明的宽高预拒（PNG IHDR、BMP DIB 含
+  BITMAPCOREHEADER、JPEG SOF 标记游走、TIFF 首个 IFD 的 256/257 标签且条目循环上限 512、
+  WebP VP8X/VP8L/VP8 ）→ 解码后按真实 `total()` 复核。**像素预算放在解码之前是本条的关键**：
+  声明炸弹（头部写 20000×20000、数据几 KB）若只在解码后判，OpenCV 会先把几 GB 分配出来，
+  在 32 位扫描端上那是崩溃而不是拒绝。布局侧按数组条目数、毫米有限性与 `±MAX_LAYOUT_MM` 界、
+  非负宽高逐项校验（`assert_array_size` 落在 9 处数组上）；mm→px 先做 `double` 预检再 `std::llround`，
+  结果过一遍像素预算。`warp_to_layout` 的输出尺寸同样过预算。
+  `main.cpp` 另加 `SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)`——
+  被 Node 逐页 spawn 的子进程绝不能停在模态错误框上等点击。
+  **像素默认值按架构分档**：x64 默认 100 Mpx / 天花板 400 Mpx，ia32 默认 40 Mpx / 天花板 70 Mpx
+  （32 位只有 2 GB 用户地址空间）。参照物 A4@300 = 8.7 Mpx、A4@600 = 34.8、A3@600 = 69.6、
+  A4@1200 = 139、A3@1200 = 278：UI 只提供 150–600 dpi，所以默认档位覆盖到 A3@600；
+  真要在 x64 上跑 A4@1200 需显式设 `PROJECTX_RECOGNIZER_MAX_IMAGE_PIXELS=160000000`，
+  而 **ia32 天花板抬到 70 Mpx 以上没有意义**（再高不是拒绝而是崩），这点写进了 README。
+- **R23 Electron 权限与导航未收口**：扫描端页面不需要任何媒体/设备权限（扫描走 TWAIN 桥接子进程），
+  但 Electron 默认会弹权限询问，且 `setWindowOpenHandler` 只管新窗口——**页面内 `location` 跳转不受限**，
+  一旦跳到任意来源，之后所有请求都出自那个来源。现在 `session` 级安装
+  permission request/check/device 三个处理器一律拒绝；主框架导航按同源放行、跨源 https 交系统浏览器
+  （与新窗口同一套口径）、其余协议一律拦下。
+- **R31 默认库路径依赖 `process.cwd()`**：换个工作目录启动就静默新建空库，现场表现为「数据全没了 +
+  管理员口令按引导态换发」（并因此触发 R01 的随机口令）。**这里刻意不做自动切库**——
+  静默改用探测到的另一个库与静默新建空库是同一类错误、只是更难发现。改为在建库之前把事实说出来：
+  解析到哪、是否已存在、同机还有哪些候选库（从模块目录向上四级探测 `data/projectx.db`，
+  不写死任何厂商路径），日志前缀 `[db-path]`，由运维显式设 `PROJECTX_DB_PATH` 收口。
+- **R38 兜底强杀可能打到无关进程**：Windows 回收复用 PID，取消扫描那条 2 秒兜底 `taskkill /F /T /PID`
+  有可能杀掉一个完全无关的进程并带走它整棵子树。现在启动时记录身份快照（父 PID + 可执行文件路径 +
+  启动时刻），强杀前用 PowerShell CIM 读回真实进程信息比对；**任一项读不到**（权限不足、进程已消失）
+  或已观察到退出，一律跳过强杀，交桥接自身超时兜底。判定抽成纯函数 `decideForceKill` 以便直接断言；
+  `close`/`error` 统一走 `retireActiveScan`（既清注册项也清兜底定时器），避免定时器在 PID 被复用后才触发。
+- **R34 兼容模式页序错位会把答卷静默挂到别人名下**：无二维码时学号只靠填涂区识别，页序一错就是
+  「分数没错、人错了」。现在兼容模式下**只有布局第 1 页能为本组定学号**（学号填涂区只在第 1 页生成），
+  其它页即使读到学号也只记在自己名下并打 WARN，人工订正不受此限；`session-results` 新增
+  `legacyIdentityProblems`（单份卡：没有第 1 页 / 第 1 页无学号 / 别页冒出学号 / 与第 1 页不一致）与
+  `legacySessionBlockReason`（会话级：纸张总数不是每份卡用纸数的整数倍，或任一份第 1 页学号不可信 →
+  **整批不入库**，交人工归组）。两者都只在存在 legacy 记录时生效，严格模式有二维码逐页校验、行为不变。
+- **R35 扫描端离线期间服务器改了卡，按旧版卡算出的分数静默入库**：新增 `src/shared/cardVersion.ts`
+  按卡内容算 96bit 指纹，客户端在 `ScannerPanel`/`ScannerWorkspace` 与上传管理器（建会话 + 提交完成两处）
+  都带上；缺指纹按**不可重试**错误立即失败而不是盲发。选卡改走 `fetchCardDetailSynced`，
+  命中离线缓存时先让老师确认，工作台常驻版本提示。服务端 `POST /sessions` 与
+  `/sessions/:sessionId/complete` 双端核验，返回 400 `CARD_VERSION_REQUIRED` / 404 `CARD_NOT_FOUND` /
+  409 `CARD_VERSION_MISMATCH`，被拒时不建会话、不改状态、不入库并打 WARN。
+  **指纹刻意不含 `updatedAt`**（本地导入会重盖时间戳，含进去会让每次上传都被误判为版本不一致），
+  也**不用 Web Crypto**（`http://局域网IP` 这类非安全上下文没有 `crypto.subtle`）。
+- **R40 TWAIN DSM 走不受限搜索回退**：候选里最后两项是裸名 `TWAINDSM.dll` / `twain_32.dll`，
+  交给 `LoadLibraryW` 按默认搜索顺序解析（当前工作目录与 PATH 都在其中），而扫描端的工作目录取决于
+  启动方式——往 CWD 或任何可写搜索目录放一个同名 DLL 就能让扫描端执行任意代码。现在候选一律先规范化成
+  绝对路径，顺序为「显式环境覆盖 > 安装包自带（exe 同目录）> Windows 目录」，裸名候选删除；
+  `TWAIN_DSM_DLL` 只接受绝对路径（相对值/裸名忽略并写进诊断）；加载前校验目标是存在的**非空常规文件**
+  并把字节数记进 `dsm_path`，包内那份还要经 `GetFinalPathNameByHandleW` 解析 junction/符号链接、
+  真实路径离开安装目录即拒绝；加载改用
+  `LoadLibraryExW(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR)`
+  （DSM 自身依赖也不再走 CWD/PATH，老系统返回 `ERROR_INVALID_PARAMETER` 时退回
+  `LOAD_WITH_ALTERED_SEARCH_PATH`，同样不搜 CWD）；`wmain` 第一件事就是
+  `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)`。**代价**：便携使用（exe 拷到别处、
+  旁边放一份 DSM）不再可行，安装包因此必须自带 `TWAINDSM.dll`——`verify:security-critical` 已加断言：
+  凡 `resources/native/win-*/scanner-bridge.exe` 存在，同目录必须有 `TWAINDSM.dll`。
+- **踩坑（四处）**：① 本机原本缺 `D:\opencv4-13` 与 `D:\nlohmann`，两个架构都编不出来，
+  也就无法给出 R19/R40 的真机证据。恢复方式全部在仓库外、不改任何构建脚本：目录 junction 指回本机已有的
+  OpenCV，ia32 的导入库用 `dumpbin /exports` + **不带引号**的 `.def` + `lib /def /machine:x86` 从已打包的
+  ia32 DLL 合成，`json.hpp` 取 nlohmann/json v3.11.3（`curl` 直连 raw.githubusercontent 报 SSL exit 60，
+  改 git clone）。`.def` 里给导出名加引号会让 `lib.exe` 把引号写进符号名，链接时 41 个 LNK2001 全对不上。
+  ② `/sdl` 下 `std::getenv` 是**编译错误**，环境变量一律走 `getenv_s`。③ `recognizer_limits()` 单例
+  调用了定义在它之后的 `describe_recognizer_limits_raw`，需要文件作用域前向声明。
+  ④ `layout_pixel_size` 里保留了历史的浮点运算顺序（`mm / 25.4 * dpi`）——换成等价写法会带来 ±1 px 漂移，
+  而识别器的定位标记判定对这一像素是敏感的。
+- **验证**：`npm run typecheck` 通过。新增 `npm run verify:recognizer-limits`（`scripts/verify-recognizer-limits.ts`）
+  在 x64 与 ia32 两份产物上各 **45 通过 / 0 失败**（ia32 用 `ANSWER_CARD_RECOGNIZER_EXE=…` 指定）：
+  正常卡识别 + 学号 + `[recognizer-limits]` 摘要、七个档位各自的越界拒绝（退出码 2 且错误信息点名对应环境变量）、
+  `MAX_IMAGE_PIXELS` 收紧时错误信息含「头部声明」以证明**拒绝发生在解码前**、非法值回落默认、
+  超天花板夹紧（并用一对相反用例证明夹紧是有效的）、`MIN_DPI > MAX_DPI` 时按 `MAX_DPI` 回落、
+  脚本清理的环境变量名单 == 模块 `*_ENV_VARS`、README 含全部 7 个变量名。
+  既有的 `verify:recognizer-layout`、`verify:recognizer-pencil` 在**两个架构**上同样全绿
+  （即「加了边界没有把正常卡拒掉」）。`verify:security-critical` 从 300 项增到 **365 项全过 / 0 失败**
+  （第五批 B 逐次为 324 → 344 → 352 → 365），新增 R23/R31/R38/R34/R35/R40/R19 的源码不退化断言，
+  其中 R40 七条锁的是「裸名候选与 `LoadLibraryW` 不得回来」、R19 锁的是「三档齐全且每档天花板不低于默认值、
+  `read_capped_file` 在 `cv::imdecode` 之前、`assert_pixel_budget` 在 `cv::warpPerspective` 之前」。
+  `verify:scanner-cancel` **33/0**（新增第 5 节 13 条 R38 身份校验断言）；`verify:scan-page-numbering`、
+  `scanner-batch-results-smoke`（SQLite 与本机 MariaDB 12.3.2 / 13306 临时实例 + 专用空库两种方言都跑）、
+  `scanner-upload-manager-smoke`、`scanner-upload-release-smoke`、`verify:card-identity`、
+  `verify:permission-scope`、`verify:scanner-dpi`、`verify:scanner-page-timeout` 全通过。
+  R40 的真机证据（KODAK i3000、x64/ia32 各自 `list` 成功、CWD 投毒被拒、相对路径环境覆盖被忽略）
+  记在 `readus/SECURITY-AUDIT-NOTES-2026-10-04.md` 第七节。
+- **文档**：README 新增「原生识别器的解码与布局边界」档位表（7 档 × x64/ia32 默认与天花板）、
+  扫描端的兼容模式归属规则与卡版本核验口径、DSM 加载路径与 `TWAIN_DSM_DLL` 必须为绝对路径的说明、
+  `[db-path]` 日志与 `PROJECTX_DB_PATH`、Electron 权限默认拒绝；`SECURITY-AUDIT-NOTES-2026-10-04.md`
+  新增第七节，逐条记下取舍理由、真机证据与本机恢复构建前提的方式（**这些路径不入库、不进 CI**）。
+- **产物**：`resources/native/win-x64` 与 `win-ia32` 下的 `answer-card-recognizer.exe`、
+  `scanner-bridge.exe` 均按仓库既有脚本重新构建并提交（x64 与 ia32 两个配置 MSBuild Release 均成功）。
+
+## 2026-10-04：Web 端凭据、导入资源与数据保真（安全审查第五批 A · R05/R12/R17/R30/R41/R44/R46/R49）
+
+前四批都在服务端加闸门。本批的前四条改的是**浏览器这一侧怎么带凭据、以及教师上传的东西会不会反过来打到本域名的用户身上**，后三条是核对清单时发现的数据保真与显示错误。新增的档位仍按三套口径交付（默认值 + `PROJECTX_*` + 安全天花板，非法值回落、超天花板夹紧、启动日志打印生效档位）。
+
+- **R05 导入插图可变成同源脚本执行**：答题卡导入把插图以 **base64 内联在 JSON 请求体**里（不走 multer），于是完全绕过上传侧的预算；资源端点原先用 `res.sendFile()`，响应类型由扩展名推导，而本仓库 CSP 允许 inline script——一张 `.html` 改名塞进导入包，就得到「在 Project-X 的域名下执行任意脚本」，同域令牌立即可被读走。现在两端一起收：`src/apps/answer-card/server/validate-upload.ts` 增加**闭合**的「扩展名 → Content-Type」表（`.png/.jpg/.jpeg/.bmp/.tif/.tiff/.webp`，**刻意没有 `.svg`**：SVG 是 XML 文本、可内嵌 `<script>`）与「扩展名 → 允许的魔数」表，`<html>…` 改名 `.png` 会因魔数不一致被拒；资源响应带 `nosniff` + `default-src 'none'; img-src 'self'; sandbox` + 显式 `Content-Type`/`Content-Disposition`，非图片扩展名直接 404。新增 `src/shared/cardAssetLimits.ts`（四档：单图 6 MiB、单次导入 200 条、累计 8 MiB、上传件 12 MiB），**不合规资源在入库前拒绝并计入 `warnings.rejectedAssets`**——既不静默丢图，也不让一张坏图毁掉整份答题卡（导入仍返回 201）。**放宽这几档不会让更大的导入通过**：外层是全局 `express.json({ limit: "8mb" })`，base64 膨胀约 4/3，本批用单张 6 MiB 插图实测到 body-parser 的 413 并把这条交互写进注释与测试；现场真要导更大的图集应改前端形态，不是把天花板抬高。
+- **R30 URL 携带主会话令牌**：跨域模式下 `<img>`/`<iframe>`/`EventSource` 带不了 `Authorization`，前端就把主令牌拼进 `?token=`；URL 进浏览器历史、代理与访问日志，而主令牌能读任意 GET 接口，泄漏一次等于整份只读权限外泄。整改分三层：① `src/server/lib/mediaAllowlist.ts` 把 `?token=` 的适用范围收敛成**只读媒体白名单**（14 条模式，逐条与真实路由注册核对过；CSV/Excel 导出走 `downloadBlob → authFetch` 的头认证，因此不进白名单），白名单外一律 401 且提示改用 `Authorization`；② `src/server/services/mediaTicket.ts` 发**短命、绑定 pathname、仅 GET/HEAD** 的一次性票据 `?mt=`（`POST /api/auth/media-ticket` 换取，登出即吊销），换路径复用、POST、过期都判 401；新增 `src/shared/mediaTicketLimits.ts`（寿命 300 秒、单账号 8 张、全局 2 万张）。**票据刻意只放内存**：落库就会随备份长期存活，变成它本来要替代的那种长效凭据；③ `src/server/lib/logRedaction.ts` 把 `token`/`mt`/`access_token`/`api_key`/`key` 的查询串值与 `Authorization` 头统一截断为前 6 位 + `***`，错误对象走 `safeErrorForLog()`（返回脱敏副本，原对象不动）。代理侧的 `access_log` 归部署方管，`deploy-guide.md` 给了一份**只记路径不记查询串**的 nginx `log_format`。
+- **R12 独立移动页面可被链接诱导泄漏 Bearer**：`Grade-Analysis-System-mobile.html` 原先从 `?api_base=`/`?apiBase=` 选后端，又把 `localStorage.px_token` 以 Bearer 发往该地址——转发一条带参数的链接就能收走点开它的人的凭据。现在目标只取自页面内 `<meta name="px-api-base">`（同源留空、跨源由部署方写死，非 https 跨源拒绝），URL 参数一律忽略并在页面底部给出可见提示。该页面**是**部署产物（`deploy-guide.md` 教人 `cp` 到静态目录），所以选择原地收紧而不是删页；跨域部署步骤已同步改写。
+- **R41 废弃独立页面**：`Grade-Analysis-System-database.html` 不在 Vite 生产入口、无任何文档/脚本引用，且内联脚本本身有语法错误（非 async 回调里用 `await`，实际解析得 `SyntaxError: Unexpected identifier 'fetchExams'`）——一个「打开就跑不起来、 yet 仍在仓库里被扫描器当成攻击面」的页面按清单建议删除。需要历史内容从 git 取回（`git checkout HEAD~1 -- Grade-Analysis-System-database.html`）。
+- **R17 CSV 公式注入**：`src/apps/answer-card/client/util/download.ts` 的本地 `esc()` 只处理引号/逗号/换行，姓名或班级里出现 `=cmd|…`、`@SUM(1-9)*…`、`1-2` 时会被 Excel/WPS 当公式执行；临界生名单正是「从别的系统导入再导出」的链路，字段来源不完全可控。现改为复用 `src/shared/csv.ts` 的 `csvCell()`（与服务端名册导出同一套口径），并加了一条**源文本守卫断言**防止本地 `esc` 被重新引入。
+- **R44 逐题选项布局被归一化丢弃**（数据保真，非安全项）：`objectiveQuestionDefinitions()` 已算出逐题 `optionLayout`（`config.optionLayout ?? block.optionLayout ?? "horizontal"`），但 `normalizeObjectiveQuestions()` 的返回对象漏了该字段——于是每次 `normalizeCard` 与 `CardRepository` 写库都把逐题 `vertical` 抹平成 `undefined`，题块级 `horizontal` 覆盖上去，表现为 PUT→GET 之后布局变样。判分坐标系与 PDF 排版坐标系必须同源，这里显式带上。
+- **R46 不定项显示成单选**：规范拼写是 `indefinite`，历史数据里还留着 `indeterminate`，而散落的三元判定只认后者，规范拼写会掉进「单选」分支。新增 `src/shared/objectiveMode.ts` 作单一口径（`objectiveModeLabel` / `isMultiSelectMode` / `isIndefiniteMode`），`OptionAnalysisPanel.tsx`、`ScoreFixPage.tsx` 接入，`types.ts` 与 `schema.sql` 的注释同步更正为 `single / multiple / indefinite` 并注明历史拼写来源。
+- **R49 皮肤切回原值不持久化**：`App.tsx` / `ScannerApp.tsx` 原先「PATCH 在飞、期间又切一次」时按最后一次**响应**写回本地状态，旧请求的响应会赢，界面显示与服务端记录不一致（切回原值时最常见的竞态）。核心抽成 React 无关的 `src/apps/answer-card/client/lib/skinPreferenceWriter.ts`（请求序号单调递增，只有「仍是最新的那一次」才回写，失败则回滚并可选 refresh），`lib/skinSync.ts` 提供 hook 包装，`AuthContext` 增 `patchUserLocal` 做本地回写。回归 `verify:scanner-skin-patch-guard` 从 13 项扩到 **17 项**，其中 R49-2 故意复现修复前的缺陷（服务端停在 `paper-edge` 只发一次 PATCH），保证这条断言不是空跑。
+- **踩坑（三处）**：① `logRedaction.ts` 里用模板串拼正则时，字符类含反引号会**提前终止模板字面量**（TS1002），改用普通单引号串拼接；② 文档注释里写 `cards/*/paper` 这类通配路径会因 `*/` **结束块注释**（TS1109/TS1127），注释里的路径示例一律改 `:id` 形态；③ 白名单最初按「看起来像媒体」直觉列了几条，与真实路由核对后发现 `/api/cards/:id/paper/pages/:n/image`、`/api/export/*.csv` 等根本没有对应注册或本就走头认证，多写的模式等于无谓扩大 `?token=` 的适用面——白名单必须来自 `grep router.get` 的结果，不能来自印象。
+- **验证**：`npm run typecheck` 通过；`npm run verify:security-critical` **300 项全过 / 0 失败**（上批基线 251，新增 49 条：两个新模块的「脚本清理的环境变量名单 == 模块 `*_ENV_VARS`」一致性、三档解析（默认/合法覆盖/非法回落/超天花板夹紧）与 `describe*()` 摘要、`IMAGE_CONTENT_TYPES` 不含 `.svg`、`detectImageLabel` 与「扩展名与魔数不一致」两类拒绝、真实导入往返 `{ok.png, evil.html, fake.png, lying.png}` → 只有 `ok.png` 落库且 `rejectedAssets` 点名三条、资源端点非图片 404 + 图片响应头 + 目录穿越拒绝、超配额 413 且答题卡数只 +1、单张 6 MiB 命中 body-parser 413、`isUrlCredentialAllowedPath` 正反例、白名单内 `?token=` 200 而 `/api/users` 401、票据签发/解析/换路径/POST/过期/登出吊销、真实 HTTP 下 `/api/auth/media-ticket` → `?mt=` → 他径 401、三类脱敏输出、`csvCell` 精确输出与 `download.ts` 源文本守卫、R44 逐题 `optionLayout`、R46 两种拼写的标签与多选判定）。`verify:scanner-skin-patch-guard` **17/0**。MariaDB 侧见本节末的实跑记录。
+- **文档**：README「API 接口一览」新增两张档位表（答题卡插图、单次媒体票据）与 R12/R41/R17 口径；`deploy-guide.md` 把跨域部署的 `?api_base=` 步骤改成 `<meta name="px-api-base">`，并新增「访问日志不记查询串」的 nginx 配方；`readus/SECURITY-AUDIT-NOTES-2026-10-04.md` 补 R41 删除判定、R12 原地收紧的理由与 R30 的部署方配合事项。
+
 ## 2026-10-05：PR #312 评审返修（chuh 的 15 条 CR + 复核补充项）
 
 第四批合入 PR #312 后，评审人给出 15 条 change request。它们不是新一批漏洞清单，而是对**已交付闸门的口径复查**：范围收敛收敛错了轴、原子性只做到「先读后写」、超时只覆盖到响应头、容量只量了输入而没量落盘。逐条返修如下（按提交分组）。
@@ -14,8 +341,8 @@
 - **CR14 / CR15 / 复核补充项（`b418ce9` / `dd7843d`）**：CR14——原卷容量闸门原本只看**输入字节**，而原卷是要转换的：一张 844 KiB 的 JPEG 会落成 jpg 加配对 PDF、实测约 1.41 MiB，1 MiB 的单卡额度被直接穿透，且放大倍数随图片内容变化、估不出来。改成写完再量：`storePaperPageFile` 返回本次真实写入字节（`sizeOf` 读不出来就抛错，不再静默算 0——这个数字现在是容量闸门的唯一依据），事务提交前用 `assertWrittenPaperWithinQuota` 以磁盘实测增量复测，越界抛 `PaperQuotaRollbackError`、页行随事务回滚、已写文件逐个删除，返回与 admission 同一形状的 413 并带 `measuredAfterConversion: true`。单卡这一维重新实测，全局这一维沿用 admission 的缓存值 + 本轮增量（每次上传都强制重扫整个 `papers/` 会把 60 秒 TTL 缓存的收益全部赔掉）；`papers/_tmp` 整棵从全局实测里排除——那是「正在路上的请求」的暂存副本，计入等于每条上传把自己算两次、并发上传还会互相挤占额度；暂存目录改由 `storage.ts` 单点导出 `paperTmpDir`。CR15——微信出站的超时与并发都只覆盖到**响应头到达**：`fetch` 一成功就归还槽位，而调用方紧接着还要 `response.json()`，那段读取既不在超时预算内也不在并发预算内；半挂连接（头给得出来、正文永远不给完）会把一条连接和一个槽位永久占住，4 个槽位占满之后全校订阅推送再也发不出去。`wechatFetch` 现在返回 `WechatFetchResponse`（正文已在闸门内读完），槽位从排队一直占到正文读完，截止点由读侧 `Promise.race` 自己守着、不依赖传输层理会 AbortSignal；正文越界/读取失败时取消响应体，连接才会归还，定时器改在外层 `finally` 清理。CR15 的 smoke 替身换成真 `Response`——用缺体的 `{ ok, json() }` 替身会绕过正文路径，等于没测到这段。复核补充项——预算是在正文还没收完时就回 413 再把请求断开的，而 multer 正在消费同一个流：`req.destroy()` 会让它随后抛出 `Request aborted`/`LIMIT_FILE_SIZE`，原卷路由的手写错误回调因此晚到半步，无条件 `res.status(400).json(...)` 就是对一个已结束的响应二次写入（`ERR_HTTP_HEADERS_SENT`）——轻则把 413 覆盖成误导的 400（客户端按「参数不对」处理而不是按「少传点」），重则未捕获异常。新增 `isUploadAlreadyRejected(req, res)`（以预算符号位为主判据，`headersSent/writableEnded/destroyed` 覆盖其它已答复路径），回调先回收临时件、再问过守卫才决定要不要写——**回收与响应彼此独立**，被预算拒掉的请求照样不在 `_tmp` 留副本；全局错误处理器同一类写入也收紧（已经结束/销毁的响应不再补 `res.end()`）。`exam-answer-key-routes.ts` 的同形回调**故意不加守卫**：那条链上前面没有 `requestUploadBudget`、`requireExamAccess` 又在 multer 之前（403 时 multer 根本不运行），「已经答复过」恒为假，加了就是死代码。
 - **踩坑（六条，都值得留在文档里）**：① `GET_LOCK` 的参数单位是**秒**，把 3000 毫秒原样传进去等于等 3000 秒——一次并发挤兑就挂住连接并把后续所有领取都变成「等待锁超时」，本机表现为整节回归只看到锁错误；现按 `Math.max(1, round(ms/1000))` 换算，并在回归里加时长断言与「突发前锁无人持有」的前置体检，锁泄漏与单位回归都会第一时间暴露。② 探针客户端最初复用 keep-alive 连接，被预算断开的那只 socket 会被下一条请求捡走，于是只看到 `ECONNRESET`——那测的是连接复用而不是响应行为，测试里每条请求 `agent: false` 各用一条连接。③ `npm ci` 会按 lock 装到有洞的 adm-zip 0.6.0，本地 `node_modules` 已是 0.6.1，于是「本地全绿、CI 现场有洞」。④ SQLite 单连接下嵌套事务直接抛错，原子准入必须额外挂进程内串行链，不能只靠数据库锁。⑤ 缺少响应体的 fetch 替身会让正文读取路径整段被绕过，改造后的闸门看起来测过了、实际没测。⑥ 判定「越权面是否放宽」要看收敛后的集合而不是看代码分支——CR10 放行的是冻结名单内的既有成员，`filterParticipatedExamIds` 在 SQL 报错时回退为「不过滤」，这种只在 MariaDB 方言下才坏的静默放行，SQLite 回归证不了。
 - **验证**：`npm run typecheck` 通过。`verify:permission-scope` 53 → **71**（CR2–CR5）→ **93**（CR1/CR6/CR9）→ **110/0**（CR7/CR10/CR11/CR12，含教师侧对照、调班保留冻结成员、只读教师与查看门两条出路）。`verify:security-critical` 251 → 256 → 257 → 263 → 270 → 279 → **285 通过 / 0 失败**（新增：暂存区不计入全局容量、844 KiB 估算放行 vs 1.41 MiB 实测拒绝、回滚错误形态与文案脱敏、「响应头先到正文后到」的连接级并发峰值仍 ≤ 闸门上限、半挂正文按预算整体判负、失败路径归还槽位、与线上同形的「预算 → multer → 手写回调」迷你链跑真实 Express + 真实 multer + 分块无 Content-Length 请求并断言二次响应被挡下、以及真实路由源码里「清理在前、守卫在 400 之前」，避免回归链与线上代码各写一套）。MariaDB 侧本机 12.3.2 / 13306 临时实例真跑 `verify:mariadb` 13 → 14 → **15 个分区全绿**，含真锁路径：并发 6 投只收 2、锁被占用时按毫秒预算等待（实测 2010 ms）后返回「请重试」且不落任务行、在途占位与僵尸行结算、启动清扫归零，试卷池 5 并发在配额 2 下恰好 2 成、锁无泄漏、等锁时长 3004 ms。另 `verify:auth` 137/0、`verify:exam-paper` 69/0、`verify:wechat-grade-release` 21/0、`verify:p1-scope` 19/0、`verify:review-ranking-degradation` 30/0、`verify:analysis-batches-2-4` 76/0，scanner 系列 smoke 全绿。CR14/CR15 与其余各条**均未改动需要重跑的迁移**，MariaDB 侧只补回归、不动 schema。
+- **并入第五批后的合并树（`fix/security-batch5-web-scan-deploy`）**：CR 返修与第五批两套断言合流，只有三处冲突（全局错误处理器、验证脚本 import 行、本文件），一律按「两侧都保留」解决——`safeErrorForLog()` 的日志打码与「已结束/已销毁的响应不再写入」的守卫同时生效。合并树全量复检：`npm run typecheck` 通过；`verify:security-critical` **441 通过 / 0 失败**（第五批新增与本轮 CR 新增互不覆盖），`verify:permission-scope` 110/0、`verify:auth` 137/0、`verify:exam-paper` 69/0、`verify:wechat-grade-release` 21/0、`verify:p1-integrity` 15/0、`verify:p1-scope` 19/0、`verify:p1-readgate` 15/0、`verify:review-ranking-degradation` 30/0、`verify:scanner-cancel` 33/0、`verify:card-export-revision` 66/0、`verify:demo-credentials` 84/0、`verify:systemd-hardening` 77/0、`verify:release-integrity` 61/0、`verify:recognizer-limits` 45/0、`verify:insecure-remote-transport` 57/0、`verify:scanner-skin-patch` 17/0、`verify:p1-security` 11/0、`verify:demo-safety` 23/0、`verify:reliability-filter` 21/0、`verify:176-178` 12/0，其余 smoke/回归退出码全 0。MariaDB 侧本机 12.3.2 / 13306 临时实例真跑 `verify:mariadb` **16 节全 PASS**（两处真锁照旧：试卷池领取等锁 3004 ms、AI 准入等锁 2010 ms），`verify:demo-credentials:mariadb`、`verify:card-export-revision:mariadb`、`verify:class-archive:mariadb`、`verify-ladder-students --mariadb` 各按自己的一次性空库跑通——这些变体要求 `PROJECTX_MARIADB_DATABASE` 等于它专属的库名，复用会留表的 `projectx_ci` 会被直接拒绝。仍红的两条是本批之前就存在的 `verify:a3`（缺 A3 样张与原生识别器）与 `verify:round5-groupby`（引用当前 schema 里不存在的 `card_id` 列），与本轮改动无关，未一并处理。
 - **文档**：README 的原卷容量、微信出站、解压预算、AI 配额、试卷池五张档位表同步本轮新增/改口径的档（`PROJECTX_RESTORE_ZIP_MAX_RATIO`、`PROJECTX_AI_ACTIVE_RUN_STALE_MS`、`PROJECTX_AI_ADMISSION_LOCK_TIMEOUT_MS`、`PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS`），并写明锁预算的秒/毫秒换算、`_tmp` 不计入全局容量、413 带 `measuredAfterConversion`、微信槽位覆盖正文读取、「回收与响应是两件独立的事」等行为口径。
-
 
 ## 2026-10-04：服务端资源与 AI 链路整改（安全审查第四批 · R10/R11/R14/R16/R20/R24/R25/R26/R27/R43）
 

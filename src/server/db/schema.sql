@@ -148,6 +148,8 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     knowledge_points_text TEXT,                            -- v1.8.0: 知识点纯文本备份
     created_by       INTEGER REFERENCES users(id),
     is_demo          INTEGER NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示答题卡（clearDemoData 仅按此标记清理）
+    revision         INTEGER NOT NULL DEFAULT 0,  -- v59: 每次保存 +1（安全 R45）。updated_at 只有秒级精度，
+                                                  -- 同一秒内的两次保存无法区分，导出 PDF 需要单调版本号绑定快照
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -173,7 +175,7 @@ CREATE TABLE IF NOT EXISTS objective_blocks (
     question_start   INTEGER NOT NULL,
     question_count   INTEGER NOT NULL,
     option_count     INTEGER NOT NULL,
-    mode             TEXT NOT NULL,                -- single / multiple / indeterminate
+    mode             TEXT NOT NULL,                -- single / multiple / indefinite
     score_per_question REAL NOT NULL,
     density          TEXT DEFAULT 'compact',       -- loose / normal / compact / dense
     option_layout    TEXT DEFAULT 'horizontal',    -- horizontal / vertical

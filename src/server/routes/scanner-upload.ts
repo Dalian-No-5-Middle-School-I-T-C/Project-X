@@ -13,6 +13,7 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { parseIdentityMode } from "../../shared/cardIdentity";
+import { cardFingerprint, parseCardVersion } from "../../shared/cardVersion";
 import { buildLayout } from "../../shared/layout";
 import { mapScanPageToLayout } from "../../shared/scanPages";
 import {
@@ -158,6 +159,45 @@ function scannerUploadDir(): string {
 }
 
 // ── POST /api/scanner/sessions ────────────────────────
+/**
+ * 安全 R35：核验扫描端上报的答题卡版本。
+ *
+ * 扫描端可以长时间离线，本机缓存的卡会与服务器分叉（版面挪了、答案改了、分数调了）。
+ * 客户端在**本机**完成识别与判分，用的就是那份缓存卡；服务器随后按自己那一版卡汇总入库。
+ * 两边不是同一版时，分数是错的，而现场看不出任何异常——所以必须在入库前比对版本，
+ * 不一致就拒绝，让老师重新同步答题卡。
+ *
+ * 返回 null 表示放行；否则返回要直接回给客户端的错误。
+ */
+async function cardVersionProblem(
+  cardId: string,
+  rawVersion: unknown,
+): Promise<{ status: number; code: string; message: string } | null> {
+  const version = parseCardVersion(rawVersion);
+  if (!version) {
+    return {
+      status: 400,
+      code: "CARD_VERSION_REQUIRED",
+      message: "缺少或非法的 cardVersion：请升级扫描端，并重新选择该答题卡以同步最新版本后再上传",
+    };
+  }
+  const card = await new CardRepository().findById(cardId);
+  if (!card) {
+    return { status: 404, code: "CARD_NOT_FOUND", message: "答题卡不存在或已删除，无法核验版本" };
+  }
+  const serverVersion = cardFingerprint(card);
+  if (serverVersion !== version) {
+    return {
+      status: 409,
+      code: "CARD_VERSION_MISMATCH",
+      message:
+        `答题卡已在服务器更新（服务器版本 ${serverVersion.slice(0, 12)}，扫描端版本 ${version.slice(0, 12)}）：` +
+        "按旧版卡识别判分的结果不能入库，请重新同步答题卡后重扫或重新上传",
+    };
+  }
+  return null;
+}
+
 router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
   try {
     const { cardId, name, dpi, paperSize } = req.body ?? {};
@@ -169,6 +209,16 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
     const requestedPages = parseScanSessionPageCount(req.body?.pageCount);
     if (requestedPages === null) {
       res.status(400).json({ message: `pageCount 需为 1–${MAX_SCAN_SESSION_PAGES} 的整数` });
+      return;
+    }
+    // 安全 R35：会话都不给建，旧版本的页自然一张也传不上来
+    const versionProblem = await cardVersionProblem(String(cardId), req.body?.cardVersion);
+    if (versionProblem) {
+      console.warn(
+        `[scanner-upload] 会话创建被拒（${versionProblem.code}）cardId=${cardId} ` +
+          `clientVersion=${parseCardVersion(req.body?.cardVersion) ?? "none"}`,
+      );
+      res.status(versionProblem.status).json({ code: versionProblem.code, message: versionProblem.message });
       return;
     }
 
@@ -487,12 +537,23 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     const { sessionId } = req.params;
     const db = await getMysqlDb();
 
-    const session = await db.get<{ id: string; page_count: number; status: string }>(
-      "SELECT id, page_count, status FROM twain_scan_sessions WHERE id = ?",
+    const session = await db.get<{ id: string; card_id: string; page_count: number; status: string }>(
+      "SELECT id, card_id, page_count, status FROM twain_scan_sessions WHERE id = ?",
       sessionId
     );
     if (!session) {
       res.status(404).json({ message: "会话不存在" });
+      return;
+    }
+
+    // 安全 R35：扫描到入库之间可能隔了几十分钟，服务器上的卡在这期间被改过就不能再入库。
+    const versionProblem = await cardVersionProblem(session.card_id, req.body?.cardVersion);
+    if (versionProblem) {
+      console.warn(
+        `[scanner-upload] 会话完成被拒（${versionProblem.code}）session=${sessionId} cardId=${session.card_id} ` +
+          `clientVersion=${parseCardVersion(req.body?.cardVersion) ?? "none"}`,
+      );
+      res.status(versionProblem.status).json({ code: versionProblem.code, message: versionProblem.message });
       return;
     }
 

@@ -97,6 +97,29 @@
 - **实时进度**：SSE 推送扫描进度 + 逐页缩略图预览
 - **自动识别评分**：扫描完成自动调用识别引擎提取考号、判分
 - **考号-图片持久化**：学号与图片路径存入 SQLite 数据库
+- **兼容模式归属口径**（安全 R34）：无二维码时**只有布局第 1 页能为本组定学号**（学号填涂区只在第 1 页生成），
+  其它页即使读到学号也只记在自己名下并打 WARN，人工订正不受此限；会话级另有一道闸——
+  纸张总数不是每份卡用纸数的整数倍，或任一份第 1 页学号不可信，则**整批不入库**、交人工归组。
+  严格模式有二维码逐页校验，行为不变
+- **答题卡版本核验**（安全 R35）：扫描端离线期间服务器上改了卡，按旧版卡算出的分数不会再静默入库。
+  客户端按卡内容算 96bit 指纹（`src/shared/cardVersion.ts`，不含 `updatedAt`、不用 Web Crypto），
+  建会话与提交完成两处都上报，缺指纹按不可重试错误立即失败；服务端核验不通过返回
+  400 `CARD_VERSION_REQUIRED` / 404 `CARD_NOT_FOUND` / 409 `CARD_VERSION_MISMATCH`，被拒时不建会话、不改状态、不入库。
+  选卡改走同步拉取，命中离线缓存时先让老师确认，工作台常驻版本提示
+- **TWAIN DSM 加载路径**（安全 R40）：DSM 只从**规范化后的受信绝对路径**加载，顺序为
+  「`TWAIN_DSM_DLL` 环境覆盖 > 安装包自带（exe 同目录）> Windows 目录」，不再退回裸名搜索
+  （裸名会交给默认搜索顺序解析，当前工作目录与 PATH 都在其中）。`TWAIN_DSM_DLL` **必须是绝对路径**，
+  相对值/裸名一律忽略并写进诊断日志；包内那份还要经符号链接解析后确认仍在安装目录内。
+  便携使用（exe 拷到别处、旁边放一份 DSM）因此不再可行，安装包必须自带 `TWAINDSM.dll`；
+  加载失败会报 `DSM_LOAD_FAILED` 并提示「只在安装目录与 Windows 目录内查找」
+- **跨机明文凭据口径**（安全 R32）：远端地址填 `http://` 且不是回环时，扫描端**默认不发送 API Key /
+  上传令牌 / 带 token 的媒体地址**，同步也不会静默退回本机缓存（被拦会明确报
+  `INSECURE_REMOTE_TRANSPORT_BLOCKED`，且标记为不可重试）。三条出路：改用 `https://`；
+  本机自测用 `http://127.0.0.1:5174`（回环一律豁免，只认 `localhost`/完整四段 `127.x.x.x`/`::1`，
+  `127.1` 这类按远端处理）；或在服务器配置对话框勾选「隔离内网测试环境」按 `host:port` 显式放行
+  （**地址一改勾选自动取消**，不做通配与同网段推断）。构建期的 `VITE_PROJECTX_API_BASE`
+  不走这道闸门——那是部署方的显式选择，Web 端也没有界面可放行。无凭据的健康探测照常发出，
+  所以「测试连接」能分清「连不上」与「连得上但明文被拦」
 
 ### 成绩分析
 
@@ -129,6 +152,15 @@
 - **知识点弱项诊断**（v1.8.0）：成绩分析 AI 可通过知识点维度诊断班级薄弱环节，按得分率排序，"勾股定理得分率 62%" 级别精准定位
 - **系统 AI 配置**（v1.8.0）：AI 提供商改为管理员统一配置（`ai_providers.is_system=1`），教师无需了解 API，账号设置仅 admin 可见
 - **导出检查**（v1.8.0）：PDF 导出前三步检查卡片——分值验证 → 原卷预览（按文件类型内联渲染：图片/img+缩放、PDF/iframe、DOCX/Office链接）→ 知识点分析（内联 AI 分析+编辑），三步含「← 上一步」回退，全部 ✓ 方可导出，侧栏橙色标识未上传原卷的考试
+- **打印件版本绑定**（安全 R45）：自动保存是 1200ms 防抖的，而 PDF 从库里当前值渲染，
+  所以「点导出时手上那一版」和「渲染时库里那一版」可以不是同一版——纸上的题格与阅卷坐标布局对不上且无提示。
+  现在每次保存把 `answer_cards.revision` +1（**自增写在 SQL 里**，请求体自带的值一律不采信），
+  导出前先把待存改动有界收敛（≤3 轮，用户持续敲键时明确放弃而不是无限重试）、再本地比对一次版本，
+  `/pdf` 于渲染**之前**过闸门：版本不等 409 `CARD_REVISION_MISMATCH`、取值非法 400 `CARD_REVISION_INVALID`，
+  三种结果都回 `X-Card-Revision`。版本令牌**只能是 `revision`**，不能用 `updated_at`——它是 `CURRENT_TIMESTAMP`
+  写入的秒级值，同一秒内的两次保存分不开。`?v=` 可省略（部署冒烟与修复基准工具不带它，不经过防抖），
+  但传了就必须是合法整数。闸门只管「导出那一刻」，**不解决多写者丢更新**：两个窗口同改一张卡，
+  后保存的仍会覆盖先保存的，要做严需要 PUT 层乐观锁（`If-Match`），那是产品决策、当前未启用。
 - **原卷预览**（v1.8.0）：放大 Modal 支持 ± 缩放（25%~300%），按钮实时显示当前倍率，`?format=image` 参数避免图片/PDF格式冲突
 
 ### 账户与安全
@@ -159,7 +191,51 @@
 - **x64 / ia32 双架构**：扫描端均支持 64 位与 32 位 Windows 包；32 位原生资源位于 `resources/native/win-ia32/`
 - **打包入口修复**：扫描端构建最终产物统一提供 `dist/scanner/index.html`，Electron 运行时与服务端 SPA fallback 使用同一入口；ia32 包不再复用 x64 Electron 运行时。
 - **数据共用**：`%APPDATA%\answer-card-designer\`（管理员 Web 端建账号→扫描端/学生 Web 端直接使用）
+- **权限默认拒绝**（安全 R23）：Electron 主进程装了 session 级权限策略，permission request / check / device
+  三个处理器一律拒绝——扫描走 TWAIN 桥接子进程，页面本身不需要任何媒体/设备权限。
+  主框架导航同时收口：同源放行，跨源 https 交系统浏览器（与新窗口同一套口径），其余协议一律拦下
+  （此前只有 `setWindowOpenHandler` 管新窗口，页面内 `location` 跳转可以走到任意来源）
+- **兜底强杀先验身份**（安全 R38）：取消扫描的 2 秒兜底 `taskkill /F /T /PID` 现在要先比对启动时记录的
+  身份快照（父 PID + 可执行文件路径 + 启动时刻），因为 Windows 会回收复用 PID；
+  任一项读不到（权限不足、进程已消失）或已观察到退出，一律跳过强杀，交桥接自身超时兜底
+- **默认库路径可诊断**（安全 R31）：默认库位置依赖 `process.cwd()`，换个工作目录启动会静默新建空库
+  （现场表现为「数据全没了 + 管理员口令按引导态换发」）。现在建库之前会先打印事实：解析到哪、是否已存在、
+  同机还有哪些候选库（从模块目录向上四级探测 `data/projectx.db`），日志前缀 `[db-path]`。
+  **刻意不自动切库**——静默改用别的库与静默新建空库是同一类错误、只是更难发现；
+  要固定位置请显式设 `PROJECTX_DB_PATH`
 - **支持项目**：账号菜单低调入口，JSON 配置驱动的收款码预留接口（详见 [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md)）
+
+#### Windows 扫描端安装包：未签名与完整性校验（安全 R42）
+
+扫描端的 exe / msi **没有代码签名**：`build.win.signAndEditExecutable` 是 `false`，仓库里也不含证书
+（代码签名证书属于私钥材料，不能入库）。现场表现是 Windows SmartScreen 提示「未知发布者」，
+以及收件方无法凭签名判断文件真伪。
+
+补偿措施：`electron:dist` / `electron:dist:ia32` / `electron:msi` / `electron:msi:ia32` /
+`package:server:ubuntu24` 五条打包命令都以 `npm run release:hash` 收尾，在 `release/` 下生成两份文件：
+
+- `SHA256SUMS.txt`：`sha256sum -c` 兼容的校验和清单（LF、按路径排序、不含构建中间物与 `*-unpacked/`）
+- `BUILD-INTEGRITY.txt`：版本、构建提交、每个产物的校验和与**签名状态**，未签名时把原因与后果写明
+
+**发布时必须把这两个文件连同安装包一起给出**，否则收件方没有任何验证手段。收件方两种校验方式：
+
+```bash
+# 方式一：不需要本仓库，Windows 自带
+certutil -hashfile "答题卡扫描端-<版本>-x64.exe" SHA256
+# 把输出的 64 位十六进制与 SHA256SUMS.txt 中同名那行比对，全等即未被改动
+
+# 方式二：有本仓库，一次校验全部产物（任何一项不符即退出码 1 并点名文件）
+node scripts/hash-release-artifacts.cjs --check --root <产物目录>
+```
+
+校验通过只说明「与打包机产出时相同」，**不等于已签名**。
+
+拿到证书后启用签名的步骤：把 `build.win.signAndEditExecutable` 改为 `true`（或删掉该行），
+用环境变量提供证书（`CSC_LINK` 指向 .pfx、`CSC_KEY_PASSWORD` 提供口令，证书文件不入库），
+重新打包后 `BUILD-INTEGRITY.txt` 里的签名状态会变成 `Valid` 并列出证书主体。
+注意这个开关当年是为修图标显示异常而关掉的（提交 `c4cdb02`），打开后要重新确认图标与非 ASCII 的
+`executableName` 在 rcedit 环节没问题；只给了 `CSC_LINK` 却没打开开关时，`release:hash` 会打印警告，
+避免「以为签了」的产物照样发出去。
 
 > 多端详细说明见 [`readus/多端使用说明.md`](./readus/多端使用说明.md)
 
@@ -349,16 +425,29 @@ npx tsx testdata/demo-exams/scripts/seed.ts
 种子会写入：
 
 - 一场「演示-网阅测试」考试，含题块 **A**（满分 15、含 0.5 小数）与题块 **B**（满分 25）；
-- 第二教师账号 `demo-teacher-2` / `teacher123`（学科数学），用于演示工作量均衡；
+- 第二教师账号 `demo-teacher-2`（学科数学），用于演示工作量均衡；
 - 切块与分配：题块 A 故意把卷拆给两位教师并留 2 份未分配，触发 `rebalanceWorkload` 自动均衡（份数差收敛到 ≤ 4）。
 
 登录实测：
 
 | 账号 | 密码 | 可验证 |
 |------|------|--------|
-| `demo-teacher` | `teacher123` | 题块 A 枚举模式 + 0.5 底部行；题块 B 位值模式；本人块 `has_half_point` 可改 |
-| `demo-teacher-2` | `teacher123` | 工作量均衡后被追加的卷（`auto_assigned`）；教师改局部设置的 403/200 边界 |
+| `demo-teacher` | 一次性随机口令（导入时返回一次，并加密存入该账号的「初始密码」，管理员可在账号导出里查回） | 题块 A 枚举模式 + 0.5 底部行；题块 B 位值模式；本人块 `has_half_point` 可改 |
+| `demo-teacher-2` | 同上（与 `demo-teacher` 不同值，每次导入都换发） | 工作量均衡后被追加的卷（`auto_assigned`）；教师改局部设置的 403/200 边界 |
+| `demo-teacher*` 的数据范围 | — | `teacher_role='subject_teacher'`，只任课「演示1班 / 演示2班」，看不到真实班级成绩 |
+| `20260101` ~ `20260116`（演示学生） | 一次性随机口令（同学生批量导入口径，8 位十六进制，存入「初始密码」） | 学生端查分、原卷查看开关、正态性检验样本 |
 | `admin` | 一次性随机口令（启动时写入数据库同目录 `bootstrap-admin.txt`；首次登录强制改密，改密后文件自动删除） | Home → 全局设置（仅管理员可见）；仲裁人留空自动改派争议卷 |
+
+> **演示口令不再固定**（安全审查 R33）：历史版本把演示教师口令写成公开文档里的 `teacher123`、演示学生口令写成学号，
+> 而演示教师又没有 `teacher_role` —— 按成绩接口的兼容分支，未配置角色的教师「全校可见」。两者叠加意味着
+> 任何读过 README 的人都能在生产库上以全校可见的教师身份登录。现在口令一律随机换发，`teacher123` 与「口令=学号」
+> 在升级后当场失效。只有在**隔离测试环境**里、确实需要可预期的固定口令（例如 `testdata/demo-exams` 的验收脚本）时，
+> 才设置 `PROJECTX_DEMO_FIXED_CREDENTIALS=1` 恢复旧口径，服务端会打印一行 `[demo-policy]` 警告。
+>
+> 演示导入还有两道闸（拒绝时**不写入任何数据**）：库里已有真实考试/真实账号时，必须在前端二次确认
+> （接口需带 `confirm: "IMPORT_DEMO_INTO_PRODUCTION"`，或设 `PROJECTX_DEMO_ALLOW_PRODUCTION_IMPORT=1` 免逐次确认）；
+> 固定演示卡号 `88000001` 等撞上真实答题卡时整单取消（安全审查 R48，详见
+> `readus/SECURITY-AUDIT-NOTES-2026-10-04.md` 第八节）。
 
 清理 / 重置演示数据：脚本每次运行会先执行 `cleanupDemoData`（删除「演示-」前缀的考试、答题卡、演示账号等），再重建，因此**重复运行即自动重置**，无需单独 clean 子命令：
 
@@ -588,11 +677,11 @@ Project-X/
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET/POST` | `/api/cards` | 答题卡列表 / 创建（含 subject/title/examDate/englishListening/chineseChoicePlacement） |
-| `GET/PUT/DELETE` | `/api/cards/:id` | 答题卡详情 / 保存 / 删除（引用考试时支持解绑或联删） |
+| `GET/PUT/DELETE` | `/api/cards/:id` | 答题卡详情 / 保存 / 删除（引用考试时支持解绑或联删；返回 `revision`，每次保存 +1，只由服务端自增） |
 | `GET` | `/api/cards/:id/export` | 导出为 .projectx-card.json（含答案+配图+实时生成布局） |
 | `POST` | `/api/cards/import` | 导入答题卡 |
 | `GET` | `/api/cards/:id/layout` | 实时生成布局坐标 |
-| `GET` | `/api/cards/:id/pdf` | 导出 PDF |
+| `GET` | `/api/cards/:id/pdf` | 导出 PDF。可选 `?v=<revision>` 做版本闸门：与库里当前版本不一致返回 409 `CARD_REVISION_MISMATCH`，取值非法返回 400 `CARD_REVISION_INVALID`；省略则照常渲染（安全 R45，见下） |
 | `POST` | `/api/cards/:id/recognition` | 单张识别（客观+主观） |
 | `POST` | `/api/cards/:id/grading` | 批量识别判分（支持 examId 落库） |
 | `POST` | `/api/cards/:id/assets` | 上传资源图片 |
@@ -648,8 +737,8 @@ Project-X/
 | `POST` | `/api/users/import-csv` | 批量导入学生/教师（CSV/Excel） |
 | `GET` | `/api/export/students` | 导出学生账密 Excel |
 | `GET` | `/api/export/teachers` | 导出教师账密 Excel |
-| `GET` | `/api/sponsor` | 赞助页配置（各渠道收款码 URL） |
-| `GET` | `/api/sponsor/qr/:channelId` | 收款码图片 |
+| `GET` | `/api/sponsor` | 赞助页配置（各渠道收款码 URL）**——按设计匿名可读**，内容只有运营方自己的收款渠道，不含任何校务数据；要收口请把渠道 `enabled` 置 `false` 或在反代屏蔽 `/api/sponsor`（安全 R36） |
+| `GET` | `/api/sponsor/qr/:channelId` | 收款码图片（同上，匿名；文件名经 `path.basename` + 目录前缀双重约束，不能穿越到 qr 目录之外） |
 | `GET/PUT/DELETE` | `/api/exams/:id/assigned-formula` | 赋分公式配置 |
 | `POST` | `/api/exams/:id/recalculate-assigned` | 批量重新计算赋分 |
 | `GET/POST` | `/api/exam-groups` | 大考组列表 / 创建 |
@@ -713,6 +802,34 @@ Project-X/
 > | `PROJECTX_UPLOAD_MAX_BATCH_TOTAL_MIB` | 1024 | 8192 |
 >
 > 当前生效值会打在服务启动日志的 `[upload-limits] …` 一行，改完重启看这一行即可确认。
+
+> **原生识别器的解码与布局边界**（安全 R19，单一来源 `native/AnswerCardRecognizer/answer-card-recognizer/recognizer_limits.cpp`）
+>
+> `answer-card-recognizer.exe` 是服务端/扫描端拉起的子进程，输入（答题卡图片、布局 JSON、`--dpi`）来自文件与 HTTP 请求。
+> 此前它在 `cv::imdecode` 与 `cv::warpPerspective` 之前**没有任何数值边界**：一张几十 KB 的 PNG 可以声明 60000×60000，
+> 一份布局可以写 `width: 1e9` 毫米或十万个 `items`，`--dpi 1e9` 会让 mm→px 溢出成负尺寸（#280 只夹了服务端一侧）。
+> 现在按「字节 → 文件头声明尺寸 → 解码后实际像素」三段收口，布局侧按「文件字节 / 数组条数 / 毫米 / 矩形数值有限性」收口，
+> DPI 侧按档位收口；越界一律抛错并由 `wmain` 转成 `{"status":"failed"}` + 退出码 2，不会把内存吃光或崩在 OpenCV 里。
+>
+> | 环境变量 | 默认（x64） | 默认（ia32） | 天花板（x64 / ia32） | 含义 |
+> |----------|-------------|--------------|----------------------|------|
+> | `PROJECTX_RECOGNIZER_MAX_IMAGE_BYTES` | 67108864（64 MiB） | 同 x64 | 536870912（512 MiB） | 图片文件**解码前**的字节上限 |
+> | `PROJECTX_RECOGNIZER_MAX_IMAGE_PIXELS` | 100000000 | 40000000 | 400000000 / 70000000 | 单张图的像素上限（面积，同时用于文件头预检与校正后整页图） |
+> | `PROJECTX_RECOGNIZER_MAX_LAYOUT_BYTES` | 8388608（8 MiB） | 同 x64 | 67108864（64 MiB） | 布局 JSON 的字节上限 |
+> | `PROJECTX_RECOGNIZER_MAX_LAYOUT_ITEMS` | 20000 | 同 x64 | 200000 | 布局里任一数组（pages/markers/blocks/items/options/questions/scoreCells/elements）的条数上限 |
+> | `PROJECTX_RECOGNIZER_MAX_LAYOUT_MM` | 1200 | 同 x64 | 5000 | 页宽高与矩形坐标的毫米上限（A0 长边 1189 mm） |
+> | `PROJECTX_RECOGNIZER_MIN_DPI` | 50 | 同 x64 | 300 | `--dpi` 下限（与服务端 `parseRecognitionDpi` 的 [50,1200] 对齐） |
+> | `PROJECTX_RECOGNIZER_MAX_DPI` | 1200 | 同 x64 | 2400 | `--dpi` 上限 |
+>
+> 生效档位写在子进程 **stderr** 的 `[recognizer-limits] …` 一行（stdout 只留给 JSON 结果，因此不影响调用方解析）；
+> 非法值回落默认、超天花板被夹紧、下限高于上限时按上限回落，三种情况都会在 stderr 留痕。
+> 环境变量由拉起识别器的进程继承，扫描端/服务端无需改动即可透传。
+>
+> **默认档位是按真实工作流取的**：扫描端界面只提供 150–600 DPI，A4@600 = 34.8 Mpx、A3@600 = 69.6 Mpx 都在 x64 默认档内；
+> A4@1200 = 139 Mpx 需要显式放宽（`PROJECTX_RECOGNIZER_MAX_IMAGE_PIXELS=160000000`）。
+> 32 位扫描端只有 2 GB 用户地址空间，默认 40 Mpx、天花板 70 Mpx（≈A3@600），**再高就是崩而不是拒**，因此不设更高天花板。
+> 回归见 `npm run verify:recognizer-limits`（超大图片/超大布局/越界 DPI 安全退出 + 三档约定生效 + 源码与 README 清单一致）；
+> 换另一个位宽的产物跑同一套：`ANSWER_CARD_RECOGNIZER_EXE=<路径> npm run verify:recognizer-limits`。
 
 > **试卷池领取配额**（安全 R15，单一来源 `src/shared/reviewPoolLimits.ts`）
 >
@@ -879,6 +996,80 @@ Project-X/
 > - **R24**：显式指定 `providerId` 时必须「属于该用户且已启用」，解析不到直接拒绝，不再静默回落到默认服务商，
 >   停用的服务商也不得继续执行。
 > - **R26**：班级/年级汇总类工具调用的 `classId` 等范围参数由服务端强制注入，模型自带范围参数会被拒绝而不是采信。
+
+> **答题卡插图导入的体积与类型预算**（安全 R05，单一来源 `src/shared/cardAssetLimits.ts`）
+>
+> 导入答题卡时插图是**以 base64 内联在 JSON 请求体**里的（不走 multer），因此它绕过上传侧的全部预算；
+> 而资源落盘后由 `GET /api/cards/:id/assets/:file` 在**本系统域名下**直接回给浏览器——一张伪装成图片的
+> `.html` 就等于「在该域名下执行任意脚本」，会话令牌可被直接读走。现在两道一起收：扩展名白名单
+> （**不含 `.svg`**，SVG 是 XML 文本、可以内嵌 `<script>`）+ 魔数必须与扩展名一致 + 逐条与累计体积上限。
+> 不合规资源在入库之前就被拒绝，并计入响应的 `warnings.rejectedAssets`（导入本身继续成功，不静默丢图、
+> 也不让一张坏图毁掉整份答题卡）。资源响应带 `X-Content-Type-Options: nosniff`、
+> `Content-Security-Policy: default-src 'none'; img-src 'self'; sandbox` 与显式 `Content-Type`/`Content-Disposition`。
+>
+> | 环境变量 | 默认 | 天花板 | 含义 |
+> |----------|------|--------|------|
+> | `PROJECTX_CARD_ASSET_MAX_MIB` | 6 | 512 | 单张插图**解码后**体积 |
+> | `PROJECTX_CARD_ASSET_MAX_COUNT` | 200 | 2000 | 单次导入的插图条数 |
+> | `PROJECTX_CARD_ASSET_TOTAL_MIB` | 8 | 4096 | 单次导入的累计解码体积 |
+> | `PROJECTX_CARD_ASSET_UPLOAD_MIB` | 12 | 512 | 单个资源上传件体积 |
+>
+> 生效值打在 `[card-asset-limits] …` 一行。**放宽这几档并不会让更大的导入通过**：导入请求受全局
+> `express.json({ limit: "8mb" })` 约束，而 base64 会把体积放大到约 4/3，所以真正的外层上限是请求体大小
+> （实测：单张 6 MiB 插图即由 body-parser 返回 413，与配额判定分属两层）。现场要导入更大的图集，
+> 应该改前端形态（分批导入或改走 multipart 上传），而不是把这里调大。
+
+> **URL 凭据换成单次媒体票据**（安全 R30，单一来源 `src/shared/mediaTicketLimits.ts`）
+>
+> 跨域 API 模式下浏览器无法给 `<img>` / `<iframe>` / `EventSource` 带 `Authorization` 头，前端于是把
+> **主会话令牌**拼进 URL（`?token=`）。URL 会进浏览器历史、代理与访问日志，而主令牌能读任意 GET 接口——
+> 泄漏一次等于整份只读权限外泄。现在 `?token=` 只对**只读媒体白名单**
+> （`src/server/lib/mediaAllowlist.ts`，图片 / PDF / SSE 共 14 条模式，按真实路由注册逐条核对过）放行，
+> 其余路径一律 401 并提示改用 `Authorization` 头；媒体则先 `POST /api/auth/media-ticket` 换一张
+> **短命、绑定路径、只允许 GET/HEAD** 的 `?mt=` 票据（换路径复用、POST、过期一律 401）。
+> 票据刻意只放内存：落库就会随备份长期存活，变成它本来要替代的那种长效凭据；登出即刻吊销。
+> CSV/Excel 导出经 `downloadBlob` → `authFetch` 走头认证，因此**不在**白名单内。
+>
+> | 环境变量 | 默认 | 天花板 | 含义 |
+> |----------|------|--------|------|
+> | `PROJECTX_MEDIA_TICKET_TTL_SEC` | 300 | 3600 | 票据寿命；SSE 长连接需要更久时按批次时长放宽 |
+> | `PROJECTX_MEDIA_TICKET_MAX_PER_USER` | 8 | 64 | 单账号同时存活的票据数 |
+> | `PROJECTX_MEDIA_TICKET_MAX_TOTAL` | 20000 | 100000 | 全局存活上限（票据在内存里，这就是内存与误用上限） |
+>
+> 生效值打在 `[media-ticket-limits] …` 一行。服务端日志侧由 `src/server/lib/logRedaction.ts` 把
+> `token` / `mt` / `access_token` / `api_key` / `key` 的查询串值与 `Authorization` 头统一截断为前 6 位 + `***`。
+> **反向代理仍需部署方配合**：nginx 的 `access_log` 默认记录完整查询串，收紧后请把 `token=` / `mt=` 的
+> 值过滤掉或改用不含查询串的日志格式，口径见 [readus/SECURITY-AUDIT-NOTES-2026-10-04.md](readus/SECURITY-AUDIT-NOTES-2026-10-04.md)。
+
+> **独立 HTML 页面的接口地址与公式注入**（安全 R12/R41/R17）
+>
+> - `Grade-Analysis-System-mobile.html` 原先从 `?api_base=` / `?apiBase=` 选择后端地址，又把 localStorage
+>   里的 `px_token` 以 Bearer 发往该地址——**一条链接**就能把点开它的人的会话凭据送到攻击者主机。
+>   现在目标只取自页面内的 `<meta name="px-api-base">`（同源部署留空即可，跨源部署由部署方写死 https 地址），
+>   链接里带 `api_base` 会被忽略并在页面底部给出可见提示；非 https 的跨源配置同样被拒绝。部署写法见
+>   [deploy-guide.md](deploy-guide.md)。
+> - `Grade-Analysis-System-database.html`（不在 Vite 生产入口、无任何文档或脚本引用、且内联脚本本身
+>   带 `await` 用在非 async 回调里的语法错误）随 R41 一并删除，需要历史版本从 git 取回。
+> - 成绩与临界生 CSV 导出的公式注入防护统一到 `src/shared/csv.ts` 的 `csvCell()`（服务端名册导出与客户端
+>   成绩导出共用一套），以 `=`/`+`/`-`/`@`/TAB/CR 开头的值加前导单引号，`8/10`、`3-4` 这类日期歧义值加前导制表符。
+
+> **演示数据的凭据与导入闸门**（安全 R33/R48，单一来源 `src/server/services/demo/demoDataPolicy.ts`）
+>
+> 这两档是**布尔开关**而不是数值上限，因此没有「默认 / 环境变量 / 天花板」三档；但沿用同一条纪律：
+> 取值非法（不是 `1|true|yes|on` 或 `0|false|no|off`）一律按**关闭**处理，并打印一行 `[demo-policy] …`，
+> 绝不静默放宽。默认状态下演示口令每次导入随机换发、生产库导入需前端二次确认。
+>
+> | 环境变量 | 默认 | 打开后的效果 |
+> |----------|------|--------------|
+> | `PROJECTX_DEMO_FIXED_CREDENTIALS` | 关 | 演示教师口令回到公开文档里的 `teacher123`、演示学生口令回到「=学号」。**仅限隔离测试环境**（例如 `testdata/demo-exams` 的验收脚本），生产库打开等于把全校成绩挂在一个口令公开的账号上 |
+> | `PROJECTX_DEMO_ALLOW_PRODUCTION_IMPORT` | 关 | 库里已有真实考试/真实账号时，导入演示数据不再要求逐次确认（CI、批量装机用）；关闭时接口返回 **409 `DEMO_IMPORT_REQUIRES_CONFIRMATION`** 并带回确认串 `IMPORT_DEMO_INTO_PRODUCTION` |
+>
+> 无论开关如何，`POST /api/db/import-demo` 都不会把口令写进服务端日志：随机口令只在**本次响应的 `message`**
+> 里出现一次，同时加密存入 `users.initial_password`（管理员可从既有「导出账密」里查回）。
+> 卡号冲突（409 `DEMO_CARD_ID_CONFLICT`）与保留用户名被真实教师占用（409 `DEMO_TEACHER_USERNAME_TAKEN`）
+> 两道闸**不受这两个开关影响**，拒绝时库里一个字节都没动。
+> 回归：`npm run verify:demo-credentials`（MariaDB 加 `--mariadb`）。
+
 
 ---
 

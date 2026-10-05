@@ -1065,6 +1065,14 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
      ) k ON k.student_id = cs.student_id AND cs.class_id <> k.keep_class_id
      WHERE c.archived_at IS NULL AND gc.archived_at IS NULL`,
   ] });
+
+  // v59: 答题卡保存计数器（与 SQLite v59 对齐，安全 R45）。导出 PDF 要把打印件与阅卷坐标布局
+  // 绑到同一次保存上；updated_at 是秒级精度、且 PUT 返回的 updatedAt 来自 normalizeCard 的
+  // new Date()（与库里 CURRENT_TIMESTAMP 写的值并不相等），两者都不能当版本令牌，故加单调递增列。
+  mariadbMigrations.push({ version: 59, name: "answer-card-revision", sqls: [
+    "ALTER TABLE answer_cards ADD COLUMN revision INT NOT NULL DEFAULT 0",
+  ] });
+
   for (const m of mariadbMigrations) {
     if (applied.has(m.version)) continue;
     for (const sql of m.sqls) {

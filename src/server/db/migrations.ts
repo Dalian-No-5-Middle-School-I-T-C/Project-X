@@ -1321,6 +1321,15 @@ MIGRATIONS.push({ version: 58, name: "dedupe-class-students", up(db) {
              )`);
 } });
 
+// v59: 答题卡保存计数器（安全 R45）。前端导出 PDF 时需要把「打印出来的这张卡」和「阅卷时用的坐标布局」
+// 绑到同一个版本上，否则自动保存竞态会让老师拿到旧版式的纸、学生答的却是新版式的格子。
+// 不能用 updated_at 当版本令牌：它由 CURRENT_TIMESTAMP 写入，只有秒级精度，
+// 同一秒内的两次保存会取到同一个值；PUT 返回的 updatedAt 又是 normalizeCard 里 new Date() 生成的，
+// 与库里的值本就不相等。单调递增的 revision 才能唯一标识一次保存。
+MIGRATIONS.push({ version: 59, name: "answer-card-revision", up(db) {
+  addColumnIfMissing(db, "answer_cards", "revision", "INTEGER NOT NULL DEFAULT 0");
+} });
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

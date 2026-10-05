@@ -2,6 +2,7 @@
 // Web 端优先级: localStorage > VITE_PROJECTX_API_BASE > 空（相对路径）
 // 扫描端始终使用本机相对路径；远端服务器仅供 scanner upload API 使用。
 import { readServerUrl } from "../lib/scannerMode";
+import { assertCredentialTransportAllowed } from "../lib/remoteCredentialTransport";
 function getViteEnv(): Record<string, string | undefined> | undefined {
   try { return (import.meta as unknown as { env?: Record<string, string | undefined> })?.env; } catch { return undefined; }
 }
@@ -13,6 +14,20 @@ function isScannerBuild(): boolean {
 function getApiBase(): string {
   if (isScannerBuild()) return "";
   return readServerUrl() || (getViteEnv()?.VITE_PROJECTX_API_BASE ?? "").replace(/\/+$/, "");
+}
+
+/**
+ * 安全（R32）：跨机明文 HTTP 上不发凭据。
+ *
+ * 只管**运行时填写**的服务器地址（`projectx_server_url`）：那是老师在界面上敲进去的，
+ * 少写一个 `s` 就变成明文，扫描端已有勾选入口可以显式放行。
+ * `VITE_PROJECTX_API_BASE` 不在此列——它是部署方在构建期写死的选择，
+ * 内网明文部署的 Web 端不该被一个没有界面无从勾选的闸门堵死。
+ */
+function assertRuntimeConfiguredTransportAllowed(): void {
+  if (isScannerBuild()) return;
+  const runtimeBase = readServerUrl();
+  if (runtimeBase) assertCredentialTransportAllowed(runtimeBase);
 }
 
 // 安全审计（F-6）：API Key 本地存储带 30 天过期时间；兼容旧纯字符串格式（视为未过期，随下次保存升级）。
@@ -79,6 +94,8 @@ export function setAuthToken(token: string | null): void {
 
 function notifyUnauthorized(): void {
   setAuthToken(null);
+  // 安全（R30）：会话失效时把已签发的媒体票据一并丢掉，别让缓存继续产出注定 401 的 URL。
+  ticketCache.clear();
   window.dispatchEvent(new Event("projectx:unauthorized"));
 }
 
@@ -92,6 +109,7 @@ export async function fetchJson<T>(url: string, options?: RequestInit): Promise<
   const crossOrigin = isCrossOriginApiMode();
   // v1.6.0: 同时支持 Api-Key header
   const storedApiKey = isScannerBuild() ? null : getStoredApiKey();
+  if (crossOrigin && (token || storedApiKey)) assertRuntimeConfiguredTransportAllowed();
   const headers = new Headers(options?.headers);
   // 安全审计（P1）：同源部署下认证主通道 = HttpOnly Cookie（credentials: include），
   // 不携带 Bearer；仅跨域 API 模式（Cookie 无法跨站点携带）才附加内存 token 的 Bearer。
@@ -136,6 +154,14 @@ export function authFetch(url: string, options?: RequestInit): Promise<Response>
   const token = getAuthToken();
   const crossOrigin = isCrossOriginApiMode();
   const storedApiKey = isScannerBuild() ? null : getStoredApiKey();
+  // 安全（R32）：闸门失败要变成 rejected promise，不能同步抛——调用方普遍只 .catch 异步错误。
+  if (crossOrigin && (token || storedApiKey)) {
+    try {
+      assertRuntimeConfiguredTransportAllowed();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
   const headers = new Headers(options?.headers);
   if (token && crossOrigin && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
@@ -157,6 +183,16 @@ export function remoteScannerFetch(url: string, options?: RequestInit): Promise<
 
   const headers = new Headers(options?.headers);
   const apiKey = getStoredApiKey();
+  const wantsCredential = Boolean(apiKey) || headers.has("X-Api-Key") || headers.has("Authorization");
+  // 安全（R32）：跨机明文 HTTP 上不发凭据。不带凭据的探测（健康检查）仍然放行，
+  // 这样界面还能区分「服务器不可达」与「服务器可达但凭据被拦下」。
+  if (wantsCredential) {
+    try {
+      assertCredentialTransportAllowed(base);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
   if (apiKey && !headers.has("X-Api-Key")) {
     headers.set("X-Api-Key", apiKey);
   }
@@ -166,22 +202,101 @@ export function remoteScannerFetch(url: string, options?: RequestInit): Promise<
   return fetch(resolved, { ...options, headers });
 }
 
-/** 为无法在请求头携带 Token 的场景（PDF、SSE 等）追加 ?token= */
+/**
+ * 为无法在请求头携带凭据的场景（PDF、图片、SSE、下载）追加 URL 凭据。
+ *
+ * 安全（R30）：优先使用「单次资源票据」`?mt=`——它由 `/api/auth/media-ticket` 签发，
+ * 只绑定「当前用户 + 这一条只读路径 + 时限」。主会话令牌 `?token=` 保留为兜底
+ * （同步渲染的 `<img src>` 拿不到异步票据时），但服务端已把它限制在只读媒体白名单内，
+ * 泄漏一条 URL 不再等于交出全部接口的只读权限。
+ */
+const ticketCache = new Map<string, { ticket: string; expiresAt: number }>();
+
+function pathnameOf(resolvedUrl: string): string {
+  try {
+    return new URL(resolvedUrl, typeof location !== "undefined" ? location.href : "http://localhost").pathname;
+  } catch {
+    return resolvedUrl.split("?")[0];
+  }
+}
+
+async function ensureMediaTicket(pathname: string): Promise<string | null> {
+  const cached = ticketCache.get(pathname);
+  if (cached && cached.expiresAt - Date.now() > 15_000) return cached.ticket;
+  try {
+    const issued = await fetchJson<{ ticket: string; expiresAt: number }>(
+      "/api/auth/media-ticket",
+      { method: "POST", body: JSON.stringify({ path: pathname }) }
+    );
+    if (issued?.ticket) {
+      ticketCache.set(pathname, { ticket: issued.ticket, expiresAt: Number(issued.expiresAt) });
+      return issued.ticket;
+    }
+  } catch (error) {
+    console.warn(`[media-ticket] 为 ${pathname} 签发票据失败，本次回落 URL 令牌`, error);
+  }
+  return cached?.ticket ?? null;
+}
+
+function appendQuery(url: string, key: string, value: string): string {
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}${key}=${encodeURIComponent(value)}`;
+}
+
+/**
+ * 安全（R32）：跨机明文 HTTP 下不把凭据写进 URL——URL 会进浏览器历史、代理与访问日志，
+ * 明文链路上还会被同网段直接读到。这里宁可让资源请求吃 401，也不外送令牌。
+ */
+function isRuntimeTransportAllowed(): boolean {
+  try {
+    assertRuntimeConfiguredTransportAllowed();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 异步取得票据后再拼 URL：下载、window.open、EventSource 等可控时机都应走这一条。 */
+export async function ticketedMediaUrl(url: string): Promise<string> {
+  const resolved = apiUrl(url);
+  if (!isCrossOriginApiMode()) return resolved; // 同源：HttpOnly Cookie 足够，URL 里不留任何凭据
+  if (!isRuntimeTransportAllowed()) return resolved;
+  const pathname = pathnameOf(resolved);
+  const ticket = await ensureMediaTicket(pathname);
+  if (ticket) return appendQuery(resolved, "mt", ticket);
+  const token = getAuthToken();
+  return token ? appendQuery(resolved, "token", token) : resolved;
+}
+
+/**
+ * 同步版本（`<img src>` / `<a href>` 字面量）。
+ * 命中缓存则用票据；未命中时先回落 `?token=`，同时后台补签一张，下一次渲染即用票据。
+ */
 export function urlWithToken(url: string): string {
   const token = getAuthToken();
   const resolved = apiUrl(url);
   if (!token) return resolved;
-  const sep = resolved.includes("?") ? "&" : "?";
-  return `${resolved}${sep}token=${encodeURIComponent(token)}`;
+  if (!isRuntimeTransportAllowed()) return resolved;
+  const cached = ticketCache.get(pathnameOf(resolved));
+  if (cached && cached.expiresAt > Date.now()) {
+    return appendQuery(resolved, "mt", cached.ticket);
+  }
+  void ensureMediaTicket(pathnameOf(resolved));
+  return appendQuery(resolved, "token", token);
+}
+
+/** 退出登录/令牌失效时清空票据缓存，避免继续携带已作废的凭据。 */
+export function clearMediaTicketCache(): void {
+  ticketCache.clear();
 }
 
 /** P1-14: 媒体资源URL（图片、PDF iframe等）。
  *  同源请求依靠 httpOnly cookie 认证，不暴露 token 在 URL 中；
- *  跨源请求（远端 API 模式）才追加 ?token=。 */
+ *  跨源请求（远端 API 模式）才追加 URL 凭据。 */
 export function mediaUrl(url: string): string {
   const base = getApiBase();
   // 同源：cookies 自动发送，不需要 token
   if (!base) return apiUrl(url);
-  // 跨源：需要 token query param
+  // 跨源：需要 URL 凭据（优先单次票据）
   return urlWithToken(url);
 }

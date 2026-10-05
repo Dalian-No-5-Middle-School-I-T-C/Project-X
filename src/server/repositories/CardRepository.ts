@@ -67,11 +67,12 @@ export class CardRepository {
     );
   }
 
-  async updateCard(card: AnswerCard): Promise<void> {
-    await this.db.transaction((tx) => this.updateCardInTx(card, tx));
+  async updateCard(card: AnswerCard): Promise<number> {
+    const revision = await this.db.transaction((tx) => this.updateCardInTx(card, tx));
     // Invalidate only after commit, including every exam sharing this card.
     const exams = await this.db.all<{ id: number }>("SELECT id FROM exams WHERE card_id = ?", card.id);
     for (const exam of exams) analysisCache.invalidateExam(Number(exam.id));
+    return revision;
   }
 
   /** Score-only projection: bounded queries, no answers, images or layout payloads. */
@@ -119,10 +120,11 @@ export class CardRepository {
     return result;
   }
 
-  /** 在调用方已开启的事务内保存答题卡（供「改答案 + 重算成绩」等原子流程复用）。 */
-  async updateCardInTx(card: AnswerCard, tx: DbAdapter): Promise<void> {
+  /** 在调用方已开启的事务内保存答题卡（供「改答案 + 重算成绩」等原子流程复用）。
+   *  返回落库后的 revision —— 每次保存 +1，是导出 PDF 绑定快照用的唯一版本令牌。 */
+  async updateCardInTx(card: AnswerCard, tx: DbAdapter): Promise<number> {
     await tx.run(
-      `UPDATE answer_cards SET title = ?, subject = ?, subject_label = ?, exam_date = ?, paper_size = ?, orientation = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      `UPDATE answer_cards SET title = ?, subject = ?, subject_label = ?, exam_date = ?, paper_size = ?, orientation = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
       card.title, card.subject ?? null, (card as any).subjectLabel ?? null, (card as any).examDate ?? null,
       card.paper?.size ?? "A4", card.paper?.orientation ?? "portrait",
       JSON.stringify(card.studentInfo ?? { studentNumberDigits: 5 }), card.studentInfo?.studentNumberDigits ?? 5,
@@ -138,6 +140,10 @@ export class CardRepository {
         else if (block.type === "subjective") await this.insertSubjectiveBlock(block as any, card.id, tx);
       }
     }
+
+    // revision 只由这条 UPDATE 自增，请求体里带的 revision 一律不采信（否则调用方可以自己造版本号）。
+    const row = await tx.get<{ revision?: number | null }>("SELECT revision FROM answer_cards WHERE id = ?", card.id);
+    return Number(row?.revision ?? 0);
   }
 
   private async insertObjectiveBlock(block: any, cardId: string, tx: DbAdapter): Promise<void> {
@@ -238,7 +244,8 @@ export class CardRepository {
       paper: { size: cardRow.paper_size, orientation: cardRow.orientation },
       studentInfo: parseStudentInfo(cardRow.student_fields, cardRow.student_number_digits),
       bodyBlocks: [], sided: (cardRow.sided as "single" | "double") ?? "double",
-      layoutVersion: cardRow.layout_version === 2 ? 2 : 1, updatedAt: cardRow.updated_at
+      layoutVersion: cardRow.layout_version === 2 ? 2 : 1, updatedAt: cardRow.updated_at,
+      revision: Number(cardRow.revision ?? 0)
     };
 
     const objBlocks = await this.db.all("SELECT * FROM objective_blocks WHERE card_id = ? ORDER BY sort_order", cardId);

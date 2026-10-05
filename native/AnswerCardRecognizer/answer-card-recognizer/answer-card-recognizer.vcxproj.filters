@@ -27,6 +27,9 @@
     <ClCompile Include="main.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="recognizer_limits.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="vision_utils.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -39,6 +42,9 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="layout_io.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="recognizer_limits.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="vision_utils.hpp">
