@@ -2,11 +2,9 @@ import { Router } from "express";
 import multer from "multer";
 import path from "node:path";
 import { existsSync, unlinkSync } from "node:fs";
-import { ensurePaperDir, paperDir, papersDir, safeId } from "../storage";
+import { ensurePaperDir, paperDir, paperTmpDir, safeId } from "../storage";
 import {
   validatePaperFile,
-
-
   storePaperPageFile,
   discardStoredPaths,
 } from "../paper-converter";
@@ -18,7 +16,14 @@ import {
   MAX_PAPER_PAGES_PER_CARD,
   MAX_PAPER_REQUEST_BYTES,
 } from "../../../../shared/paperStorageLimits";
-import { evaluatePaperQuota, invalidatePaperUsageCache, purgeStaleTmpUploads, readPaperQuota } from "../paperQuota";
+import {
+  assertWrittenPaperWithinQuota,
+  evaluatePaperQuota,
+  invalidatePaperUsageCache,
+  PaperQuotaRollbackError,
+  purgeStaleTmpUploads,
+  readPaperQuota,
+} from "../paperQuota";
 import { requestUploadBudget } from "../../../../server/lib/uploadBudget";
 import { autoExtractPaperText, getFileMime, getPaperInputKind } from "../paper-ocr";
 import { PaperInputError } from "../paper-docx";
@@ -58,9 +63,7 @@ type AiProviderRow = {
   is_system?: number;
 };
 
-/** multer 的暂存目录：请求中断/被拒时留下的临时件由 `purgeStaleTmpUploads` 兜底清理（安全 R14）。 */
-export const paperTmpDir = path.join(papersDir, "_tmp");
-
+/** multer 的暂存目录在 storage 里定义：容量扫描要把这棵子树整棵排除，两边必须指向同一个路径。 */
 const paperUpload = multer({
   dest: paperTmpDir,
   // 安全 R10：单文件与单次文件数都走「默认 + 环境变量 + 天花板」三档，不再是硬编码 50MB/40 个
@@ -216,12 +219,11 @@ export function paperRoutes(): Router {
           return;
         }
 
-        // ── 累计容量闸门（安全 R10）：按上传件字节数估计本次增量，真实占盘在下一次读取时反映 ──
+        // ── 累计容量闸门（安全 R10）：admission 只能按上传件字节数**估算**，真实产物在下述
+        //    落盘后用 assertWrittenPaperWithinQuota 复测——原卷转换会变大（jpg + 配对 PDF）。
         const incomingBytes = validFiles.reduce((sum, item) => sum + Math.max(0, item.file.size), 0);
-        const quota = evaluatePaperQuota(
-          await readPaperQuota(db, cardId),
-          { pages: validFiles.length, bytes: incomingBytes }
-        );
+        const usageBefore = await readPaperQuota(db, cardId);
+        const quota = evaluatePaperQuota(usageBefore, { pages: validFiles.length, bytes: incomingBytes });
         if (!quota.ok) {
           res.status(413).json({
             code: "PAPER_QUOTA_EXCEEDED",
@@ -246,6 +248,8 @@ export function paperRoutes(): Router {
           ) as { mx: number } | undefined;
           let nextIndex = (maxRow?.mx ?? 0) + 1;
 
+          let writtenPages = 0;
+          let writtenBytes = 0;
           for (const { file, originalname } of validFiles) {
             const pageIndex = nextIndex;
             nextIndex += 1;
@@ -253,6 +257,8 @@ export function paperRoutes(): Router {
             const stored = await storePaperPageFile(file.path, originalname, dir, pageIndex);
             // 先登记再入库：这一页此刻还没有任何 DB 行引用，失败时必须由本路由删掉（安全 R14）
             storedPaths.push(...stored.writtenPaths);
+            writtenPages += 1;
+            writtenBytes += stored.bytes;
 
             // UNIQUE(card_id, page_index) 约束保证不会重复写入
             await tx.run(
@@ -265,6 +271,10 @@ export function paperRoutes(): Router {
             }
             uploaded.push({ pageIndex, filename: stored.diskFilename });
           }
+          // 提交前用**实际落盘体积**复测容量（PR #312 CR14）：上面的 admission 只能按输入字节估，
+          // 而原卷转换会变大（jpg + 配对 PDF）。越界就在这里抛错——事务回滚掉这批页行，
+          // 已写出的文件由下面的 catch 逐个删除，不会留下「按输入算合格、按产物算超限」的占盘。
+          await assertWrittenPaperWithinQuota(tx, cardId, usageBefore, { pages: writtenPages, bytes: writtenBytes });
         });
         // 事务已提交：这些文件正式被 DB 行引用，回滚窗口到此结束
         storedPaths.length = 0;
@@ -295,6 +305,17 @@ export function paperRoutes(): Router {
       } catch (err: any) {
         // 事务未提交就失败：本轮落地的文件没有任何 DB 行引用，全部删掉（安全 R14）
         if (storedPaths.length > 0) await discardStoredPaths(storedPaths);
+        if (err instanceof PaperQuotaRollbackError) {
+          // 落盘后复测越界（CR14）：页行已随事务回滚、文件已删，这里给出与 admission 同一形状的 413
+          res.status(413).json({
+            code: "PAPER_QUOTA_EXCEEDED",
+            reason: err.reason,
+            error: err.message,
+            measuredAfterConversion: true,
+            limits: { pagesPerCard: MAX_PAPER_PAGES_PER_CARD, bytesPerCard: MAX_PAPER_BYTES_PER_CARD, bytesTotal: MAX_PAPER_BYTES_TOTAL },
+          });
+          return;
+        }
         console.error("[paper] upload failed:", err);
         res.status(500).json({ error: err.message || "上传失败" });
       } finally {

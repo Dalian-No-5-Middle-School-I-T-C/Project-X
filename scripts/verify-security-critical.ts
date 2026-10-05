@@ -843,6 +843,55 @@ async function main(): Promise<void> {
     check(r14Residue === 0,
       "multer 越界拒绝后临时目录不留已落盘文件（越界重试不再是免费的填满磁盘攻击）");
 
+    // ── CR14：暂存区不计入长期容量
+    const { paperTmpDir } = await import("../src/apps/answer-card/server/storage");
+    check(paperTmpDir === r14TmpDir
+      && path.dirname(paperTmpDir) === path.join(process.env.ANSWER_CARD_DATA_DIR!, "papers"),
+      "暂存目录由 storage 单点定义，且确实落在容量扫描的根目录里（跳过它才是真跳过，而不是路径拼错）");
+    const cr14BeforeStaging = await readPapersTotalBytes();
+    const cr14StagingFile = path.join(paperTmpDir, "cr14-staging.tmp");
+    writeFileSync(cr14StagingFile, Buffer.alloc(4096, 3));
+    invalidatePaperUsageCache();
+    const cr14AfterStaging = await readPapersTotalBytes();
+    writeFileSync(path.join(r10Dir, "original-3.jpg"), Buffer.alloc(4096, 5));
+    invalidatePaperUsageCache();
+    const cr14AfterRealPage = await readPapersTotalBytes();
+    rmSync(cr14StagingFile);
+    invalidatePaperUsageCache();
+    check(cr14AfterStaging.bytes === cr14BeforeStaging.bytes
+      && cr14AfterRealPage.bytes >= cr14BeforeStaging.bytes + 4096,
+      "同体积的两份数据：暂存件不计入全局容量、已落盘页计入（否则并发上传会把自己算两次，把别人挤在门外）");
+
+    // ── CR14：转换后按实测复测并回滚
+    const { assertWrittenPaperWithinQuota, PaperQuotaRollbackError } = await import("../src/apps/answer-card/server/paperQuota");
+    const cr14Limits = {
+      maxPaperPagesPerCard: 60,
+      maxPaperBytesPerCard: 1024 * 1024,
+      maxPaperBytesTotal: 204800 * 1024 * 1024,
+    };
+    const cr14EmptyCard = { cardPages: 0, cardBytes: 0, totalBytes: 0, totalExact: true };
+    // 评审给的真实观测：844 KiB 的 JPEG 输入落成 jpg + 配对 PDF 后实测约 1.41 MiB
+    const cr14ByInput = evaluatePaperQuota(cr14EmptyCard, { pages: 1, bytes: 844 * 1024 }, cr14Limits);
+    const cr14ByOutput = evaluatePaperQuota(cr14EmptyCard, { pages: 1, bytes: Math.round(1.41 * 1024 * 1024) }, cr14Limits);
+    check(cr14ByInput.ok === true && cr14ByOutput.ok === false && cr14ByOutput.reason === "card-bytes",
+      "同一份上传：按输入 844KiB 放行、按落盘实测 1.41MiB 拒绝（放大倍数没法估，只能写完再量）");
+    const cr14Admission = await readPaperQuota(quotaDb, r10CardId);
+    let cr14Rollback: unknown = null;
+    try {
+      await assertWrittenPaperWithinQuota(quotaDb, r10CardId, cr14Admission,
+        { pages: 1, bytes: 6144 },
+        { ...cr14Limits, maxPaperBytesPerCard: 4096 });
+    } catch (error) { cr14Rollback = error; }
+    check(cr14Rollback instanceof PaperQuotaRollbackError
+      && (cr14Rollback as { reason?: string }).reason === "card-bytes"
+      && !containsHostPath((cr14Rollback as Error).message),
+      "落盘后复测越界 → 抛出带回滚原因的专属错误（路由据此撤销事务、删掉已写文件并回 413）");
+    let cr14WithinQuota = true;
+    try {
+      await assertWrittenPaperWithinQuota(quotaDb, r10CardId, cr14Admission, { pages: 1, bytes: 6144 }, cr14Limits);
+    } catch { cr14WithinQuota = false; }
+    check(cr14WithinQuota, "实测仍在额度内时不触发回滚：放大是常态，不是拒绝的理由");
+
     // ── AI 计费与并发配额（安全 R11）
     const {
       AI_QUOTA_ENV_VARS, DEFAULT_AI_QUOTA_LIMITS, resolveAiQuotaLimits, describeAiQuotaLimits,
@@ -1083,26 +1132,95 @@ async function main(): Promise<void> {
       }, 60);
     });
     const hangProbe = nodeHttp.createServer(() => { /* 永不响应：模拟微信侧半挂连接 */ });
+    // 响应头立刻给出、正文 60 毫秒后才结束：只有「槽位一直占到正文读完」才不会让并发闸门形同虚设
+    const splitProbe = nodeHttp.createServer((_req, res) => {
+      observedConcurrent += 1;
+      peakConcurrent = Math.max(peakConcurrent, observedConcurrent);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.write('{"errcode":');
+      setTimeout(() => {
+        res.end("0}");
+        observedConcurrent -= 1;
+      }, 60);
+    });
     await new Promise<void>((resolve) => wechatProbe.listen(0, "127.0.0.1", resolve));
     await new Promise<void>((resolve) => hangProbe.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) => splitProbe.listen(0, "127.0.0.1", resolve));
     const wechatProbePort = (wechatProbe.address() as { port: number }).port;
     const hangProbePort = (hangProbe.address() as { port: number }).port;
+    const splitProbePort = (splitProbe.address() as { port: number }).port;
     await Promise.all(Array.from({ length: WECHAT_MAX_CONCURRENT_REQUESTS * 3 }, async () => {
       const response = await wechatThrottle.wechatFetch(`http://127.0.0.1:${wechatProbePort}/token`);
       await response.json();
     }));
     check(peakConcurrent > 1 && peakConcurrent <= WECHAT_MAX_CONCURRENT_REQUESTS,
       "批量公布时的出站呼叫确实受并发闸门约束（超过微信频控只会换来 45009，受害的是全校推送）");
+    observedConcurrent = 0;
+    peakConcurrent = 0;
+    await Promise.all(Array.from({ length: WECHAT_MAX_CONCURRENT_REQUESTS * 3 }, async () => {
+      const response = await wechatThrottle.wechatFetch(`http://127.0.0.1:${splitProbePort}/token`);
+      await response.json();
+    }));
+    check(peakConcurrent <= WECHAT_MAX_CONCURRENT_REQUESTS,
+      "「响应头先到、正文后到」的请求依旧只占一个槽位（闸门若在读体前放行，服务端会同时看到 12 条在途连接）");
     let timeoutError: unknown = null;
     const timeoutStarted = Date.now();
     try {
       await wechatThrottle.wechatFetch(`http://127.0.0.1:${hangProbePort}/jscode2session`, {}, 400);
     } catch (error) { timeoutError = error; }
-    wechatProbe.close();
-    hangProbe.close();
     check(timeoutError instanceof wechatThrottle.WechatTimeoutError
       && Date.now() - timeoutStarted < 3000,
       "半挂连接在预算内被判超时（此前不带信号的 fetch 会永久占住这个请求）");
+
+    // ── CR15：响应头给得出来、正文永不结束的呼叫
+    // 打桩 fetch 而不是再造一个 server：这条断言要证明的是「截止点由读侧自己守着」，
+    // 一个完全不理会 AbortSignal 的响应体才是唯一能排除传输层侥幸的样本。
+    const realGlobalFetch = globalThis.fetch;
+    const stallBudgetMs = 250;
+    let stubInvocations = 0;
+    const headOnlyStub = (async () => {
+      stubInvocations += 1;
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"errcode":')); /* 永不 close */ },
+      }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    const healthyStub = (async () => {
+      stubInvocations += 1;
+      return new Response('{"errcode":0}', { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    globalThis.fetch = headOnlyStub;
+    const stallStarted = Date.now();
+    try {
+      const stallResults = await Promise.allSettled(
+        Array.from({ length: WECHAT_MAX_CONCURRENT_REQUESTS + 2 }, () =>
+          wechatThrottle.wechatFetch("https://wechat.invalid/cgi-bin/token", {}, stallBudgetMs))
+      );
+      const stallElapsed = Date.now() - stallStarted;
+      check(stallResults.every((r) => r.status === "rejected"
+        && r.reason instanceof wechatThrottle.WechatTimeoutError
+        && (r.reason as Error).message.includes("正文")),
+        "只给响应头、正文半挂的微信呼叫照样按预算判超时（超时此前只覆盖到响应头）");
+      // 「闸门覆盖正文」由上面 splitProbe 那条按连接数实测的断言负责；这里要守的是另一半：
+      // 预算是「排队 + 请求」的总预算，排在后面的请求不会因为排队就拿到第二份时间。
+      check(stubInvocations === WECHAT_MAX_CONCURRENT_REQUESTS + 2
+        && stallElapsed >= stallBudgetMs && stallElapsed < stallBudgetMs * 3,
+        `半挂的正文按预算整体判负（${stallElapsed}ms / ${stubInvocations} 路），既不无限等待也不逐波累加`);
+      // 失败路径必须归还槽位：把闸门装满一次，若泄漏这里会永远等下去。
+      globalThis.fetch = healthyStub;
+      const refilled = Promise.all(Array.from({ length: WECHAT_MAX_CONCURRENT_REQUESTS }, () =>
+        wechatThrottle.wechatFetch("https://wechat.invalid/cgi-bin/token", {}, 2000).then((r) => r.json())));
+      const revived = await Promise.race([
+        refilled,
+        new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 3000)),
+      ]);
+      check(revived !== "hung" && Array.isArray(revived) && revived.length === WECHAT_MAX_CONCURRENT_REQUESTS,
+        "正文超时的失败路径把槽位归还了闸门（占着的槽位不回收 = 之后全校推送都发不出去）");
+    } finally {
+      globalThis.fetch = realGlobalFetch;
+      wechatProbe.close();
+      hangProbe.close();
+      splitProbe.close();
+    }
 
     // ── R04：记录/会话级接口收敛到考试范围（critical-card 被可见/越权两场考试复用）
     const r04Session = await newScanSession();

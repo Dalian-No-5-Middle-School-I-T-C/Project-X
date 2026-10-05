@@ -2,7 +2,7 @@ import { readdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import type { DbAdapter } from "../../../server/db/mysql";
-import { paperDir, papersDir } from "./storage";
+import { paperDir, paperTmpDir, papersDir } from "./storage";
 import {
   DEFAULT_PAPER_STORAGE_LIMITS,
   MAX_PAPER_BYTES_PER_CARD,
@@ -68,7 +68,11 @@ export async function purgeStaleTmpUploads(tmpDir: string, maxAgeMs = 60 * 60_00
   return removed;
 }
 
-async function sumDirBytes(dir: string, stopAfter?: number): Promise<{ bytes: number; stoppedEarly: boolean; partial: boolean }> {
+async function sumDirBytes(
+  dir: string,
+  stopAfter?: number,
+  skipDirs?: ReadonlySet<string>
+): Promise<{ bytes: number; stoppedEarly: boolean; partial: boolean }> {
   let total = 0;
   let partial = false;
   let entries;
@@ -81,6 +85,7 @@ async function sumDirBytes(dir: string, stopAfter?: number): Promise<{ bytes: nu
     // 不跟随符号链接：目录里放一个指向 / 的软链，就等于把「磁盘用量」变成「任意文件读取」。
     if (entry.isSymbolicLink()) { partial = true; continue; }
     const full = path.join(dir, entry.name);
+    if (skipDirs?.has(full)) continue; // 暂存目录等「不属于长期占盘」的子树，整棵跳过
     if (entry.isDirectory()) {
       const nested = await sumDirBytes(full, stopAfter === undefined ? undefined : stopAfter - total);
       total += nested.bytes;
@@ -109,12 +114,15 @@ export interface PapersUsage {
 /**
  * `papers/` 目录的实测占盘体积。
  * 超过上限时**不缓存早停结果**（它只是下界），避免缓存值被误当成完整用量。
+ *
+ * `_tmp` 整棵跳过：里面是「正在路上的请求」的暂存副本，由上传预算与滞留清理负责，
+ * 不属于原卷的长期占盘；计入的话每条请求都会把自己算两次。
  */
 export async function readPapersTotalBytes(limitBytes: number = MAX_PAPER_BYTES_TOTAL): Promise<PapersUsage> {
   if (cachedTotal && Date.now() - cachedTotal.at < TOTAL_SCAN_TTL_MS) {
     return { bytes: cachedTotal.bytes, exact: cachedTotal.exact };
   }
-  const scanned = await sumDirBytes(papersDir, limitBytes);
+  const scanned = await sumDirBytes(papersDir, limitBytes, new Set([paperTmpDir]));
   if (scanned.stoppedEarly) return { bytes: scanned.bytes, exact: false };
   cachedTotal = { bytes: scanned.bytes, exact: !scanned.partial, at: Date.now() };
   return { bytes: scanned.bytes, exact: !scanned.partial };
@@ -152,7 +160,10 @@ export async function readPaperQuota(db: DbAdapter, cardId: string): Promise<Pap
 
 export interface IncomingPaperUpload {
   pages: number;
-  /** 本次上传件的字节数之和（按解压前的原始大小估计；真实占盘会在下一次读取时反映） */
+  /**
+   * 本次增量的字节数。admission 阶段只有上传件本身的体积可看，只能当下界用；
+   * 落盘之后由 `assertWrittenPaperWithinQuota` 按实际写入量复测（原卷转换会变大）。
+   */
   bytes: number;
 }
 
@@ -200,4 +211,50 @@ export function evaluatePaperQuota(
     };
   }
   return { ok: true };
+}
+
+/** 落盘后复测越界：由路由回滚事务、删除本轮写入并返回 413（安全 R10 与 PR #312 CR14）。 */
+export class PaperQuotaRollbackError extends Error {
+  readonly reason: "pages" | "card-bytes" | "total-bytes";
+  constructor(reason: "pages" | "card-bytes" | "total-bytes", message: string) {
+    super(message);
+    this.name = "PaperQuotaRollbackError";
+    this.reason = reason;
+  }
+}
+
+/**
+ * 用**实际落盘体积**复测容量闸门（PR #312 CR14）。
+ *
+ * 上传 admission 只能按输入字节估算，而原卷是要转换的：一张 844 KiB 的 JPEG 会同时落成
+ * jpg 与配对 PDF，实测约 1.41 MiB——单看输入，1 MiB 的额度会被穿透。所以写入完成后必须
+ * 按磁盘真实增量再判一次，越界就抛错：事务回滚掉这一批 DB 行，已落盘的文件由调用方删除。
+ *
+ * - 单卡这一维**重新实测**：卡目录最多几百个文件，扫得起，而且这才是刚写出来的真相；
+ *   基线取「实测值减去本轮写入量」，不引入会漂移的计数器。
+ * - 全局这一维沿用 admission 读到的缓存值 + 本轮实测增量：每次上传都强制重扫整个 `papers/`
+ *   会把 60 秒缓存的收益全部赔掉。缓存若恰好在本次请求期间被别人刷新过，这一维会把自己
+ *   算两次——方向是保守的（宁多少拒一次）。
+ *
+ * 必须在事务内用 `tx` 调用，才看得见本次尚未提交的页行。
+ */
+export async function assertWrittenPaperWithinQuota(
+  db: DbAdapter,
+  cardId: string,
+  admission: PaperQuotaSnapshot,
+  written: { pages: number; bytes: number },
+  limits?: Parameters<typeof evaluatePaperQuota>[2]
+): Promise<void> {
+  const post = await readPaperQuota(db, cardId);
+  const verdict = evaluatePaperQuota(
+    {
+      cardPages: Math.max(0, post.cardPages - written.pages),
+      cardBytes: Math.max(0, post.cardBytes - written.bytes),
+      totalBytes: admission.totalBytes,
+      totalExact: admission.totalExact && post.totalExact,
+    },
+    { pages: written.pages, bytes: written.bytes },
+    limits
+  );
+  if (!verdict.ok) throw new PaperQuotaRollbackError(verdict.reason, verdict.message);
 }

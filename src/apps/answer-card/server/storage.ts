@@ -16,6 +16,11 @@ export const assetsDir = path.join(dataDir, "assets");
 export const layoutsDir = path.join(dataDir, "layouts");
 export const blockCropsDir = path.join(dataDir, "recognition", "crops");
 export const papersDir = path.join(dataDir, "papers");
+/**
+ * 原卷上传的 multer 暂存目录。放在 `papers/_tmp` 里，因此容量扫描必须把它整棵排除：
+ * 里面的字节属于「正在路上的请求」，由上传预算与滞留清理负责，不是原卷的长期占盘。
+ */
+export const paperTmpDir = path.join(papersDir, "_tmp");
 export const answerKeysDir = path.join(dataDir, "answer-keys");
 
 export async function ensureDataDirs(): Promise<void> {
