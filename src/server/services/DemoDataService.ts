@@ -551,34 +551,40 @@ async function assertDemoCardIdsFree(db: DbAdapter): Promise<void> {
 }
 
 /**
- * 安全 R33：`demo-teacher` / `demo-teacher-2` 是保留用户名，但要区分两种情况——
- * v1.9.8 之前崩溃残留的演示账号（is_demo=0、没被真实业务用过）可以收编并换发口令；
- * 真有人拿这个名字建了在用教师（带真实班级、被分配过阅卷、创建过考试）则必须拒绝，
- * 否则会改掉一个真实账号的口令与角色。判定放在清理之前，拒绝时不留任何改动。
+ * 安全 R33 / 评审 P1：`demo-teacher` / `demo-teacher-2` 是演示账号的保留用户名，
+ * 但**同名且查不到业务关系，不是「这是演示账号」的证据**。
+ *
+ * 旧判据是「三条在用证据（真实班级任课 / 阅卷分配 / 创建过考试）任一命中才拒绝」。
+ * 于是一个真实教师只要刚导入、还没任课、还没被分配阅卷，就会被改口令、改角色、标成
+ * `is_demo = 1`——而 `clearDemoData` 正是按 `is_demo = 1` 删账号的：一次演示导入
+ * 把真实账号交到了清理程序手里，之后任何人点一次「清理演示数据」它就消失了。
+ *
+ * 现在只认**明确的演示归属**：`is_demo = 1` 才算演示账号。v1.9.8 起建号与打标在同一条
+ * INSERT 里完成，正常流程不会再产出 `is_demo = 0` 的演示教师，所以这个名字下的非演示
+ * 账号一律整单拒绝、零改动，由人来定性（改名、删除，或确认是历史残留后显式认领）。
+ * 判定仍在任何写入之前，拒绝时库里一个字节都没动。
  */
 async function assertDemoTeacherUsernamesAvailable(db: DbAdapter): Promise<void> {
   const taken: string[] = [];
+  const details: string[] = [];
   for (const username of DEMO_TEACHER_USERNAMES) {
     const row = await db.get(
-      "SELECT id, is_demo FROM users WHERE username = ?",
+      "SELECT id, name, is_demo FROM users WHERE username = ?",
       username
-    ) as { id: number; is_demo: number | null } | undefined;
+    ) as { id: number; name: string; is_demo: number | null } | undefined;
     if (!row || Number(row.is_demo) === 1) continue;
-    const inUse =
-      (await db.get(
-        `SELECT 1 AS x FROM teacher_classes tc JOIN classes c ON c.id = tc.class_id
-          WHERE tc.teacher_id = ? AND c.is_demo = 0 LIMIT 1`,
-        row.id
-      )) ||
-      (await db.get("SELECT 1 AS x FROM review_assignments WHERE teacher_id = ? LIMIT 1", row.id)) ||
-      (await db.get("SELECT 1 AS x FROM exams WHERE created_by = ? LIMIT 1", row.id));
-    if (inUse) taken.push(username);
+    taken.push(username);
+    details.push(
+      `${username}（id=${row.id}，名称「${row.name}」）不是演示账号：`
+      + `确认是历史版本中断导入留下的残留时，可显式认领 `
+      + `"UPDATE users SET is_demo = 1 WHERE id = ${row.id}"；是真实账号请先改名或删除`
+    );
   }
   if (taken.length === 0) return;
   throw refuse(
     "DEMO_TEACHER_USERNAME_TAKEN",
-    `用户名 ${taken.join("、")} 已被在用的真实教师占用（该用户名是演示账号保留名）。`
-    + `本次导入已整单取消，未改动任何数据；请先把该教师改名，再导入演示数据。`,
+    `用户名 ${taken.join("、")} 被非演示账号占用（该用户名是演示账号保留名）。`
+    + `本次导入已整单取消，未改动任何数据。${details.join("；")}。`,
     { usernames: taken }
   );
 }
@@ -690,8 +696,12 @@ export async function seedDemoData(options: SeedDemoOptions = {}): Promise<SeedD
   // v1.9.8: 年级/班级/演示教师在单个事务内以 INSERT 直写 is_demo=1，创建与打标原子完成。
   // 此前「先创建再 UPDATE 打标」存在窗口：若进程在两步之间崩溃，demo-teacher 以 is_demo=0
   // 残留（users.username UNIQUE），cleanup 按 is_demo=1 识别无法清理，下次导入必撞 UNIQUE。
-  // 安全 R33：残留账号现在照旧收编（assertDemoTeacherUsernamesAvailable 已确认它没被真实业务用过），
-  // 但一律**换发口令**并补上 teacher_role —— 公开文档里的 teacher123 在升级后当场失效。
+  // 评审 P1：这种残留**不再自动收编**。一个 is_demo=0 的同名账号无法自证是演示残留，
+  // 收编＝改口令、改角色、打上 is_demo=1，随后就落进 clearDemoData 的删除集合——
+  // 那正是「演示导入删掉真实账号」的成因。归属判定统一由
+  // assertDemoTeacherUsernamesAvailable 在任何写入之前完成：只认 is_demo=1，其余整单拒绝，
+  // 历史残留由人显式认领（错误信息里给出该账号 id 与认领语句）。
+  // 口令一律随机换发：公开文档里的 teacher123 在升级后当场失效。
   // teacher_role 不能留空：routes/scores.ts 的兼容分支把「未配置 teacher_role 的教师」当全校可见，
   // 那等于把全校成绩挂在一个口令公开的账号上。
   const fixedCredentials = demoFixedCredentialsEnabled();
@@ -715,17 +725,6 @@ export async function seedDemoData(options: SeedDemoOptions = {}): Promise<SeedD
     const class2Id = Number(class2Result.lastInsertRowid);
     const teacherIds: number[] = [];
     for (const row of teacherRows) {
-      const existing = await tx.get("SELECT id FROM users WHERE username = ?", row.username) as { id: number } | undefined;
-      if (existing) {
-        await tx.run(
-          `UPDATE users SET password_hash = ?, name = ?, role_id = ?, subject = ?, teacher_role = ?,
-                            initial_password = ?, is_active = 1, is_demo = 1
-            WHERE id = ?`,
-          row.hash, row.name, ROLE_IDS.TEACHER, "数学", "subject_teacher", encryptField(row.password), Number(existing.id)
-        );
-        teacherIds.push(Number(existing.id));
-        continue;
-      }
       const info = await tx.run(
         `INSERT INTO users (username, password_hash, name, role_id, subject, teacher_role, initial_password, is_demo)
          VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
@@ -831,7 +830,8 @@ export async function seedDemoData(options: SeedDemoOptions = {}): Promise<SeedD
   examCount += await seedWeeklyQuizDemo(db, grade.id, studentIdByNumber);
 
   // 网阅打分面板 DEV 演示数据（v1.9.4 路径 B 测试入口）
-  // 教师 id 直接用建号事务的返回值：残留账号被收编时 id 与用户名不再一一对应，按用户名再查一次没意义。
+  // 教师 id 直接用建号事务的返回值：演示账号名是保留名，同名账号一律在写入前被拒绝，
+  // 这里的 id 必然来自本次新建的演示教师，不必再按用户名回查。
   const [demoTeacherId, demoTeacher2Id] = created.teacherIds;
   if (demoTeacherId) {
     const reviewSeeded = await seedReviewDemo(db, grade, studentIdByNumber, demoTeacherId, demoTeacher2Id, STUDENT_NUMBERS);

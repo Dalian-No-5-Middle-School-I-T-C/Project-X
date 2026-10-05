@@ -333,19 +333,23 @@ if (!user.teacher_role) return null; // plain teacher: back-compat 全部可见
   「仅限隔离测试库」警告；生产环境的导入走 `POST /api/db/import-demo`，不经过那个文件。
   开关是布尔值，没有「默认/环境/天花板」三档，但沿用同一条纪律：**取值非法一律按关闭处理**并打印
   `[demo-policy] …`，绝不静默放宽。
-- **升级即失效**：v1.9.8 之前崩溃残留的 `demo-teacher`（`is_demo=0`、`cleanupDemoData` 认不出来）
-  照旧收编，但一律换发口令、补 `teacher_role`、打 `is_demo=1`。也就是说老库升级后
-  `teacher123` **当场失效**，与 R01「历史公开口令一律视为无效」同一口径。
-- **收编有边界**：`demo-teacher` / `demo-teacher-2` 是保留用户名，但若库里同名的 `is_demo=0` 账号
-  真被业务用过（任课真实班级 / 被分配过阅卷 / 创建过考试），导入**整单拒绝**
-  （409 `DEMO_TEACHER_USERNAME_TAKEN`）而不是改掉一个真实教师的口令与角色。
+- **升级即失效（改为「由人认领」）**：v1.9.8 之前崩溃残留的 `demo-teacher`（`is_demo=0`、`cleanupDemoData`
+  认不出来）不再被自动收编。演示导入只认 `is_demo=1` 这一条明确的演示归属；认领动作交给管理员——
+  错误信息直接给出该账号 id 与 `UPDATE users SET is_demo = 1 WHERE id = N`，认领后重跑导入即换发随机口令、
+  补 `teacher_role`，老库里那个 `teacher123` 当场失效，与 R01「历史公开口令一律视为无效」同一口径。
+- **保留名不覆盖非演示账号（评审 P1）**：旧判据是「有三条在用证据之一才拒绝」（任课真实班级 /
+  被分配过阅卷 / 创建过考试），于是**刚导入、还没来得及任课**的真实教师会被改口令、改角色并打上
+  `is_demo=1`——而 `clearDemoData` 正是按 `is_demo=1` 删账号的，一次演示导入等于把真实账号交给清理程序。
+  「没有业务关系」推断不出归属，现在同名非演示账号一律 409 `DEMO_TEACHER_USERNAME_TAKEN`、零改动。
+  v1.9.8 之后建号与打标在同一条 INSERT 里完成，正常流程不会再产出 `is_demo=0` 的演示教师，
+  所以这条收紧不会挡住任何正常导入；受影响的只有历史残留，处理路径就是上面的显式认领。
 - **生产库导入需二次确认**：库里已有真实考试或真实账号（`admin` 除外）时，接口返回
   409 `DEMO_IMPORT_REQUIRES_CONFIRMATION` 并带回确认串 `IMPORT_DEMO_INTO_PRODUCTION`，前端二次确认后
   回传；CI/装机可用 `PROJECTX_DEMO_ALLOW_PRODUCTION_IMPORT=1` 免逐次确认。理由不是「怕误点」这么轻：
   演示导入写入 16 个账号与十几场考试，而 `clearDemoData` 只认「演示-」前缀与 `is_demo=1`，
   中间态最难还原。
 
-**证据**（`npm run verify:demo-credentials`，SQLite 84 通过 / 0 失败；MariaDB 同一脚本 `--mariadb` 跑同一套断言）：
+**证据**（`npm run verify:demo-credentials`，SQLite 91 通过 / 0 失败；MariaDB 同一脚本 `--mariadb` 跑同一套断言）：
 
 - 默认导入：两名教师口令互不相同、长度 ≥16、`!== teacher123`；用 `teacher123` 校验**失败**、
   用返回口令校验通过；`teacher_role='subject_teacher'`；`teacher_classes` 恰好 2 条且**全部指向
@@ -357,9 +361,10 @@ if (!user.teacher_role) return null; // plain teacher: back-compat 全部可见
 - 闸门：库里插入 1 场真实考试后，未确认导入抛 `DEMO_IMPORT_REQUIRES_CONFIRMATION`（`status=409`、
   带确认串、`realExams=1`），且**用户/考试/答题卡/年级/题块五项计数与拒绝前完全一致**、
   「演示-」前缀考试数为 0；带确认串放行；`=on` 放行；删掉变量后闸门恢复。
-- 保留名：残留账号被收编（`is_demo` 0→1、补 `teacher_role`、`teacher123` 失效、换发口令、清理可回收）；
-  在用的真实同名教师三条判据（任课真实班级 / `exams.created_by` / `review_assignments`）**逐条**触发拒绝，
-  且拒绝时该账号的 `password_hash`、`is_demo`、`teacher_role` 原样不动；三条证据全部撤除后放行。
+- 保留名：同名 `is_demo=0` 账号（残留或真实教师）**一律拒绝**，且该账号的 `password_hash`、`is_demo`、
+  `teacher_role` 原样不动、五项计数零变化；把任课/阅卷/考试三条业务往来全部撤除后仍然拒绝（评审 P1 的
+  正是这一格）；错误信息带 id 与认领语句；按 `is_demo=1` 认领后导入成功，重建的演示教师带
+  `teacher_role='subject_teacher'`、`teacher123` 校验失败、换发口令可登录、清理可回收。
 - 清单一致性：脚本接管的变量清单与 `DEMO_POLICY_ENV_VARS` 全等（新增开关却忘了在验证脚本里清空，
   会让「默认关闭」的断言在带脏环境的机器上假通过）。
 
