@@ -37,6 +37,7 @@ import { useAuth } from "./auth/AuthContext";
 import { apiUrl, authFetch, fetchJson, mediaUrl, ticketedMediaUrl, urlWithToken } from "./auth/api";
 import { cn } from "./lib/utils";
 import { useSkinPreferenceWriter } from "./lib/skinSync";
+import { skinPatchDecision } from "./lib/skinPatchGuard";
 import { PROMO_SITE_URL } from "./lib/external-links";
 import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
@@ -583,10 +584,20 @@ function App() {
   }, [user?.id, user?.themeSkin]);
 
   // v2.1.0: 皮肤变更 → 同步到账号（已登录时）。fire-and-forget，离线/失败静默。
+  // 评审 P2：Web 端缺了扫描端那道 skinPatchDecision 护栏。登录瞬态里「按账号偏好初始化」
+  // 与「变更即回写」两条 effect 在同一轮中先后执行，闭包里的 skin 还是本机残留值——
+  // 本机与账号皮肤不同 initialization 正要覆盖的那个值时，回写 effect 先把它 PATCH 回账号，
+  // patchUserLocal 又把账号快照改成它，两条 effect 交替、PATCH 一发接一发。
+  // 现在首见某个 user.id 的那一轮按「同步落定值」判定，不信任陈旧闭包 skin（与扫描端同一口径）。
+  const skinPatchPrevUserRef = useRef<string | number | null>(null);
   useEffect(() => {
-    if (!user) return;
-    const serverSkin = user.themeSkin || DEFAULT_SKIN;
-    if (skin === serverSkin) return;
+    const userId = user?.id ?? null;
+    const serverSkin = user?.themeSkin || DEFAULT_SKIN;
+    let chosen: string | null = null;
+    try { chosen = sessionStorage.getItem(SKIN_CHOSEN_KEY); } catch { /* ignore */ }
+    const decision = skinPatchDecision(skinPatchPrevUserRef.current, userId, skin, serverSkin, chosen);
+    skinPatchPrevUserRef.current = decision.nextPrevUserId;
+    if (!decision.patch) return;
     // R49：PATCH 成功后把值写回本地用户快照，A→B→A 才不会被「与登录快照相同」的判断跳过；
     // 失败则 refresh，避免本地与账号长期背离。
     void writeSkinPreference(
@@ -803,10 +814,20 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(snapshot),
       keepalive: true
-    }).then((response) => {
+    }).then(async (response) => {
       if (response.ok && editRevisionRef.current === revision) {
         savedRevisionRef.current = revision;
         setAutoSaveState("saved");
+        // 评审 P2：这次 PUT 同样让服务器 revision +1。不接住返回值，本地 card.revision
+        // 就停在改动前的版本，回到页面点导出会被自己的版本闸门判成「答题卡已被其他窗口改动」。
+        // 页面真在卸载时读不到 body（连接被掐断），这里就什么也不更新——下次 flush 会带回正确版本。
+        const saved = await response.json().catch(() => null) as AnswerCard | null;
+        if (saved && typeof saved.revision === "number"
+          && editRevisionRef.current === revision
+          && latestCardRef.current?.id === saved.id) {
+          latestCardRef.current = { ...latestCardRef.current!, revision: saved.revision };
+          setCard((current) => (current ? { ...current, revision: saved.revision } : current));
+        }
       }
     }).catch(() => undefined);
   }
