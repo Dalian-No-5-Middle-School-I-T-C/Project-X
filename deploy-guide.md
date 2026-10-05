@@ -87,8 +87,12 @@ root 身份直接等于整机沦陷。Ubuntu 服务器包内置了幂等安装�
 ```bash
 cd project-x-server-ubuntu24-<version>
 npm install --omit=dev
-sudo systemd/install.sh
+sudo bash systemd/install.sh
 ```
+
+写 `bash systemd/install.sh` 而不是 `sudo systemd/install.sh`：包是从 Windows 打包机经 ZIP 分发的，
+解压器不一定把 Unix 执行位还原出来（打包脚本已经显式补 `0755` + made-by Unix，但不同解压器对这
+16 位的信任程度不一），`bash 脚本路径` 与执行位无关，是唯一不会当场卡住的形式（评审 P2-8）。
 
 它会建一个 nologin 系统账号 `projectx`，把代码铺到 `/opt/project-x-server`（root 所有、
 服务账号只读+可执行），把 `/var/lib/project-x`（SQLite 库、答题卡图片、自动备份）交给
@@ -96,6 +100,18 @@ sudo systemd/install.sh
 `ProtectSystem=full`、`ProtectHome`、`PrivateTmp`、`PrivateDevices`、空 `CapabilityBoundingSet`
 等）并 `daemon-reload + enable + restart`。升级时重跑同一条命令即可：属主与权限会被重新纠正，
 不会退回 root。
+
+换目录时四个开关一起给，systemd 单元里的路径会跟着一起重写（评审 P2-9）：
+
+```bash
+sudo PROJECTX_APP_DIR=/srv/project-x PROJECTX_DATA_DIR=/srv/project-x-data \
+     PROJECTX_SERVICE_USER=px PROJECTX_SERVICE_GROUP=px bash systemd/install.sh
+```
+
+此前它只改 `User=` 与 `Group=`：包体与数据确实落到自定义目录，服务却仍按包内默认的 `/opt` 与
+`/var/lib` 起起来——自定义目录成了摆设，升级还会静默跑一份旧代码。现在 `WorkingDirectory`、
+四条 `Environment` 路径与 `ExecStart` 都按本次实际目录整行重写，并在装完前逐行自检：包内单元与
+重写规则一旦漂移，安装直接非零失败，而不是留下一个「报告成功却指向旧路径」的服务。
 
 装完自检（第三条命令**不该**有输出）：
 
@@ -349,7 +365,7 @@ GET /api/analysis/exams/1/questions
    `PROJECTX_DEMO_FIXED_CREDENTIALS`（恢复文档里的 `teacher123` / 口令=学号）与
    `PROJECTX_DEMO_ALLOW_PRODUCTION_IMPORT`（跳过「库中已有真实数据」的二次确认）**只应在隔离测试环境打开**；
    生产环境保持未设即可，两个开关取值非法时一律按关闭处理。
-7. **最小权限运行**（安全 R37）：后端不要用 root 常驻。Ubuntu 包里的 `sudo systemd/install.sh`
+7. **最小权限运行**（安全 R37）：后端不要用 root 常驻。Ubuntu 包里的 `sudo bash systemd/install.sh`
    会建专用系统账号、把数据目录置 `0750` 并安装带沙箱指令的 systemd 单元；升级重跑同一条命令即可，
    详见 2.3 节。手工 `sudo node dist/server/index.mjs` 或 `sudo ./start.sh` 的部署应改为该脚本安装。
 8. **数据目录跟着库一起走**（安全 R39）：答题卡的原卷、配图与坐标布局在 `ANSWER_CARD_DATA_DIR` 下，

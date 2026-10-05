@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <functional>
@@ -56,8 +57,12 @@ std::pair<long long, long long> probe_bmp(const std::vector<unsigned char>& buff
         return {static_cast<long long>(read_le(buffer, 18, 2)), static_cast<long long>(read_le(buffer, 20, 2))};
     }
     const auto width = static_cast<long long>(read_le(buffer, 18, 4));
-    const auto height = static_cast<long long>(read_le(buffer, 22, 4));
-    return {width, height < 0 ? -height : height};  // 负高度表示自顶向下位图
+    // 高度按**有符号** INT32 读：BITMAPINFOHEADER 用负高表示自顶向下（top-down）位图，
+    // 绝对值才是真实行高。按无符号读会把 -3000 变成 4294964296，既过不了单边常识上界，
+    // 又把扫描仪/驱动产出的合法 top-down BMP 误拒成「头部伪造」（CR #313 P2-5）。
+    // 宽度仍按无符号读：负宽在规范里本就非法，留着大值让 read_image 的 R19 闸门拒绝。
+    const auto raw_height = static_cast<long long>(static_cast<int32_t>(read_le(buffer, 22, 4)));
+    return {width, raw_height < 0 ? -raw_height : raw_height};
 }
 
 std::pair<long long, long long> probe_jpeg(const std::vector<unsigned char>& buffer) {

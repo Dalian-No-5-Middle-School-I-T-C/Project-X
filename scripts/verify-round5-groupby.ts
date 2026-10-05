@@ -27,15 +27,26 @@ function section(title: string): void { console.log(`\n\x1b[36m== ${title} ==\x1
 async function main(): Promise<void> {
   const db = getMysqlDb();
   // 最小数据：1 场考试、2 学生、3 个 (题, 题型) 组（其中 q1 objective 两行取 MAX）
+  // exams.card_id 是全量复检补的：getExamFullScoreMap 先读它走「按答题卡满分」，夹具缺这一列时
+  // 脚本在第一条断言之前就崩（no such column），A2 的 GROUP BY 等价性其实一直没被守住。
+  // 置为 NULL 保持原意——满分仍由 question_scores 汇总得出。
+  // grades/classes/joined_at 同理：getStudentTrend 的 CURRENT_CLASS_SUBQUERY 要按
+  // 「未归档优先 + joined_at 倒序」选当前班，缺表就直接死在断言之前。补上之后班级均分
+  // 那条 GROUP BY 分支才真的被执行（两名学生同班）。
   await db.exec(`
-    CREATE TABLE exams (id INTEGER PRIMARY KEY, name TEXT, subject TEXT, status TEXT, start_time TEXT, end_time TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE exams (id INTEGER PRIMARY KEY, name TEXT, subject TEXT, status TEXT, card_id TEXT, start_time TEXT, end_time TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, student_number TEXT);
+    CREATE TABLE grades (id INTEGER PRIMARY KEY, name TEXT, archived_at TEXT);
+    CREATE TABLE classes (id INTEGER PRIMARY KEY, name TEXT, grade_id INTEGER, archived_at TEXT);
     CREATE TABLE student_scores (exam_id INTEGER, student_id INTEGER, total_score REAL, objective_score REAL, subjective_score REAL, rank INTEGER, percentile REAL);
     CREATE TABLE question_scores (exam_id INTEGER, student_id INTEGER, question_number INTEGER, score REAL, max_score REAL, score_type TEXT);
-    CREATE TABLE class_students (class_id INTEGER, student_id INTEGER);
+    CREATE TABLE class_students (class_id INTEGER, student_id INTEGER, joined_at TEXT);
   `);
   await db.run("INSERT INTO exams (id, name, subject, status) VALUES (1, '数学测验', '数学', 'closed')");
   await db.run("INSERT INTO users (id, name, student_number) VALUES (1, '张三', '1001'), (2, '李四', '1002')");
+  await db.run("INSERT INTO grades (id, name, archived_at) VALUES (1, '高一', NULL)");
+  await db.run("INSERT INTO classes (id, name, grade_id, archived_at) VALUES (1, '1班', 1, NULL)");
+  await db.run("INSERT INTO class_students (class_id, student_id, joined_at) VALUES (1, 1, '2026-01-01 00:00:00'), (1, 2, '2026-01-01 00:00:00')");
   await db.run("INSERT INTO student_scores (exam_id, student_id, total_score, objective_score, subjective_score) VALUES (1, 1, 92, 40, 52), (1, 2, 78, 36, 42)");
   // q1 objective 两行（MAX(max_score) 应取 100）；组 = (1,1,objective)/(1,1,subjective)/(1,2,subjective)
   await db.run("INSERT INTO question_scores (exam_id, student_id, question_number, score, max_score, score_type) VALUES"

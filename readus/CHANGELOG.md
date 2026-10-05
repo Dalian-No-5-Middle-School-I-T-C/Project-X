@@ -2,6 +2,89 @@
 
 > **项目起点：2026-06-07 建库**（GitHub 仓库创建，`Initial commit` 于同一分钟提交）。本文件只记录建库之后的真实提交与发版；建库之前的任何日期/版本均为误记，已删除。
 
+## 2026-10-05：PR #313 评审返修（3 项 P1 + 9 项 P2）
+
+第五批提上去之后评审给了十二条：3 个「上线前必须修」的 P1，9 个「这一轮改动自己带出来的」P2 回归。
+两条 P1 会让功能整体不可用（远程上传一律 409），一条 P1 会**删掉真实账号**，P2 里最重的一条是
+「服务从默认路径起了个旧版本、还报告安装成功」。逐条按「症状—根因—为什么这样修」处理如下。
+
+**P1**
+
+- **P1-1 答题卡指纹按 JSON 传输语义规范化**（`src/shared/cardVersion.ts`）：客户端手上的卡是「JSON 往返之后」
+  的形状（值为 `undefined` 的键根本不存在），服务端从库里构造的那份带着这些键。旧的规范化把前者编成 `null`、
+  后者编成「没有这个键」，同一张卡算出两个指纹——普通客观题/主观题卡的**远程上传全部 409**。
+  现在与 `JSON.stringify` 同语义（键跳过、数组元素里的 `undefined` 编成 `null`），并加反向对照：
+  真正的内容差异照样改变指纹，规范化没有把校验变成空转。
+- **P1-2 媒体票据随账号权限撤销失效**（`src/server/middleware/auth.ts`、`AuthService`）：票据认证直接采用**签发时的用户快照**，
+  改密 / 重置密码 / 禁用账号之后旧链接在剩余寿命内仍能读到资源，被降权的人还沿用旧角色。
+  两处一起收紧：`revokeUserTokens` 这个统一撤销入口连带作废票据；票据命中后回库核对当前账号与角色，
+  账号已停用或删除就地清空该用户票据并回落——与令牌路径同一个口径。
+- **P1-3 演示导入不得覆盖 / 删除真实账号**（`DemoDataService`）：清理阶段按**用户名**匹配演示账号，
+  于是叫同一个名字的真实教师会被改名或删掉。现在只认明确的演示归属标记；v1.9.8 起建号与打标在同一条
+  INSERT 里完成，正常流程不再产出 `is_demo=0` 的演示教师，因此收紧不影响任何正常导入。
+  建号事务里的「同名就 UPDATE 收编」分支随之删除——清理之后仍在的名字只可能是非演示账号。
+
+**P2（本轮改动自己带出来的回归）**
+
+| 症状 | 修法 |
+|---|---|
+| 切到别的标签页触发自动保存后，回来点导出 PDF 被判成「答题卡已被其他窗口改动」 | 隐藏页面那次 `keepalive` PUT 成功后**把服务端返回的新 revision 接住**，同时落到 `latestCardRef` 与 `card` state；仍受世代与卡片身份约束，迟到的响应不能覆盖更新的一轮改动 |
+| 服务地址没变、再点一次保存，HTTP 的明文许可就被抹掉 | 补发许可的条件里加上 `explicit-allowance`（旧写法只认 `blocked-plaintext`，命中许可的地址反而在「原样再存」时被清掉），换 https/回环时依旧照旧清除 |
+| 跨源模式连续看九张图，回看第一张一直 401 | 客户端票据缓存按服务端同一档位与同一驱逐策略走（上限取自 `shared/mediaTicketLimits`，不写死 8），并给 `<img>` 补一条 `onError` 重签退路：只对失败的那一个 URL 重试一次，重签前先剥掉旧 `mt` |
+| Web 端登录后两条皮肤 effect 交替 PATCH，账号偏好被本机旧值定住 | 补上扫描端那道 `skinPatchDecision` 护栏：首见某个 `user.id` 的那一轮不信任闭包里的陈旧 `skin`，按「同步落定值」判定 |
+| 正常截图（top-down BMP，负高度）被识别器判成伪造尺寸 | `biHeight` 按有符号 `int32_t` 读取再取绝对值；**宽度仍按无符号**，R19 对伪造尺寸的防护不受影响 |
+| 安装目录经合法 junction 时，随包 `twaindsm.dll` 被当成外部 DLL 拒绝加载 | 安装目录与 DLL **两边都解析成真实路径**再比；只在目录侧解析失败时退回逻辑路径，DLL 侧解析失败仍然拒绝 |
+| 扫描端里点「复制诊断」毫无反应 | 默认全拒的权限策略开一条白名单：**只对壳自己加载的 origin 放行写剪贴板**，读剪贴板仍全拒；渲染端同时补回退路径，并以 `execCommand` 的真实返回值决定「已复制」提示 |
+| Windows 打包的 ZIP 里 `install.sh` 没有执行位，解压后 `sudo ./systemd/install.sh` 直接 Permission denied | 打包时给 `.sh` 条目显式写 `0755` 并把 made-by 标成 Unix（解压器只在这 16 位被标成 Unix 时才信它）；文档一律改写 `sudo bash systemd/install.sh`，与解压器行为无关 |
+| 给了 `PROJECTX_APP_DIR` / `PROJECTX_DATA_DIR`，包体和数据确实落到自定义目录，systemd 却仍按 `/opt` 与 `/var/lib` 起服务 | 单元按**指令键名**整行重写（`WorkingDirectory` + 四条 `Environment` + `ExecStart`，用 awk 的 `index()/substr()` 避开 sed 里 `&` 与反斜杠是元字符的坑），装完前逐行自检；锚点一旦与包内单元漂移就非零失败，而不是留下一个「报告成功却指向旧路径」的服务 |
+
+**验证**：`npm run verify:security-critical` **477 通过 / 0 失败**（本轮新增 24 条，每条 P2 都配反向对照；
+其中 R23 的旧断言「权限请求处理器一律 `callback(false)`」按新策略改写为「默认拒绝 + 唯一白名单分支」，
+不改写就会把这条放行判成回归）。`scripts/verify-systemd-hardening.ts` **108 通过 / 0 失败**——新增的第 8 节
+把 install.sh 里标记之间的重写片段连同真实单元在临时目录**跑两遍**（自定义目录 + 默认目录）并做键名漂移的
+反向对照，第 9 节用合成 ZIP 验证执行位与 made-by。P1-3 走 `verify:demo-credentials`（SQLite **91 / 0**）与
+`verify:demo-safety`（**23 / 0**）。`npm run typecheck` 通过。
+**两处踩过的坑记在这里**：验收脚本一开始用 `bash -c` 传片段，Git Bash 经 Windows 命令行重解析反斜杠续行后
+把 `"$APP_DIR"` 变成空串，症状是「安装脚本逻辑坏了」——片段落成文件再执行才是真实形态（install.sh 本来就是文件）；
+生成物必须统一 LF，模板字面量在 Windows 上会把 `\r` 带进 `install.sh` 的 shebang，导致 bad interpreter。
+
+**边界**：客户端的票据上限拿到的只是默认档位（浏览器读不到运维环境变量），所以它只保证「不超过」，
+不保证「不失效」——真正的兜底是 `onError` 重签那条退路。P2-5 / P2-6 只改了源码，
+**必须 `npm run native:build:x64` / `:ia32` 重建才会落到包内产物**，本轮 `resources/native/` 下的 exe 仍是改动前的构建。
+三条判定口径（为什么读剪贴板不放行、为什么宽度不改、为什么目录侧允许退回而 DLL 侧不允许）写在
+`readus/SECURITY-AUDIT-NOTES-2026-10-04.md` 第九节。
+
+**全量复检（同日，返修之后）**：把 CI 跑过的与 CI 没跑的都过了一遍——`npm run typecheck`、
+**56 套 `verify:*`**（SQLite 全量，另加 5 套 `--mariadb` 走本机临时实例）、LLM 边车两套 Python 回归
+（21 + 18 条），以及 `scanner-bridge.vcxproj` 的 Release/x64 构建。三条结论：
+
+1. **抓到一处真缺陷并已修**：P2-6 那句「两边都解析成真实路径」当时只是纸面成立——解析用的
+   `CreateFileW(…, 0, …, FILE_ATTRIBUTE_NORMAL, …)` **打不开目录**（目录句柄需要 `FILE_FLAG_BACKUP_SEMANTICS`，
+   本机最小探针实测 gle=5），目录侧永远退回逻辑路径，junction 安装照样被误拒。改为
+   `FILE_READ_ATTRIBUTES + FILE_FLAG_BACKUP_SEMANTICS`，并补一条锁住该标志组合的断言
+   （`verify:security-critical` 现为 **478 / 0**）。源码形状断言看不出这类问题，是本轮复检的价值所在。
+2. **CI 之外的脚本里有一条长期空转**：`verify:round5-groupby`（A2 的三处 GROUP BY 等价性）自建的最小夹具
+   缺 `exams.card_id`、`grades`、`classes`、`class_students.joined_at`，脚本在**第一条断言之前**就崩，
+   等于一直没守住。补齐夹具后 **9 / 0**。
+3. **仍有一条本地红**：`verify:a3` 在原生识别环节报「未找到二维码」（预期 30000001 第 1 页）。
+   复检时先怀疑「包内 exe 是旧构建」，于是**用当前源码重建了识别器**（Release/x64，退出码 0）再跑一次，
+   报的是同一个错——**「构建过期」这个解释被证伪**。它也不可能是本轮带出来的：`recognition.ts` 未被触碰，
+   识别器源码这轮只改了 BMP 高度读法，而这条链路喂的是 PNG。旁证是同一条原生 QR 路径在
+   `verify:card-identity`（同样真起识别器）上是绿的，所以红在 **A3 这一页的形状/旋转处理**上，
+   不是 QR 通用能力。它不在 CI 里，因此既不是本轮回归，也不能算已验证通过——留作单独一条待查项。
+
+顺带记一条判据：复检首轮 MariaDB 报了 4 条红，换一个**干净的临时实例**后 5 套全绿——旧数据目录处于
+「表查得到但 `SHOW TABLES` 不列」的不一致状态。本机 MariaDB 的红先排除实例污染，再怀疑代码。
+
+**合并快照漏掉了本节（同日发现，由 PR #314 带回）**：#313 于 07:58 以 squash 并入
+`fix/security-r02-scanner-access`（合并提交 `15f4987`），但取的是 `76e71aa` 这一份快照——
+**上面这批 CR 返修之前**的版本。判据是 `git diff 76e71aa 15f4987` 为空（两棵树完全一致），
+且 base 分支上 `twain_controller.cpp` 仍是旧的 `FILE_ATTRIBUTE_NORMAL`、`lib/mediaTicketRetry.ts` 不存在。
+因此 `76e71aa` 之后的 14 个提交（3 条 P1 + 9 条 P2 + 复检两条）当时并没有进入合并结果。
+分支上补了一个 `-s ours` 合并提交 `a748e15`（父提交 `c76ac17` 与 `15f4987`）把那份快照认领为祖先：
+**树内容与 `c76ac17` 完全相同**，唯一作用是把 PR #314 的三点 diff 收窄到这 14 个提交（35 文件 / +1305 −297），
+而不是把第五批的 102 个文件再审一遍。已合并的历史不改写；推送与合并仍按分工走。
+
 ## 2026-10-05：导出 PDF 与答题卡版本绑定（安全审查第五批 C · R45）
 
 答题卡是 1200ms 防抖自动保存的，而 PDF 是从**库里当前值**渲染的。老师点「导出」时手上那一版可能还没落库，
@@ -342,6 +425,7 @@ Electron 主进程、TWAIN 桥接子进程、答题卡识别器子进程。共�
 - **踩坑（六条，都值得留在文档里）**：① `GET_LOCK` 的参数单位是**秒**，把 3000 毫秒原样传进去等于等 3000 秒——一次并发挤兑就挂住连接并把后续所有领取都变成「等待锁超时」，本机表现为整节回归只看到锁错误；现按 `Math.max(1, round(ms/1000))` 换算，并在回归里加时长断言与「突发前锁无人持有」的前置体检，锁泄漏与单位回归都会第一时间暴露。② 探针客户端最初复用 keep-alive 连接，被预算断开的那只 socket 会被下一条请求捡走，于是只看到 `ECONNRESET`——那测的是连接复用而不是响应行为，测试里每条请求 `agent: false` 各用一条连接。③ `npm ci` 会按 lock 装到有洞的 adm-zip 0.6.0，本地 `node_modules` 已是 0.6.1，于是「本地全绿、CI 现场有洞」。④ SQLite 单连接下嵌套事务直接抛错，原子准入必须额外挂进程内串行链，不能只靠数据库锁。⑤ 缺少响应体的 fetch 替身会让正文读取路径整段被绕过，改造后的闸门看起来测过了、实际没测。⑥ 判定「越权面是否放宽」要看收敛后的集合而不是看代码分支——CR10 放行的是冻结名单内的既有成员，`filterParticipatedExamIds` 在 SQL 报错时回退为「不过滤」，这种只在 MariaDB 方言下才坏的静默放行，SQLite 回归证不了。
 - **验证**：`npm run typecheck` 通过。`verify:permission-scope` 53 → **71**（CR2–CR5）→ **93**（CR1/CR6/CR9）→ **110/0**（CR7/CR10/CR11/CR12，含教师侧对照、调班保留冻结成员、只读教师与查看门两条出路）。`verify:security-critical` 251 → 256 → 257 → 263 → 270 → 279 → **285 通过 / 0 失败**（新增：暂存区不计入全局容量、844 KiB 估算放行 vs 1.41 MiB 实测拒绝、回滚错误形态与文案脱敏、「响应头先到正文后到」的连接级并发峰值仍 ≤ 闸门上限、半挂正文按预算整体判负、失败路径归还槽位、与线上同形的「预算 → multer → 手写回调」迷你链跑真实 Express + 真实 multer + 分块无 Content-Length 请求并断言二次响应被挡下、以及真实路由源码里「清理在前、守卫在 400 之前」，避免回归链与线上代码各写一套）。MariaDB 侧本机 12.3.2 / 13306 临时实例真跑 `verify:mariadb` 13 → 14 → **15 个分区全绿**，含真锁路径：并发 6 投只收 2、锁被占用时按毫秒预算等待（实测 2010 ms）后返回「请重试」且不落任务行、在途占位与僵尸行结算、启动清扫归零，试卷池 5 并发在配额 2 下恰好 2 成、锁无泄漏、等锁时长 3004 ms。另 `verify:auth` 137/0、`verify:exam-paper` 69/0、`verify:wechat-grade-release` 21/0、`verify:p1-scope` 19/0、`verify:review-ranking-degradation` 30/0、`verify:analysis-batches-2-4` 76/0，scanner 系列 smoke 全绿。CR14/CR15 与其余各条**均未改动需要重跑的迁移**，MariaDB 侧只补回归、不动 schema。
 - **并入第五批后的合并树（`fix/security-batch5-web-scan-deploy`）**：CR 返修与第五批两套断言合流，只有三处冲突（全局错误处理器、验证脚本 import 行、本文件），一律按「两侧都保留」解决——`safeErrorForLog()` 的日志打码与「已结束/已销毁的响应不再写入」的守卫同时生效。合并树全量复检：`npm run typecheck` 通过；`verify:security-critical` **441 通过 / 0 失败**（第五批新增与本轮 CR 新增互不覆盖），`verify:permission-scope` 110/0、`verify:auth` 137/0、`verify:exam-paper` 69/0、`verify:wechat-grade-release` 21/0、`verify:p1-integrity` 15/0、`verify:p1-scope` 19/0、`verify:p1-readgate` 15/0、`verify:review-ranking-degradation` 30/0、`verify:scanner-cancel` 33/0、`verify:card-export-revision` 66/0、`verify:demo-credentials` 84/0、`verify:systemd-hardening` 77/0、`verify:release-integrity` 61/0、`verify:recognizer-limits` 45/0、`verify:insecure-remote-transport` 57/0、`verify:scanner-skin-patch` 17/0、`verify:p1-security` 11/0、`verify:demo-safety` 23/0、`verify:reliability-filter` 21/0、`verify:176-178` 12/0，其余 smoke/回归退出码全 0。MariaDB 侧本机 12.3.2 / 13306 临时实例真跑 `verify:mariadb` **16 节全 PASS**（两处真锁照旧：试卷池领取等锁 3004 ms、AI 准入等锁 2010 ms），`verify:demo-credentials:mariadb`、`verify:card-export-revision:mariadb`、`verify:class-archive:mariadb`、`verify-ladder-students --mariadb` 各按自己的一次性空库跑通——这些变体要求 `PROJECTX_MARIADB_DATABASE` 等于它专属的库名，复用会留表的 `projectx_ci` 会被直接拒绝。仍红的两条是本批之前就存在的 `verify:a3`（缺 A3 样张与原生识别器）与 `verify:round5-groupby`（引用当前 schema 里不存在的 `card_id` 列），与本轮改动无关，未一并处理。
+- **再同步 `origin/main`（#304/#305/#308 共八个提交）**：唯一真冲突在 `src/server/db/mysql.ts` 的 **v58**——本支带着「清理学生在读班级多份关联」的 `DELETE`，而 main 在 #308 评审后已把同号改成**故意留空**（多班在读本身合法，调班残留与有意的多班关联在数据上不可区分，评审实测执行后同一学生的两条在读关联变成一条）。这里取 main 的留空口径、只保留本支的 v59（答题卡 `revision` 列）：按「保留我们的」解决等于把一次已回退的破坏性数据改写重新送回生产线。SQLite 侧同号本就是注释占位，合并后 `grep -rn dedupe-class-students src/ scripts/` 为空，`verify:grading-published-exam` 随新基线报「sqlite 迁移 54 条 / mariadb 42 条，v57/v58 均空置」。同步后的复检仍全绿：`verify:security-critical` 441/0、`verify:permission-scope` 110/0、p1 三条 15/19/15、`verify:class-archive` 与 `verify:card-export-revision` 66/0 两侧同形，MariaDB 侧 `verify:mariadb`、`verify:class-archive:mariadb`、`verify:card-export-revision:mariadb`、`verify:demo-credentials:mariadb`、`verify-ladder-students --mariadb` 退出码全 0。另一条 #312 的头分支按 `git merge-tree` 对 main 试合**零冲突**，且合并结果同样落在 main 的 v58 留空口径上——它不需要额外处理。
 - **文档**：README 的原卷容量、微信出站、解压预算、AI 配额、试卷池五张档位表同步本轮新增/改口径的档（`PROJECTX_RESTORE_ZIP_MAX_RATIO`、`PROJECTX_AI_ACTIVE_RUN_STALE_MS`、`PROJECTX_AI_ADMISSION_LOCK_TIMEOUT_MS`、`PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS`），并写明锁预算的秒/毫秒换算、`_tmp` 不计入全局容量、413 带 `measuredAfterConversion`、微信槽位覆盖正文读取、「回收与响应是两件独立的事」等行为口径。
 
 ## 2026-10-04：服务端资源与 AI 链路整改（安全审查第四批 · R10/R11/R14/R16/R20/R24/R25/R26/R27/R43）
@@ -558,9 +642,14 @@ Electron 主进程、TWAIN 桥接子进程、答题卡识别器子进程。共�
 > ① **v57 已删除并永久空置**：原「以 `score_published` 为准把 `status` 推回 `closed`」把主线允许的合法状态当脏数据改写（阅卷期间可先公布部分成绩，公布接口本就接受 `status IN ('grading','closed')`）。实测升级后再次扫描入库直接报「答题卡未关联可阅卷的考试，成绩未入库」，因为 `scannerExam.ts:9` 的取考试条件会过滤 `closed`。展示层错位早由 `toExamStatus()` 的发布标志优先解决，不需要改数据。
 > ② **双面扫描页码被改坏**：原 B13 修法「已有页数 + index + 1」把偏移按**图片**累加，而 native 的 `page` 是**物理纸张号**（`twain_controller.cpp:473`/`:513` 正反写同一个 `pageNum`），两份双面卷的分组从 `[0,0,1,1]` 变成 `[0,1,2,3]`，正反面被拆到相邻两张纸上，学号继承与完整性校验随之失效。现改为「偏移按纸累加」，见 `scanPages.ts:assignScanRecordPageNums`。
 > ③ **撤回路径的嵌套事务**：`withdraw()` 收到的恒为调用方事务适配器，再开 `transaction()` 在 SQLite 抛 `cannot start a transaction within a transaction`、在 MariaDB 会对 `PoolConnection` 调用不存在的 `getConnection()`；实测原有 `scripts/scanner-batch-results-smoke.ts` 主线通过、返修前在重复卷接口 **500（本应 409）**。现合并为传入适配器上的单条 UPDATE，原子性由外层事务保证。另更正本人此前的说法：主线 `withdraw()` 开头早已调用 `markScoreMutated()`，不存在「漏撤公布」。
-> ④ **「一人一班」的全量删除会抹掉历史班级**：写入路径与 v58 迁移都无条件 `DELETE FROM class_students WHERE student_id = ?`，而归档班级的关联是刻意保留的历史关系（`verify-class-archive.ts:84` 就断言归档后该行仍在）。现统一为只清「当前归属」（班级与其年级均未归档），见 `activeClassScope.ts:clearActiveStudentClassLinks`。
+> ④ **「一人一班」的全量删除会抹掉历史班级**：写入路径与 v58 迁移都无条件 `DELETE FROM class_students WHERE student_id = ?`，而归档班级的关联是刻意保留的历史关系（`verify-class-archive.ts:84` 就断言归档后该行仍在）。当时的收窄方案是只清「当前归属」（`clearActiveStudentClassLinks`）；**该方案已被二次评审 ⑦ 进一步推翻**——在读多班关联同样不得清，写入侧改为纯增量、v58 停用删除，函数已移除。
 > ⑤ **60 秒默认超时没进安装包**：只改了 `twain_controller.hpp`，而两个随包 `resources/native/win-{ia32,x64}/scanner-bridge.exe` 与主线逐字节相同，打包链路不重编扫描桥且优先使用这些二进制 → 现场仍跑旧 exe 的 15s。现由服务端调用链恒定传 `--page-timeout-ms`（已检出两个 exe 内含该开关字串，故无需重编译即可生效）。
 > ⑥ **UCRT 查找路径拼错**：`findUcrtDir()` 把 `Redist\ucrt\DLLs` 的第一层（其实是 `x64`/`x86`/`arm` 架构目录）当 SDK 版本目录，再追加一次架构去找 `DLLs\x86\x86` 这种不存在的路径，返回 null 后只能回退系统目录——而 System32 只有 `ucrtbase.dll`、没有 15 个转发桩，正好补不齐第 2 条要解决的问题。现同时探测 `Redist\<版本>\ucrt\DLLs\<arch>` 与 `Redist\ucrt\DLLs\<arch>` 两种真实布局，并按完整性（`ucrtbase.dll` + 15 个 `api-ms-win-crt-*`）筛目录。
+>
+> **二次评审返修（2026-10-03，针对 #304/#305/#308 三 PR 复核的 3 条发现）**：
+> ⑦ **[P1]「一人一个在读班」与 #308 明确保留多班成员的行为冲突**：v58 迁移与加入班级/重导入/调班写入仍把在读关联收缩成一条，会把合法的多班在读成员当脏数据删除（评审实测：执行 v58 后同一学生的两条在读班级关联变成一条）。现放弃该不变量：v58 **停用删除（号位保留，与 v57 同款占号注释）**；`addStudent`/`addStudents` 与重导入改为**纯增量** INSERT IGNORE，`moveStudent`（显式调班）只移除原班关联；`activeClassScope.ts` 的 `clearActiveStudentClassLinks` 随之删除。多行关联的归班歧义全部由读取侧口径消解（见 ⑧⑨）。
+> ⑧ **[P2] 成绩表和导出的去重仍会选中归档旧班**：`getScoreTableData`/`getExportData` 按 `c.id ASC` 取每生首行，已转入新班的学生命中 id 更小的归档旧班，未筛选成绩表与导出显示旧班及其班排（评审实测：旧班班排 2，筛选新班才是 1）。排序键改为 `DISPLAY_CLASS_ORDER`：**在读班级优先**（班级与年级均未归档）→ `joined_at` 最新 → 同刻取 `class_id` 最大；学生关联全部归档时回落最新归档归属，毕业班级的历史导出仍有班级可看。班排仍按各班完整成员计算。修复落在 #308 分支（缺陷由其引入），本分支经合并继承。
+> ⑨ **[P2] 「当前班级」查询没有排除归档关系**：`CURRENT_CLASS_SUBQUERY` / `CURRENT_CLASS_JOIN_SUBQUERY`、大考归班两处排序与逐题下钻展示班，原只按 `joined_at DESC, class_id DESC` 选取——加入时间相同且归档班 id 更大时会选中归档班，学生成长曲线的班均分因此取到归档班（评审实测：应为 30 显示 73.3）。现统一为「在读优先（班级与其年级均未归档）→ joined_at 最新 → class_id 最大」，与 ⑧ 的展示班级同优先级。
 
 ### 1. 扫进 100 张只显示 1 份（双因叠加）
 - **成因 A（页间超时过短）**：`twain_controller.hpp` 的 `pageTimeoutMs` 默认 **15000ms**，而 UI「等纸超时」留 0 时整条链路回落到该值。300/600dpi 的 ADF 页间机械进纸 + 高分辨率传输常超过 15s，第 2 页起 `waitForState(6)` 提前超时 → 每会话恒 `pages=1`（日志中 `pages=` 只出现过 `1`）。**修复（返修后）**：默认值改由**服务端调用链恒定给出**——`scanner/index.ts` 的 `normalizePageTimeoutMs()` 把缺省/非法/越界一律兜底为 `PAGE_TIMEOUT_DEFAULT_MS = 60_000` 并始终传 `--page-timeout-ms`；`twain_controller.hpp` 的 60s 只作为重编译后的同源默认值保留。之所以不能只改头文件：随包的 `resources/native/win-{ia32,x64}/scanner-bridge.exe` 是预编译二进制、打包链路不重编它，而两个 exe 内都检得到 `--page-timeout-ms` 开关，显式传参无需重编译即可生效。仍可经 UI 覆盖。
@@ -581,7 +670,7 @@ Electron 主进程、TWAIN 桥接子进程、答题卡识别器子进程。共�
 
 ### 5. 学生名单回到调班前的班级
 - 根因：`class_students` 主键是 `(class_id, student_id)`，**一人可多行**。各写入路径（重新导入 / 加入班级）只 `INSERT IGNORE` 新关联、**从不删旧行**，于是调班后旧班关联残留；而成绩分析部分查询按 `MIN(class_id)`（最旧）取班，必然命中旧班。与下钻详情的 `joined_at DESC`（最新）口径不一致，导致同一学生在不同页面显示不同班级。（另已排除「考号重复」：`users.student_number` 为 UNIQUE，且现场确认无多班就读学生。）
-- **修复**：① `AnalysisRepository` 新增 `CURRENT_CLASS_SUBQUERY` / `CURRENT_CLASS_JOIN_SUBQUERY` 统一「当前班 = `joined_at DESC, class_id DESC`」，并替换全部 `MIN(class_id)` 站点（含 `ScoreRepository` 成长曲线），两处排序改为 `cs.joined_at DESC`；② `ClassRepository.addStudent/addStudents` 与 `UserRepository` 重导入路径**先清该生的当前分班关联再绑新班**，恢复「当前归属一人一行」不变量，`moveStudent` 同样归一。**返修收紧**：清理范围由「该生全部关联」改为「班级与其年级均未归档的当前归属」（`activeClassScope.ts:clearActiveStudentClassLinks`）——归档班级的关联是刻意保留的历史关系，无条件全删会让「归档旧班 → 加入新班」当场抹掉学生读过的历史班级，与本仓库既有的归档断言直接矛盾；③ 新增迁移 **v58**（原 v54）清理存量残留，同样只作用于当前归属（保留 `joined_at` 最新行、同刻取 `class_id` 最大，与查询口径一致），SQLite/MariaDB 双方言各一版。多班/同名班的读取侧防御由 #308 一并覆盖（`getScoreTableData` 与 `getExportData` 双路）。
+- **修复（二次评审后定稿）**：① `AnalysisRepository` 新增 `CURRENT_CLASS_SUBQUERY` / `CURRENT_CLASS_JOIN_SUBQUERY` 统一归班口径，并替换全部 `MIN(class_id)` 站点（含 `ScoreRepository` 成长曲线）；口径为**「在读优先（班级与年级均未归档）→ joined_at 最新 → 同刻取 class_id 最大」**，全部关联归档时回落最新归档归属（见二次评审 ⑨，先前只按 `joined_at DESC` 会在同刻被 id 更大的归档班抢先）；② 写入侧**不再删除任何班级关联**（见二次评审 ⑦）：`ClassRepository.addStudent/addStudents` 与 `UserRepository` 重导入为纯增量 INSERT IGNORE（多班在读合法），`moveStudent` 只移除原班关联，显式退班走 `removeStudent`；③ 原定的清理迁移 **v58 停用删除**（SQLite/MariaDB 双侧均改为占号注释，号位保留）——多班在读成员合法（#308 按学生去重排名、保留各班完整成员），调班残留与有意的多班关联在数据上不可区分，不得按「一人一班」批量删除；成绩表/导出的展示班级去重见二次评审 ⑧（`DISPLAY_CLASS_ORDER`，#308 分支修复、本分支继承）。
 
 ### 6. 学校网络传不到服务器
 - 判定为**现场网络问题**（非代码缺陷），未改代码。附带发现上传 `413 File too large` 会触发约 40 次**无上限重试**，已记录为后续待办。
@@ -591,18 +680,18 @@ Electron 主进程、TWAIN 桥接子进程、答题卡识别器子进程。共�
 
 ### 验证
 - `npm run typecheck` 全绿。
-- v58（原 v54）去重 SQL 与 `CURRENT_CLASS_SUBQUERY` 两种形态均以隔离 x64 better-sqlite3 实测通过；B13 归组用例反向对照确认旧行为复现 bug、新行为修复。
+- `CURRENT_CLASS_SUBQUERY` / `DISPLAY_CLASS_ORDER` 两种口径形态均以隔离 x64 better-sqlite3 实测通过；B13 归组用例反向对照确认旧行为复现 bug、新行为修复。（v58 自二次评审起停用删除，见返修 ⑦。）
 - 返修新增/扩展的回归（2026-10-03，本机 SQLite 全绿，并已接入 CI `typecheck-and-test`）：
   - `npm run verify:scan-page-numbering`——双面共享纸张号、跨进程按纸累计、单面逐张递增、无效纸张号兜底，并含「按图片下标递增会把分组拆成 `[0,1,2,3]`」的反向对照与调用点静态接线检查。
   - `npm run verify:scanner-page-timeout`——缺省/非法值兜底 60s、合法区间透传、调用链恒定传参，并**直接扫描两个随包 exe 确认内含 `--page-timeout-ms` 开关**（这是「无需重编译也能生效」的证据），同时断言 `twain_controller.hpp` 默认值与服务端同源。
   - `npm run verify:grading-published-exam`——重复执行全部迁移后 `grading + score_published=1` 的考试状态不变、仍被 `resolveScannerExam` 选为入库目标；并静态校验两套方言迁移版本号无重复、v57 在两侧均空置、强制结考语句已彻底移除。
-  - `npm run verify:class-archive`（新增 `--mariadb` 变体并接入 CI 的 `mariadb-test` 作业）——归档旧班后把学生加入新班、`moveStudent`、以及重跑 v58 三条路径都**必须保留归档班级的历史关联**，同时维持当前归属一人一行。
+  - `npm run verify:class-archive`（新增 `--mariadb` 变体并接入 CI 的 `mariadb-test` 作业）——归档旧班后把学生加入新班、`moveStudent`、以及重跑 v58 的路径都**必须保留归档班级的历史关联**；同时断言在读多班关联不被清空（加入第二个在读班两条都保留）、`moveStudent` 只移除原班、v58 重跑不删任何行、「当前班级」在归档班 id 更大且同刻时仍选中在读班（二次评审 ⑦⑨）。
   - `npm run verify:stage-vc-runtime`——用临时目录搭出 SDK 的两种真实布局，断言 x64/ia32 分别命中 `DLLs\x64` / `DLLs\x86`（而非旧拼法的 `DLLs\x86\x86`）、多版本取最新、缺转发桩的目录不采用。
   - `scripts/verify-ladder-students.ts`（随 #308 一并进入本分支）改为**双方言**：默认仍是临时 SQLite，`--mariadb` 走与归档套件相同的空库门禁；另加夹具自检（多班学生在库里必须真的落成 5 行关联），避免断言在空场景假绿。
   - `npm run verify:scanner-batch-results`——重复卷/重试撤回路径返修前 **500**、返修后回到 **409**（已做反向对照：把嵌套事务写回去即精确复现 500）。
 - **MariaDB 实跑（2026-10-03 追加，更正上一条「本机无 MariaDB」的说法）**：本机装有 MariaDB 12.3.2。已用**独立临时实例**（专用 datadir、`127.0.0.1:13306`、一次性 `projectx_ci` / `projectx_class_archive_test` / `projectx_ladder_test` 三库，跑完销毁；只复用本机已安装的二进制，既有的 MariaDB 服务与其中数据未读取、未写入）把 MariaDB 侧一次补齐：
   - `npm run verify:mariadb` 九段全通过；`schema_migrations` 落库 43 行、`COUNT(*) = COUNT(DISTINCT version)`，50–58 区间实到 50/51/52/53/54/55/56/58——**v57 空置与「不撞号」在真实 MariaDB 上得到确认**。
-  - `npm run verify:class-archive:mariadb` 全通过，含「重跑 v58 去重只作用于当前归属、归档班级的历史关联保留」。
+  - `npm run verify:class-archive:mariadb` 全通过（针对二次评审**前**的「只清当前归属」行为；该行为已被 ⑦ 推翻，MariaDB 侧结论以本轮之后的 CI `mariadb-test` 作业为准）。
   - `npx tsx scripts/verify-ladder-students.ts --mariadb`（#308 评审 P1 新增的双方言变体）全通过。
   - 两条根因取证：在真 MariaDB 的已开启事务里再调 `transaction()` → `TypeError: this.executor.getConnection is not a function`（CR②，与 SQLite 侧的 `cannot start a transaction within a transaction` 各对应一条失败路径）；未设 `dateStrings` 时 `DATETIME` 返回 JS `Date`、`.slice(0,10)` 抛 `v.slice is not a function`，设 `dateStrings: true` 后返回 `'2026-10-03'` 字符串（#305 修复的机制在真库上成立）。
   - **版本差异不可忽略**：本机 12.3.2 比 CI 的 `mariadb:10.11` 新，优化器与部分 SQL 行为不同源，CI 仍是最终裁判。这次实跑排除的是「MariaDB 分支从未执行过」这一档风险，不替代 CI 作业。

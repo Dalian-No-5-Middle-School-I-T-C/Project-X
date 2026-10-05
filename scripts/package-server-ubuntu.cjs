@@ -107,7 +107,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 if [ "$(id -u)" = "0" ]; then
-  echo "[start.sh] 警告：正在以 root 运行（安全 R37）。生产环境请改用 sudo systemd/install.sh，" >&2
+  echo "[start.sh] 警告：正在以 root 运行（安全 R37）。生产环境请改用 sudo bash systemd/install.sh，" >&2
   echo "[start.sh]       它会建专用系统账号、收紧数据目录权限并以该账号启动 systemd 服务。" >&2
 fi
 
@@ -170,7 +170,7 @@ in a temporary extraction directory breaks as soon as the tree is copied to
 \`\`\`bash
 sudo apt install -y python3-venv
 npm install --omit=dev             # still inside the extracted package directory
-sudo systemd/install.sh            # copies the tree to /opt/project-x-server
+sudo bash systemd/install.sh            # copies the tree to /opt/project-x-server
 cd /opt/project-x-server
 sudo python3 -m venv .venv
 sudo .venv/bin/python -m pip install -r llmclient/requirements.txt
@@ -195,7 +195,7 @@ chmod +x start.sh
 The service listens on http://127.0.0.1:5174 by default. Point Nginx to this port for the whole site: / serves the browser UI and /api serves the API.
 
 This is a foreground trial run as whoever invoked it. For a production install use
-\`sudo systemd/install.sh\` instead — see "Systemd Service" below.
+\`sudo bash systemd/install.sh\` instead — see "Systemd Service" below.
 
 Default environment:
 
@@ -260,7 +260,7 @@ which runs the service as a dedicated non-root account (security R37):
 
 \`\`\`bash
 cd project-x-server-ubuntu24-${packageJson.version}
-sudo systemd/install.sh
+sudo bash systemd/install.sh
 \`\`\`
 
 The script is idempotent, so re-running it after an upgrade is safe. It:
@@ -279,8 +279,19 @@ Overrides, all read from the environment before running the installer:
 \`\`\`bash
 sudo PROJECTX_SERVICE_USER=px PROJECTX_SERVICE_GROUP=px \\
      PROJECTX_APP_DIR=/srv/project-x PROJECTX_DATA_DIR=/srv/project-x-data \\
-     systemd/install.sh
+     bash systemd/install.sh
 \`\`\`
+
+The installer rewrites the unit it installs, so \`WorkingDirectory\`, \`ExecStart\`,
+\`Environment=HOME\` / \`PROJECTX_DB_PATH\` / \`ANSWER_CARD_DATA_DIR\` /
+\`ANSWER_CARD_CLIENT_DIST\` and \`User\`/\`Group\` all follow the directories above —
+a custom \`PROJECTX_APP_DIR\` is not just where the files land, it is what the service
+runs. The rewritten unit is verified line by line before \`daemon-reload\`, and the
+install fails loudly instead of silently starting the packaged default paths.
+
+Note the scripts are shipped with the Unix executable bit set inside the ZIP, but the
+documented command uses \`sudo bash ...\` on purpose: extraction tools, Samba shares and
+plain \`cp -r\` each drop that bit in their own way, and \`bash script.sh\` works regardless.
 
 The unit itself sets \`UMask=0027\`, \`NoNewPrivileges=yes\`, \`ProtectSystem=full\`,
 \`ProtectHome=yes\`, \`PrivateTmp=yes\`, \`PrivateDevices=yes\`, the \`ProtectKernel*\` /
@@ -428,7 +439,7 @@ UNIT_NAME="project-x-server.service"
 SRC_DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [ "$(id -u)" != "0" ]; then
-  echo "[install] 需要 root 权限：sudo systemd/install.sh" >&2
+  echo "[install] 需要 root 权限：sudo bash systemd/install.sh" >&2
   exit 1
 fi
 
@@ -464,15 +475,63 @@ chmod 0750 "$APP_DIR/start.sh" "$APP_DIR/systemd/install.sh"
 chown -R "$SERVICE_USER":"$SERVICE_GROUP" "$DATA_DIR"
 chmod 0750 "$DATA_DIR" "$DATA_DIR/answer-card" "$DATA_DIR/backups"
 
+UNIT_SRC="$APP_DIR/systemd/$UNIT_NAME"
 UNIT_DST="/etc/systemd/system/$UNIT_NAME"
-if [ "$SERVICE_USER" = "projectx" ] && [ "$SERVICE_GROUP" = "projectx" ]; then
-  install -D -m 0644 "$APP_DIR/systemd/$UNIT_NAME" "$UNIT_DST"
-else
-  sed -e "s/^User=projectx$/User=$SERVICE_USER/" \\
-      -e "s/^Group=projectx$/Group=$SERVICE_GROUP/" \\
-      "$APP_DIR/systemd/$UNIT_NAME" > "$UNIT_DST"
-  chmod 0644 "$UNIT_DST"
-fi
+
+# 单元里的账号**和路径**都按本次实际使用的目录重写（CR #313 P2-9）。
+# INSTALL-REWRITE-BEGIN —— 验证脚本按这对标记切出「重写 + 自检」，在临时目录里带自定义目录真跑一遍
+# 此前只改 User/Group：老师给了 PROJECTX_APP_DIR / PROJECTX_DATA_DIR，包体和数据确实
+# 落到自定义目录，但 systemd 仍按包内默认的 /opt 与 /var/lib 起服务——服务读的是旧路径，
+# 自定义目录成了摆设，升级时还会静默跑起一份旧代码。
+# 用 awk 的 index()/substr() 而不是 sed：路径里的 & \\ 在 sed 替换串里是元字符，
+# 换个带这些字符的目录就会串位；按「键名」整行重写也避免了默认值一改就漏改。
+awk -v app="$APP_DIR" -v data="$DATA_DIR" -v user="$SERVICE_USER" -v group="$SERVICE_GROUP" '
+  function subpath(line, from, to,   i) {
+    i = index(line, from)
+    return i ? substr(line, 1, i - 1) to substr(line, i + length(from)) : line
+  }
+  /^#/    { print subpath(subpath($0, "/opt/project-x-server", app), "/var/lib/project-x", data); next }
+  /^User=/  { print "User=" user; next }
+  /^Group=/ { print "Group=" group; next }
+  /^WorkingDirectory=/              { print "WorkingDirectory=" app; next }
+  /^Environment=HOME=/              { print "Environment=HOME=" data; next }
+  /^Environment=PROJECTX_DB_PATH=/  { print "Environment=PROJECTX_DB_PATH=" data "/projectx.db"; next }
+  /^Environment=ANSWER_CARD_DATA_DIR=/     { print "Environment=ANSWER_CARD_DATA_DIR=" data "/answer-card"; next }
+  /^Environment=ANSWER_CARD_CLIENT_DIST=/  { print "Environment=ANSWER_CARD_CLIENT_DIST=" app "/dist/web"; next }
+  /^ExecStart=/ {
+    node = $1
+    sub(/^ExecStart=/, "", node)          # 沿用包内既有的 node 可执行路径，只换脚本目录
+    print "ExecStart=" node " " app "/dist/server/index.mjs"
+    next
+  }
+  { print }
+' "$UNIT_SRC" > "$UNIT_DST"
+chmod 0644 "$UNIT_DST"
+
+# 自检：重写后的单元必须真的指向本次目录。sed/awk 的锚点一旦与包内单元漂移，
+# 症状是「服务从默认路径起了个旧版本」——现场最难查的那一类，所以宁可装到一半就失败。
+for probe in \\
+  "User=$SERVICE_USER" \\
+  "Group=$SERVICE_GROUP" \\
+  "WorkingDirectory=$APP_DIR" \\
+  "Environment=HOME=$DATA_DIR" \\
+  "Environment=PROJECTX_DB_PATH=$DATA_DIR/projectx.db" \\
+  "Environment=ANSWER_CARD_DATA_DIR=$DATA_DIR/answer-card" \\
+  "Environment=ANSWER_CARD_CLIENT_DIST=$APP_DIR/dist/web"; do
+  if ! grep -qxF "$probe" "$UNIT_DST"; then
+    echo "[install] systemd 单元缺少期望的行：$probe" >&2
+    echo "[install] 包内单元与安装脚本的重写规则可能已漂移：$UNIT_SRC" >&2
+    exit 1
+  fi
+done
+case "$(awk '/^ExecStart=/{print; exit}' "$UNIT_DST")" in
+  *" $APP_DIR/dist/server/index.mjs") ;;
+  *)
+    echo "[install] systemd 单元的 ExecStart 未指向 $APP_DIR/dist/server/index.mjs" >&2
+    exit 1
+    ;;
+esac
+# INSTALL-REWRITE-END —— 以上片段只读 APP_DIR / DATA_DIR / SERVICE_USER / SERVICE_GROUP / UNIT_SRC / UNIT_DST
 
 systemctl daemon-reload
 systemctl enable "$UNIT_NAME" >/dev/null 2>&1 || true
@@ -483,9 +542,38 @@ systemctl --no-pager show "$UNIT_NAME" -p User -p Group -p UMask -p ActiveState 
 `);
 }
 
+/** ZIP 里 `.sh` 条目的 Unix 权限：S_IFREG + 0755（外层 dos 属性位原样保留）。 */
+const ZIP_UNIX_EXEC_MODE = 0o100755;
+/** 「version made by」高字节 = 3（Unix）。低字节 0x14 = 2.0，与 adm-zip 原本写的一致。 */
+const ZIP_MADE_BY_UNIX = 0x0314;
+
+function isShellEntry(entry) {
+  return !entry.isDirectory && entry.entryName.toLowerCase().endsWith(".sh");
+}
+
+/**
+ * 给打包产物补 Unix 可执行位（CR #313 P2-8）。
+ *
+ * 打包机是 Windows：`fs.statSync` 没有 x 位，adm-zip 于是把每个条目都写成 0666，
+ * Linux 上 `unzip` 出来的 `start.sh` / `systemd/install.sh` 自然不可执行，
+ * 而按旧文档直接执行 `systemd/install.sh` 的第一条命令就是 permission denied。
+ * 这里显式写 0755，并把 made-by 标成 Unix：解压端（unzip / tar / Python）判断
+ * 「外部属性里的 mode 是否可信」看的就是这个字节，光有 mode 还可能被忽略。
+ * 文档同时改成 `sudo bash systemd/install.sh`——权限位会经过解压器、Samba、
+ * `cp -r` 等多手传递，用解释器显式执行才是任何一条路都不断的那一个。
+ */
+function applyUnixExecBits(zip) {
+  for (const entry of zip.getEntries()) {
+    if (!isShellEntry(entry)) continue;
+    entry.attr = (((ZIP_UNIX_EXEC_MODE << 16) | (entry.attr & 0xffff)) >>> 0);
+    entry.header.made = ZIP_MADE_BY_UNIX;
+  }
+}
+
 function createZip(sourceDir, targetZipPath) {
   const zip = new AdmZip();
   zip.addLocalFolder(sourceDir, path.basename(sourceDir));
+  applyUnixExecBits(zip);
   zip.writeZip(targetZipPath);
 }
 
@@ -550,12 +638,15 @@ function buildPackage() {
 }
 
 module.exports = {
+  applyUnixExecBits,
   buildPackage,
   createDeployReadme,
   createInstallScript,
   createRuntimePackageJson,
   createStartScript,
-  createSystemdUnit
+  createSystemdUnit,
+  ZIP_MADE_BY_UNIX,
+  ZIP_UNIX_EXEC_MODE
 };
 
 // 让 verify-systemd-hardening.ts 能直接 require 这些生成器做静态断言，

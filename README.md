@@ -1066,7 +1066,8 @@ Project-X/
 >
 > 无论开关如何，`POST /api/db/import-demo` 都不会把口令写进服务端日志：随机口令只在**本次响应的 `message`**
 > 里出现一次，同时加密存入 `users.initial_password`（管理员可从既有「导出账密」里查回）。
-> 卡号冲突（409 `DEMO_CARD_ID_CONFLICT`）与保留用户名被真实教师占用（409 `DEMO_TEACHER_USERNAME_TAKEN`）
+> 卡号冲突（409 `DEMO_CARD_ID_CONFLICT`）与保留用户名被**非演示账号**占用（409 `DEMO_TEACHER_USERNAME_TAKEN`，
+> 判据是 `is_demo` 归属标记，不是「有没有业务往来」；详见 `readus/演示数据.md`）
 > 两道闸**不受这两个开关影响**，拒绝时库里一个字节都没动。
 > 回归：`npm run verify:demo-credentials`（MariaDB 加 `--mariadb`）。
 

@@ -3,6 +3,7 @@
 // 扫描端始终使用本机相对路径；远端服务器仅供 scanner upload API 使用。
 import { readServerUrl } from "../lib/scannerMode";
 import { assertCredentialTransportAllowed } from "../lib/remoteCredentialTransport";
+import { MEDIA_TICKET_MAX_PER_USER } from "../../../../shared/mediaTicketLimits";
 function getViteEnv(): Record<string, string | undefined> | undefined {
   try { return (import.meta as unknown as { env?: Record<string, string | undefined> })?.env; } catch { return undefined; }
 }
@@ -212,6 +213,35 @@ export function remoteScannerFetch(url: string, options?: RequestInit): Promise<
  */
 const ticketCache = new Map<string, { ticket: string; expiresAt: number }>();
 
+/**
+ * 客户端票据缓存上限与服务端 `PROJECTX_MEDIA_TICKET_MAX_PER_USER` 对齐（P2 返修）。
+ *
+ * 服务端在「单账号已有 N 张票据」时签发第 N+1 张会淘汰最早过期的那张；客户端若不限存，
+ * 第 10 张图之后回看第 1 张仍会命中那张**服务端已经丢弃**的票据 URL，请求直接 401。
+ * 浏览器读不到运维的环境变量，这里拿到的是默认档位——方向是安全的：客户端存得比服务端
+ * 允许得更少，就绝不会留着一条注定失败的票据。
+ */
+const TICKET_CACHE_CAP = Math.max(1, MEDIA_TICKET_MAX_PER_USER);
+
+function rememberTicket(pathname: string, ticket: string, expiresAt: number): void {
+  ticketCache.set(pathname, { ticket, expiresAt });
+  // 与服务端同一策略：按「最早过期」淘汰，而不是 Map 插入序——TTL 相同时两者等价，
+  // 但显式按过期时间选，未来支持差异化 TTL 时不会悄悄退化成「淘汰最近才签的那张」。
+  while (ticketCache.size > TICKET_CACHE_CAP) {
+    let oldestPath: string | undefined;
+    let oldestExpiry = Number.POSITIVE_INFINITY;
+    for (const [path, entry] of ticketCache) {
+      if (path === pathname) continue;
+      if (entry.expiresAt < oldestExpiry) {
+        oldestExpiry = entry.expiresAt;
+        oldestPath = path;
+      }
+    }
+    if (oldestPath === undefined) break;
+    ticketCache.delete(oldestPath);
+  }
+}
+
 function pathnameOf(resolvedUrl: string): string {
   try {
     return new URL(resolvedUrl, typeof location !== "undefined" ? location.href : "http://localhost").pathname;
@@ -220,27 +250,48 @@ function pathnameOf(resolvedUrl: string): string {
   }
 }
 
-async function ensureMediaTicket(pathname: string): Promise<string | null> {
+/**
+ * @param force 忽略缓存里的旧票强制重签（票据被服务端撤销/驱逐后的补救路径）。
+ *              force 时不回落旧票——回落等于让调用方再撞一次 401。
+ */
+async function ensureMediaTicket(pathname: string, force = false): Promise<string | null> {
   const cached = ticketCache.get(pathname);
-  if (cached && cached.expiresAt - Date.now() > 15_000) return cached.ticket;
+  if (!force && cached && cached.expiresAt - Date.now() > 15_000) return cached.ticket;
+  const fallback = force ? null : cached?.ticket ?? null;
   try {
     const issued = await fetchJson<{ ticket: string; expiresAt: number }>(
       "/api/auth/media-ticket",
       { method: "POST", body: JSON.stringify({ path: pathname }) }
     );
     if (issued?.ticket) {
-      ticketCache.set(pathname, { ticket: issued.ticket, expiresAt: Number(issued.expiresAt) });
+      rememberTicket(pathname, issued.ticket, Number(issued.expiresAt));
       return issued.ticket;
     }
   } catch (error) {
     console.warn(`[media-ticket] 为 ${pathname} 签发票据失败，本次回落 URL 令牌`, error);
   }
-  return cached?.ticket ?? null;
+  return fallback;
 }
 
 function appendQuery(url: string, key: string, value: string): string {
   const sep = url.includes("?") ? "&" : "?";
   return `${url}${sep}${key}=${encodeURIComponent(value)}`;
+}
+
+/**
+ * 剥掉 URL 上已有的 URL 凭据（`mt` / `token`），其余查询参数原样保留。
+ * 重签/补签的入口可能拿到「已经拼过一次凭据」的 URL（例如直接来自 `img.src`），
+ * 再 append 一次就会得到两个 `mt=`：Express 把重复键解析成数组，服务端按非法票据拒绝。
+ */
+function stripUrlCredentials(url: string): string {
+  try {
+    const parsed = new URL(url, typeof location !== "undefined" ? location.href : "http://localhost");
+    parsed.searchParams.delete("mt");
+    parsed.searchParams.delete("token");
+    return parsed.toString();
+  } catch {
+    return url;
+  }
 }
 
 /**
@@ -258,7 +309,7 @@ function isRuntimeTransportAllowed(): boolean {
 
 /** 异步取得票据后再拼 URL：下载、window.open、EventSource 等可控时机都应走这一条。 */
 export async function ticketedMediaUrl(url: string): Promise<string> {
-  const resolved = apiUrl(url);
+  const resolved = stripUrlCredentials(apiUrl(url));
   if (!isCrossOriginApiMode()) return resolved; // 同源：HttpOnly Cookie 足够，URL 里不留任何凭据
   if (!isRuntimeTransportAllowed()) return resolved;
   const pathname = pathnameOf(resolved);
@@ -288,6 +339,30 @@ export function urlWithToken(url: string): string {
 /** 退出登录/令牌失效时清空票据缓存，避免继续携带已作废的凭据。 */
 export function clearMediaTicketCache(): void {
   ticketCache.clear();
+}
+
+/** 丢弃某个资源的缓存票据（资源加载 401/403 时用，别让下次渲染继续端出同一张废票）。 */
+export function invalidateMediaTicket(url: string): void {
+  const resolved = apiUrl(url);
+  if (!isCrossOriginApiMode()) return;
+  ticketCache.delete(pathnameOf(resolved));
+}
+
+/**
+ * 重新签发并返回新的资源 URL（P2 返修）：`<img onerror>` 这类「浏览器自己发请求、
+ * 拿不到响应码」的场景无法主动探测权限问题，只能在失败后换一张票重试。
+ * 入参允许是「已经带过 mt/token 的 URL」（例如直接来自 `img.src`），内部会先剥掉旧凭据。
+ * 同源模式下没有票据概念，原样返回。
+ */
+export async function resignMediaTicketUrl(url: string): Promise<string> {
+  if (!isCrossOriginApiMode()) return apiUrl(url);
+  const resolved = stripUrlCredentials(apiUrl(url));
+  const pathname = pathnameOf(resolved);
+  ticketCache.delete(pathname);
+  const fresh = await ensureMediaTicket(pathname, true);
+  if (fresh) return appendQuery(resolved, "mt", fresh);
+  const token = getAuthToken();
+  return token ? appendQuery(resolved, "token", token) : resolved;
 }
 
 /** P1-14: 媒体资源URL（图片、PDF iframe等）。

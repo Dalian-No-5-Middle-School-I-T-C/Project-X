@@ -81,11 +81,17 @@ bool isUsableDllFile(const std::wstring& path, unsigned long long* sizeOut) {
     return true;
 }
 
-/** 解析 junction / 符号链接之后的真实路径（小写、去掉 \\?\ 前缀）；失败返回空串。 */
+/**
+ * 解析 junction / 符号链接之后的真实路径（小写、去掉 \\?\ 前缀）；失败返回空串。
+ *
+ * 打开方式必须是 `FILE_READ_ATTRIBUTES + FILE_FLAG_BACKUP_SEMANTICS`：目录句柄不带
+ * backup 语义时 CreateFileW 一律失败（实测 ERROR_ACCESS_DENIED / gle=5），而这里既要解析
+ * DLL 也要解析安装目录。只读属性不需要任何特权，也不会因此获得文件内容的访问权。
+ */
 std::wstring finalLowerPath(const std::wstring& path) {
-    HANDLE file = CreateFileW(path.c_str(), 0,
+    HANDLE file = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                              nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     if (file == INVALID_HANDLE_VALUE) return {};
     wchar_t buffer[MAX_PATH * 2] = {};
     const DWORD len = GetFinalPathNameByHandleW(file, buffer,
@@ -106,6 +112,21 @@ bool isUnderDir(const std::wstring& pathLower, const std::wstring& dirLower) {
     if (dirLower.empty() || pathLower.size() <= dirLower.size()) return false;
     if (pathLower.compare(0, dirLower.size(), dirLower) != 0) return false;
     return pathLower[dirLower.size()] == L'\\';
+}
+
+/**
+ * 安装目录的真实路径（CR #313 P2-6）。
+ *
+ * 整个安装目录本身就可能合法地挂在 junction 上（`D:\Apps\ProjectX -> E:\ProjectX`、
+ * 迁移到第二块盘的 Program Files、漫游目录重定向），此时只把 DLL 解析成真实路径、
+ * 却拿逻辑目录去比，随包 DSM 必然「落在目录外」——把正常安装误判成链接替换，现场直接扫不了。
+ * 解析失败时退回逻辑路径继续判定：宁可沿用旧的收紧口径，也不要因为一次目录解析失败
+ * 就把包内 DSM 判死；DLL 自身解析失败仍然是拒绝（调用方处理那条分支）。
+ */
+std::wstring realInstallDirLower(const std::wstring& dirLower) {
+    if (dirLower.empty()) return {};
+    const std::wstring real = finalLowerPath(dirLower);
+    return real.empty() ? dirLower : real;
 }
 
 /** 安装包把 TWAINDSM.dll 与 scanner-bridge.exe 放在同一目录（build-scanner-bridge.bat）。 */
@@ -195,6 +216,7 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(
         }
 
         const std::wstring exeDir = executableDirLower();
+        const std::wstring realExeDir = realInstallDirLower(exeDir);
         const std::wstring winDir = windowsDirLower();
         if (!exeDir.empty()) candidates.push_back(absolutePath(exeDir + L"\\TWAINDSM.dll"));
         if (!winDir.empty()) {
@@ -211,10 +233,12 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(
             }
             // 打包完整性：包内那份 DSM 必须真的还在包里。用 junction / 符号链接把它
             // 指到别处时，规范化后的真实路径会落到安装目录之外，此时拒绝加载。
+            // 两边都要先解析成真实路径再比（CR #313 P2-6）——安装目录自己就挂在 junction 上
+            // 是合法安装，只解析 DLL 会把这种安装误判成链接替换。
             const std::wstring candidateLower = lowerW(candidate);
             if (!exeDir.empty() && isUnderDir(candidateLower, exeDir)) {
                 const std::wstring real = finalLowerPath(candidate);
-                if (real.empty() || !isUnderDir(real, exeDir)) {
+                if (real.empty() || !isUnderDir(real, realExeDir)) {
                     note(wideToUtf8(candidate.c_str()) +
                          " -> 解析后的真实路径已离开安装目录（疑似链接替换），已跳过");
                     continue;

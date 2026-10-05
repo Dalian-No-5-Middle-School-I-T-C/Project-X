@@ -3,7 +3,7 @@ import { authService } from "../services/AuthService";
 import { permissionsForRole, roleHasPermission, type Permission } from "../auth/permissions";
 import { isAuthEnforced } from "../lib/authEnforce";
 import { isUrlCredentialAllowedPath } from "../lib/mediaAllowlist";
-import { resolveMediaTicket } from "../services/mediaTicket";
+import { resolveMediaTicket, revokeMediaTicketsForUser } from "../services/mediaTicket";
 
 export const AUTH_COOKIE_NAME = "projectx_auth_token";
 
@@ -106,10 +106,18 @@ async function authenticateRequest(req: Request): Promise<"ticket" | "token" | "
   if (typeof rawTicket === "string" && rawTicket) {
     if (req.method === "GET" || req.method === "HEAD") {
       const pathname = req.baseUrl ? req.baseUrl + req.path : req.path;
-      const user = resolveMediaTicket(rawTicket, req.method, pathname);
-      if (user) {
-        req.user = { ...user };
-        return "ticket";
+      const issuedAs = resolveMediaTicket(rawTicket, req.method, pathname);
+      if (issuedAs) {
+        // 安全（评审 P1）：票据命中只证明「签发那一刻」的授权，不能当成当前身份。
+        // 签发时冻结的用户快照会让改密/禁用/降权之后的旧链接照样读得到资源，
+        // 所以这里回到库里取现状：账号没了（停用/删除）就作废该用户全部票据并回落，
+        // 账号还在就以**当前角色**挂载——和令牌路径同一个口径。
+        const current = await authService.getActiveUserById(issuedAs.id);
+        if (current) {
+          attachUserSnapshot(req, current);
+          return "ticket";
+        }
+        revokeMediaTicketsForUser(issuedAs.id);
       }
     }
   }

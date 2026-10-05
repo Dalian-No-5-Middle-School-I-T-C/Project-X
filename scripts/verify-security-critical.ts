@@ -466,6 +466,49 @@ async function main(): Promise<void> {
     check(cardFingerprint(editedKey!).length === 24 && /^[0-9a-f]{24}$/.test(cardFingerprint(editedKey!)),
       "指纹为 24 位小写十六进制，可直接放进请求体与日志");
 
+    // 评审 P1：同一张卡在客户端与服务端必须算出同一个指纹。两边的 JSON 文本相同，
+    // 但内存形状不同——服务端从库里构造会带值为 undefined 的键，而这些键经 HTTP 到客户端时根本不存在。
+    // 旧的 stableStringify 把前者编成 null、后者编成「没有这个键」，于是普通客观题/主观题卡一律 409。
+    type VersionedCard = Parameters<typeof cardFingerprint>[0];
+    const serverShapedCard = {
+      id: "critical-remote-card",
+      title: "规范化验收卡",
+      subject: "shuxue",
+      subjectLabel: "数学",
+      examDate: null,
+      paper: { pageSize: "A4", pages: [{ width: 210, height: 297, blanks: undefined }] },
+      studentInfo: { items: [{ label: "姓名", field: undefined }] },
+      bodyBlocks: [
+        { type: "objective", id: "b1", answerKey: undefined, score: 2 },
+        { type: "subjective", id: "b2", blocks: [undefined, { title: "作文" }] },
+      ],
+      sided: false,
+      layoutVersion: 1,
+    } as unknown as VersionedCard;
+    // 客户端那一侧：同一份内容走一遍 JSON 往返，undefined 键被省略、数组里的 undefined 变 null
+    const clientShapedCard = JSON.parse(JSON.stringify(serverShapedCard)) as VersionedCard;
+    const clientShapedAgain = JSON.parse(JSON.stringify(clientShapedCard)) as VersionedCard;
+    check(cardFingerprint(clientShapedCard) === cardFingerprint(serverShapedCard),
+      "「带 undefined 键的服务端形状」与「省略这些键的客户端形状」指纹一致（评审 P1 的 409 根因）");
+    check(cardFingerprint(clientShapedAgain) === cardFingerprint(clientShapedCard),
+      "客户端形状再走一遍 JSON 仍是同一值——规范化是幂等的，不会在两边各自漂移");
+    const keyOrderVariant = JSON.parse(
+      `{"layoutVersion":1,"sided":false,"bodyBlocks":${JSON.stringify(serverShapedCard.bodyBlocks)},`
+      + `"studentInfo":${JSON.stringify((serverShapedCard as { studentInfo: unknown }).studentInfo)},`
+      + `"paper":${JSON.stringify((serverShapedCard as { paper: unknown }).paper)},`
+      + `"examDate":null,"subjectLabel":"数学","subject":"shuxue","title":"规范化验收卡","id":"critical-remote-card"}`
+    ) as VersionedCard;
+    check(cardFingerprint(keyOrderVariant) === cardFingerprint(serverShapedCard),
+      "键序不同不影响指纹（规范化只统一 undefined/null，不引入键序依赖）");
+    const meaningfulAddition = JSON.parse(JSON.stringify(clientShapedCard)) as VersionedCard;
+    (meaningfulAddition as { studentInfo: Record<string, unknown> }).studentInfo.extra = "新字段";
+    check(cardFingerprint(meaningfulAddition) !== cardFingerprint(serverShapedCard),
+      "反向对照：真正的内容差异（多出且有值的字段）照样改变指纹——规范化没有把校验变成空转");
+    const nullVsMissingArrayElement = JSON.parse(JSON.stringify(serverShapedCard)) as VersionedCard;
+    (nullVsMissingArrayElement as { bodyBlocks: unknown[] }).bodyBlocks[1].blocks = [null, { title: "作文" }];
+    check(cardFingerprint(nullVsMissingArrayElement) === cardFingerprint(serverShapedCard),
+      "数组里的 undefined 与 null 经 JSON 同形（元素位置的 undefined 编成 null）");
+
     // 完成会话时再核一次：建会话之后服务器上的卡被改了，就不能把旧版结果落库
     const completeWithVersion = async (sessionId: string, cardVersion: unknown) => {
       const response = await fetch(`${base}/api/scanner/upload/sessions/${encodeURIComponent(sessionId)}/complete`, {
@@ -2675,6 +2718,80 @@ async function main(): Promise<void> {
       });
       check(anonymousIssue.status === 401, "未登录不能签发票据");
 
+      // ── 评审 P1：票据必须随账号撤销失效，并按「当前」账号状态与角色判定 ──
+      // 中间件级别的驱动器：真实 HTTP 只能看到状态码，看不到 req.user 被挂成了谁，
+      // 而「降权后仍沿用旧角色」正是身份问题，所以直接喂一个带 ?mt= 的请求给 authMiddleware。
+      const { authMiddleware } = await import("../src/server/middleware/auth");
+      const runTicketAuth = async (ticketValue: string, pathname: string) => {
+        const probe: any = {
+          method: "GET", headers: {}, query: { mt: ticketValue }, baseUrl: "", path: pathname,
+        };
+        let statusCode: number | null = null;
+        let allowed = false;
+        // 中间件两条出路都要落定：next()（认下身份）或 res.status().json()（拒绝）。
+        // 少认一条，这里就挂在一个永远不会来的回调上。
+        await new Promise<void>((resolve) => {
+          let settled = false;
+          const done = () => { if (!settled) { settled = true; resolve(); } };
+          const res: any = {
+            status(code: number) { statusCode = code; return res; },
+            json() { done(); return res; },
+          };
+          authMiddleware(probe, res, () => { allowed = true; done(); });
+        });
+        return { user: probe.user as { role_id: number; role_name: string } | undefined, statusCode, allowed };
+      };
+
+      // (1) 统一撤销入口：管理端「重置密码」走 revokeUserTokens，票据要跟着一起作废
+      const revokeUser = await users.createUser({
+        username: "ticket-revoke", password: "revoke-pass", name: "票据撤销教师",
+        role_id: 2, teacher_role: "subject_teacher", subject: "数学",
+      });
+      const revokePath = "/api/cards/CRITICALCARD001/export";
+      const revokeTicket = issueMediaTicket({
+        id: revokeUser.id, username: revokeUser.username, name: revokeUser.name,
+        role_id: revokeUser.role_id, role_name: revokeUser.role_name ?? "teacher",
+        student_number: revokeUser.student_number ?? null, teacher_role: revokeUser.teacher_role ?? null,
+        subject: revokeUser.subject ?? null, password_change_required: Boolean(revokeUser.password_change_required),
+      }, revokePath);
+      const beforeReset = await fetch(`${base}/api/cards/CRITICALCARD001/export?mt=${revokeTicket!.ticket}`);
+      check(beforeReset.status !== 401 && !!resolveMediaTicket(revokeTicket!.ticket, "GET", revokePath),
+        `撤销前票据可用（状态 ${beforeReset.status}，不是 401 就说明身份被认下了）`);
+      const resetResp = await fetch(`${base}/api/users/${revokeUser.id}/reset-password`, {
+        method: "POST", headers: authHeaders(adminToken),
+      });
+      const afterReset = await fetch(`${base}/api/cards/CRITICALCARD001/export?mt=${revokeTicket!.ticket}`);
+      check(resetResp.status === 200 && afterReset.status === 401
+        && resolveMediaTicket(revokeTicket!.ticket, "GET", revokePath) === null,
+        "「重置密码」同时吊销该用户的票据（此前只清 tokenStore，旧链接在剩余寿命内仍读得到资源）");
+
+      // (2) 实时核对：票据记录本身仍是签发时的快照，身份由中间件回库取现状
+      const liveUser = await users.createUser({
+        username: "ticket-live", password: "live-pass", name: "票据现状教师",
+        role_id: 2, teacher_role: "subject_teacher", subject: "数学",
+      });
+      const livePath = "/api/cards/CRITICALCARD001/pdf";
+      const liveTicket = issueMediaTicket({
+        id: liveUser.id, username: liveUser.username, name: liveUser.name,
+        role_id: 2, role_name: "teacher", student_number: null, teacher_role: "subject_teacher",
+        subject: "数学", password_change_required: false,
+      }, livePath);
+      const asTeacher = await runTicketAuth(liveTicket!.ticket, livePath);
+      check(asTeacher.allowed && asTeacher.user?.role_id === 2, "票据命中时按当前身份挂载（教师）");
+      check(resolveMediaTicket(liveTicket!.ticket, "GET", livePath)?.role_id === 2,
+        "票据服务自身仍返回签发时的快照——评审 P1 的根因；撤销与实时核对都发生在认证中间件，不能把它当边界");
+      db.prepare("UPDATE users SET role_id = ? WHERE id = ?").run(3, liveUser.id);
+      const afterDemote = await runTicketAuth(liveTicket!.ticket, livePath);
+      check(afterDemote.user?.role_id === 3 && afterDemote.user?.role_name === "student",
+        "账号被降权后，同一张未过期票据立即以新角色判定（旧行为：沿用签发时的教师角色）");
+      db.prepare("UPDATE users SET is_active = 0 WHERE id = ?").run(liveUser.id);
+      const afterDisable = await runTicketAuth(liveTicket!.ticket, livePath);
+      check(afterDisable.user === undefined && resolveMediaTicket(liveTicket!.ticket, "GET", livePath) === null,
+        "账号被停用后票据不再冒领身份，并且该用户的票据被就地清空（不等到自然过期）");
+      db.prepare("UPDATE users SET is_active = 1 WHERE id = ?").run(liveUser.id);
+      const afterReenable = await runTicketAuth(liveTicket!.ticket, livePath);
+      check(afterReenable.user === undefined, "重新启用账号不会让已作废的票据复活（撤销是持久的）");
+
       // ── R30：日志脱敏（URL 里的凭据不得进日志/错误堆栈）──
       const { redactUrlCredentials, redactAuthorizationHeader, safeErrorForLog } = await import("../src/server/lib/logRedaction");
       const redacted = redactUrlCredentials("GET /api/cards/1/pdf?token=abcdefghijklmnop&mt=qwertyuiopasdf 500");
@@ -2735,8 +2852,12 @@ async function main(): Promise<void> {
       check(policyBody.length > 0 && policyBody.indexOf("function createWindow") === -1,
         "installDevicePermissionPolicy 定义在 createWindow 之前");
       check(/setPermissionRequestHandler\([\s\S]*?callback\(false\);/.test(policyBody)
-        && !/callback\(true\)/.test(policyBody),
-        "权限请求处理器一律 callback(false)（无放行分支）");
+        && (policyBody.match(/callback\(true\)/g) ?? []).length === 1
+        && /TRUSTED_PERMISSIONS\.has\(permission\) && isTrustedPermissionOrigin\(details\?\.requestingUrl\)\)\s*\{[\s\S]{0,160}?callback\(true\);/.test(policyBody),
+        "权限请求处理器默认 callback(false)，唯一的放行分支是「可信来源 + 写剪贴板」白名单（CR #313 P2-7：全拒把现场排障入口堵死了）");
+      check((policyBody.match(/\breturn true\b/g) ?? []).length === 1
+        && /isTrustedPermissionOrigin\(requestingOrigin\)\) return true;/.test(policyBody),
+        "反向对照：整段策略里唯一的 return true 挂在检查处理器的白名单分支上（其余分支与设备枚举仍是拒绝）");
       check(/setPermissionCheckHandler\([\s\S]*?return false;/.test(policyBody)
         && /setDevicePermissionHandler\([\s\S]*?return false;/.test(policyBody),
         "权限检查与设备授权处理器一律返回 false（USB/串口/摄像头等不落到默认放行）");
@@ -3086,6 +3207,132 @@ async function main(): Promise<void> {
         "R33：README 写明两个演示开关及默认值（布尔开关，非法值按关闭处理）");
       check(/仅限隔离测试库/.test(seedScriptSource) && /process\.env\[DEMO_FIXED_CREDENTIALS_ENV\] = "1"/.test(seedScriptSource),
         "R33：只有测试数据包的 seed.ts 会打开固定凭据开关，且打印「仅限隔离测试库」警告");
+    }
+
+    // ── 评审 CR #313 P2：扫描端客户端与原生侧的九项回归 ──
+    section("评审 CR #313 P2：票据缓存上限 / 卸载保存版本回写 / 明文许可保持 / 皮肤护栏 / BMP 与 junction / 剪贴板");
+    {
+      // 这九项都在客户端或原生进程里，服务端 HTTP 看不到（<img> 的 401、C++ 的尺寸预检、
+      // Electron 的权限回调都不经过这里起的测试服务），所以锁的是「改动确实还在代码里」：
+      // 只查标识符会被重命名糊过去，因此按语句形态与先后顺序断言，并各留一条反向对照。
+      const p2ApiSource = readFileSync(path.resolve("src/apps/answer-card/client/auth/api.ts"), "utf8");
+      const p2RetrySource = readFileSync(
+        path.resolve("src/apps/answer-card/client/lib/mediaTicketRetry.ts"), "utf8");
+      const p2GradeSource = readFileSync(
+        path.resolve("src/apps/answer-card/client/components/GradePanel.tsx"), "utf8");
+      const p2PaperSource = readFileSync(
+        path.resolve("src/apps/answer-card/client/components/StudentExamPaper.tsx"), "utf8");
+      const p2AppSource = readFileSync(path.resolve("src/apps/answer-card/client/App.tsx"), "utf8");
+      const p2ServerConfigSource = readFileSync(
+        path.resolve("src/apps/answer-card/client/components/ServerConfigDialog.tsx"), "utf8");
+      const p2ScannerPanelSource = readFileSync(
+        path.resolve("src/apps/answer-card/client/components/ScannerPanel.tsx"), "utf8");
+      const p2ElectronSource = readFileSync(path.resolve("electron/main.cjs"), "utf8");
+      const p2VisionSource = readFileSync(
+        path.resolve("native/AnswerCardRecognizer/answer-card-recognizer/vision_utils.cpp"), "utf8");
+      const p2TwainSource = readFileSync(
+        path.resolve("native/ScannerBridge/scanner-bridge/twain_controller.cpp"), "utf8");
+
+      // P2-3（上限与服务端对齐）：档位必须来自 shared/mediaTicketLimits，不能在客户端另写一个 8
+      check(/import \{ MEDIA_TICKET_MAX_PER_USER \} from "[^"]*shared\/mediaTicketLimits"/.test(p2ApiSource)
+        && /const TICKET_CACHE_CAP = Math\.max\(1, MEDIA_TICKET_MAX_PER_USER\);/.test(p2ApiSource)
+        && !/ticketCache\.size > 8\b/.test(p2ApiSource),
+        "P2-3：客户端上限取自服务端同一档位模块（写死 8 的话，运维调档就悄悄失效了）");
+      check(/while \(ticketCache\.size > TICKET_CACHE_CAP\)/.test(p2ApiSource)
+        && /if \(entry\.expiresAt < oldestExpiry\)/.test(p2ApiSource),
+        "P2-3：超出上限按「最早过期」驱逐，与服务端的驱逐策略同形（客户端持有的票据 ⊆ 服务端持有的）");
+      check((p2ApiSource.match(/ticketCache\.set\(/g) ?? []).length === 1
+        && p2ApiSource.indexOf("function rememberTicket") < p2ApiSource.indexOf("ticketCache.set("),
+        "P2-3：票据只经 rememberTicket 一个入口写入缓存——绕过它写入就等于绕过上限");
+
+      // P2-3（重签退路）：force 不得回落旧票，且重签前必须剥掉已有凭据
+      check(/async function ensureMediaTicket\(pathname: string, force = false\)/.test(p2ApiSource)
+        && /const fallback = force \? null : cached\?\.ticket \?\? null;/.test(p2ApiSource),
+        "P2-3：强制重签失败时不回落旧票（回落就是让调用方再撞一次 401）");
+      check((p2ApiSource.match(/const resolved = stripUrlCredentials\(apiUrl\(url\)\);/g) ?? []).length === 2
+        && !/appendQuery\(apiUrl\(url\)/.test(p2ApiSource),
+        "P2-3：拼票据的两个入口都先剥旧凭据（否则 ?mt=a&mt=b 会被 Express 解析成数组而判非法）");
+
+      // P2-3（<img> 侧）：只重试一次、只对带票据的 URL 重试
+      check(/if \(!failedUrl\.includes\("mt="\)\) return false;/.test(p2RetrySource)
+        && /element\.dataset\[MEDIA_IMAGE_RETRY_KEY\] === failedUrl/.test(p2RetrySource)
+        && /element\.dataset\[MEDIA_IMAGE_RETRY_KEY\] = failedUrl;/.test(p2RetrySource),
+        "P2-3：图片重签以「失败的那个 URL」为一次性闸门（401→重签→401 不会变成无限循环）");
+      check(p2RetrySource.indexOf("invalidateMediaTicket(failedUrl)") < p2RetrySource.indexOf("resignMediaTicketUrl(failedUrl)"),
+        "P2-3：重签前先作废缓存里的旧票（顺序反了就会把刚签到的新票删掉）");
+      check(/retryMediaTicketImage\(event\.currentTarget\)/.test(p2GradeSource)
+        && /if \(retryMediaTicketImage\(event\.currentTarget\)\) return;\s*\n\s*setFailed\(true\);/.test(p2PaperSource),
+        "P2-3：切块图与学生卷页面图都挂了 onError 重签（只修一处，另一处照样白屏）");
+
+      // P2-1：卸载前的自动保存必须把服务端返回的新 revision 接住
+      const p2FlushAt = /keepalive: true\s*\}\)\.then\(async \(response\) => \{/.test(p2AppSource);
+      check(p2FlushAt
+        && /const saved = await response\.json\(\)\.catch\(\(\) => null\)/.test(p2AppSource),
+        "P2-1：卸载前那次 PUT 读取响应体接住新 revision（不读的话本地版本停在改动前，导出被自己的闸门拦住）");
+      check(/latestCardRef\.current = \{ \.\.\.latestCardRef\.current!, revision: saved\.revision \};/.test(p2AppSource)
+        && /setCard\(\(current\) => \(current \? \{ \.\.\.current, revision: saved\.revision \} : current\)\);/.test(p2AppSource),
+        "P2-1：新 revision 同时落到 latestCardRef 与 card state（只更新一处，另一处仍是旧版本）");
+      check(/saved && typeof saved\.revision === "number"\s*\n\s*&& editRevisionRef\.current === revision\s*\n\s*&& latestCardRef\.current\?\.id === saved\.id/.test(p2AppSource),
+        "P2-1：回写仍受世代与卡片身份约束——迟到的响应不能覆盖更新的一轮改动");
+
+      // P2-2：命中显式许可的地址原样再保存一次，不能把许可抹掉
+      check(/decision\.reason === "blocked-plaintext" \|\| decision\.reason === "explicit-allowance"/.test(p2ServerConfigSource)
+        && /if \(keepAllowance\) grantInsecureTransportAllowance\(loadUrl\(\)\);/.test(p2ServerConfigSource)
+        && !/if \(decision\.reason === "blocked-plaintext"\) grantInsecureTransportAllowance/.test(p2ServerConfigSource),
+        "P2-2：补发许可的条件含 explicit-allowance（旧写法只认 blocked-plaintext，原样再存一次就丢掉正在用的许可）");
+      check(p2ServerConfigSource.indexOf("revokeInsecureTransportAllowance()")
+        < p2ServerConfigSource.indexOf("if (keepAllowance) grantInsecureTransportAllowance"),
+        "P2-2：先清历史许可、再按当前地址补发（顺序反了会把新许可一并清掉）");
+
+      // P2-4：Web 端的皮肤回写必须有登录瞬态护栏
+      check(/import \{ skinPatchDecision \} from "\.\/lib\/skinPatchGuard"/.test(p2AppSource)
+        && /const decision = skinPatchDecision\(skinPatchPrevUserRef\.current, userId, skin, serverSkin, chosen\);/.test(p2AppSource)
+        && /skinPatchPrevUserRef\.current = decision\.nextPrevUserId;/.test(p2AppSource),
+        "P2-4：Web 端与扫描端共用同一护栏函数（各写一份判断，两边就会各自漂移）");
+      check(!/if \(!user\) return;\s*\n\s*const serverSkin = user\.themeSkin \|\| DEFAULT_SKIN;\s*\n\s*if \(skin === serverSkin\) return;/.test(p2AppSource),
+        "P2-4：反向对照：旧的「闭包 skin ≠ 账号就 PATCH」裸判断已经不在（正是交替回写的根因）");
+
+      // P2-5：biHeight 是有符号 INT32，负值表示 top-down 行序
+      check(/static_cast<long long>\(static_cast<int32_t>\(read_le\(buffer, 22, 4\)\)\)/.test(p2VisionSource)
+        && /raw_height < 0 \? -raw_height : raw_height/.test(p2VisionSource)
+        && !/return \{ read_le\(buffer, 18, 4\), read_le\(buffer, 22, 4\) \};/.test(p2VisionSource),
+        "P2-5：BMP 高度按有符号读取并取绝对值（无符号读法把 -3000 变成 4294963000，合法 top-down 图被判伪造）");
+      check(/static_cast<long long>\(read_le\(buffer, 18, 4\)\)/.test(p2VisionSource),
+        "P2-5：宽度仍按无符号读——R19 对伪造尺寸的防护不受影响");
+
+      // P2-6：junction 过的安装目录，两边都要解析成真实路径再比
+      check(p2TwainSource.indexOf("std::wstring realInstallDirLower(") >= 0
+        && /const std::wstring realExeDir = realInstallDirLower\(exeDir\);/.test(p2TwainSource)
+        && /isUnderDir\(real, realExeDir\)/.test(p2TwainSource),
+        "P2-6：随包 DSM 的归属判断比的是「真实路径 vs 真实路径」（拿逻辑目录比，junction 安装会误拒合法随包 DLL）");
+      check(/if \(real\.empty\(\) \|\| !isUnderDir\(real, realExeDir\)\)/.test(p2TwainSource),
+        "P2-6：DLL 侧解析失败仍然拒绝加载——只有目录侧允许退回逻辑路径");
+      // 全量复检补的一条：finalLowerPath 原先用 (0, FILE_ATTRIBUTE_NORMAL) 打开句柄，
+      // 目录句柄不带 backup 语义时 CreateFileW 直接失败（本机实测 ERROR_ACCESS_DENIED / gle=5），
+      // 于是 realInstallDirLower 永远退回逻辑路径——「两边都解析成真实路径」只是纸面成立，
+      // junction 安装目录照样被误拒。断言锁住打开方式，别让下一次重构又把它改回去。
+      const p2FinalPathFn = (p2TwainSource.match(/std::wstring finalLowerPath[\s\S]*?\n\}/) ?? [""])[0];
+      check(/FILE_READ_ATTRIBUTES/.test(p2FinalPathFn) && /FILE_FLAG_BACKUP_SEMANTICS/.test(p2FinalPathFn)
+        && !/FILE_ATTRIBUTE_NORMAL/.test(p2FinalPathFn),
+        "P2-6：真实路径解析按「只读属性 + backup 语义」打开（无此语义打不开目录，junction 修复形同未修）");
+
+      // P2-7：默认拒绝里只留「可信来源 + 写剪贴板」这一条白名单
+      check(/const TRUSTED_PERMISSIONS = new Set\(\["clipboard-sanitized-write", "clipboard-write"\]\);/.test(p2ElectronSource)
+        && !/new Set\(\[[^\]]*clipboard-read/.test(p2ElectronSource),
+        "P2-7：放行的只有写剪贴板，读剪贴板仍在全拒之列（读会把用户复制过的任何东西交给页面）");
+      check((p2ElectronSource.match(/TRUSTED_PERMISSIONS\.has\(permission\) && isTrustedPermissionOrigin/g) ?? []).length === 2,
+        "P2-7：请求处理器与检查处理器共用同一判断（只改一处会出现「检查通过、请求被拒」的错位）");
+      check(/trustedOrigins\.add\(baseOrigin\)/.test(p2ElectronSource)
+        && /return trustedOrigins\.has\(normalized\);/.test(p2ElectronSource)
+        && /normalized = new URL\(origin\)\.origin;/.test(p2ElectronSource)
+        && !/trustedOrigins\.has\([^)]*startsWith/.test(p2ElectronSource),
+        "P2-7：可信来源就是壳自己加载的那个 origin，先 new URL().origin 归一化再精确比对（前缀匹配会把 evil.com 放进来）");
+      check(/if \(!copied\) copied = copyViaTextarea\(text\);/.test(p2ScannerPanelSource)
+        && /const ok = document\.execCommand\("copy"\);/.test(p2ScannerPanelSource)
+        && /setDiagCopied\(copied\);/.test(p2ScannerPanelSource)
+        && !/^\s*document\.execCommand\("copy"\);/m.test(p2ScannerPanelSource)
+        && !/setDiagCopied\(true\);/.test(p2ScannerPanelSource),
+        "P2-7：回退路径以 execCommand 的真实返回值为准（忽略返回值就会在复制失败时显示「已复制」）");
     }
 
     console.log(`\n关键安全验收：${passed} 通过，${failures.length} 失败`);

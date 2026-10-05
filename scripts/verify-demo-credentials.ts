@@ -6,7 +6,8 @@
  *      教师范围收敛到 teacher_role='subject_teacher' + 两个演示班级，不再命中「未配置角色=全校可见」兼容分支。
  *   2. 库里已有真实数据时导入需显式确认串（或环境变量放行），拒绝发生在任何写入之前。
  *   3. 固定演示卡号撞上真实答题卡时整单拒绝，真实卡上不留任何演示题块/知识点（INSERT IGNORE 静默复用已封死）。
- *   4. 崩溃残留的 demo-teacher（未被真实业务用过）收编并换发口令；在用的真实同名教师则拒绝且零改动。
+ *   4. 保留用户名 demo-teacher：只认明确的演示归属（is_demo=1）。同名非演示账号一律整单拒绝且零改动，
+ *      不再凭「查不到业务往来」收编——那会把真实账号打上 is_demo 标记，之后被 clear-demo 删除（评审 P1）。
  *
  * 用法：
  *   npx tsx scripts/verify-demo-credentials.ts
@@ -336,8 +337,8 @@ await db.run("UPDATE answer_cards SET is_demo = 1 WHERE id = ?", conflictCardId)
 ok(await isDemoCard(db, conflictCardId), "is_demo=1 后 isDemoCard = true（判据只看归属标记，不看卡号）");
 await db.run("UPDATE answer_cards SET is_demo = 0 WHERE id = ?", conflictCardId);
 
-// ── 6. 崩溃残留的 demo-teacher：收编 + 换发口令 ─────────────────
-section("6. v1.9.8 崩溃残留的 demo-teacher（未被真实业务用过）：收编并换发口令");
+// ── 6. 同名但非演示归属：不自动收编，整单拒绝且零改动 ──────────
+section("6. is_demo=0 的同名账号（历史残留/真实账号）：拒绝导入，账号原样不动");
 await db.run("DELETE FROM answer_cards WHERE id = ?", conflictCardId);
 const leftoverHash = await hashPassword(LEGACY_PUBLIC_DEMO_TEACHER_PASSWORD);
 await db.run(
@@ -347,20 +348,49 @@ await db.run(
   "崩溃残留",
   ROLE_IDS.TEACHER
 );
+const snapshot6 = {
+  users: await count("SELECT COUNT(*) AS n FROM users"),
+  exams: await count("SELECT COUNT(*) AS n FROM exams"),
+  cards: await count("SELECT COUNT(*) AS n FROM answer_cards"),
+  demoGrades: await count("SELECT COUNT(*) AS n FROM grades WHERE is_demo = 1")
+};
+const refusal6 = await refuseOf(seedDemoData({ confirmedProductionImport: true }));
+ok(refusal6?.code === "DEMO_TEACHER_USERNAME_TAKEN", `错误码 DEMO_TEACHER_USERNAME_TAKEN（实际 ${refusal6?.code}）`);
+ok(refusal6?.status === 409, `HTTP 状态 409（实际 ${refusal6?.status}）`);
+// 评审 P1 的根因：旧判据「查不到业务关系就收编」会给同名真实账号打上 is_demo=1，
+// 而 clearDemoData 正是按 is_demo=1 删账号的——一次演示导入把真实账号交给了清理程序。
+const row6 = await findUser(DEMO_TEACHER_USERNAMES[0]);
+ok(row6?.is_demo === 0, `同名账号没有被自动打上 is_demo=1（实际 ${row6?.is_demo}）`);
+ok(row6?.password_hash === leftoverHash, "拒绝时未改动该账号口令");
+ok(row6?.teacher_role === null, `拒绝时未改动该账号的 teacher_role（实际 ${row6?.teacher_role}）`);
+ok(
+  (await count("SELECT COUNT(*) AS n FROM users")) === snapshot6.users
+  && (await count("SELECT COUNT(*) AS n FROM exams")) === snapshot6.exams
+  && (await count("SELECT COUNT(*) AS n FROM answer_cards")) === snapshot6.cards
+  && (await count("SELECT COUNT(*) AS n FROM grades WHERE is_demo = 1")) === snapshot6.demoGrades,
+  "拒绝时零改动：用户/考试/答题卡计数不变，没有留下演示年级"
+);
+ok(
+  String(refusal6?.message ?? "").includes("UPDATE users SET is_demo = 1 WHERE id ="),
+  "错误信息给出显式认领语句（归属由人定性，不由程序推断）"
+);
+
+// 人确认这是 v1.9.8 之前中断导入留下的残留 → 认领为演示账号后导入照旧完成，公开口令当场失效
+await db.run("UPDATE users SET is_demo = 1 WHERE username = ?", DEMO_TEACHER_USERNAMES[0]);
 const stats6 = await seedDemoData({ confirmedProductionImport: true });
 const cred6 = stats6.teacherCredentials.find((c) => c.username === DEMO_TEACHER_USERNAMES[0])!;
-const row6 = await findUser(DEMO_TEACHER_USERNAMES[0]);
-ok(row6 !== null, "残留账号被收编（未因 UNIQUE 撞名失败）");
-ok(row6?.is_demo === 1, `收编后标记 is_demo=1，可被 clearDemoData 回收（实际 ${row6?.is_demo}）`);
-ok(row6?.teacher_role === "subject_teacher", `收编后补上 teacher_role（实际 ${row6?.teacher_role}）`);
-ok(!(await verifyPassword(LEGACY_PUBLIC_DEMO_TEACHER_PASSWORD, row6!.password_hash)), `收编后 ${LEGACY_PUBLIC_DEMO_TEACHER_PASSWORD} 当场失效`);
+const row6b = await findUser(DEMO_TEACHER_USERNAMES[0]);
+ok(row6b !== null, "认领后导入成功（残留按演示归属清理并重建）");
+ok(row6b?.is_demo === 1, "导入后的账号仍是演示账号");
+ok(row6b?.teacher_role === "subject_teacher", `重建后带 teacher_role（实际 ${row6b?.teacher_role}）`);
+ok(!(await verifyPassword(LEGACY_PUBLIC_DEMO_TEACHER_PASSWORD, row6b!.password_hash)), `公开的 ${LEGACY_PUBLIC_DEMO_TEACHER_PASSWORD} 当场失效`);
 ok(
-  await verifyPassword(cred6.password, row6!.password_hash),
-  "收编后使用本次随机换发的口令"
+  await verifyPassword(cred6.password, row6b!.password_hash),
+  "使用本次随机换发的口令"
 );
 ok(cred6.password !== LEGACY_PUBLIC_DEMO_TEACHER_PASSWORD, "换发口令不是公开固定值");
 await clearDemoData();
-ok((await findUser(DEMO_TEACHER_USERNAMES[0])) === null, "清理后残留账号一并回收");
+ok((await findUser(DEMO_TEACHER_USERNAMES[0])) === null, "清理后演示账号一并回收");
 
 // ── 7. 在用的真实同名教师：拒绝且零改动 ────────────────────────
 section("7. demo-teacher 已被真实教师占用：拒绝导入，账号原样不动");
@@ -403,24 +433,20 @@ ok(
   "拒绝时零改动：用户/考试/答题卡计数不变，没有留下演示年级"
 );
 
-// 换一条「在用」证据（exams.created_by）仍须拒绝：三条判据任一命中即拒绝，不是只认任课关系。
+// 评审 P1：判据是「演示归属」，不是「有没有业务往来」。
+// 旧行为在这里放行——三条证据（真实班级任课 / 阅卷分配 / 创建过考试）全撤掉后，
+// 一个刚导入、还没来得及任课的真实教师就会被打上 is_demo=1，交给下一次 clearDemoData 删除。
 await db.run("DELETE FROM teacher_classes WHERE teacher_id = ?", realTeacherId);
-await db.run("UPDATE exams SET created_by = ? WHERE id = ?", realTeacherId, realExamId);
-const refusal7b = await refuseOf(seedDemoData({ confirmedProductionImport: true }));
-ok(refusal7b?.code === "DEMO_TEACHER_USERNAME_TAKEN", "该教师创建过真实考试时同样拒绝（created_by 判据）");
-await db.run("UPDATE exams SET created_by = NULL WHERE id = ?", realExamId);
-await db.run(
-  "INSERT INTO review_assignments (exam_id, block_id, teacher_id) VALUES (?, ?, ?)",
-  realExamId,
-  "verify-block-x",
-  realTeacherId
-);
-const refusal7c = await refuseOf(seedDemoData({ confirmedProductionImport: true }));
-ok(refusal7c?.code === "DEMO_TEACHER_USERNAME_TAKEN", "该教师被分配过阅卷任务时同样拒绝（review_assignments 判据）");
-await db.run("DELETE FROM review_assignments WHERE teacher_id = ?", realTeacherId);
 const refusal7d = await refuseOf(seedDemoData({ confirmedProductionImport: true }));
-ok(refusal7d === null, "三条「在用」证据全部撤除后放行（残留账号按第 6 节收编）");
-ok((await findUser(DEMO_TEACHER_USERNAMES[0]))?.is_demo === 1, "放行后同名账号按演示账号收编，真实教师身份不再被复用");
+ok(refusal7d?.code === "DEMO_TEACHER_USERNAME_TAKEN", "业务往来全部撤除后仍然拒绝（没有任课/阅卷/考试记录不等于账号可覆盖）");
+const row7d = await findUser(DEMO_TEACHER_USERNAMES[0]);
+ok(row7d?.is_demo === 0, "真实教师不被复用为演示账号（不打 is_demo 标记）");
+ok(row7d?.password_hash === realHash, "真实教师口令未被改写");
+ok(
+  (await count("SELECT COUNT(*) AS n FROM exams")) === snapshot7.exams
+  && (await count("SELECT COUNT(*) AS n FROM grades WHERE is_demo = 1")) === snapshot7.demoGrades,
+  "拒绝时仍未写入任何演示数据"
+);
 
 await clearDemoData();
 ok(

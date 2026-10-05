@@ -226,26 +226,44 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     ].join("\n");
   }
 
-  /** v2.5.6：一键复制诊断（剪贴板不可用时回退到隐藏 textarea 选中复制） */
+  /**
+   * v2.5.6：一键复制诊断。
+   *
+   * 走两条路（CR #313 P2-7）：Clipboard API 抛错**和**不存在都要回退到隐藏 textarea。
+   * 只判 `navigator.clipboard?.writeText` 是否存在是不够的——扫描端是 Electron 壳，
+   * R23 的权限策略对设备能力默认拒绝，writeText 会好好存在却以 NotAllowedError 失败，
+   * 于是「复制诊断」按下去毫无反馈，而它正是现场自证、少走弯路的入口。
+   */
   async function copyDiagnostics(): Promise<void> {
     const text = diagnosticText();
+    let copied = false;
     try {
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(text);
-      } else {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.style.position = "fixed";
-        ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
+        copied = true;
       }
-      setDiagCopied(true);
-      setTimeout(() => setDiagCopied(false), 2000);
     } catch {
-      setDiagCopied(false);
+      copied = false; // 权限被拒/文档失焦：交给下面的回退
+    }
+    if (!copied) copied = copyViaTextarea(text);
+    setDiagCopied(copied);
+    if (copied) setTimeout(() => setDiagCopied(false), 2000);
+  }
+
+  /** 回退路径：以 execCommand 的真实返回值为准，不谎报成功。 */
+  function copyViaTextarea(text: string): boolean {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
     }
   }
 
