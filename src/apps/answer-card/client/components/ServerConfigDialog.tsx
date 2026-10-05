@@ -173,9 +173,13 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
     saveUrl(serverUrl);
     setServerUrl(loadUrl()); // 回显归一化后的实际生效地址
     storeApiKey(apiKey.trim() || null);
-    // 同意只留给当前这一个 host:port；改成 https/回环时把历史明文同意一并清掉
+    // 同意只留给当前这一个 host:port；改成 https/回环时把历史明文同意一并清掉。
+    // 评审 P2：已获许可的地址也要一并保住——它命中许可时 decision.reason 是
+    // explicit-allowance 而不是 blocked-plaintext，下面这句只按后者补发，
+    // 于是「原样再点一次保存」就把正在用的许可抹掉了：同步与上传从此在闸门处失败。
+    const keepAllowance = decision.reason === "blocked-plaintext" || decision.reason === "explicit-allowance";
     revokeInsecureTransportAllowance();
-    if (decision.reason === "blocked-plaintext") grantInsecureTransportAllowance(loadUrl());
+    if (keepAllowance) grantInsecureTransportAllowance(loadUrl());
     serverStatus.refresh();
     scannerUploadManager.notifyNetworkChanged();
     if (mode === "dialog") onOpenChange?.(false);
