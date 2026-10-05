@@ -32,13 +32,26 @@ export function canonicalCardForVersion(card: AnswerCard): Record<string, unknow
   };
 }
 
-/** 键排序后序列化：客户端与服务端构造对象的路径不同，键序不能影响指纹。 */
+/**
+ * 键排序后序列化：客户端与服务端构造对象的路径不同，键序不能影响指纹。
+ *
+ * **必须与 `JSON.stringify` 的规范化语义逐条一致**（评审 P1）：对象里值为 `undefined` 的键
+ * 被**省略**，数组里的 `undefined` 元素落成 `null`。两边拿到的是同一份 JSON 文本，但内存里的
+ * 形状不同——服务端从库里构造时会写出 `{ marker: undefined }`，而这份键经 HTTP 传输后在客户端
+ * 根本不存在。旧实现把前者编成 `"marker":null`、后者编成没有这个键，于是同一张卡得到两个指纹，
+ * 普通客观题卡与主观题卡都在上传时 409 `CARD_VERSION_MISMATCH`。
+ * 指纹是「两边是不是同一版」的唯一依据，这种差异等于把校验本身变成故障源。
+ */
 function stableStringify(value: unknown): string {
-  if (value === null || value === undefined) return "null";
-  if (typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (value === undefined) return "null";
+  if (value === null || typeof value !== "object") {
+    // 数字 NaN/Infinity 经 JSON 也是 null；字符串/数字/布尔按 JSON 的转义与格式产出。
+    return JSON.stringify(value) ?? "null";
+  }
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
   const record = value as Record<string, unknown>;
   return `{${Object.keys(record)
+    .filter((key) => record[key] !== undefined)
     .sort()
     .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
     .join(",")}}`;

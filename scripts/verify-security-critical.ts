@@ -466,6 +466,49 @@ async function main(): Promise<void> {
     check(cardFingerprint(editedKey!).length === 24 && /^[0-9a-f]{24}$/.test(cardFingerprint(editedKey!)),
       "指纹为 24 位小写十六进制，可直接放进请求体与日志");
 
+    // 评审 P1：同一张卡在客户端与服务端必须算出同一个指纹。两边的 JSON 文本相同，
+    // 但内存形状不同——服务端从库里构造会带值为 undefined 的键，而这些键经 HTTP 到客户端时根本不存在。
+    // 旧的 stableStringify 把前者编成 null、后者编成「没有这个键」，于是普通客观题/主观题卡一律 409。
+    type VersionedCard = Parameters<typeof cardFingerprint>[0];
+    const serverShapedCard = {
+      id: "critical-remote-card",
+      title: "规范化验收卡",
+      subject: "shuxue",
+      subjectLabel: "数学",
+      examDate: null,
+      paper: { pageSize: "A4", pages: [{ width: 210, height: 297, blanks: undefined }] },
+      studentInfo: { items: [{ label: "姓名", field: undefined }] },
+      bodyBlocks: [
+        { type: "objective", id: "b1", answerKey: undefined, score: 2 },
+        { type: "subjective", id: "b2", blocks: [undefined, { title: "作文" }] },
+      ],
+      sided: false,
+      layoutVersion: 1,
+    } as unknown as VersionedCard;
+    // 客户端那一侧：同一份内容走一遍 JSON 往返，undefined 键被省略、数组里的 undefined 变 null
+    const clientShapedCard = JSON.parse(JSON.stringify(serverShapedCard)) as VersionedCard;
+    const clientShapedAgain = JSON.parse(JSON.stringify(clientShapedCard)) as VersionedCard;
+    check(cardFingerprint(clientShapedCard) === cardFingerprint(serverShapedCard),
+      "「带 undefined 键的服务端形状」与「省略这些键的客户端形状」指纹一致（评审 P1 的 409 根因）");
+    check(cardFingerprint(clientShapedAgain) === cardFingerprint(clientShapedCard),
+      "客户端形状再走一遍 JSON 仍是同一值——规范化是幂等的，不会在两边各自漂移");
+    const keyOrderVariant = JSON.parse(
+      `{"layoutVersion":1,"sided":false,"bodyBlocks":${JSON.stringify(serverShapedCard.bodyBlocks)},`
+      + `"studentInfo":${JSON.stringify((serverShapedCard as { studentInfo: unknown }).studentInfo)},`
+      + `"paper":${JSON.stringify((serverShapedCard as { paper: unknown }).paper)},`
+      + `"examDate":null,"subjectLabel":"数学","subject":"shuxue","title":"规范化验收卡","id":"critical-remote-card"}`
+    ) as VersionedCard;
+    check(cardFingerprint(keyOrderVariant) === cardFingerprint(serverShapedCard),
+      "键序不同不影响指纹（规范化只统一 undefined/null，不引入键序依赖）");
+    const meaningfulAddition = JSON.parse(JSON.stringify(clientShapedCard)) as VersionedCard;
+    (meaningfulAddition as { studentInfo: Record<string, unknown> }).studentInfo.extra = "新字段";
+    check(cardFingerprint(meaningfulAddition) !== cardFingerprint(serverShapedCard),
+      "反向对照：真正的内容差异（多出且有值的字段）照样改变指纹——规范化没有把校验变成空转");
+    const nullVsMissingArrayElement = JSON.parse(JSON.stringify(serverShapedCard)) as VersionedCard;
+    (nullVsMissingArrayElement as { bodyBlocks: unknown[] }).bodyBlocks[1].blocks = [null, { title: "作文" }];
+    check(cardFingerprint(nullVsMissingArrayElement) === cardFingerprint(serverShapedCard),
+      "数组里的 undefined 与 null 经 JSON 同形（元素位置的 undefined 编成 null）");
+
     // 完成会话时再核一次：建会话之后服务器上的卡被改了，就不能把旧版结果落库
     const completeWithVersion = async (sessionId: string, cardVersion: unknown) => {
       const response = await fetch(`${base}/api/scanner/upload/sessions/${encodeURIComponent(sessionId)}/complete`, {
@@ -2674,6 +2717,80 @@ async function main(): Promise<void> {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: "/api/cards/1/pdf" })
       });
       check(anonymousIssue.status === 401, "未登录不能签发票据");
+
+      // ── 评审 P1：票据必须随账号撤销失效，并按「当前」账号状态与角色判定 ──
+      // 中间件级别的驱动器：真实 HTTP 只能看到状态码，看不到 req.user 被挂成了谁，
+      // 而「降权后仍沿用旧角色」正是身份问题，所以直接喂一个带 ?mt= 的请求给 authMiddleware。
+      const { authMiddleware } = await import("../src/server/middleware/auth");
+      const runTicketAuth = async (ticketValue: string, pathname: string) => {
+        const probe: any = {
+          method: "GET", headers: {}, query: { mt: ticketValue }, baseUrl: "", path: pathname,
+        };
+        let statusCode: number | null = null;
+        let allowed = false;
+        // 中间件两条出路都要落定：next()（认下身份）或 res.status().json()（拒绝）。
+        // 少认一条，这里就挂在一个永远不会来的回调上。
+        await new Promise<void>((resolve) => {
+          let settled = false;
+          const done = () => { if (!settled) { settled = true; resolve(); } };
+          const res: any = {
+            status(code: number) { statusCode = code; return res; },
+            json() { done(); return res; },
+          };
+          authMiddleware(probe, res, () => { allowed = true; done(); });
+        });
+        return { user: probe.user as { role_id: number; role_name: string } | undefined, statusCode, allowed };
+      };
+
+      // (1) 统一撤销入口：管理端「重置密码」走 revokeUserTokens，票据要跟着一起作废
+      const revokeUser = await users.createUser({
+        username: "ticket-revoke", password: "revoke-pass", name: "票据撤销教师",
+        role_id: 2, teacher_role: "subject_teacher", subject: "数学",
+      });
+      const revokePath = "/api/cards/CRITICALCARD001/export";
+      const revokeTicket = issueMediaTicket({
+        id: revokeUser.id, username: revokeUser.username, name: revokeUser.name,
+        role_id: revokeUser.role_id, role_name: revokeUser.role_name ?? "teacher",
+        student_number: revokeUser.student_number ?? null, teacher_role: revokeUser.teacher_role ?? null,
+        subject: revokeUser.subject ?? null, password_change_required: Boolean(revokeUser.password_change_required),
+      }, revokePath);
+      const beforeReset = await fetch(`${base}/api/cards/CRITICALCARD001/export?mt=${revokeTicket!.ticket}`);
+      check(beforeReset.status !== 401 && !!resolveMediaTicket(revokeTicket!.ticket, "GET", revokePath),
+        `撤销前票据可用（状态 ${beforeReset.status}，不是 401 就说明身份被认下了）`);
+      const resetResp = await fetch(`${base}/api/users/${revokeUser.id}/reset-password`, {
+        method: "POST", headers: authHeaders(adminToken),
+      });
+      const afterReset = await fetch(`${base}/api/cards/CRITICALCARD001/export?mt=${revokeTicket!.ticket}`);
+      check(resetResp.status === 200 && afterReset.status === 401
+        && resolveMediaTicket(revokeTicket!.ticket, "GET", revokePath) === null,
+        "「重置密码」同时吊销该用户的票据（此前只清 tokenStore，旧链接在剩余寿命内仍读得到资源）");
+
+      // (2) 实时核对：票据记录本身仍是签发时的快照，身份由中间件回库取现状
+      const liveUser = await users.createUser({
+        username: "ticket-live", password: "live-pass", name: "票据现状教师",
+        role_id: 2, teacher_role: "subject_teacher", subject: "数学",
+      });
+      const livePath = "/api/cards/CRITICALCARD001/pdf";
+      const liveTicket = issueMediaTicket({
+        id: liveUser.id, username: liveUser.username, name: liveUser.name,
+        role_id: 2, role_name: "teacher", student_number: null, teacher_role: "subject_teacher",
+        subject: "数学", password_change_required: false,
+      }, livePath);
+      const asTeacher = await runTicketAuth(liveTicket!.ticket, livePath);
+      check(asTeacher.allowed && asTeacher.user?.role_id === 2, "票据命中时按当前身份挂载（教师）");
+      check(resolveMediaTicket(liveTicket!.ticket, "GET", livePath)?.role_id === 2,
+        "票据服务自身仍返回签发时的快照——评审 P1 的根因；撤销与实时核对都发生在认证中间件，不能把它当边界");
+      db.prepare("UPDATE users SET role_id = ? WHERE id = ?").run(3, liveUser.id);
+      const afterDemote = await runTicketAuth(liveTicket!.ticket, livePath);
+      check(afterDemote.user?.role_id === 3 && afterDemote.user?.role_name === "student",
+        "账号被降权后，同一张未过期票据立即以新角色判定（旧行为：沿用签发时的教师角色）");
+      db.prepare("UPDATE users SET is_active = 0 WHERE id = ?").run(liveUser.id);
+      const afterDisable = await runTicketAuth(liveTicket!.ticket, livePath);
+      check(afterDisable.user === undefined && resolveMediaTicket(liveTicket!.ticket, "GET", livePath) === null,
+        "账号被停用后票据不再冒领身份，并且该用户的票据被就地清空（不等到自然过期）");
+      db.prepare("UPDATE users SET is_active = 1 WHERE id = ?").run(liveUser.id);
+      const afterReenable = await runTicketAuth(liveTicket!.ticket, livePath);
+      check(afterReenable.user === undefined, "重新启用账号不会让已作废的票据复活（撤销是持久的）");
 
       // ── R30：日志脱敏（URL 里的凭据不得进日志/错误堆栈）──
       const { redactUrlCredentials, redactAuthorizationHeader, safeErrorForLog } = await import("../src/server/lib/logRedaction");
