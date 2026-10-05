@@ -259,6 +259,86 @@ async function main(): Promise<void> {
   const groupOwn = await get(`/api/ladder/exam-groups/${groupId}`, tokenS1);
   ok(groupOwn.status === 200, `学生读取本人参与的大考组天梯成功（实际 ${groupOwn.status} ${groupOwn.body?.message ?? ""}）`);
 
+  console.log("\n== PR #312 CR7/CR10/CR11/CR12 天梯参与子集、冻结名单出路、只读教师与 403 脱敏 ==");
+  // created_by 挂在 teacherA 名下：末尾 R06 的解绑步骤要求卡上每场考试都在调用者范围内，
+  // 这场是新增的，若归 admin 会把那条断言变成 403（考试归属 ≠ 天梯可见范围，后者按班+学科判定）。
+  const examL2 = makeExam("B班数学考（本人未参加）", { classId: classB, subject: "数学", createdBy: teacherA.id, published: true });
+  db.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?,?,0,77,77)")
+    .run(examL2, sids["9004"]);
+  db.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?,?,0,66,66)")
+    .run(examL2, sids["9003"]);
+  const hasLadderNumber = (body: any, num: string) =>
+    (body?.rows ?? []).some((r: { studentNumber?: string }) => String(r.studentNumber) === num);
+
+  // CR7 ①：混合选择只要求「参加过其中一场」，未参加那场的整榜照读——现在按参与子集聚合
+  const { AnalysisRepository: LadderRepo } = await import("../src/server/repositories/AnalysisRepository");
+  const ladParticipated = await new LadderRepo().filterParticipatedExamIds([examA, examL2], sids["9001"]);
+  ok(ladParticipated.length === 1 && Number(ladParticipated[0]) === examA,
+    `参与子集只保留本人参加的那场、保持原顺序（实际 ${JSON.stringify(ladParticipated)}）`);
+  const ladMixed = await get(`/api/ladder/cross-exam?mode=selected&examIds=${examA},${examL2}`, tokenS1);
+  ok(ladMixed.status === 200, `混合选择含本人未参加场次时仍返回本人可读的子集（实际 ${ladMixed.status}）`);
+  ok(hasLadderNumber(ladMixed.body, "9001"), "参与子集里本人仍在榜（空榜会让下面的断言白过）");
+  ok(!hasLadderNumber(ladMixed.body, "9004"), "未参加场次的独有学生不出现在榜单（修复前其姓名/学号/分数整行泄露）");
+  // 教师侧对照用的是「同时任教 A、B 两班」的账号：teacherA 只任教 A 班，
+  // 请求含 examL2 会先在 validateExamIdsAccess 处 403，测不到参与收敛这条口径。
+  const teacherBoth = await users.createUser({ username: "t-both", password: "pass-1234", name: "跨班教师", role_id: 2, teacher_role: "subject_teacher", subject: "数学" });
+  db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, '数学')").run(teacherBoth.id, classA);
+  db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, '数学')").run(teacherBoth.id, classB);
+  const tokenBoth = (await authService.login("t-both", "pass-1234")).token!;
+  const ladMixedTeacher = await get(`/api/ladder/cross-exam?mode=selected&examIds=${examA},${examL2}`, tokenBoth);
+  ok(ladMixedTeacher.status === 200 && hasLadderNumber(ladMixedTeacher.body, "9004"),
+    `教师侧不受参与收敛影响，仍能读到完整榜单（实际 ${ladMixedTeacher.status} ${ladMixedTeacher.body?.message ?? ""}）`);
+
+  // CR7 ②：日期模式（week）没有调用者给定的考试集合，原先直接放行
+  const ladWeek = await get(`/api/ladder/cross-exam?mode=week&startDate=2026-08-25&endDate=2026-09-07`, tokenS1);
+  ok(ladWeek.status === 200, `学生读取日期包天梯成功（实际 ${ladWeek.status} ${ladWeek.body?.message ?? ""}）`);
+  ok(hasLadderNumber(ladWeek.body, "9001"), "日期包内本人参加的场次照常聚合");
+  ok(!hasLadderNumber(ladWeek.body, "9004"), "日期包内本人未参加的场次不再进榜");
+
+  // CR10：调班后，冻结名单里的历史应考者必须还能被保留（否则「剔除缺考者」这条唯一出路被拦死）
+  db.prepare("INSERT OR IGNORE INTO exam_participants (exam_id, student_id, source) VALUES (?, ?, 'roster')").run(examA, sids["9001"]);
+  db.prepare("INSERT OR IGNORE INTO exam_participants (exam_id, student_id, source) VALUES (?, ?, 'roster')").run(examA, sids["9002"]);
+  db.prepare("DELETE FROM class_students WHERE student_id = ?").run(sids["9001"]);
+  const cr10KeepFrozen = await send(`/api/exams/${examA}/participants`, "PUT", tokenA, { studentIds: [sids["9001"], sids["9002"]] });
+  ok(cr10KeepFrozen.status === 200, `调班后仍可保留冻结名单里的历史应考者（实际 ${cr10KeepFrozen.status} ${cr10KeepFrozen.body?.message ?? ""}）`);
+  const cr10RejectNew = await send(`/api/exams/${examA}/participants`, "PUT", tokenA, { studentIds: [sids["9001"], sids["9003"]] });
+  ok(cr10RejectNew.status === 403 && cr10RejectNew.body?.code === "PARTICIPANT_OUT_OF_SCOPE",
+    `冻结名单不放宽 R29：新塞入的范围外学生仍被 403（实际 ${cr10RejectNew.status}）`);
+  db.prepare("INSERT INTO class_students (class_id, student_id) VALUES (?, ?)").run(classA, sids["9001"]);
+  await send(`/api/exams/${examA}/participants`, "DELETE", tokenA);
+
+  // CR12：拒绝越权时只回显调用者自己给的标识，不得把范围外学生的姓名拼进消息
+  const cr12Labels = String(cr10RejectNew.body?.message ?? "");
+  ok(!cr12Labels.includes("学生9003"), `403 消息不含范围外学生姓名（实际 ${cr12Labels}）`);
+  ok(cr12Labels.includes(String(sids["9003"])), "403 消息仍回显调用者提交过的学生 ID，够定位问题");
+  const cr12ByNumber = await send(`/api/exams/${examA}/participants`, "PUT", tokenA, { studentNumbers: ["9001", "9003"] });
+  ok(cr12ByNumber.status === 403 && !String(cr12ByNumber.body?.message ?? "").includes("学生9003")
+    && String(cr12ByNumber.body?.message ?? "").includes("9003"),
+    `学号入口同样只回显请求里的学号（实际 ${JSON.stringify(cr12ByNumber.body?.message ?? "")}）`);
+
+  // CR11：只读教师（can_view_scores=1 / can_view_students=1 / can_grade=0）不是「题块级受限」
+  const teacherView = await users.createUser({ username: "t-view", password: "pass-1234", name: "只读教师", role_id: 2, teacher_role: "subject_teacher", subject: "数学" });
+  db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, '数学')").run(teacherView.id, classA);
+  const tokenV = (await authService.login("t-view", "pass-1234")).token!;
+  matrix(teacherView.id, { class_id: classA, can_grade: 0 });
+  const cr11ReadOnly = await get(`/api/exams/${examA}/student/${sids["9001"]}/scores`, tokenV);
+  ok(cr11ReadOnly.status === 200, `只读教师读取整卷成绩详情成功（实际 ${cr11ReadOnly.status} ${cr11ReadOnly.body?.message ?? ""}）`);
+  clearMatrix(teacherView.id);
+  matrix(teacherView.id, { class_id: classA, can_grade: 0, can_view_scores: 0 });
+  const cr11NoView = await get(`/api/exams/${examA}/student/${sids["9001"]}/scores`, tokenV);
+  // 拒绝理由必须落在「查看权限」上：can_view_scores=0 先在 getVisibleExamIds 的矩阵过滤里
+  // 把考试移出可见集合（requireExamAccess 报「无权访问此考试」），到不了路由上的查看门，
+  // 两道门是同一条口径。反过来，若理由变成「题块」就说明 CR11 的放宽被写坏了。
+  ok(cr11NoView.status === 403 && !String(cr11NoView.body?.message ?? "").includes("题块"),
+    `关掉 can_view_scores 后仍被拒（读权限缺失才是 403 的理由，实际 ${cr11NoView.status} ${cr11NoView.body?.message ?? ""}）`);
+  clearMatrix(teacherView.id);
+  const cr11NoMatrix = await get(`/api/exams/${examA}/student/${sids["9001"]}/scores`, tokenV);
+  ok(cr11NoMatrix.status === 200, `未配置矩阵的教师保持旧部署兼容放行（实际 ${cr11NoMatrix.status}）`);
+  matrix(teacherA.id, { class_id: classA, block_id: "B1", can_grade: 1 });
+  const cr11BlockScoped = await get(`/api/exams/${examA}/student/${sids["9001"]}/scores`, tokenA);
+  ok(cr11BlockScoped.status === 403, `确实只有题块级阅卷授权的教师仍被拦在整卷详情外（实际 ${cr11BlockScoped.status}）`);
+  clearMatrix(teacherA.id);
+
   console.log("\n== R47 争议复评按人去重，不叠加票数 ==");
   const { submitReviewCropScores } = await import("../src/server/services/ReviewService");
   db.prepare(

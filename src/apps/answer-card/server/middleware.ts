@@ -741,6 +741,13 @@ export async function requireWholeExamGradingAccess(
 /**
  * 整卷**读取**授权判定（安全 R08）：仅有题块级阅卷/权限配置的教师不应读到全卷成绩详情、
  * 总分与班级均分。返回其受限于的题块集合，null 表示不受题块限制。
+ *
+ * PR #312 CR11：`getPermittedBlocks` 的空集意味着「这场**没有任何阅卷授权**」，
+ * 而 R08 要拦的是「有阅卷授权、但只到题块粒度」的账号。把两者混为一谈，
+ * 只读教师（can_view_scores=1 / can_view_students=1 / can_grade=0、无阅卷分配）
+ * 就会因为「没有写权限」被判定成「没有读权限」而 403——读与写是两条独立的授权：
+ * 整卷读取由前面的 `requireExamAccess` + 两个查看门决定（查看门要求 block_id IS NULL
+ * 的整卷权限行），这道门只在「确实被限制在若干题块上」时才生效。
  */
 export async function isBlockedToOwnGradingBlocks(
   user: express.Request["user"],
@@ -748,7 +755,9 @@ export async function isBlockedToOwnGradingBlocks(
 ): Promise<string[] | null> {
   if (!user || user.role_name !== "teacher") return null;
   if (isPrivilegedGrader(user)) return null;
-  return await getPermittedBlocks(user, examId);
+  const blocks = await getPermittedBlocks(user, examId);
+  if (blocks !== null && blocks.length === 0) return null;
+  return blocks;
 }
 
 // ── Grading scope (题块级正向授权 · 防 IDOR) ──────────────

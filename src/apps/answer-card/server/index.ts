@@ -2809,6 +2809,9 @@ export async function createApp(): Promise<express.Express> {
       }
 
       let ids: number[];
+      // 安全 CR12：403 只能回显**调用者本来就给了**的标识，不能把范围外学生的姓名/学号查出来拼进消息。
+      // 走 studentNumbers 入口时用请求里的学号回显，走 studentIds 入口时用请求里的 ID 回显。
+      const numberById = new Map<number, string>();
       if (hasIds) {
         ids = [...new Set((body.studentIds as unknown[]).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
         if (ids.length === 0 && (body.studentIds as unknown[]).length > 0) {
@@ -2832,6 +2835,7 @@ export async function createApp(): Promise<express.Express> {
             return;
           }
           ids = [...new Set(rows.map((r) => r.id))];
+          for (const r of rows) if (r.student_number) numberById.set(Number(r.id), r.student_number);
         }
       }
 
@@ -2853,16 +2857,15 @@ export async function createApp(): Promise<express.Express> {
       if (ids.length > 0) {
         const outside = await findStudentsOutsideParticipantScope(
           db,
+          examId,
           { class_id: exam.class_id, grade_id: exam.grade_id },
           ids,
           await getAccessibleClassIds(req.user)
         );
         if (outside.length > 0) {
-          const rows = await db.all(
-            `SELECT id, name, student_number FROM users WHERE id IN (${outside.map(() => "?").join(",")})`,
-            ...outside
-          ) as Array<{ id: number; name: string; student_number: string | null }>;
-          const labels = rows.map((r) => r.student_number ? `${r.name}(${r.student_number})` : r.name);
+          // PR #312 CR12：回显只取调用者自己提交过的标识（学号或 ID），
+          // 原先把范围外学生的「姓名(学号)」查出来拼进消息，等于用一次拒绝换取身份。
+          const labels = outside.map((id) => numberById.get(id) ?? String(id));
           res.status(403).json({
             message: `以下学生不在本考试的应考范围内，或你不具备其所在班级的管理权限：${labels.join("、")}`,
             code: "PARTICIPANT_OUT_OF_SCOPE",

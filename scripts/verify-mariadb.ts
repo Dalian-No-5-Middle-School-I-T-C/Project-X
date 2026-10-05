@@ -355,6 +355,38 @@ async function main(): Promise<void> {
     await db.run("DELETE FROM users WHERE id IN (?, ?)", blocksStudentId, otherStudentId);
     console.log("PASS: review block listing (per-block max score, half-point, R03 block scope)");
 
+    // ===== PR #312 CR7：参与子集过滤必须在真库跑通（SQL 报错 = 静默放行）=====
+    // checkLadderParticipation 捕获异常后回退成「不过滤」（为的是没有 exam_participants 表的存量库），
+    // 所以这条 SQL 一旦在 MariaDB 方言下语法不过（派生表缺别名、UNION 两侧列数不齐）
+    // 就等于天梯参与收敛整条失效，而且没有任何错误日志可看见。SQLite 回归证不了这件事。
+    const { AnalysisRepository: PartRepo } = await import("../src/server/repositories/AnalysisRepository");
+    await db.run("INSERT INTO answer_cards (id, title) VALUES ('part_ci', '参与收敛回归')");
+    const partExamIds: number[] = [];
+    for (const [idx, name] of [["1-仅快照", "roster"], ["2-仅成绩", "score"], ["3-都没参加", "none"]] as Array<[string, string]>) {
+      const r = await db.run("INSERT INTO exams (name, card_id) VALUES (?, 'part_ci')", `${name}${idx}`);
+      partExamIds.push(Number(r.lastInsertRowid));
+    }
+    const [pSnap, pScore, pNone] = partExamIds;
+    const partStudent = await db.run(
+      "INSERT INTO users (username, password_hash, name, role_id, student_number) VALUES ('part_ci_student', 'test-only', '参与回归生', 3, '93010009')",
+    );
+    const partStudentId = Number(partStudent.lastInsertRowid);
+    await db.run("INSERT INTO exam_participants (exam_id, student_id, source) VALUES (?, ?, 'roster')", pSnap, partStudentId);
+    await db.run(
+      "INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?, ?, 0, 50, 50)",
+      pScore, partStudentId,
+    );
+    const participated = await new PartRepo().filterParticipatedExamIds([...partExamIds].reverse(), partStudentId);
+    assert.deepEqual(participated, [pScore, pSnap], "真库：快照与成绩两条出路都算参与，且保持调用方给的顺序");
+    assert.deepEqual(await new PartRepo().filterParticipatedExamIds([pNone], partStudentId), [], "真库：未参与的场次被剔除");
+    assert.deepEqual(await new PartRepo().filterParticipatedExamIds([], partStudentId), [], "真库：空集合不触发查询");
+    await db.run("DELETE FROM exam_participants WHERE student_id = ?", partStudentId);
+    await db.run("DELETE FROM student_scores WHERE student_id = ?", partStudentId);
+    await db.run("DELETE FROM exams WHERE id IN (?, ?, ?)", pSnap, pScore, pNone);
+    await db.run("DELETE FROM users WHERE id = ?", partStudentId);
+    await db.run("DELETE FROM answer_cards WHERE id = 'part_ci'");
+    console.log("PASS: ladder participation subset (exam_participants UNION student_scores)");
+
     // ===== PR #312 CR9：并发领取的「计数 + 占卷」必须落在同一个临界区 =====
     // 只做普通事务并不原子：MariaDB 下 5 个并发领取各自读到同一个旧持有量
     // （COUNT 走一致性快照，看不见对方未提交的 UPDATE），题块 2 份的配额能被领成 5 份。

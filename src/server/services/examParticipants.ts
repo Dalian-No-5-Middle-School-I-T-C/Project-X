@@ -66,17 +66,36 @@ export async function searchStudentsForExam(
  * 2. 学生在调用者可访问的班级内——`accessibleClassIds` 为 null（管理员 / 学年主任 /
  *    未配置 teacher_role 的旧部署教师）时不叠加此约束，`[]` 时一律视为越权。
  *
+ * PR #312 CR10：两条判定都建立在**当前** `class_students` 关系上，而调班/升级会把这层关系
+ * 改掉。已冻结进 `exam_participants` 的学生是这场曾经的历史事实，若仍按现班级判定就会被判越权，
+ * 于是「把缺考者从应考名单里剔除」这条唯一正当出路被拦死（公布完整性又要求先剔除，见
+ * examPublication），正常流程反而走不通。现在**冻结名单内的已有成员一律放行**，
+ * 收敛只作用于本次新加入的 ID——R29 拦的是「把人塞进名单」，不是「保留名单里已有的人」，
+ * 因此越权面没有放宽。
+ *
  * 返回越权（含名册缺失、无法判定归属）的学生 ID 列表。
  */
 export async function findStudentsOutsideParticipantScope(
   db: DbAdapter,
+  examId: number,
   exam: { class_id: number | null; grade_id: number | null },
   studentIds: number[],
   accessibleClassIds: number[] | null
 ): Promise<number[]> {
   if (studentIds.length === 0) return [];
   const placeholders = studentIds.map(() => "?").join(",");
-  const inExamScope = new Set<number>();
+  // 本场已冻结/已显式写入的应考成员（历史事实，不随调班改变）
+  let frozen = new Set<number>();
+  try {
+    const frozenRows = await db.all<{ student_id: number }>(
+      "SELECT student_id FROM exam_participants WHERE exam_id = ?",
+      examId
+    ) as Array<{ student_id: number }>;
+    frozen = new Set(frozenRows.map((r) => Number(r.student_id)));
+  } catch {
+    frozen = new Set(); // 判定表缺失（极老存量库）→ 不因此放宽，也不阻断
+  }
+  const inExamScope = new Set<number>(frozen);
   if (exam.class_id != null) {
     const rows = await db.all(
       `SELECT cs.student_id FROM class_students cs
@@ -97,7 +116,9 @@ export async function findStudentsOutsideParticipantScope(
   }
   const outside = studentIds.filter((id) => !inExamScope.has(id));
   if (accessibleClassIds === null) return outside;
-  if (accessibleClassIds.length === 0) return [...studentIds];
+  // 调用者没有任何可访问班级：只剩「本场冻结成员」这一条出路（frozen ⊆ inExamScope，
+  // 所以 outside 里的都不可能是冻结成员，这样筛等价于「非冻结一律拒绝」）
+  if (accessibleClassIds.length === 0) return studentIds.filter((id) => !frozen.has(id));
   const callerPlaceholders = accessibleClassIds.map(() => "?").join(",");
   const rows = await db.all(
     `SELECT cs.student_id FROM class_students cs
@@ -105,7 +126,7 @@ export async function findStudentsOutsideParticipantScope(
     ...studentIds, ...accessibleClassIds
   ) as Array<{ student_id: number }>;
   const accessible = new Set(rows.map((r) => Number(r.student_id)));
-  const notAccessible = studentIds.filter((id) => !accessible.has(id));
+  const notAccessible = studentIds.filter((id) => !accessible.has(id) && !frozen.has(id));
   return [...new Set([...outside, ...notAccessible])];
 }
 

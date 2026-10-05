@@ -166,7 +166,7 @@ export class AnalysisRepository {
     return (await this.db.all(sql, ...q) as Array<{ id: number }>).map(r => r.id);
   }
 
-  async getCrossExamTotal(request: CrossExamTotalRequest, options?: { visibleExamIds?: number[] | null; onlyPublished?: boolean }): Promise<CrossExamTotalResponse> {
+  async getCrossExamTotal(request: CrossExamTotalRequest, options?: { visibleExamIds?: number[] | null; onlyPublished?: boolean; participatedByStudentId?: number }): Promise<CrossExamTotalResponse> {
     const mode = request.mode;
     const group = mode === "group" && request.groupId ? await this.getExamGroup(request.groupId) : null;
     let examIds = mode === "week"
@@ -176,6 +176,10 @@ export class AnalysisRepository {
     if (options?.visibleExamIds) { const v = new Set(options.visibleExamIds); examIds = examIds.filter(id => v.has(id)); }
     // PR #256（v41）：学生端跨考聚合仅统计已公布考试（教师端不受限），在考试集合解析后统一过滤
     if (options?.onlyPublished) { examIds = await this.filterPublishedExamIds(examIds); }
+    // PR #312 CR7：week/month 等日期模式没有调用者给定的考试集合，走不到路由那道
+    // 「明确集合」参与校验，于是学生能读到范围内任意考试的姓名、学号与分数。
+    // 集合在此解析完（含公布过滤）后再按「本人参与」收敛，与明确集合模式同一口径。
+    if (options?.participatedByStudentId != null) { examIds = await this.filterParticipatedExamIds(examIds, options.participatedByStudentId); }
     examIds = normalizeExamIds(examIds);
     if (examIds.length === 0) return this.emptyCrossExamTotal(mode, group);
     const exams = await this.getCrossExamTotalExams(examIds);
@@ -1878,6 +1882,27 @@ export class AnalysisRepository {
     );
     const pub = new Set(rows.map((r) => Number(r.id)));
     return examIds.filter((id) => pub.has(id));
+  }
+
+  /**
+   * 安全 R13 + PR #312 CR7：仅保留该生**真的参加**过的考试，保持原顺序。
+   *
+   * 「参加」= 冻结/显式应考名单里有他，或该场已有他的成绩记录（存量库未冻结快照时仍能查分）。
+   * 判定口径与 `examParticipants` 的名单来源一致，但这里只问「在不在名单」，
+   * 不用当前班级关系反推——天梯是按场聚合的历史事实，班级可能早已变动（CR10 同源）。
+   */
+  async filterParticipatedExamIds(examIds: number[], studentId: number): Promise<number[]> {
+    if (examIds.length === 0) return [];
+    const rows = await this.db.all<{ eid: number }>(
+      `SELECT DISTINCT eid FROM (
+         SELECT exam_id AS eid FROM exam_participants WHERE student_id = ? AND exam_id IN (${placeholders(examIds)})
+         UNION
+         SELECT exam_id AS eid FROM student_scores WHERE student_id = ? AND exam_id IN (${placeholders(examIds)})
+       ) t`,
+      studentId, ...examIds, studentId, ...examIds
+    );
+    const joined = new Set(rows.map((r) => Number(r.eid)));
+    return examIds.filter((id) => joined.has(id));
   }
 
   private async getCrossExamTotalExams(examIds: number[]): Promise<CrossExamTotalExam[]> {
