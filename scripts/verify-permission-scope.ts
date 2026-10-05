@@ -73,11 +73,11 @@ async function main(): Promise<void> {
     `INSERT INTO answer_cards (id, title, subject, subject_label, exam_date, paper_size, orientation, student_fields, student_number_digits, sided, layout_version, created_by)
      VALUES (?, '权限卡', 'math', '数学', '2026-09-01', 'A4', 'portrait', '{}', 4, 'single', 1, ?)`
   ).run(cardId, adminId);
-  function makeExam(name: string, opts: { classId: number | null; subject: string; mode?: string; createdBy: number; published?: boolean }): number {
+  function makeExam(name: string, opts: { classId: number | null; subject: string; mode?: string; createdBy: number; published?: boolean; card?: string }): number {
     return Number(db.prepare(
       `INSERT INTO exams (name, card_id, grade_id, class_id, subject, start_time, status, score_published, exam_mode, created_by)
        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 'closed', ?, ?, ?)`
-    ).run(name, cardId, gradeId, opts.classId, opts.subject, opts.published ? 1 : 0, opts.mode ?? "formal", opts.createdBy).lastInsertRowid);
+    ).run(name, opts.card ?? cardId, gradeId, opts.classId, opts.subject, opts.published ? 1 : 0, opts.mode ?? "formal", opts.createdBy).lastInsertRowid);
   }
   const examA = makeExam("A班数学考", { classId: classA, subject: "数学", createdBy: adminId, published: true });
   const examQuiz = makeExam("A班晨测", { classId: classA, subject: "数学", mode: "quiz", createdBy: adminId, published: true });
@@ -290,6 +290,102 @@ async function main(): Promise<void> {
     "SELECT score FROM question_scores WHERE exam_id = ? AND student_id = ? AND question_number = 22 AND block_id = 'B2'"
   ).get(examA, sids["9001"]) as { score: number };
   ok(Number(authoritativeRow.score) === 15, "争议未决期间不写入逐题正式分");
+
+  console.log("\n== PR #312 CR3/CR4/CR5 扫描接口的考试与题块范围 ==");
+  const { CardRepository } = await import("../src/server/repositories/CardRepository");
+  const { buildLayout } = await import("../src/shared/layout");
+  const scanCardId = "PERMSCAN001";
+  db.prepare(
+    `INSERT INTO answer_cards (id, title, subject, subject_label, exam_date, paper_size, orientation, student_fields, student_number_digits, sided, layout_version, created_by)
+     VALUES (?, '扫描范围卡', 'math', '数学', '2026-09-01', 'A4', 'portrait', '{}', 4, 'single', 1, ?)`
+  ).run(scanCardId, adminId);
+  for (const [block, question, order] of [["B1", 21, 0], ["B2", 22, 1]] as Array<[string, number, number]>) {
+    db.prepare("INSERT INTO subjective_blocks (id, card_id, sort_order, block_kind, title, title_locked) VALUES (?, ?, ?, 'answer', ?, 0)")
+      .run(block, scanCardId, order, `${block} 题块`);
+    db.prepare(
+      `INSERT INTO subjective_questions (id, block_id, number, score, style, kind, min_height_mm, line_grid_enabled, line_spacing_mm, sort_order)
+       VALUES (?, ?, ?, 20, 'manual_score_grid', 'plain_box', 200, 0, 8, 0)`
+    ).run(`q-${block}`, block, question);
+  }
+  const scanCard = await new CardRepository().findById(scanCardId);
+  ok(Boolean(scanCard), "夹具自校验：扫描范围卡可读（含两个题块）");
+  const scanLayout = buildLayout(scanCard!);
+  const pageOfBlock = new Map<string, number>();
+  for (const page of scanLayout.pages) for (const b of page.blocks) pageOfBlock.set(b.blockId, page.pageNumber);
+  const [pageB1, pageB2] = [pageOfBlock.get("B1") ?? 0, pageOfBlock.get("B2") ?? 0];
+  ok(pageB1 > 0 && pageB2 > 0 && pageB1 !== pageB2,
+    `夹具自校验：两个题块分处不同排版页（实际 ${pageB1} / ${pageB2}，共 ${scanLayout.pages.length} 页）`);
+
+  const examScan = makeExam("扫描范围考", { classId: classA, subject: "数学", createdBy: adminId, published: true, card: scanCardId });
+  const scanSession = "perm-scan-session";
+  db.prepare("INSERT INTO twain_scan_sessions (id, card_id, name, status, identity_mode, page_count) VALUES (?, ?, '范围验收', 'completed', 'strict', 2)")
+    .run(scanSession, scanCardId);
+  for (const [rec, page] of [["rec-p1", pageB1], ["rec-p2", pageB2]] as Array<[string, number]>) {
+    db.prepare(
+      `INSERT INTO twain_scan_records (id, session_id, card_id, student_id, image_path, page_num, side, ocr_status, identity_json)
+       VALUES (?, ?, ?, '9001', ?, ?, 'front', 'uploaded', '{}')`
+    ).run(rec, scanSession, scanCardId, path.join(tmpDir, `${rec}.png`), page);
+    // 两条识别结果都同时含 B1/B2：即使在同一排版页上，他人题块也不该外发。
+    db.prepare(
+      `INSERT INTO twain_recognition_results (id, scan_record_id, objective_json, subjective_json, total_score, max_score, grade_status)
+       VALUES (?, ?, ?, '[]', 35, 35, 'recognized')`
+    ).run(`rr-${rec}`, rec, JSON.stringify([
+      { blockId: "B1", questionNumber: 21, score: 20 },
+      { blockId: "B2", questionNumber: 22, score: 15 }
+    ]));
+  }
+
+  // CR3：只带 cardId / sessionId 的列表与进度端点，此前完全绕开考试范围。
+  const foreignSessions = await get(`/api/scanner/sessions/${scanCardId}`, tokenB);
+  ok(foreignSessions.status === 403, `范围外教师按卡号读会话列表被 403（实际 ${foreignSessions.status}）`);
+  const foreignScans = await get(`/api/scanner/card/${scanCardId}/scans`, tokenB);
+  ok(foreignScans.status === 403 && !JSON.stringify(foreignScans.body).includes("9001"),
+    `范围外教师按卡号读扫描列表被 403，学号与总分不落进响应体（实际 ${JSON.stringify(foreignScans.body).slice(0, 80)}）`);
+  const foreignProgress = await get(`/api/scanner/progress/${scanSession}`, tokenB);
+  ok(foreignProgress.status === 403, `范围外教师订阅扫描进度流被 403（实际 ${foreignProgress.status}）`);
+  const foreignRecord = await get(`/api/scanner/record/rec-p1`, tokenB);
+  ok(foreignRecord.status === 403, "同一记录在详情端点上同样被拒（列表与详情口径一致）");
+  const foreignPreview = await get(`/api/scanner/exam/${examScan}/student/${sids["9001"]}/scans`, tokenB);
+  ok(foreignPreview.status === 403, `范围外教师读评分表原卷预览被 403（实际 ${foreignPreview.status}）`);
+  const foreignImage = await get(`/api/scanner/grading-image/${scanCardId}/x.png`, tokenB);
+  ok(foreignImage.status === 403, `阅卷上传目录的图片读取按答题卡范围收口（实际 ${foreignImage.status}）`);
+  ok((await get(`/api/scanner/exam/${examScan}/student/${sids["9001"]}/scans`, tokenA)).status === 200,
+    "整卷授权的本场教师仍能正常预览");
+
+  // CR5：题块教师只能读到含本人题块的排版页，同页他人题块与整卷总分一并剔除。
+  matrix(teacherA.id, { class_id: classA, block_id: "B1" });
+  const scopedForeignPage = await get(`/api/scanner/record/rec-p2`, tokenA);
+  ok(scopedForeignPage.status === 403, `题块教师读取他人题块所在页被 403（实际 ${scopedForeignPage.status}）`);
+  const scopedOwnPage = await get(`/api/scanner/record/rec-p1`, tokenA);
+  const ownObjective = String(scopedOwnPage.body?.recognition?.objective_json ?? "");
+  ok(scopedOwnPage.status === 200 && ownObjective.includes("B1") && !ownObjective.includes("B2"),
+    `本人页上他人题块的识别结果被剔除（实际 ${ownObjective.slice(0, 90)}）`);
+  ok(scopedOwnPage.body?.recognition?.total_score === null && scopedOwnPage.body?.recognition?.max_score === null,
+    "整卷总分不再随识别结果外发");
+  const scopedSessionView = await get(`/api/scanner/scan/${scanSession}`, tokenA);
+  const listedRecords = (scopedSessionView.body?.records ?? []).map((r: { id: string }) => r.id);
+  ok(scopedSessionView.status === 200 && listedRecords.length === 1 && listedRecords[0] === "rec-p1",
+    `会话详情只列出本人题块所在页（实际 ${JSON.stringify(listedRecords)}）`);
+  const scopedCardList = await get(`/api/scanner/card/${scanCardId}/scans`, tokenA);
+  ok(Array.isArray(scopedCardList.body) && scopedCardList.body.length === 1
+    && scopedCardList.body[0]?.recognition?.totalScore === null,
+    `扫描列表按排版页收口且不含整卷分（实际 ${JSON.stringify(scopedCardList.body).slice(0, 120)}）`);
+  // 扫描端的整卷聚合入口（会话结果）：返回全卷识别结果与总分，题块级账号没有可读子集。
+  const scopedSessionResults = await get(`/api/scanner/session/${scanSession}/results`, tokenA);
+  ok(scopedSessionResults.status === 403,
+    `题块教师读取整卷会话结果被 403（扫描端点是整卷操作面，实际 ${scopedSessionResults.status}）`);
+  clearMatrix(teacherA.id);
+  const wholePaperResults = await get(`/api/scanner/session/${scanSession}/results`, tokenA);
+  ok(wholePaperResults.status !== 403,
+    `整卷授权教师未被范围校验误拦（放行到业务层，实际 ${wholePaperResults.status}）`);
+
+  // CR4：卡上唯一考试被软删除后，不得退化成「未绑定考试」而直接放行。
+  db.prepare("INSERT INTO exam_archives (exam_id, is_deleted, deleted_at) VALUES (?, 1, CURRENT_TIMESTAMP)").run(examScan);
+  const archivedCardList = await get(`/api/scanner/card/${scanCardId}/scans`, tokenA);
+  ok(archivedCardList.status === 404, `考试归档后按卡号读扫描列表返回 404 而非放行（实际 ${archivedCardList.status}）`);
+  const archivedRecord = await get(`/api/scanner/record/rec-p1`, tokenA);
+  ok(archivedRecord.status === 404, `考试归档后按记录 ID 读原卷同样 404（实际 ${archivedRecord.status}）`);
+  db.prepare("DELETE FROM exam_archives WHERE exam_id = ?").run(examScan);
 
   console.log("\n== R06 删除答题卡不得改写/点名范围外考试（破坏性步骤，放在最后） ==");
   const referencedCount = (db.prepare("SELECT COUNT(*) AS n FROM exams WHERE card_id = ?").get(cardId) as { n: number }).n;

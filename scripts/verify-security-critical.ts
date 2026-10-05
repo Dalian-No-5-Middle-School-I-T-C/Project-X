@@ -1026,6 +1026,37 @@ async function main(): Promise<void> {
     });
     check(replayCrops.status === 409, "会话完成后的切块上传也被 409 拒绝（阅卷图不可静默替换）");
 
+    // ── CR2（PR #312 复核）：/complete 部分失败的中间态里，已入库成绩的页面同样不可被上传改写
+    // 只看 session.status / record.ocr_status 会漏掉这一态：分组已 saved，会话却没进终态。
+    const partialSession = await newScanSession();
+    const partialStatus = (db.prepare("SELECT ocr_status FROM twain_scan_records WHERE id=?").get(partialSession.token) as { ocr_status: string }).ocr_status;
+    db.prepare("INSERT INTO scanner_submissions (exam_id, session_id, group_id, student_number, state, pages_json) VALUES (?,?,?,?,'saved',?)")
+      .run(visibleExam, partialSession.sessionId, "0", "S1001",
+        JSON.stringify([{ recordId: partialSession.token, pageNum: 1, side: "front", layoutPage: 1 }]));
+    const partialSessionRow = db.prepare("SELECT status FROM twain_scan_sessions WHERE id=?").get(partialSession.sessionId) as { status: string };
+    check(partialSessionRow.status !== "completed" && partialStatus !== "completed",
+      `夹具自校验：会话停留在部分失败中间态（会话 ${partialSessionRow.status} / 页面 ${partialStatus}）`);
+    const savedPageForm = new FormData();
+    savedPageForm.append("image", new Blob([pngBytes], { type: "image/png" }), "page.png");
+    savedPageForm.append("token", partialSession.token);
+    savedPageForm.append("pageNum", "1");
+    const savedPageReplay = await fetch(`${base}/api/scanner/upload/sessions/${partialSession.sessionId}/pages`, {
+      method: "POST", headers: scannerKeyHeaders, body: savedPageForm
+    });
+    const savedPageBody = await savedPageReplay.json() as { code?: string; message?: string; examId?: number };
+    check(savedPageReplay.status === 409 && savedPageBody.code === "SCAN_PAGE_SAVED",
+      `已入库回执的页面上传被 409 SCAN_PAGE_SAVED（实际 ${savedPageReplay.status} ${savedPageBody.code ?? ""}）`);
+    check(Number(savedPageBody.examId) === visibleExam, "拒绝响应带上归属考试编号，扫描端能定位是哪场考试的成绩已入库");
+    const savedCropForm = new FormData();
+    savedCropForm.append("crops", new Blob([pngBytes], { type: "image/png" }), "crop.png");
+    savedCropForm.append("manifest", JSON.stringify([validManifest("crop.png")]));
+    const savedCrops = await fetch(cropsUrl(partialSession.sessionId, partialSession.token), {
+      method: "POST", headers: scannerKeyHeaders, body: savedCropForm
+    });
+    check(savedCrops.status === 409, "同页切块上传也被拒（阅卷人看到的图不可静默替换）");
+    check((db.prepare("SELECT ocr_status FROM twain_scan_records WHERE id=?").get(partialSession.token) as { ocr_status: string }).ocr_status === partialStatus,
+      "被拒的上传不产生任何改写，已入库成绩对应的页面原样保留");
+
     // ── R07：切块清单字段收敛，落盘路径由服务端决定
     const r07Session = await newScanSession();
     db.prepare("UPDATE twain_scan_records SET ocr_status='uploaded', identity_json=?, student_id=? WHERE id=?")
