@@ -458,6 +458,94 @@ async function main(): Promise<void> {
     await db.run("DELETE FROM users WHERE id IN (?, ?)", claimTeacherId, claimStudentId);
     console.log(`PASS: review pool claim reservation (named lock, quota under concurrency, lock-timeout in ${claimLockWaitedMs}ms)`);
 
+    // ===== PR #312 CR8/CR9：AI 名额的原子准入与在途占位（真库跨连接） =====
+    // 进程内的串行链挡得住同进程突发，挡不住跨连接/跨进程：MariaDB 下两个请求各自读到
+    // 同一份旧账本（COUNT 走一致性快照，看不见对方未提交的 INSERT），上限 8 能放进 11 个任务。
+    // 命名锁 px_ai_admission 才是跨连接那一层保证，只有在真库里才测得到。
+    const { reserveAiAnalysisJob } = await import("../src/server/services/aiAnalysisJobs");
+    const { reserveAiCall, readAiQuotaSnapshot, AiQuotaError } = await import("../src/server/services/aiQuota");
+    const { finalizeAiRun, markInterruptedAiRuns } = await import("../src/server/services/aiTelemetry");
+    const { MAX_AI_ACTIVE_JOBS_PER_USER, AI_ACTIVE_RUN_STALE_MS, AI_ADMISSION_LOCK_TIMEOUT_MS } =
+      await import("../src/shared/aiQuotaLimits");
+    const aiTeacher = await db.run(
+      "INSERT INTO users (username, password_hash, name, role_id) VALUES ('ai_ci_teacher', 'test-only', 'AI 并发准入教师', 2)"
+    );
+    const aiTeacherId = Number(aiTeacher.lastInsertRowid);
+    const aiExam = await db.run("INSERT INTO exams (name) VALUES ('AI 并发准入回归')");
+    const aiExamId = Number(aiExam.lastInsertRowid);
+    const aiLockName = "px_ai_admission";
+    // 前置体检与试卷池同款教训：命名锁是**连接级**状态，泄漏的旧会话会让每次准入只看到等锁超时，
+    // 把名额回归误判成临界区失效。
+    const aiHolderBefore = await db.get<{ holder: number | null }>("SELECT IS_USED_LOCK(?) AS holder", aiLockName);
+    assert.equal(aiHolderBefore?.holder, null,
+      `并发突发前 AI 准入锁无人持有（若失败：连接 ${aiHolderBefore?.holder} 泄漏了锁，与本题无关）`);
+    const aiBurstSize = MAX_AI_ACTIVE_JOBS_PER_USER + 4;
+    const aiAttempts = await Promise.allSettled(
+      Array.from({ length: aiBurstSize }, () => reserveAiAnalysisJob({ examId: aiExamId, createdBy: aiTeacherId }))
+    );
+    const aiAdmitted = aiAttempts.filter((a) => a.status === "fulfilled").length;
+    const aiRejected = aiAttempts.filter((a) => a.status === "rejected") as PromiseRejectedResult[];
+    const aiQueued = Number((await db.get<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM ai_analysis_jobs WHERE created_by = ? AND status = 'queued'", aiTeacherId))?.c ?? 0);
+    assert.equal(aiAdmitted, MAX_AI_ACTIVE_JOBS_PER_USER,
+      `并发提交 ${aiBurstSize} 次分析只放行名额内的 ${MAX_AI_ACTIVE_JOBS_PER_USER} 个（拒绝原因：${aiRejected.map((a) => (a.reason as Error).message).join(" | ")}）`);
+    assert.equal(aiQueued, MAX_AI_ACTIVE_JOBS_PER_USER, "真库并发下排队任务数与名额一致（修复前会超发）");
+    assert.equal(aiRejected.filter((a) => a.reason instanceof AiQuotaError).length, aiBurstSize - MAX_AI_ACTIVE_JOBS_PER_USER,
+      "其余请求以配额错误明确拒绝（429 语义），而不是静默少建任务");
+    // 锁被别的连接占住时：等满毫秒预算后给出可重试的拒绝，绝不「拿不到锁就照常写」
+    let aiLockWaitedMs = 0;
+    await db.transaction(async (tx) => {
+      const grabbed = await tx.get<{ locked: number }>("SELECT GET_LOCK(?, 0) AS locked", aiLockName);
+      assert.equal(Number(grabbed?.locked), 1, "夹具可先占住 AI 准入锁");
+      const startedAt = Date.now();
+      await assert.rejects(
+        () => reserveAiAnalysisJob({ examId: aiExamId, createdBy: aiTeacherId }),
+        (err: unknown) => err instanceof AiQuotaError && err.message.includes("请重试"),
+        "等锁超时返回可重试的 429，而不是绕过临界区继续建任务"
+      );
+      // GET_LOCK 的等待参数单位是「秒」：把毫秒预算原样传入等于等 AI_ADMISSION_LOCK_TIMEOUT_MS 秒。
+      aiLockWaitedMs = Date.now() - startedAt;
+      assert.ok(aiLockWaitedMs >= Math.floor(AI_ADMISSION_LOCK_TIMEOUT_MS / 1000) * 1000
+        && aiLockWaitedMs < AI_ADMISSION_LOCK_TIMEOUT_MS + 4000,
+        `等锁时长跟随毫秒预算（预算 ${AI_ADMISSION_LOCK_TIMEOUT_MS} 毫秒，实际 ${aiLockWaitedMs} 毫秒）`);
+      assert.equal(Number((await db.get<{ c: number }>(
+        "SELECT COUNT(*) AS c FROM ai_analysis_jobs WHERE created_by = ?", aiTeacherId))?.c ?? 0), aiQueued,
+        "等锁失败期间没有写入任何任务行");
+      await tx.get("SELECT RELEASE_LOCK(?) AS released", aiLockName);
+    });
+    const aiLockReleased = await db.get<{ holder: number | null }>("SELECT IS_USED_LOCK(?) AS holder", aiLockName);
+    assert.equal(aiLockReleased?.holder, null, "准入结束后命名锁已释放（泄漏会让后续请求白等一个超时预算）");
+    await db.run("DELETE FROM ai_analysis_jobs WHERE created_by = ?", aiTeacherId);
+    // CR8：同步入口不建任务行，它以 success IS NULL 的运行行占位；回填即释放
+    const aiReserved = await reserveAiCall(db, aiTeacherId, { feature: "knowledge_points" });
+    assert.equal((await readAiQuotaSnapshot(db, aiTeacherId)).inFlightRuns?.user, 1,
+      "同步调用的占位行计入在途名额（真库）");
+    await finalizeAiRun(aiReserved, { success: true, latencyMs: 5 });
+    assert.equal((await readAiQuotaSnapshot(db, aiTeacherId)).activeJobsForUser, 0,
+      "回填后名额立即释放（真库）");
+    // 崩溃残留：超过失效窗口的 success IS NULL 行不再压着名额，但仍留在计费账本里。
+    // created_at 用 NOW() 回退写入——真库里直接绑带 `T` 的 ISO 会被 Incorrect datetime value 拒绝。
+    const aiRunsBeforeZombie = (await readAiQuotaSnapshot(db, aiTeacherId)).runsLastHour;
+    await db.run(
+      `INSERT INTO ai_analysis_runs (user_id, feature, stage, created_at)
+       VALUES (?, 'knowledge_points', 'request', DATE_SUB(NOW(), INTERVAL ? SECOND))`,
+      aiTeacherId, Math.ceil(AI_ACTIVE_RUN_STALE_MS / 1000) + 60
+    );
+    const aiZombie = await readAiQuotaSnapshot(db, aiTeacherId);
+    assert.equal(aiZombie.inFlightRuns?.user, 0, "超过失效窗口的崩溃残留不再占用并发名额（真库）");
+    assert.equal(aiZombie.runsLastHour, aiRunsBeforeZombie + 1, "残留仍计入 1 小时调用次数（它确实发起过）");
+    await markInterruptedAiRuns(db);
+    assert.equal(Number((await db.get<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM ai_analysis_runs WHERE user_id = ? AND success IS NULL", aiTeacherId))?.c ?? 0), 0,
+      "启动清理把残留的在途行判为中断，不靠失效窗口兜底");
+    assert.equal((await db.get<{ error_code: string }>(
+      "SELECT error_code FROM ai_analysis_runs WHERE user_id = ? ORDER BY id DESC LIMIT 1", aiTeacherId))?.error_code,
+      "INTERRUPTED", "清理写明中断原因，控制台成功率不会把它算成成功");
+    await db.run("DELETE FROM ai_analysis_runs WHERE user_id = ?", aiTeacherId);
+    await db.run("DELETE FROM exams WHERE id = ?", aiExamId);
+    await db.run("DELETE FROM users WHERE id = ?", aiTeacherId);
+    console.log(`PASS: ai admission reservation (named lock, quota under concurrency, in-flight placeholder, lock-timeout in ${aiLockWaitedMs}ms)`);
+
     const upsert = buildUpsertSQL(db.dialect, "system_settings", ["key", "value"], ["key"]);
     const readValue = () => db.get<{ value: string }>("SELECT `value` FROM system_settings WHERE `key` = ?", "ci_test");
     const initial = "中文与 emoji 🧪 ' ?";

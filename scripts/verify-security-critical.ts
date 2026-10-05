@@ -36,7 +36,8 @@ const paperStorageEnvVarsClearedHere = [
 ];
 const aiQuotaEnvVarsClearedHere = [
   "PROJECTX_AI_MAX_ACTIVE_JOBS_PER_USER", "PROJECTX_AI_MAX_ACTIVE_JOBS_GLOBAL",
-  "PROJECTX_AI_MAX_RUNS_PER_HOUR", "PROJECTX_AI_MAX_TOKENS_PER_DAY"
+  "PROJECTX_AI_MAX_RUNS_PER_HOUR", "PROJECTX_AI_MAX_TOKENS_PER_DAY",
+  "PROJECTX_AI_ACTIVE_RUN_STALE_MS", "PROJECTX_AI_ADMISSION_LOCK_TIMEOUT_MS"
 ];
 const wechatEnvVarsClearedHere = [
   "PROJECTX_WECHAT_TIMEOUT_MS", "PROJECTX_WECHAT_BIND_MAX_PER_HOUR",
@@ -783,22 +784,30 @@ async function main(): Promise<void> {
     // ── AI 计费与并发配额（安全 R11）
     const {
       AI_QUOTA_ENV_VARS, DEFAULT_AI_QUOTA_LIMITS, resolveAiQuotaLimits, describeAiQuotaLimits,
-      MAX_AI_ACTIVE_JOBS_PER_USER, MAX_AI_ACTIVE_JOBS_GLOBAL, MAX_AI_RUNS_PER_USER_HOUR, MAX_AI_TOKENS_PER_USER_DAY
+      MAX_AI_ACTIVE_JOBS_PER_USER, MAX_AI_ACTIVE_JOBS_GLOBAL, MAX_AI_RUNS_PER_USER_HOUR, MAX_AI_TOKENS_PER_USER_DAY,
+      AI_ACTIVE_RUN_STALE_MS, AI_ADMISSION_LOCK_TIMEOUT_MS
     } = await import("../src/shared/aiQuotaLimits");
     check(AI_QUOTA_ENV_VARS.slice().sort().join() === aiQuotaEnvVarsClearedHere.slice().sort().join()
       && AI_QUOTA_ENV_VARS.every((name) => !(name in process.env)),
       "脚本清理的 PROJECTX_AI_* 名单与配额表逐一对应，宿主机变量不会渗入默认配额断言");
     check(MAX_AI_ACTIVE_JOBS_PER_USER === DEFAULT_AI_QUOTA_LIMITS.maxActiveJobsPerUser
-      && MAX_AI_TOKENS_PER_USER_DAY === 1000000,
-      "未配置时按默认 AI 配额生效（单用户 2 个未完成任务 / 24 小时 100 万 tokens）");
+      && MAX_AI_TOKENS_PER_USER_DAY === 1000000
+      && AI_ACTIVE_RUN_STALE_MS === DEFAULT_AI_QUOTA_LIMITS.activeRunStaleMs
+      && AI_ADMISSION_LOCK_TIMEOUT_MS === DEFAULT_AI_QUOTA_LIMITS.admissionLockTimeoutMs,
+      "未配置时按默认 AI 配额生效（单用户 2 个在途 / 24 小时 100 万 tokens / 占位 5 分钟失效 / 等锁 2 秒）");
     check(resolveAiQuotaLimits({ PROJECTX_AI_MAX_RUNS_PER_HOUR: "3" }).limits.maxRunsPerUserHour === 3
       && resolveAiQuotaLimits({ PROJECTX_AI_MAX_TOKENS_PER_DAY: "0" }).limits.maxTokensPerUserDay
         === DEFAULT_AI_QUOTA_LIMITS.maxTokensPerUserDay
-      && resolveAiQuotaLimits({ PROJECTX_AI_MAX_ACTIVE_JOBS_GLOBAL: "99999" }).limits.maxActiveJobsGlobal === 100,
-      "AI 配额可收紧、非法值回落默认、超天花板被夹紧");
-    check(describeAiQuotaLimits().includes("≤2") && describeAiQuotaLimits().includes("1000000"),
-      "AI 配额档位进入启动摘要");
-    const { evaluateAiQuota, readAiQuotaSnapshot, AiQuotaError } = await import("../src/server/services/aiQuota");
+      && resolveAiQuotaLimits({ PROJECTX_AI_MAX_ACTIVE_JOBS_GLOBAL: "99999" }).limits.maxActiveJobsGlobal === 100
+      && resolveAiQuotaLimits({ PROJECTX_AI_ACTIVE_RUN_STALE_MS: "60000" }).limits.activeRunStaleMs === 60000
+      && resolveAiQuotaLimits({ PROJECTX_AI_ACTIVE_RUN_STALE_MS: "-1" }).limits.activeRunStaleMs
+        === DEFAULT_AI_QUOTA_LIMITS.activeRunStaleMs
+      && resolveAiQuotaLimits({ PROJECTX_AI_ADMISSION_LOCK_TIMEOUT_MS: "999999" }).limits.admissionLockTimeoutMs === 30000,
+      "AI 配额可收紧、非法值回落默认、超天花板被夹紧（含在途失效窗口与等锁预算两档新档位）");
+    check(describeAiQuotaLimits().includes("≤2") && describeAiQuotaLimits().includes("1000000")
+      && describeAiQuotaLimits().includes("300 秒") && describeAiQuotaLimits().includes("2 秒"),
+      "AI 配额档位（含在途占位窗口与等锁预算）进入启动摘要");
+    const { evaluateAiQuota, readAiQuotaSnapshot, reserveAiCall, AiQuotaError } = await import("../src/server/services/aiQuota");
     check(evaluateAiQuota({
       activeJobsForUser: MAX_AI_ACTIVE_JOBS_PER_USER - 1, activeJobsGlobal: 0, runsLastHour: 0, tokensLastDay: 0
     }).ok === true, "未到并发线的用户照常提交分析（配额没有变成默认拒绝）");
@@ -830,26 +839,46 @@ async function main(): Promise<void> {
     const r11Base = await readAiQuotaSnapshot(quotaDb, teacher.id);
     // 观测记录的 created_at 有两种真实形态：列默认值（SQLite 写空格分隔的 UTC）与应用侧 ISO。
     // 窗口判定必须都算进来，否则配额在 SQLite 上「看着生效、实际恒为 0」。
+    // success 显式给 1：这些行代表「已结算的历史用量」，只进计费维度，不占并发名额。
     const r11RunIds: number[] = [];
     const insertR11Run = (tokensIn: number, tokensOut: number, createdAtSql: string, ...extra: unknown[]): void => {
       r11RunIds.push(Number(db.prepare(
-        `INSERT INTO ai_analysis_runs (user_id, feature, tokens_in, tokens_out, created_at) VALUES (?,?,?,?,${createdAtSql})`)
+        `INSERT INTO ai_analysis_runs (user_id, feature, success, tokens_in, tokens_out, created_at) VALUES (?,?,1,?,?,${createdAtSql})`)
         .run(teacher.id, "exam_analysis", tokensIn, tokensOut, ...extra).lastInsertRowid));
     };
-    // 观测记录的 created_at 有两种真实形态：列默认值（SQLite 写空格分隔的 UTC）与应用侧 ISO。
-    // 窗口判定必须都算进来，否则配额在 SQLite 上「看着生效、实际恒为 0」。
     insertR11Run(1200, 300, "CURRENT_TIMESTAMP");
     insertR11Run(500, 200, "?", new Date().toISOString());
     // 窗口外的两条（24 小时之外）：证明统计是真窗口而不是全表
     insertR11Run(90000, 90000, "?", new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString());
     insertR11Run(80000, 80000, "?",
       new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19));
+    // 在途行（success IS NULL）：PR #312 CR8 后它就是同步调用占住的名额
+    const r11PendingRun = Number(db.prepare(
+      "INSERT INTO ai_analysis_runs (user_id, feature, stage, success) VALUES (?, 'knowledge_points', 'request', NULL)")
+      .run(teacher.id).lastInsertRowid);
+    r11RunIds.push(r11PendingRun);
     const r11Snapshot = await readAiQuotaSnapshot(quotaDb, teacher.id);
-    check(r11Snapshot.activeJobsForUser >= MAX_AI_ACTIVE_JOBS_PER_USER
+    // 该教师此时有：1 个 queued 任务、1 个 running 任务、1 条在途运行行。
+    // 名额必须是 2 而不是 3——running 任务行不自己占位，它占的是那条在途运行行（CR8 的分工）。
+    check(r11Snapshot.queuedJobs!.user === r11Base.queuedJobs!.user
+      && r11Snapshot.inFlightRuns!.user === r11Base.inFlightRuns!.user + 1
+      && r11Snapshot.activeJobsForUser === r11Snapshot.queuedJobs!.user + r11Snapshot.inFlightRuns!.user
+      && r11Snapshot.activeJobsForUser === r11Base.activeJobsForUser + 1
       && r11Snapshot.activeJobsGlobal >= r11Snapshot.activeJobsForUser
-      && r11Snapshot.runsLastHour === r11Base.runsLastHour + 2
+      && r11Snapshot.runsLastHour === r11Base.runsLastHour + 3
       && r11Snapshot.tokensLastDay === r11Base.tokensLastDay + 2200,
-      "配额账本读的是已落库事实：两种时间格式都计入、窗口外的两条不计（SQLite 与 MariaDB 同一口径）");
+      "并发名额 = 排队任务 + 在途调用（running 的任务行由它的运行行接手，不重复占位）；已结算行只进计费维度，两种时间格式都计入、窗口外的两条不计");
+    // 崩溃残留的在途行（没人回填 success）不能永久压着名额：超过失效窗口就不再占用，
+    // 但它确实发起过一次调用，计费账本里仍然算数。
+    const r11ZombieRun = Number(db.prepare(
+      "INSERT INTO ai_analysis_runs (user_id, feature, success, created_at) VALUES (?,?,NULL,?)")
+      .run(teacher.id, "knowledge_points", new Date(Date.now() - (AI_ACTIVE_RUN_STALE_MS + 60_000)).toISOString())
+      .lastInsertRowid);
+    const r11ZombieSnapshot = await readAiQuotaSnapshot(quotaDb, teacher.id);
+    check(r11ZombieSnapshot.inFlightRuns!.user === r11Snapshot.inFlightRuns!.user
+      && r11ZombieSnapshot.activeJobsForUser === r11Snapshot.activeJobsForUser
+      && r11ZombieSnapshot.runsLastHour === r11Snapshot.runsLastHour + 1,
+      "在途占位有失效窗口：超时残留不再压着并发名额，但依然计入调用次数");
     check((await readAiQuotaSnapshot(quotaDb, null)).activeJobsForUser === 0
       && (await readAiQuotaSnapshot(quotaDb, -1)).tokensLastDay === 0,
       "无身份调用不虚构他人账本（读的是 0，而不是把全表当成某人用量）");
@@ -889,8 +918,52 @@ async function main(): Promise<void> {
     for (const jobId of r11StudentJobs) db.prepare("DELETE FROM ai_analysis_jobs WHERE id=?").run(jobId);
     db.prepare("DELETE FROM student_scores WHERE exam_id=?").run(r11StuExam);
     db.prepare("DELETE FROM exams WHERE id=?").run(r11StuExam);
-    db.prepare("DELETE FROM ai_analysis_runs WHERE id IN (?,?,?,?)").run(...r11RunIds);
+    db.prepare(`DELETE FROM ai_analysis_runs WHERE id IN (${[...r11RunIds, r11ZombieRun].map(() => "?").join(",")})`)
+      .run(...r11RunIds, r11ZombieRun);
     check(AiQuotaError.name === "AiQuotaError", "配额错误类型可被路由单独识别（不会与 AI 服务故障混为一谈）");
+
+    // ── PR #312 CR9：并发准入必须原子「检查 + 占位」
+    // 旧的写法是先 assertAiQuota 再建任务：一波并发请求读到的是同一份空账本，
+    // 12 个请求会全部放行（评审实测活动任务达到 11，上限 8）。现在只有名额内的能成。
+    check((await readAiQuotaSnapshot(quotaDb, teacher.id)).activeJobsForUser === 0,
+      "并发突发前教师账本已清空（否则下面数的是残留而不是突发）");
+    const { reserveAiAnalysisJob } = await import("../src/server/services/aiAnalysisJobs");
+    const { finalizeAiRun } = await import("../src/server/services/aiTelemetry");
+    const r11BurstSize = MAX_AI_ACTIVE_JOBS_PER_USER + 4;
+    const r11JobBurst = await Promise.allSettled(
+      Array.from({ length: r11BurstSize }, () => reserveAiAnalysisJob({ examId: visibleExam, createdBy: teacher.id }))
+    );
+    const admittedValue = (r: PromiseSettledResult<number>): number | null => (r.status === "fulfilled" ? r.value : null);
+    const r11JobAdmitted = r11JobBurst.map(admittedValue).filter((v): v is number => v !== null);
+    const r11QueuedNow = Number((db.prepare(
+      "SELECT COUNT(*) AS c FROM ai_analysis_jobs WHERE created_by = ? AND status = 'queued'")
+      .get(teacher.id) as { c: number }).c);
+    check(r11JobAdmitted.length === MAX_AI_ACTIVE_JOBS_PER_USER && r11QueuedNow === MAX_AI_ACTIVE_JOBS_PER_USER
+      && r11JobBurst.every((r) => r.status === "fulfilled" || r.reason instanceof AiQuotaError),
+      `并发提交 ${r11BurstSize} 次只放行名额内的 ${r11JobAdmitted.length} 个，其余以配额错误拒绝且不落任务行`);
+    // 同步入口（不建任务行）走的是同一条准入链，两个维度共用同一份名额
+    const r11SyncBurst = await Promise.allSettled(
+      Array.from({ length: r11BurstSize }, () => reserveAiCall(quotaDb, teacher.id, { feature: "knowledge_points" }))
+    );
+    const r11PendingRows = Number((db.prepare(
+      "SELECT COUNT(*) AS c FROM ai_analysis_runs WHERE user_id = ? AND success IS NULL")
+      .get(teacher.id) as { c: number }).c);
+    check(r11SyncBurst.every((r) => r.status === "rejected") && r11PendingRows === 0,
+      `任务名额被突发占满时，同步调用同样被挡在门外且不写占位行（实际放行 ${r11SyncBurst.filter((r) => r.status === "fulfilled").length} 个）`);
+    for (const jobId of r11JobAdmitted) db.prepare("DELETE FROM ai_analysis_jobs WHERE id=?").run(jobId);
+    const r11SyncBurst2 = await Promise.allSettled(
+      Array.from({ length: r11BurstSize }, () => reserveAiCall(quotaDb, teacher.id, { feature: "knowledge_points" }))
+    );
+    const r11SyncAdmitted = r11SyncBurst2.map(admittedValue).filter((v): v is number => v !== null);
+    check(r11SyncAdmitted.length === MAX_AI_ACTIVE_JOBS_PER_USER
+      && r11SyncBurst2.every((r) => r.status === "fulfilled" || r.reason instanceof AiQuotaError)
+      && Number((db.prepare("SELECT COUNT(*) AS c FROM ai_analysis_runs WHERE user_id = ? AND success IS NULL")
+        .get(teacher.id) as { c: number }).c) === MAX_AI_ACTIVE_JOBS_PER_USER,
+      `清空任务名额后再突发同步调用：只放行 ${MAX_AI_ACTIVE_JOBS_PER_USER} 个在途占位（CR8：它们过去完全不占名额）`);
+    for (const runId of r11SyncAdmitted) await finalizeAiRun(runId, { success: true, latencyMs: 1 });
+    check((await readAiQuotaSnapshot(quotaDb, teacher.id)).activeJobsForUser === 0,
+      "在途行回填即释放名额：完成/失败的回填不只是埋点");
+    db.prepare("DELETE FROM ai_analysis_runs WHERE user_id = ? AND feature = 'knowledge_points'").run(teacher.id);
 
     // ── 微信出站超时、并发与绑定配额（安全 R20）
     const {

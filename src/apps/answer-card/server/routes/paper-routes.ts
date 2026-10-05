@@ -29,9 +29,9 @@ import { KnowledgePointRepository } from "../../../../server/repositories/Knowle
 import type { Request, Response } from "express";
 import { readFile, readdir } from "node:fs/promises";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "../llm-client";
-import { recordAiRun, finalizeAiRun } from "../../../../server/services/aiTelemetry";
-// 安全（R11）：AI 计费与并发配额；安全（R25）：对外错误摘要脱敏
-import { AiQuotaError, assertAiQuota } from "../../../../server/services/aiQuota";
+import { finalizeAiRun } from "../../../../server/services/aiTelemetry";
+// 安全（R11）：AI 计费与并发配额（占位与判定原子完成）；安全（R25）：对外错误摘要脱敏
+import { AiQuotaError, reserveAiCall } from "../../../../server/services/aiQuota";
 import { sanitizeOpsMessage } from "../../../../server/lib/opsErrorMessage";
 import { decryptField } from "../../../../server/lib/field-crypto";
 import { isVisionProvider, resolveKnowledgePointMode } from "../llm-capabilities";
@@ -557,13 +557,11 @@ export function paperRoutes(): Router {
         return;
       }
 
-      // 安全（R11）：先过配额，再留观测记录——否则被拒的请求会在 ai_analysis_runs
-      // 里留下永远无法结算的幽灵行，把「谁在打模型」的账本本身污染掉。
-      await assertAiQuota(db, req.user?.id ?? null);
-
-      // 观测：逻辑任务层（原卷知识点分析），后续 3 处边车调用以 runId 关联实际层
-      runId = await recordAiRun({
-        userId: req.user?.id ?? null,
+      // 安全（R11 + PR #312 CR8/CR9）：知识点分析是同步打模型的，它过去只出现在
+      // 计费账本里、不占并发名额——同一用户可以把「单用户在途 ≤2」刷成任意多个并行调用。
+      // 现在判定与占位（一条 success IS NULL 的运行行）在同一临界区里原子完成；
+      // 被拒时事务回滚，不会留下无法结算的幽灵行污染「谁在打模型」的账本。
+      runId = await reserveAiCall(db, req.user?.id ?? null, {
         feature: "knowledge_points",
         model: provider.model ?? null,
         stage: "request"
