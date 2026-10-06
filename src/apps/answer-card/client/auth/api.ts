@@ -105,12 +105,50 @@ function isCrossOriginApiMode(): boolean {
   return Boolean(getApiBase());
 }
 
+/**
+ * 这条请求会不会自己带出凭据（安全 R32 评审 B5）。
+ *
+ * 原先闸门挂在「本机已存有 token / API Key」上，于是**第一次登录**恰好漏在外面：
+ * 那时两者都为空，而登录请求的 body 里就是明文账号口令——配置了跨机 http 地址的
+ * Web 端会把管理员口令直接发出去，正是 R32 要挡的那件事。
+ * 所以判据不能看「本机存了什么」，要看「这条请求要发什么」。
+ *
+ * 仍按「带凭据才拦」而不是无条件拦：`/api/app/health` 这类无凭据探测要能继续发出去，
+ * 界面才分得清「服务器不可达」与「服务器可达但凭据被闸门挡下」（见 remoteCredentialTransport 的口径说明）。
+ *
+ * 三种 body 形态分开判：
+ *  - JSON 字符串按**带引号的键名 + 冒号**匹配，所以 `{"note":"password"}` 这种值里含字的不会被误判；
+ *  - `URLSearchParams` 序列化出来是 `password=xxx`（没有引号），只能按键名判；
+ *  - `FormData` 同理按键名，且只看键不看值。
+ */
+const CREDENTIAL_BODY_PATTERN = /"(password|oldPassword|newPassword|confirmPassword|initialPassword|api_key|apiKey|token|authorization)"\s*:/i;
+const CREDENTIAL_KEY_PATTERN = /(password|passwd|api_?key|authorization|token)/i;
+
+export function bodyCarriesCredentials(body: unknown): boolean {
+  if (typeof body === "string") return CREDENTIAL_BODY_PATTERN.test(body);
+  if (body instanceof URLSearchParams) {
+    for (const key of body.keys()) if (CREDENTIAL_KEY_PATTERN.test(key)) return true;
+    return false;
+  }
+  if (typeof FormData !== "undefined" && body instanceof FormData) {
+    for (const key of body.keys()) if (CREDENTIAL_KEY_PATTERN.test(key)) return true;
+  }
+  return false;
+}
+
+/** 本次请求是否需要先过传输安全闸门（凭据随请求外发，或本机已有凭据会被附上）。 */
+function requestSendsCredentials(opts: { token?: string | null; apiKey?: string | null; body?: unknown }): boolean {
+  return Boolean(opts.token || opts.apiKey) || bodyCarriesCredentials(opts.body);
+}
+
 export async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const token = getAuthToken();
   const crossOrigin = isCrossOriginApiMode();
   // v1.6.0: 同时支持 Api-Key header
   const storedApiKey = isScannerBuild() ? null : getStoredApiKey();
-  if (crossOrigin && (token || storedApiKey)) assertRuntimeConfiguredTransportAllowed();
+  if (crossOrigin && requestSendsCredentials({ token, apiKey: storedApiKey, body: options?.body })) {
+    assertRuntimeConfiguredTransportAllowed();
+  }
   const headers = new Headers(options?.headers);
   // 安全审计（P1）：同源部署下认证主通道 = HttpOnly Cookie（credentials: include），
   // 不携带 Bearer；仅跨域 API 模式（Cookie 无法跨站点携带）才附加内存 token 的 Bearer。
@@ -156,7 +194,8 @@ export function authFetch(url: string, options?: RequestInit): Promise<Response>
   const crossOrigin = isCrossOriginApiMode();
   const storedApiKey = isScannerBuild() ? null : getStoredApiKey();
   // 安全（R32）：闸门失败要变成 rejected promise，不能同步抛——调用方普遍只 .catch 异步错误。
-  if (crossOrigin && (token || storedApiKey)) {
+  // 判据同 `fetchJson`：登录/改密这类「本机还没有令牌但 body 里带口令」的请求同样要过闸门（评审 B5）。
+  if (crossOrigin && requestSendsCredentials({ token, apiKey: storedApiKey, body: options?.body })) {
     try {
       assertRuntimeConfiguredTransportAllowed();
     } catch (error) {
