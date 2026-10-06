@@ -9,6 +9,7 @@ import type { AnswerBlockCrop, AnswerBlockCropSourceType, RecognitionBlockCrop, 
 import { CardRepository } from "../repositories/CardRepository";
 import { objectiveQuestionDefinitions } from "../../shared/grading";
 import type { AnswerCard } from "../../shared/types";
+import { examClassPredicate } from "./examClassMemberships";
 
 type CropRow = {
   id: string;
@@ -277,7 +278,7 @@ export async function listReviewBlockCrops(
     values.push(params.status);
   }
   if (params.classId) {
-    filters.push("EXISTS (SELECT 1 FROM class_students cs WHERE cs.student_id = abc.student_id AND cs.class_id = ?)");
+    filters.push(examClassPredicate("abc.student_id", "abc.exam_id"));
     values.push(params.classId);
   }
   if (params.cropId) {

@@ -476,7 +476,7 @@ async function main(): Promise<void> {
     const { reserveAiAnalysisJob } = await import("../src/server/services/aiAnalysisJobs");
     const { reserveAiCall, readAiQuotaSnapshot, AiQuotaError } = await import("../src/server/services/aiQuota");
     const { finalizeAiRun, markInterruptedAiRuns } = await import("../src/server/services/aiTelemetry");
-    const { MAX_AI_ACTIVE_JOBS_PER_USER, AI_ACTIVE_RUN_STALE_MS, AI_ADMISSION_LOCK_TIMEOUT_MS } =
+    const { MAX_AI_ACTIVE_JOBS_PER_USER, MAX_AI_ACTIVE_JOBS_GLOBAL, AI_ACTIVE_RUN_STALE_MS, AI_ADMISSION_LOCK_TIMEOUT_MS } =
       await import("../src/shared/aiQuotaLimits");
     const aiTeacher = await db.run(
       "INSERT INTO users (username, password_hash, name, role_id) VALUES ('ai_ci_teacher', 'test-only', 'AI 并发准入教师', 2)"
@@ -570,6 +570,33 @@ async function main(): Promise<void> {
       "SELECT COUNT(*) AS c FROM ai_analysis_runs WHERE user_id = ? AND success IS NOT NULL AND error_code = 'INTERRUPTED'",
       aiTeacherId))?.c ?? 0), 1, "清理结果与失效窗口严格一致：只有一行被判中断");
     await db.run("DELETE FROM ai_analysis_runs WHERE user_id = ?", aiTeacherId);
+    const anonymousBaseline = await readAiQuotaSnapshot(db, null);
+    const anonymousJob = await db.run("INSERT INTO ai_analysis_jobs (exam_id,status,created_by) VALUES (?, 'queued', ?)", aiExamId, aiTeacherId);
+    const anonymousUserRun = await reserveAiCall(db, aiTeacherId, { feature: "knowledge_points" });
+    const anonymousBefore = await readAiQuotaSnapshot(db, null);
+    assert.equal(anonymousBefore.activeJobsGlobal, anonymousBaseline.activeJobsGlobal + 2);
+    assert.equal(anonymousBefore.activeJobsForUser, 0);
+    assert.equal(anonymousBefore.runsLastHour, 0);
+    assert.equal(anonymousBefore.tokensLastDay, 0);
+    const anonymousSlots = MAX_AI_ACTIVE_JOBS_GLOBAL - anonymousBefore.activeJobsGlobal;
+    assert.ok(anonymousSlots > 0, "Anonymous burst requires free global capacity");
+    const anonymousBurst = await Promise.allSettled(Array.from({ length: anonymousSlots + 3 },
+      (_, index) => reserveAiCall(db, index % 2 === 0 ? null : undefined, { feature: "knowledge_points" })));
+    const anonymousAdmitted = anonymousBurst.flatMap(result => result.status === "fulfilled" ? [result.value] : []);
+    assert.equal(anonymousAdmitted.length, anonymousSlots, "Anonymous calls cannot exceed the remaining global capacity");
+    assert.ok(anonymousBurst.every(result => result.status === "fulfilled"
+      || (result.reason instanceof AiQuotaError && result.reason.retryAfterSeconds === 60)));
+    assert.equal((await readAiQuotaSnapshot(db, null)).activeJobsGlobal, MAX_AI_ACTIVE_JOBS_GLOBAL);
+    await assert.rejects(() => reserveAiCall(db, aiTeacherId, { feature: "exam_analysis" }), AiQuotaError,
+      "Authenticated requests count anonymous reservations too");
+    await finalizeAiRun(anonymousAdmitted[0], { success: true });
+    const anonymousReplacement = await reserveAiCall(db, null, { feature: "knowledge_points" });
+    assert.equal((await readAiQuotaSnapshot(db, undefined)).activeJobsGlobal, MAX_AI_ACTIVE_JOBS_GLOBAL);
+    await db.run("DELETE FROM ai_analysis_jobs WHERE id = ?", anonymousJob.lastInsertRowid);
+    for (const runId of [anonymousUserRun, ...anonymousAdmitted, anonymousReplacement]) {
+      await db.run("DELETE FROM ai_analysis_runs WHERE id = ?", runId);
+    }
+    console.log("PASS: anonymous AI calls share global queued/in-flight capacity, atomic admission and release");
     await db.run("DELETE FROM exams WHERE id = ?", aiExamId);
     await db.run("DELETE FROM users WHERE id = ?", aiTeacherId);
     console.log(`PASS: ai admission reservation (named lock, quota under concurrency, in-flight placeholder, `

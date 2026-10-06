@@ -69,6 +69,8 @@ try {
   await assert.rejects(new ClassRepository(proxy).deleteClass(old.id), /injected archive failure/);
   assert.ok(await repo.findClassById(old.id));
   assert.equal((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM exam_participants WHERE exam_id = ?', e))?.n, 0);
+  assert.equal((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM exam_class_memberships WHERE exam_id = ?', e))?.n, 0,
+    '归档失败时，班级快照也必须与应考名单一起回滚');
   await repo.deleteClass(old.id);
   assert.equal(await repo.findClassById(old.id), null);
   assert.deepEqual((await repo.listClasses(g.id)).map(c => c.id), [current.id]);
@@ -160,9 +162,8 @@ try {
   console.log('PASS: 当前班级在读优先，归档班（id 更大、同刻）不选中');
   await repo.deleteClass(residue.id);
 
-  // 成长曲线班均分（#305 的 ScoreRepository.getStudentTrendData 消费 CURRENT_CLASS_JOIN_SUBQUERY）：
-  // 班均分必须取在读班成员。给 second 班添一名 30 分陪跑后，在读班均分 = (90+30)/2 = 60；
-  // 若误选归档旧班（仅本人 90 分）会得到 90 —— 正是二次评审实测「30 变 73.3」的形态。
+  // 历史曲线按考试时班级，不能在调班后改用新班同学的成绩。
+  // 旧考试原班只有本人 90 分；新考试在读班的两人均分为 60。
   await db.run('UPDATE exams SET score_published = 1 WHERE id = ?', e);
   const trendMate = (await db.run("INSERT INTO users(username,password_hash,name,role_id,student_number) VALUES ('trend_mate','disabled','班均分陪跑',3,'ARC003')")).lastInsertRowid;
   await db.run('INSERT INTO class_students(class_id, student_id) VALUES (?,?)', second.id, trendMate);
@@ -171,8 +172,17 @@ try {
   const trendRows = await new ScoreRepository().getStudentTrendData(Number(student));
   const trendRow = trendRows.find(p => Number(p.examId) === Number(e));
   assert.ok(trendRow, '已公布考试应进入学生成长曲线');
-  assert.equal(Number(trendRow!.classAvg), 60, '成长曲线班均分取在读班（60），不得取归档旧班（90）');
-  console.log('PASS: 成长曲线班均分消费在读班级口径');
+  assert.equal(Number(trendRow!.classAvg), 90, '历史考试班均分保留原班，不使用调班后的新班');
+  const currentExam = await exam('在读新考试');
+  await db.run('UPDATE exams SET score_published = 1 WHERE id = ?', currentExam);
+  await db.transaction(async tx => {
+    const exams = new ExamRepository(tx);
+    await exams.saveStudentScore(currentExam, student, 90, 0);
+    await exams.saveStudentScore(currentExam, trendMate, 30, 0);
+  });
+  const currentTrend = (await new ScoreRepository().getStudentTrendData(Number(student))).find(p => Number(p.examId) === Number(currentExam));
+  assert.equal(Number(currentTrend?.classAvg), 60, '新考试班均分取在读班，归档班不得污染新考试');
+  console.log('PASS: 成长曲线旧考试保留原班，新考试使用在读班');
 
   // Reusing the name must create a new identity, never revive history.
   const replacement = await repo.createClass(g.id, '高二1班');

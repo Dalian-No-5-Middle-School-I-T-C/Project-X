@@ -17,6 +17,7 @@ import { databaseTimestamp } from "../db/timestamp";
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { listReviewBlockCrops } from "./AnswerBlockCropService";
+import { examClassPredicate } from "./examClassMemberships";
 import { getAssignmentsByBlock } from "./ReviewAssignmentService";
 import { CLAIM_LOCK_TIMEOUT_MS, MAX_HELD_PAPERS_PER_BLOCK, MAX_HELD_PAPERS_TOTAL } from "../../shared/reviewPoolLimits";
 import type { ReviewPoolEntry, ReviewPoolSummary } from "../../shared/types";
@@ -398,7 +399,7 @@ export async function claimNextPaper(
     // 安全 R15 + PR #312 CR9：持有量在领取临界区内结算，「先查后写」分离时并发能突破配额
     await assertHeldQuota(examId, blockId, teacherId, tx, privileged);
     const classFilter = options.classId
-      ? `AND EXISTS (SELECT 1 FROM class_students cs WHERE cs.student_id = answer_block_crops.student_id AND cs.class_id = ?)`
+      ? `AND ${examClassPredicate("answer_block_crops.student_id", "answer_block_crops.exam_id")}`
       : "";
     const classParams = options.classId ? [options.classId] : [];
     // 安全 R15：分配行写明学生集合时首评只看自己的切片；

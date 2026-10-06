@@ -1,7 +1,8 @@
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import type { StudentTrendPoint, StudentSemesterComparison, SemesterSummary } from "../../shared/types";
-import { CURRENT_CLASS_JOIN_SUBQUERY, AnalysisRepository } from "./AnalysisRepository";
+import { AnalysisRepository } from "./AnalysisRepository";
+import { examClassPredicate, examDisplayClass } from "../services/examClassMemberships";
 
 /**
  * 日期归一化为 YYYY-MM-DD。
@@ -134,11 +135,7 @@ export class ScoreRepository {
         ROUND(
           (SELECT AVG(s2.total_score) FROM student_scores s2
            WHERE s2.exam_id = ss.exam_id
-             AND cs.class_id IS NOT NULL
-             AND EXISTS (
-               SELECT 1 FROM class_students cs2
-               WHERE cs2.student_id = s2.student_id AND cs2.class_id = cs.class_id
-             )),
+             AND ${examClassPredicate("s2.student_id", "s2.exam_id", false, examDisplayClass("ss.student_id", "ss.exam_id"))}),
           1
         ) AS classAvg,
         ROUND(
@@ -152,9 +149,6 @@ export class ScoreRepository {
         ) AS rank
       FROM student_scores ss
       JOIN exams e ON e.id = ss.exam_id
-      LEFT JOIN (
-        ${CURRENT_CLASS_JOIN_SUBQUERY}
-      ) cs ON cs.student_id = ss.student_id
       WHERE ss.student_id = ?
         -- #246 auto_delete：软删除考试不进入成长曲线
         AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)

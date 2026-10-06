@@ -11,6 +11,7 @@ import { analysisCache } from "./analysisCache";
 import { ensureExamParticipants, isExamParticipant } from "./examParticipants";
 import { databaseTimestamp } from "../db/timestamp";
 import { markScoreMutated } from "./examPublishEvents";
+import { captureExamClasses } from "./examClassMemberships";
 
 /** Resolve persisted receipt ownership, including retries after exam closure. */
 export async function findSavedScannerOwners(db: DbAdapter, sessionId: string, groupId: string,
@@ -178,6 +179,7 @@ export async function recoverLegacyScannerSubmission(examId: number, groupId: st
         return typeof raw === "string" && column.endsWith("_at") ? databaseTimestamp(raw, tx.dialect) : raw ?? null;
       };
       const scoreColumns = ["exam_id", "student_id", "objective_score", "subjective_score", "total_score", "graded_at", "manually_modified", "modified_by", "modified_at"];
+      await captureExamClasses(tx, examId, user.id);
       await tx.run(buildUpsertSQL(tx.dialect, "student_scores", scoreColumns, ["exam_id", "student_id"]),
         examId, user.id, ...scoreColumns.slice(2).map(c => value(snapshot.score, c)));
       const questionColumns = ["exam_id", "student_id", "question_number", "question_id", "block_id", "score", "max_score", "score_type", "selected_options", "manually_modified", "modified_by", "modified_at"];

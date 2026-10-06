@@ -5,6 +5,8 @@ import { validateInitialPassword, generateRandomInitialPassword } from "../auth/
 import { encryptField, decryptField } from "../lib/field-crypto";
 import { csvCell } from "../../shared/csv";
 import crypto from "node:crypto";
+import { preserveStudentExamHistory } from "../services/examParticipants";
+import { analysisCache } from "../services/analysisCache";
 
 export interface UserRecord {
   id: number; username: string; password_hash: string; name: string; role_id: number;
@@ -287,8 +289,12 @@ export class UserRepository {
               // 会把学生同时就读的其他在读班当脏数据抹掉；多行关联的归班歧义由读取侧
               // 「在读优先 → joined_at 最新」口径消解，移出班级走 removeStudent/moveStudent。
               const linkSql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
+              if (!await tx.get("SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?", cls.id, existingStudent.id)) {
+                await preserveStudentExamHistory(tx, existingStudent.id);
+              }
               await tx.run(linkSql, cls.id, existingStudent.id);
             });
+            analysisCache.clear();
             result.students.linked++; continue;
           }
 

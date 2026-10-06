@@ -1124,12 +1124,23 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
   // 两条在读关联变成一条）。归班歧义由读取侧「在读优先 → joined_at 最新 →
   // class_id 最大」口径消解（AnalysisRepository 的 CURRENT_CLASS_* 与
   // DISPLAY_CLASS_ORDER）；显式调班走 moveStudent 只移除原班关联。留注释占号。
+  const examClassMembershipsSQL = `CREATE TABLE IF NOT EXISTS exam_class_memberships (
+      exam_id INT NOT NULL, student_id INT NOT NULL, class_id INT NOT NULL,
+      joined_at DATETIME,
+      PRIMARY KEY (exam_id, student_id, class_id),
+      INDEX idx_ecm_student (student_id, exam_id),
+      FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+      FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
+  mariadbMigrations.push({ version: 59, name: "exam-class-memberships", sqls: [examClassMembershipsSQL] });
 
-  // v59: 答题卡保存计数器（与 SQLite v59 对齐，安全 R45）。导出 PDF 要把打印件与阅卷坐标布局
+  // v60: 答题卡保存计数器（与 SQLite v60 对齐，安全 R45）。导出 PDF 要把打印件与阅卷坐标布局
   // 绑到同一次保存上；updated_at 是秒级精度、且 PUT 返回的 updatedAt 来自 normalizeCard 的
   // new Date()（与库里 CURRENT_TIMESTAMP 写的值并不相等），两者都不能当版本令牌，故加单调递增列。
-  mariadbMigrations.push({ version: 59, name: "answer-card-revision", sqls: [
+  mariadbMigrations.push({ version: 60, name: "answer-card-revision", sqls: [
     "ALTER TABLE answer_cards ADD COLUMN revision INT NOT NULL DEFAULT 0",
+    // PR #312 previously used v59 for revision; recover its missing snapshot table too.
+    examClassMembershipsSQL,
   ] });
 
   for (const m of mariadbMigrations) {

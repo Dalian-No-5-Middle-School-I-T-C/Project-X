@@ -514,8 +514,9 @@ Authenticode 签名，发布时也没有任何校验和。收件方看到的是�
 
 **处置**：
 
-- `answer_cards` 加 `revision INTEGER NOT NULL DEFAULT 0`（迁移 **v59**，SQLite 与 MariaDB 各一份；
+- `answer_cards` 加 `revision INTEGER NOT NULL DEFAULT 0`（迁移 **v60**，SQLite 与 MariaDB 各一份；
   `schema.sql` / `schema.mariadb.sql` / `schema.mysql.sql` 三份建库语句同步）。
+  初版 #312 使用 v59；与 #311 整合后 v59 保留给考试班级快照，v60 幂等补齐两项结构，兼容已经执行初版 v59 的库。
 - 自增写在 SQL 里（`revision = revision + 1`）而不是「读—改—写」，避免并发丢号；
   `updateCard` / `updateCardInTx` 返回**落库后**的值。
 - **请求体里自带的 revision 一律不采信**：`saveCardWithLayout` 返回 `{ ...normalized, revision }`，

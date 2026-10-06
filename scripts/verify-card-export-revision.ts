@@ -183,9 +183,9 @@ ok(
 );
 
 const migrationRow = await db.get<{ version: number; name: string }>(
-  "SELECT version, name FROM schema_migrations WHERE version = 59"
+  "SELECT version, name FROM schema_migrations WHERE version = 60"
 );
-ok(migrationRow?.name === "answer-card-revision", `迁移 59 已记录（实际 ${migrationRow?.name ?? "缺失"}）`);
+ok(migrationRow?.name === "answer-card-revision", `迁移 60 已记录（实际 ${migrationRow?.name ?? "缺失"}）`);
 
 const cardId = "59000001";
 const fresh = createDefaultCard(cardId);
@@ -266,7 +266,7 @@ ok(
 
 // 模拟「升级前就存在的老库」：摘掉列与迁移记录，重跑迁移把列补回来。
 await db.run("ALTER TABLE answer_cards DROP COLUMN revision");
-await db.run("DELETE FROM schema_migrations WHERE version = 59");
+await db.run("DELETE FROM schema_migrations WHERE version = 60");
 if (maria) {
   await initMariadbSchema();
 } else {
@@ -291,6 +291,38 @@ ok(
   "findById 对回填值返回 0 而不是 undefined/NaN"
 );
 ok(await cardRepo.updateCard({ ...fresh, title: "升级后首次保存" }) === 1, "升级后首次保存 revision 从 0 递增到 1");
+
+// Both pre-integration branches recorded v59 with a different meaning.
+// Run incremental migrations directly so base-schema CREATE cannot mask a skip.
+const migrate = async (): Promise<void> => {
+  if (maria) {
+    const mysql = await import("mysql2/promise");
+    const conn = await mysql.createConnection({
+      host: process.env.PROJECTX_MARIADB_HOST, port: Number(process.env.PROJECTX_MARIADB_PORT || 3306),
+      user: process.env.PROJECTX_MARIADB_USER, password: process.env.PROJECTX_MARIADB_PASSWORD,
+      database: process.env.PROJECTX_MARIADB_DATABASE,
+    });
+    try { await (await import("../src/server/db/mysql")).runMariadbMigrations(conn); }
+    finally { await conn.end(); }
+  } else (await import("../src/server/db/migrations")).runMigrations(getDatabase());
+};
+await db.run("ALTER TABLE answer_cards DROP COLUMN revision");
+await db.run("DELETE FROM schema_migrations WHERE version = 60");
+await migrate();
+ok((await cardRepo.findById(cardId))?.revision === 0, "已运行 #311 v59 的库仍会补齐 revision");
+ok((await db.get<{ name: string }>("SELECT name FROM schema_migrations WHERE version = 59"))?.name === "exam-class-memberships",
+  "#311 的 v59 迁移身份保持不变");
+await db.run("UPDATE answer_cards SET revision = 7 WHERE id = ?", cardId);
+await db.run("DROP TABLE exam_class_memberships");
+await db.run("UPDATE schema_migrations SET name = 'answer-card-revision' WHERE version = 59");
+await db.run("DELETE FROM schema_migrations WHERE version = 60");
+await migrate();
+ok((await count("SELECT COUNT(*) AS n FROM exam_class_memberships")) === 0,
+  "已运行旧 #312 v59 的库通过 v60 补齐班级快照表");
+ok((await cardRepo.findById(cardId))?.revision === 7, "旧 #312 升级时保留已有卡版本号");
+await migrate();
+ok((await cardRepo.findById(cardId))?.revision === 7, "兼容迁移可重复运行，已有版本号保持不变");
+await db.run("UPDATE schema_migrations SET name = 'exam-class-memberships' WHERE version = 59");
 
 await db.run("DELETE FROM answer_cards WHERE id = ?", cardId);
 
@@ -346,8 +378,8 @@ for (const [file, needle] of [
 ] as const) {
   ok(readSource(file).includes(needle), `${file} 新建库语句含 revision 列`);
 }
-ok(readSource("src/server/db/migrations.ts").includes('version: 59, name: "answer-card-revision"'), "SQLite 迁移 59 已登记");
-ok(readSource("src/server/db/mysql.ts").includes('version: 59, name: "answer-card-revision"'), "MariaDB 迁移 59 已登记");
+ok(readSource("src/server/db/migrations.ts").includes('version: 60, name: "answer-card-revision"'), "SQLite 迁移 60 已登记");
+ok(readSource("src/server/db/mysql.ts").includes('version: 60, name: "answer-card-revision"'), "MariaDB 迁移 60 已登记");
 
 // 两个不带 ?v= 的内部调用方必须继续可用——闸门放行「省略」正是为它们留的口子。
 ok(

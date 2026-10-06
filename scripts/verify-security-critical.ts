@@ -1453,6 +1453,65 @@ async function main(): Promise<void> {
       "在途行回填即释放名额：完成/失败的回填不只是埋点");
     db.prepare("DELETE FROM ai_analysis_runs WHERE user_id = ? AND feature = 'knowledge_points'").run(teacher.id);
 
+    // Anonymous direct calls share global capacity with authenticated jobs/runs.
+    // A mixed burst must fill only the remaining global slots, without assigning
+    // anonymous usage to any user's hourly/token ledger.
+    const anonymousBaseline = await readAiQuotaSnapshot(quotaDb, null);
+    const anonymousJob = Number(db.prepare(
+      "INSERT INTO ai_analysis_jobs (exam_id,status,created_by) VALUES (?, 'queued', ?)")
+      .run(visibleExam, teacher.id).lastInsertRowid);
+    const anonymousRun = await reserveAiCall(quotaDb, teacher.id, { feature: "knowledge_points" });
+    const anonymousBefore = await readAiQuotaSnapshot(quotaDb, null);
+    check(anonymousBefore.activeJobsGlobal === anonymousBaseline.activeJobsGlobal + 2
+      && anonymousBefore.activeJobsForUser === 0 && anonymousBefore.runsLastHour === 0
+      && anonymousBefore.tokensLastDay === 0,
+      "匿名调用读取全局排队和在途账本，用户用量保持 0");
+    const anonymousSlots = MAX_AI_ACTIVE_JOBS_GLOBAL - anonymousBefore.activeJobsGlobal;
+    const anonymousBurst = await Promise.allSettled(Array.from({ length: anonymousSlots + 3 },
+      (_, index) => reserveAiCall(quotaDb, index % 2 === 0 ? null : undefined, { feature: "knowledge_points" })));
+    const anonymousAdmitted = anonymousBurst.map(admittedValue).filter((v): v is number => v !== null);
+    check(anonymousAdmitted.length === anonymousSlots
+      && anonymousBurst.every(r => r.status === "fulfilled"
+        || (r.reason instanceof AiQuotaError && r.reason.retryAfterSeconds === 60))
+      && (await readAiQuotaSnapshot(quotaDb, null)).activeJobsGlobal === MAX_AI_ACTIVE_JOBS_GLOBAL,
+      "匿名并发突发只占用剩余全局名额，超限请求以 429 语义拒绝且不落占位行");
+    const anonymousProvider = Number(db.prepare(
+      "INSERT INTO ai_providers (user_id,name,provider_type,api_key,models,is_system) VALUES (?, 'anonymous-quota-test', 'openai', 'test-only', '[\"gpt-4o\"]', 1)")
+      .run(teacher.id).lastInsertRowid);
+    const anonymousRowsBefore = Number((db.prepare("SELECT COUNT(*) AS c FROM ai_analysis_runs").get() as { c: number }).c);
+    const enforcedBeforeAnonymous = process.env.PROJECTX_AUTH_ENFORCE;
+    process.env.PROJECTX_AUTH_ENFORCE = "0";
+    const anonymousApp = await createApp();
+    const anonymousServer = anonymousApp.listen(0, "127.0.0.1");
+    try {
+      await new Promise<void>(resolve => anonymousServer.once("listening", resolve));
+      const anonymousPort = (anonymousServer.address() as { port: number }).port;
+      const anonymousHttp = await fetch(`http://127.0.0.1:${anonymousPort}/api/cards/critical-card/knowledge-points/analyze`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+      });
+      const anonymousBody = await anonymousHttp.json() as { error?: string };
+      check(anonymousHttp.status === 429 && anonymousBody.error === "AI_QUOTA_EXCEEDED"
+        && Number(anonymousHttp.headers.get("retry-after")) === 60
+        && Number((db.prepare("SELECT COUNT(*) AS c FROM ai_analysis_runs").get() as { c: number }).c) === anonymousRowsBefore,
+        `本地免登录模式的知识点分析在全局满额时返回 429 + Retry-After，不写运行行（实际 ${anonymousHttp.status}）`);
+    } finally {
+      process.env.PROJECTX_AUTH_ENFORCE = enforcedBeforeAnonymous;
+      anonymousServer.closeAllConnections();
+      await new Promise<void>((resolve, reject) => anonymousServer.close(error => error ? reject(error) : resolve()));
+    }
+    db.prepare("DELETE FROM ai_providers WHERE id=?").run(anonymousProvider);
+    const anonymousBlocked = await Promise.allSettled([reserveAiCall(quotaDb, student.id, { feature: "student_analysis" })]);
+    check(anonymousBlocked[0].status === "rejected" && anonymousBlocked[0].reason instanceof AiQuotaError,
+      "匿名占位也计入已登录用户看到的全局名额");
+    await finalizeAiRun(anonymousAdmitted[0], { success: true });
+    const anonymousReplacement = await reserveAiCall(quotaDb, null, { feature: "knowledge_points" });
+    check((await readAiQuotaSnapshot(quotaDb, undefined)).activeJobsGlobal === MAX_AI_ACTIVE_JOBS_GLOBAL,
+      "匿名调用回填后释放一个名额，后续调用可再次占用");
+    db.prepare("DELETE FROM ai_analysis_jobs WHERE id=?").run(anonymousJob);
+    for (const runId of [anonymousRun, ...anonymousAdmitted, anonymousReplacement]) {
+      db.prepare("DELETE FROM ai_analysis_runs WHERE id=?").run(runId);
+    }
+
     // ── PR #312 复核 P2：queued → running 的交接期间名额不能出现空隙
     // CR8 的账本是「queued 任务行 + success IS NULL 运行行」两段接力，但旧实现先改状态、
     // 运行行要等 trackAnalysisCall 才插——中间那一刻两条腿都不占位，并发提交读到空账本就能超放。

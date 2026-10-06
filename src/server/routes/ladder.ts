@@ -12,6 +12,7 @@ import express from "express";
 import type { Request, Response } from "express";
 import { authMiddleware } from "../middleware/auth";
 import { getMysqlDb } from "../db";
+import { examClassJoin, examClassId, examClassJoinedAt } from "../services/examClassMemberships";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
 import { LadderService } from "../services/LadderService";
 import { competitionRank, takeLadder } from "../../shared/ranking";
@@ -227,12 +228,14 @@ router.get("/exam-groups/:groupId", async (req: Request, res: Response) => {
                 g.name as grade_name
          FROM student_scores ss
          JOIN users u ON u.id = ss.student_id
-         LEFT JOIN class_students cs ON cs.student_id = ss.student_id
-         LEFT JOIN classes c ON c.id = cs.class_id
+         ${examClassJoin("ss.student_id", "ss.exam_id")}
+         LEFT JOIN classes c ON c.id = ${examClassId()}
          LEFT JOIN grades g ON g.id = c.grade_id
-         WHERE ss.exam_id IN (${memberScopeIds.map(() => "?").join(",")})`,
+         WHERE ss.exam_id IN (${memberScopeIds.map(() => "?").join(",")}) ORDER BY (c.id IS NOT NULL AND c.archived_at IS NULL AND g.archived_at IS NULL) DESC, ${examClassJoinedAt()} DESC, c.id DESC`,
       ...memberScopeIds,
     );
+
+    allScores.sort((a, b) => memberIds.indexOf(a.exam_id) - memberIds.indexOf(b.exam_id));
 
     const studentMap = new Map<
       number,
@@ -274,6 +277,7 @@ router.get("/exam-groups/:groupId", async (req: Request, res: Response) => {
         studentMap.set(s.student_id, entry);
       }
       const member = members.find((m) => m.exam_id === s.exam_id);
+      if (entry.subjects.some(subject => subject.examId === s.exam_id)) continue;
       const subjectName = member?.subject || `科目${s.exam_id}`;
       entry.totalRaw += s.total_score;
       entry.totalAssigned += s.assigned_score ?? s.total_score;

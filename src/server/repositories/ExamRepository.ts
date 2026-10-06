@@ -3,6 +3,7 @@ import { getMysqlDb, buildUpsertSQL } from "../db";
 import type { DbAdapter } from "../db";
 import { roundScore } from "../services/rankingUpdate";
 import { assertActiveClassScope } from "../services/activeClassScope";
+import { captureExamClasses } from "../services/examClassMemberships";
 
 export interface ExamRecord {
   id: number;
@@ -244,6 +245,7 @@ export class ExamRepository {
       ["objective_score", "subjective_score", "total_score", "graded_at"]
     );
     // ON CONFLICT 仅更新分数列，保留 rank/percentile/assigned_score/manually_modified 等
+    await captureExamClasses(this.db, examId, studentId);
     await this.db.run(upsertSQL, examId, studentId, obj, subj, total, gradedAt);
   }
 

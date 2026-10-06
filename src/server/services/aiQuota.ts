@@ -73,8 +73,8 @@ const RUN_TIME_AT = sqlTimeAt("created_at");
 const RUN_TIME_CUTOFF = SQL_TIME_ARG;
 
 /**
- * 读取当前账本。未登录（`userId` 为空）时没有可归因的账本，返回全 0，
- * 由调用方决定是否放行——扫描端等机器凭据路径本来就不该进到这里。
+ * 读取当前账本。未登录时仍统计全局排队任务与在途调用；
+ * 用户维度没有可归因的身份，保持为 0，不把匿名请求视为同一个用户。
  *
  * 并发维度由两部分相加（CR8）：
  *  - `ai_analysis_jobs` 的 `queued` 行：任务已建、还没轮到执行；
@@ -84,29 +84,26 @@ const RUN_TIME_CUTOFF = SQL_TIME_ARG;
  * （启动阶段另有 `markInterruptedAiRuns` 一次性清干净）。
  */
 export async function readAiQuotaSnapshot(db: DbAdapter, userId: number | null | undefined): Promise<AiQuotaSnapshot> {
-  if (!Number.isFinite(Number(userId)) || Number(userId) <= 0) {
-    return { activeJobsForUser: 0, activeJobsGlobal: 0, runsLastHour: 0, tokensLastDay: 0 };
-  }
-  const id = Number(userId);
+  const id = Number.isFinite(Number(userId)) && Number(userId) > 0 ? Number(userId) : null;
   const hourAgo = databaseTimestamp(new Date(Date.now() - 60 * 60 * 1000));
   const dayAgo = databaseTimestamp(new Date(Date.now() - 24 * 60 * 60 * 1000));
   const staleAgo = databaseTimestamp(new Date(Date.now() - AI_ACTIVE_RUN_STALE_MS));
   const [queuedForUser, queuedGlobal, inFlightForUser, inFlightGlobal, runsLastHour, tokens] = await Promise.all([
-    countOf(db,
+    id === null ? Promise.resolve(0) : countOf(db,
       "SELECT COUNT(*) AS c FROM ai_analysis_jobs WHERE created_by = ? AND status = 'queued'",
       id),
     countOf(db,
       "SELECT COUNT(*) AS c FROM ai_analysis_jobs WHERE status = 'queued'"),
-    countOf(db,
+    id === null ? Promise.resolve(0) : countOf(db,
       `SELECT COUNT(*) AS c FROM ai_analysis_runs WHERE user_id = ? AND success IS NULL AND ${RUN_TIME_AT} >= ${RUN_TIME_CUTOFF}`,
       id, staleAgo),
     countOf(db,
       `SELECT COUNT(*) AS c FROM ai_analysis_runs WHERE success IS NULL AND ${RUN_TIME_AT} >= ${RUN_TIME_CUTOFF}`,
       staleAgo),
-    countOf(db,
+    id === null ? Promise.resolve(0) : countOf(db,
       `SELECT COUNT(*) AS c FROM ai_analysis_runs WHERE user_id = ? AND ${RUN_TIME_AT} >= ${RUN_TIME_CUTOFF}`,
       id, hourAgo),
-    (async () => {
+    id === null ? Promise.resolve(0) : (async () => {
       const row = await db.get<{ tin: number | string | null; tout: number | string | null }>(
         `SELECT COALESCE(SUM(tokens_in), 0) AS tin, COALESCE(SUM(tokens_out), 0) AS tout FROM ai_analysis_runs WHERE user_id = ? AND ${RUN_TIME_AT} >= ${RUN_TIME_CUTOFF}`,
         id, dayAgo
