@@ -50,7 +50,10 @@ export function initializeDatabase(): void {
   if (dialect === "mariadb") {
     // v1.6.0: MariaDB 增量迁移机制 — 检测并执行缺失的 schema_migrations
     console.log("[DB] MariaDB mode: schema seeded via schema.mariadb.sql");
-    // initMariadbSchema() 在 getMysqlDb() 首次调用时自动执行
+    // 注意：这行日志只是**口径声明**，本函数并不建表。`getMysqlDb()` 是同步的构造适配器，
+    // 建表/迁移由调用方显式 `await initMariadbSchema()` 完成（见 scripts/verify-mariadb.ts）。
+    // 只 `initializeDatabase()` 就直接写 SQL 的脚本因此只能跑 SQLite 模式——
+    // MariaDB 下会在第一条 INSERT 上撞 ER_NO_SUCH_TABLE（表 'grades' doesn't exist）。
     // ensureDefaultAdmin() 在外部调用，自动生成 API Key
     return;
   }

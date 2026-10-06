@@ -98,7 +98,9 @@ SQLite 侧 CI 同款清单全绿：`auth` 137/0、`core-logic` ALL PASS、`ladde
 `grading-published-exam`、`scan-page-numbering`、`scanner-page-timeout`、`scanner-batch-results`、
 `demo-credentials`、`systemd-hardening` 108/0、`release-integrity` 61/0、`card-export-revision` 66/0、
 `stage-vc-runtime`；CI 清单外补跑 `scanner-cancel` 33/0 与 `analysis-batches-2-4` 76/0（AI 异步任务流，
-直接覆盖 B2/B3 的改动面）。**CI 尚未跑过这批提交**——本分支是 stacked PR，`ci.yml` 只在
+直接覆盖 B2/B3 的改动面）。上面的数字是在**最终提交的 HEAD 上重跑**得到的（不是改代码前的旧一版），
+MariaDB 段那次重跑里 `grading-published-exam` 因为坑 4 被排除在真库清单之外，它照旧属于 SQLite 段且通过。
+**CI 尚未跑过这批提交**——本分支是 stacked PR，`ci.yml` 只在
 `pull_request → main` 触发，要等合并顺序定了才有 CI 结论。
 
 本轮踩到的三个坑，记下来免得下次重踩：
@@ -113,6 +115,14 @@ SQLite 侧 CI 同款清单全绿：`auth` 137/0、`core-logic` ALL PASS、`ladde
    只 `unset PROJECTX_DB_TYPE` 不够——只要 `PROJECTX_MARIADB_HOST` 还在，`db/index` 仍推断成 MariaDB 模式，
    于是 SQLite 段的 `verify:grading-published-exam` 去连 `projectx` 库拿 `ER_DBACCESS_DENIED_ERROR`，
    是一条**假红**。串行跑（两套都要起真实 HTTP 服务，并行会端口相撞）且 SQLite 段前把六个变量全部清掉。
+4. **`verify-grading-published-exam.ts` 不是 `--mariadb` 脚本**：它只调 `initializeDatabase()` 再同步取
+   `getMysqlDb()`，从不 `await initMariadbSchema()`，所以硬塞 `PROJECTX_DB_TYPE=mariadb` 时第一条
+   `INSERT INTO grades` 撞 `ER_NO_SUCH_TABLE`——同样是假红，成因却在「建表是调用方的责任」这一侧。
+   `db/index.ts` 那句「schema seeded …」日志与旧注释（「`getMysqlDb()` 首次调用时自动执行」）都在暗示
+   它会自动建表，实际 `getMysqlDb()` 只是同步造适配器；注释已改成如实描述，免得下次再按旧话去复用这个脚本。
+5. **清环境变量的写法会把日志清空**：`env -u VAR npx tsx …` 在这台机器的 Git Bash 下**退出码照常是 0，
+   重定向出来的日志却是 0 字节**，于是「跑过了」和「什么都没跑」看起来一模一样。改成子 shell 里 `unset`
+   再执行才有输出。回归 harness 因此加了 `bytes=0` 也算一条问题——静默的绿色不可信。
 
 ## 2026-10-05：PR #312 复核返修（2 项 P2）
 
