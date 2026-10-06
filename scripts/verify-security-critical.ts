@@ -703,9 +703,70 @@ async function main(): Promise<void> {
     const bypassSession = await newScanSession();
     check(bypassSession.status === 201
       && rowCount("SELECT COUNT(*) count FROM twain_scan_sessions") === scopeSessions + 1,
-      "扫描端 API Key 凭据建会话不受本次收口影响（isApiClient 直连是设计内行为）");
+      "扫描端 API Key 建会话照常可用（Key 仍是身份凭证，机器入口没有被范围收口误伤）");
     db.prepare("DELETE FROM twain_scan_records WHERE session_id=?").run(bypassSession.sessionId);
     db.prepare("DELETE FROM twain_scan_sessions WHERE id=?").run(bypassSession.sessionId);
+
+    // ── PR #312 评审 A1：X-Api-Key 不再是「范围校验免检」
+    // R04/CR3/CR5 建起来的考试 / 卡 / 页三级收口，此前对带 Key 的请求整体失效：三处
+    // `if (isApiClient) next()` 让「拿到扫描机 config.yml 里那把 Key 的教师」回到收口之前。
+    // 现在 Key 只能作用于**归属链完整、且未被保留策略清理**的对象。
+    section("评审 A1：扫描端 Key 的数据绑定收口");
+    {
+      const a1SoftCardId = "a1-soft-card";
+      db.prepare("INSERT INTO answer_cards (id, title) VALUES (?, ?)").run(a1SoftCardId, "A1 软删除卡");
+      const a1SoftExam = Number(db.prepare(
+        "INSERT INTO exams (name, card_id, grade_id, class_id, subject, status, created_by) VALUES (?,?,?,?,?,'active',?)"
+      ).run("A1-已清理考试", a1SoftCardId, grade.id, classA, "数学", teacher.id).lastInsertRowid);
+      db.prepare("INSERT INTO exam_archives (exam_id, is_deleted, deleted_at) VALUES (?, 1, CURRENT_TIMESTAMP)").run(a1SoftExam);
+      db.prepare(
+        `INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, page_count, status)
+         VALUES ('a1-soft-session', ?, 'A1 会话', 300, 1, 'gray', 'A4', 1, 'pending')`
+      ).run(a1SoftCardId);
+      // 整卷原图：文件真的在盘上，「404 来自收口」而不是「文件本来就没有」
+      const a1UploadsDir = path.join(dataRoot, "recognition", "uploads", a1SoftCardId);
+      mkdirSync(a1UploadsDir, { recursive: true });
+      writeFileSync(path.join(a1UploadsDir, "original-1.jpg"), pngBytes);
+      const a1KeyGet = async (urlPath: string): Promise<number> =>
+        (await fetch(`${base}${urlPath}`, { headers: { ...scannerKeyHeaders, Origin: scannerOrigin } })).status;
+      const a1TeacherGet = async (urlPath: string, token: string): Promise<number> =>
+        (await fetch(`${base}${urlPath}`, { headers: { Origin: scannerOrigin, ...authHeaders(token) } })).status;
+
+      // 1) 不存在的 ID：Key 也不再能换到「空数组也是 200」的枚举面
+      check(await a1KeyGet("/api/scanner/sessions/ghost-card") === 404
+        && await a1KeyGet("/api/scanner/card/ghost-card/scans") === 404,
+        "Key 按不存在的卡号列扫描记录被 404（此前 isApiClient 直通，列表端点对任意卡号都回 200）");
+      check(await a1KeyGet(`/api/scanner/exam/999999/student/${student.id}/scans`) === 404,
+        "Key 按不存在的考试号读逐生扫描被 404（数据绑定：examId 必须解析得到真实行）");
+      check(await a1KeyGet("/api/scanner/scan/a1-missing-session") === 404,
+        "Key 按解析不到会话的 sessionId 读扫描页被 404（归属链断裂不放行）");
+
+      // 2) 已被保留策略清理的考试：机器与人在 CR4 口径上对齐
+      check(await a1KeyGet("/api/scanner/scan/a1-soft-session") === 404
+        && await a1KeyGet(`/api/scanner/sessions/${a1SoftCardId}`) === 404
+        && await a1KeyGet(`/api/scanner/grading-image/${a1SoftCardId}/original-1.jpg`) === 404,
+        "Key 读「绑过的考试全被软删除」的卡：会话列表、扫描页与整卷原图一律 404（此前按未绑定考试放行，清理过的原卷照样取到）");
+      check(await a1KeyGet(`/api/scanner/exam/${a1SoftExam}/student/${student.id}/scans`) === 404,
+        "Key 按 examId 访问已软删除考试同样 404（与教师侧 requireExamAccess 的软删除口径一致）");
+      // 同一张卡对「能看见这场考试」的年级组长也是 404：机器收口没有开出新的口径分叉
+      check(await a1TeacherGet(`/api/scanner/sessions/${a1SoftCardId}`, leaderToken) === 404,
+        "年级组长对同一张「只剩已清理考试」的卡同样 404");
+
+      // 3) 正向对照：真正在用的考试/卡，扫描端功能不受影响
+      const a1LiveSession = await newScanSession();
+      check(a1LiveSession.status === 201
+        && await a1KeyGet(`/api/scanner/scan/${a1LiveSession.sessionId}`) === 200
+        && await a1KeyGet("/api/scanner/sessions/critical-card") === 200
+        && await a1KeyGet(`/api/scanner/exam/${visibleExam}/student/${student.id}/scans`) === 200,
+        "在用的卡、未清理的考试与新建会话对 Key 照常可读（收口只砍断链与已清理数据，不打死扫描端）");
+      db.prepare("DELETE FROM twain_scan_records WHERE session_id=?").run(a1LiveSession.sessionId);
+      db.prepare("DELETE FROM twain_scan_sessions WHERE id=?").run(a1LiveSession.sessionId);
+      db.prepare("DELETE FROM exam_archives WHERE exam_id = ?").run(a1SoftExam);
+      db.prepare("DELETE FROM exams WHERE id = ?").run(a1SoftExam);
+      db.prepare("DELETE FROM twain_scan_sessions WHERE id = 'a1-soft-session'").run();
+      db.prepare("DELETE FROM answer_cards WHERE id = ?").run(a1SoftCardId);
+      rmSync(a1UploadsDir, { recursive: true, force: true });
+    }
 
     // ── 上限可配置（安全 R22/R28 的三档设计）：默认值 / 环境变量覆盖 / 非法回落 / 天花板夹紧
     check(SCAN_UPLOAD_ENV_VARS.slice().sort().join() === uploadEnvVarsClearedHere.slice().sort().join()
@@ -964,7 +1025,8 @@ async function main(): Promise<void> {
       "原卷容量档位进入启动摘要");
 
     const {
-      evaluatePaperQuota, purgeStaleTmpUploads, readPaperQuota, readPapersTotalBytes, invalidatePaperUsageCache
+      evaluatePaperQuota, purgeStaleTmpUploads, readPaperQuota, readPapersTotalBytes,
+      readPapersTotalScanCount, invalidatePaperUsageCache
     } = await import("../src/apps/answer-card/server/paperQuota");
     const r10Limits = { maxPaperPagesPerCard: 3, maxPaperBytesPerCard: 4096, maxPaperBytesTotal: 8192 };
     check(evaluatePaperQuota(
@@ -999,7 +1061,48 @@ async function main(): Promise<void> {
     invalidatePaperUsageCache();
     const r10FreshTotal = await readPapersTotalBytes();
     check(r10CachedTotal.bytes === r10BeforeTotal.bytes && r10FreshTotal.bytes >= r10BeforeTotal.bytes + 2048,
-      "全局用量走 TTL 缓存、上传/删除后即时失效（否则每次上传都要全目录走一遍）");
+      "全局用量走 TTL 缓存，只有显式失效才重新实测（评审 A2：作废缓存改由删除路径与增量前推负责）");
+
+    // ── PR #312 评审 A2：缓存策略不再是「每条请求都扫一遍盘」
+    // 原先上传路由的 `finally` 无条件 `invalidatePaperUsageCache()`，而每条请求在被拒之前
+    // 都要先读一次配额——持续上传（哪怕全是 400/413）就把 60 秒缓存的收益全部赔光，
+    // 配额闸门自己成了可被打的靶子。三条不变量：并发共用一次实测、写入按增量前推、删除才重测。
+    const a2Scans0 = readPapersTotalScanCount();
+    invalidatePaperUsageCache();
+    const a2Warm = await readPapersTotalBytes();
+    check(readPapersTotalScanCount() === a2Scans0 + 1 && a2Warm.bytes >= r10FreshTotal.bytes,
+      "缓存失效后的第一次读取才实测目录（计数只加 1）");
+    invalidatePaperUsageCache();
+    const a2Concurrent = await Promise.all([
+      readPapersTotalBytes(), readPapersTotalBytes(), readPapersTotalBytes(), readPapersTotalBytes()
+    ]);
+    check(readPapersTotalScanCount() === a2Scans0 + 2
+      && a2Concurrent.every(usage => usage.bytes === a2Concurrent[0].bytes && usage.exact === a2Concurrent[0].exact),
+      "4 个并发读取共用同一次在途实测：一波上传只扫一遍 papers/（此前每个未命中的请求各自扫盘）");
+    db.prepare("INSERT INTO answer_cards (id,title,subject,subject_label) VALUES (?,?,?,?)")
+      .run("critical-a2-card", "缓存回归卡", "shuxue", "数学");
+    // 真图片：这条断言要的是**上传成功**，`pngBytes` 那种「只带魔数」的正文会被转换层判损坏
+    const { default: a2Sharp } = await import("sharp");
+    const a2PageBytes = await a2Sharp({ create: { width: 600, height: 850, channels: 3, background: "#ffffff" } })
+      .png().toBuffer();
+    const a2Form = new FormData();
+    a2Form.append("files", new Blob([new Uint8Array(a2PageBytes)], { type: "image/png" }), "a2-page.png");
+    const a2Upload = await fetch(`${base}/api/cards/critical-a2-card/paper`, {
+      method: "POST", headers: authHeaders(teacherToken), body: a2Form
+    });
+    const a2UploadText = await a2Upload.text();
+    const a2AfterUpload = await readPapersTotalBytes();
+    check(a2Upload.status === 200 && readPapersTotalScanCount() === a2Scans0 + 2
+      && a2AfterUpload.bytes > a2Concurrent[0].bytes,
+      `上传成功后缓存按实测增量前推、不重扫目录：扫描次数仍为 +2，用量已变大（实际 ${a2Upload.status}/${a2UploadText.slice(0, 60)}）`);
+    const a2Adjusted = await fetch(`${base}/api/cards/critical-a2-card/paper`, {
+      method: "DELETE", headers: authHeaders(teacherToken)
+    });
+    const a2AfterDelete = await readPapersTotalBytes();
+    check(a2Adjusted.status === 200 && readPapersTotalScanCount() === a2Scans0 + 3
+      && a2AfterDelete.bytes <= a2AfterUpload.bytes,
+      "整卡删除走重测（此前既不作废也不增量：删掉的原卷在 60 秒内仍算占盘，删了腾地方立刻再上传会被 413）");
+    db.prepare("DELETE FROM answer_cards WHERE id = ?").run("critical-a2-card");
 
     const r14TmpDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "papers", "_tmp");
     mkdirSync(r14TmpDir, { recursive: true });
@@ -2128,10 +2231,17 @@ async function main(): Promise<void> {
       // 单场：无成绩拒绝；1/2 人出分同样拒绝（应考集合 ⊆ 已评分集合）。
       const publishNoScore = await fetch(`${base}/api/exams/${noScoreExam}/publish`, { method: "POST", headers: authHeaders(teacherToken) });
       const publishPartial = await fetch(`${base}/api/exams/${partialScoreExam}/publish`, { method: "POST", headers: authHeaders(teacherToken) });
-      const publishPartialBody = await publishPartial.json() as { message?: string };
+      const publishPartialRaw = await publishPartial.text();
+      const publishPartialBody = JSON.parse(publishPartialRaw) as { message?: string };
       check(publishNoScore.status === 409 && auditCount(noScoreExam) === 0, "closed 但无成绩记录：单场公布被 409 拒绝且不写审计");
       check(publishPartial.status === 409 && auditCount(partialScoreExam) === 0 && /不完整|缺/.test(String(publishPartialBody.message || "")),
         "收紧：仅 1/2 人出分 → 409 且提示缺应考学生成绩");
+      // 评审 B6（与 CR12 同一口径）：409 只给**人数**，不给「姓名(学号)」。公布是教师一次点很多场的
+      // 高频操作，缺考学生的姓名随错误提示成批外发，等于把「本场没出分的是谁」变成一个可读结果。
+      check(/应考 2 人，缺 1 名应考学生成绩/.test(String(publishPartialBody.message || "")),
+        `B6：提示仍给得出应考/缺考人数，教师知道去哪儿核对名单（实际 ${publishPartialBody.message}）`);
+      check(!publishPartialRaw.includes("批改名单生2") && !publishPartialRaw.includes("S3002"),
+        "B6：整个响应体不含缺考学生的姓名与学号（修复前会回显最多 5 人的「姓名(学号)」）");
 
       // 名单齐全可公布
       const fullScoreExam = seedRosterExam("公布门控-P1完整");
@@ -2147,8 +2257,11 @@ async function main(): Promise<void> {
         method: "POST", headers: { "Content-Type": "application/json", ...authHeaders(teacherToken) },
         body: JSON.stringify({ examIds: [partialScoreExam, noScoreExam] })
       });
+      const batchIncompleteRaw = await batchIncomplete.text();
       check(batchIncomplete.status === 409 && auditCount(partialScoreExam) === 0 && auditCount(noScoreExam) === 0,
         "批量含未完整场次：整体 409 且无任何审计写入");
+      check(!batchIncompleteRaw.includes("批改名单生2") && !batchIncompleteRaw.includes("S3002"),
+        "B6：批量公布的拼接文案同样只报人数（多条原因合成一条响应时不另开 PII 出口）");
 
       // 缺考学生按 #248 §3.2 从应考名单剔除后即可公布（显式名单优先于名册快照）
       db.prepare("DELETE FROM exam_participants WHERE exam_id = ?").run(partialScoreExam);
@@ -3147,6 +3260,31 @@ async function main(): Promise<void> {
       check(/function assertRuntimeConfiguredTransportAllowed\(\): void \{\s*\n\s*if \(isScannerBuild\(\)\) return;\s*\n\s*const runtimeBase = readServerUrl\(\);/.test(apiSource)
         && /`VITE_PROJECTX_API_BASE` 不在此列/.test(apiSource),
         "R32：闸门只管运行时填写的地址，构建期写死的 VITE_PROJECTX_API_BASE 不受影响（内网 Web 部署不会被堵死且无从勾选）");
+
+      // 评审 B5：判据必须看「这条请求要发什么」，不能看「本机存了什么」——首次登录时两者都为空，
+      // 而 body 里就是明文口令。行为侧（bodyCarriesCredentials 的各形态）在
+      // verify:insecure-remote-transport；这里锁「两个 Web 发送点都把它接上了」，防止只改一处。
+      const fetchJsonSlice = apiSource.slice(apiSource.indexOf("export async function fetchJson"),
+        apiSource.indexOf("export function authFetch"));
+      const authFetchSlice = apiSource.slice(apiSource.indexOf("export function authFetch"));
+      for (const [name, slice] of [["fetchJson", fetchJsonSlice], ["authFetch", authFetchSlice]] as const) {
+        check(slice.indexOf("export") === 0
+          && slice.includes("requestSendsCredentials({ token, apiKey: storedApiKey, body: options?.body })")
+          && slice.includes("assertRuntimeConfiguredTransportAllowed()")
+          && slice.indexOf("requestSendsCredentials(") < slice.indexOf("assertRuntimeConfiguredTransportAllowed()"),
+          `R32/B5：${name} 的闸门判据含本次请求 body，且判据在闸门调用之前`);
+      }
+      check(/if \(crossOrigin && \(token \|\| storedApiKey\)\) assertRuntimeConfiguredTransportAllowed\(\);/.test(apiSource) === false,
+        "R32/B5：旧的「只看本机凭据」写法没有残留（回归它的判据本身）");
+      check(apiSource.includes('(password|oldPassword|newPassword|confirmPassword|initialPassword|api_key|apiKey|token|authorization)')
+        && /const CREDENTIAL_KEY_PATTERN = /.test(apiSource)
+        && apiSource.includes("export function bodyCarriesCredentials"),
+        "R32/B5：口令/Key/令牌字段名集中在一处且判据可导出单测（新增改密入口时只改这一行）");
+      check(/CREDENTIAL_BODY_PATTERN = \/"\(password[^/]*\)"\\s\*:/i.test(apiSource),
+        "R32/B5：JSON 判据要求「带引号的键名 + 冒号」，值里含 password 的普通请求不会被误拦");
+      check(apiSource.includes("for (const key of body.keys()) if (CREDENTIAL_KEY_PATTERN.test(key)) return true;")
+        && (apiSource.match(/CREDENTIAL_KEY_PATTERN\.test\(key\)/g) ?? []).length === 2,
+        "R32/B5：urlencoded 与 FormData 按键名判（序列化结果没有引号，照 JSON 正则匹配等于漏判）——两种形态都要接上");
 
       check(uploadManagerSource.indexOf("assertCredentialTransportAllowed(j.remoteBase)") >= 0
         && uploadManagerSource.indexOf("assertCredentialTransportAllowed(j.remoteBase)")

@@ -216,8 +216,19 @@ async function main(): Promise<void> {
     const absent = await db.run("INSERT INTO users (username, password_hash, name, role_id) VALUES ('absent_publish', 'test-only', '尚未出分', 3)");
     await db.run("INSERT INTO exam_participants (exam_id, student_id, source) VALUES (?, ?, 'explicit'), (?, ?, 'explicit')",
       publicationExam.id, student.lastInsertRowid, publicationExam.id, absent.lastInsertRowid);
-    // 应考集合 ⊄ 已评分集合 → 拒绝，并列出缺考学生（MariaDB 侧集合校验谓词可用）
-    await assert.rejects(assertScoresPublishable(db, publicationExam), /不完整|缺/);
+    // 应考集合 ⊄ 已评分集合 → 拒绝。评审 B6（与 CR12 同口径）：拒绝消息只给**人数**，
+    // 不再把缺考学生的姓名/学号拼进 409 文案——公布是高频批量操作，那相当于把「本场没出分」
+    // 这批学生的身份明细成批送到调用方屏幕上。
+    let publishRejection: unknown = null;
+    await assertScoresPublishable(db, publicationExam).catch((error: unknown) => { publishRejection = error; });
+    assert.ok(publishRejection instanceof Error && /不完整/.test(publishRejection.message),
+      `缺考时仍按「成绩记录不完整」拒绝公布（实际 ${String((publishRejection as Error)?.message)}）`);
+    const publishMessage = String((publishRejection as Error).message);
+    assert.match(publishMessage, /缺 1 名应考学生成绩/, "消息给出缺考人数，教师仍知道该去哪儿核对名单");
+    assert.ok(!publishMessage.includes("尚未出分") && !publishMessage.includes("absent_publish"),
+      "409 文案不含缺考学生的姓名与登录名（修复前会回显最多 5 人的「姓名(学号)」）");
+    assert.equal((publishRejection as { missingCount?: number }).missingCount, 1,
+      "人数以结构化字段给出，前端不必再从文案里解析");
     const missingRows = await listMissingParticipants(db, publicationExam.id);
     assert.equal(missingRows.length, 1);
     assert.equal(Number(missingRows[0].student_id), Number(absent.lastInsertRowid));
@@ -524,27 +535,45 @@ async function main(): Promise<void> {
     assert.equal((await readAiQuotaSnapshot(db, aiTeacherId)).activeJobsForUser, 0,
       "回填后名额立即释放（真库）");
     // 崩溃残留：超过失效窗口的 success IS NULL 行不再压着名额，但仍留在计费账本里。
-    // created_at 用 NOW() 回退写入——真库里直接绑带 `T` 的 ISO 会被 Incorrect datetime value 拒绝。
+    // created_at 用 NOW()/DATE_SUB 写入——真库里直接绑带 `T` 的 ISO 会被 Incorrect datetime value 拒绝。
     const aiRunsBeforeZombie = (await readAiQuotaSnapshot(db, aiTeacherId)).runsLastHour;
-    await db.run(
+    const aiZombieRow = await db.run(
       `INSERT INTO ai_analysis_runs (user_id, feature, stage, created_at)
        VALUES (?, 'knowledge_points', 'request', DATE_SUB(NOW(), INTERVAL ? SECOND))`,
       aiTeacherId, Math.ceil(AI_ACTIVE_RUN_STALE_MS / 1000) + 60
     );
+    const aiZombieId = Number(aiZombieRow.lastInsertRowid);
+    // 评审 B3：窗口内的那一行代表**别的实例正在真实执行**的调用（多实例部署、金丝雀/滚动更新）。
+    // 清理若照旧无条件把 success IS NULL 全判中断，就是把别人的在途工作改成失败，
+    // 还顺手把它的占位提前释放成可用名额——误杀与超发同时发生。
+    const aiLiveRow = await db.run(
+      `INSERT INTO ai_analysis_runs (user_id, feature, stage, created_at)
+       VALUES (?, 'knowledge_points', 'request', NOW())`,
+      aiTeacherId
+    );
+    const aiLiveId = Number(aiLiveRow.lastInsertRowid);
     const aiZombie = await readAiQuotaSnapshot(db, aiTeacherId);
-    assert.equal(aiZombie.inFlightRuns?.user, 0, "超过失效窗口的崩溃残留不再占用并发名额（真库）");
-    assert.equal(aiZombie.runsLastHour, aiRunsBeforeZombie + 1, "残留仍计入 1 小时调用次数（它确实发起过）");
-    await markInterruptedAiRuns(db);
+    assert.equal(aiZombie.inFlightRuns?.user, 1,
+      "失效窗口是名额判定的唯一口径：出窗的崩溃残留不占位，窗口内的在途行（含别的实例）仍占 1（真库）");
+    assert.equal(aiZombie.runsLastHour, aiRunsBeforeZombie + 2, "两行都计入 1 小时调用次数（它们确实发起过）");
+    const aiMarked = await markInterruptedAiRuns(db);
+    assert.ok(aiMarked >= 1, `启动清理只标记超窗行并返回条数供启动日志核对（本次 ≥1，实际 ${aiMarked}）`);
+    assert.equal((await db.get<{ error_code: string | null }>(
+      "SELECT error_code FROM ai_analysis_runs WHERE id = ?", aiZombieId))?.error_code,
+      "INTERRUPTED", "超窗残留被写明中断原因，控制台成功率不会把它算成成功");
+    const aiLiveAfter = await db.get<{ success: number | null; error_code: string | null }>(
+      "SELECT success, error_code FROM ai_analysis_runs WHERE id = ?", aiLiveId);
+    assert.ok(aiLiveAfter?.success === null && !aiLiveAfter?.error_code,
+      "窗口内的在途行在别的实例启动清理后仍是未回填状态（修复前会被改成 INTERRUPTED，实际 "
+      + `${aiLiveAfter?.success}/${aiLiveAfter?.error_code}）`);
     assert.equal(Number((await db.get<{ c: number }>(
-      "SELECT COUNT(*) AS c FROM ai_analysis_runs WHERE user_id = ? AND success IS NULL", aiTeacherId))?.c ?? 0), 0,
-      "启动清理把残留的在途行判为中断，不靠失效窗口兜底");
-    assert.equal((await db.get<{ error_code: string }>(
-      "SELECT error_code FROM ai_analysis_runs WHERE user_id = ? ORDER BY id DESC LIMIT 1", aiTeacherId))?.error_code,
-      "INTERRUPTED", "清理写明中断原因，控制台成功率不会把它算成成功");
+      "SELECT COUNT(*) AS c FROM ai_analysis_runs WHERE user_id = ? AND success IS NOT NULL AND error_code = 'INTERRUPTED'",
+      aiTeacherId))?.c ?? 0), 1, "清理结果与失效窗口严格一致：只有一行被判中断");
     await db.run("DELETE FROM ai_analysis_runs WHERE user_id = ?", aiTeacherId);
     await db.run("DELETE FROM exams WHERE id = ?", aiExamId);
     await db.run("DELETE FROM users WHERE id = ?", aiTeacherId);
-    console.log(`PASS: ai admission reservation (named lock, quota under concurrency, in-flight placeholder, lock-timeout in ${aiLockWaitedMs}ms)`);
+    console.log(`PASS: ai admission reservation (named lock, quota under concurrency, in-flight placeholder, `
+      + `stale-window-bounded startup sweep, lock-timeout in ${aiLockWaitedMs}ms)`);
 
     const upsert = buildUpsertSQL(db.dialect, "system_settings", ["key", "value"], ["key"]);
     const readValue = () => db.get<{ value: string }>("SELECT `value` FROM system_settings WHERE `key` = ?", "ci_test");

@@ -16,7 +16,7 @@
  *
  * 用法: npm run verify:permission-scope
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
@@ -433,6 +433,18 @@ async function main(): Promise<void> {
   ok((await get(`/api/scanner/exam/${examScan}/student/${sids["9001"]}/scans`, tokenA)).status === 200,
     "整卷授权的本场教师仍能正常预览");
 
+  // 评审 B1：`/api/cards/:cardId/grading/preview/:fileName` 与扫描端的 grading-image
+  // 读的是同一个物理目录（`recognition/uploads/<cardId>/`），CR3 的收口却只挂在扫描端那一侧。
+  const { dataDir: appDataDir } = await import("../src/apps/answer-card/server/storage");
+  const previewDir = path.join(appDataDir, "recognition", "uploads", scanCardId);
+  mkdirSync(previewDir, { recursive: true });
+  const previewFile = path.join(previewDir, "b1-page.png");
+  writeFileSync(previewFile, "same-directory-as-scanner-grading-image");
+  const ownCardsPreview = await get(`/api/cards/${scanCardId}/grading/preview/b1-page.png`, tokenA);
+  ok(ownCardsPreview.status === 200, `整卷授权教师走 cards 路径读原卷预览正常（实际 ${ownCardsPreview.status}）`);
+  const foreignCardsPreview = await get(`/api/cards/${scanCardId}/grading/preview/b1-page.png`, tokenB);
+  ok(foreignCardsPreview.status === 403, `范围外教师走 cards 路径读同一张图同样 403（同级路由不再是收口的绕道，实际 ${foreignCardsPreview.status}）`);
+
   // CR5：题块教师只能读到含本人题块的排版页，同页他人题块与整卷总分一并剔除。
   matrix(teacherA.id, { class_id: classA, block_id: "B1" });
   const scopedForeignPage = await get(`/api/scanner/record/rec-p2`, tokenA);
@@ -455,6 +467,11 @@ async function main(): Promise<void> {
   const scopedSessionResults = await get(`/api/scanner/session/${scanSession}/results`, tokenA);
   ok(scopedSessionResults.status === 403,
     `题块教师读取整卷会话结果被 403（扫描端点是整卷操作面，实际 ${scopedSessionResults.status}）`);
+  // 评审 B1：题块级教师改走 cards 那条同级路径也读不到整卷原图——两边同一口径
+  const scopedCardsPreview = await get(`/api/cards/${scanCardId}/grading/preview/b1-page.png`, tokenA);
+  ok(scopedCardsPreview.status === 403,
+    `题块级教师走 cards 路径读整卷原图同样 403（grading-image 的收口不再有绕道，实际 ${scopedCardsPreview.status}）`);
+  rmSync(previewFile, { force: true });
   clearMatrix(teacherA.id);
   const wholePaperResults = await get(`/api/scanner/session/${scanSession}/results`, tokenA);
   ok(wholePaperResults.status !== 403,
@@ -550,6 +567,32 @@ async function main(): Promise<void> {
   ok((await get(`/api/answer-block-crops/pc-b1-9001/image`, tokenS1)).status === 200, "学生读取本人切块原图不受影响");
   ok((await get(`/api/answer-block-crops/pc-b2-9001/image`, tokenA)).status === 200,
     "该题块完全没有分配数据时按旧部署放行（兼容回退不误拦）");
+
+  // 评审 B1：切块清单与阅卷溯源也要按逐生分配收口。
+  // 两处此前只收到题块粒度（R03），于是同一题块被切成两半时，A 教师能从清单/溯源里
+  // 读到 D 教师那半学生的姓名学号、每题得分与评审轨迹——只是点开原图才被 CR6 挡住。
+  const cropListBody = async (token: string): Promise<string> =>
+    JSON.stringify((await get(`/api/review/exams/${examA}/block-crops?blockId=B1`, token)).body ?? {});
+  const aCropList = await cropListBody(tokenA);
+  const dCropList = await cropListBody(tokenD);
+  const cropIdsOf = (body: string): string[] => [...body.matchAll(/pc-b1-\d{4}/g)].map(m => String(m[0]));
+  ok(cropIdsOf(aCropList).includes("pc-b1-9001") && !cropIdsOf(aCropList).includes("pc-b1-9003")
+    && !cropIdsOf(aCropList).includes("pc-b1-9002"),
+    `切块清单只列本人切片与已离开首评的卷子（实际 ${JSON.stringify([...new Set(cropIdsOf(aCropList))])}）`);
+  ok(cropIdsOf(dCropList).includes("pc-b1-9003") && cropIdsOf(dCropList).includes("pc-b1-9001")
+    && !cropIdsOf(dCropList).includes("pc-b1-9002"),
+    `D 教师的清单含本人切片 + 跨切片待复核卷，不含无人开评的那份（实际 ${JSON.stringify([...new Set(cropIdsOf(dCropList))])}）`);
+  ok(!aCropList.includes(String(sids["9003"])) && !aCropList.includes("9003"),
+    "A 教师的清单响应体里读不到 D 教师切片学生的学号与学生 ID（横向越权不再只是「看不见图」）");
+  const traceA = await get(`/api/review/exams/${examA}/trace?blockId=B1`, tokenA);
+  const traceAIds = [...new Set((traceA.body?.data ?? []).map((t: { cropId: string }) => String(t.cropId)))];
+  ok(traceA.status === 200 && traceAIds.includes("pc-b1-9001") && !traceAIds.includes("pc-b1-9003")
+    && !traceAIds.includes("pc-b1-9002"),
+    `阅卷溯源同样按逐生切片收口（实际 ${JSON.stringify(traceAIds)}）`);
+  const traceD = await get(`/api/review/exams/${examA}/trace?blockId=B1`, tokenD);
+  const traceDIds = [...new Set((traceD.body?.data ?? []).map((t: { cropId: string }) => String(t.cropId)))];
+  ok(traceDIds.includes("pc-b1-9003") && !traceDIds.includes("pc-b1-9002"),
+    `D 教师看得到自己切片内的卷子，仍看不到无人开评的那份（实际 ${JSON.stringify(traceDIds)}）`);
 
   // CR1 全流程：跨切片承接第二评 → 首评人再承接另一份的第二评，双评走得完
   const crossClaim = await claimSpecificPaper(examA, "B1", "pc-b1-9001", teacherD.id);

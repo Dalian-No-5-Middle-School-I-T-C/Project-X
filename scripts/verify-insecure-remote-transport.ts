@@ -130,6 +130,39 @@ async function main(): Promise<void> {
   check(insecureTransportMessage("10.0.0.7:5174").includes("10.0.0.7:5174"),
     "话术生成器把目标地址原样带回，便于老师核对是不是自己填的那台");
 
+  // 评审 B5：闸门的判据从「本机存了什么凭据」换成「这条请求会不会带出凭据」。
+  // 旧判据把**第一次登录**漏在外面：那台机器上 token 与 API Key 都为空，而登录请求的 body
+  // 里就是明文口令——配置了跨机 http 地址的 Web 端会把管理员口令直接发出去。
+  // Web 构建目标（VITE_BUILD_TARGET）在 Node/tsx 下无法伪造（无 env 时模块按扫描端处理，
+  // 闸门本就直接放行），所以这里直接测判据纯函数，「两个发送点都接上」由
+  // scripts/verify-security-critical.ts 的 R32 源码断言锁住。
+  const { bodyCarriesCredentials } = await import("../src/apps/answer-card/client/auth/api");
+  check(bodyCarriesCredentials(JSON.stringify({ username: "admin", password: "admin123" })) === true,
+    "B5：首次登录的 body（只有 password，本机无任何凭据）被认成带凭据请求");
+  check(bodyCarriesCredentials(JSON.stringify({ oldPassword: "a", newPassword: "b" })) === true
+    && bodyCarriesCredentials(JSON.stringify({ confirmPassword: "b" })) === true
+    && bodyCarriesCredentials(JSON.stringify({ initialPassword: "b" })) === true,
+    "B5：改密/重置的三个入口字段同样在判据内（漏一个就是新的明文口令外发口）");
+  check(bodyCarriesCredentials(JSON.stringify({ api_key: "sk-x" })) === true
+    && bodyCarriesCredentials(JSON.stringify({ apiKey: "sk-x" })) === true
+    && bodyCarriesCredentials(JSON.stringify({ token: "jwt-x" })) === true,
+    "B5：下划线与驼峰两种 Key 写法、以及 token 字段都被认出来");
+  check(bodyCarriesCredentials(new URLSearchParams("password=admin123")) === true
+    && bodyCarriesCredentials(new URLSearchParams("oldPassword=a&newPassword=b")) === true,
+    "B5：urlencoded body 按键名判（它序列化出来是 password=xxx，没有引号，照 JSON 正则匹配等于漏判）");
+  const form = new FormData();
+  form.set("api_key", "sk-x");
+  check(bodyCarriesCredentials(form) === true, "B5：FormData 同样按键名判，口令字段不看值");
+  check(bodyCarriesCredentials(new URLSearchParams("examId=12&page=2")) === false,
+    "B5：urlencoded 的普通查询参数不触发闸门");
+  check(bodyCarriesCredentials(JSON.stringify({ examId: 12, page: 2 })) === false
+    && bodyCarriesCredentials(undefined) === false
+    && bodyCarriesCredentials("") === false
+    && bodyCarriesCredentials(JSON.stringify({ note: "把 password 字段留空" })) === false
+    && bodyCarriesCredentials(JSON.stringify({ note: "password" })) === false,
+    "B5：无凭据的 body 不触发闸门（/api/app/health 这类探测要能继续发出去，界面才分得清「不可达」与「被闸门挡下」）；"
+    + "值里含 password 字样也不算带凭据");
+
   console.log("\n[2] 真实 HTTP：明文凭据不出进程，回环与不带凭据的探测照常");
 
   const seen: Array<{ url: string; apiKey: string | null; auth: string | null; from: string }> = [];

@@ -2,7 +2,121 @@
 
 > **项目起点：2026-06-07 建库**（GitHub 仓库创建，`Initial commit` 于同一分钟提交）。本文件只记录建库之后的真实提交与发版；建库之前的任何日期/版本均为误记，已删除。
 
+## 2026-10-06：PR #312 评审返修（2 项 blocker + 6 项重要）
+
+这一轮评审给了八条：A1/A2 是「上线前必须修」的 blocker，B1–B6 是重要项。八条都在
+`fix/security-r02-scanner-access` 上修完。共同特征是**闸门本身是对的，漏在边界上**：
+一条让整条范围校验对某类凭据形同不存在，一条让新加的性能优化变成自伤，其余六条分别是
+同级路由、锁与事务的先后、启动清理的作用域、后补列的默认值、首次登录、以及错误文案里的 PII。
+
+**Blocker**
+
+- **A1 扫描端 API Key 不再穿透范围校验**（`src/server/middleware/scanner-scope.ts`）：
+  `requireScannerRecordScope` / `requireScannerCardScope` / `requireScannerExamScope` 三处函数第一行都是
+  `if (isApiClient) { next(); return; }`，而旁边注释写着「raw X-Api-Key never grants a bypass」——注释是愿望，
+  代码是反面。这把 Key 就写在扫描机的 `config.yml` 里，同局域网内一个能碰到它的教师就能按任意 ID 读原卷，
+  R04/CR3/CR5 建起来的「考试 / 卡 / 页」三级收口对这类凭据整体失效。
+  扫描端确实没有教师身份可谈（可见考试集合、题块矩阵、逐生分配在它身上都没有对应物），
+  但**「无法按人授权」不等于「按 ID 任意读」**：机器调用者改走数据绑定校验——recordId/sessionId/cardId/examId
+  必须解析得到真实行、归属链完整、且绑定的考试不是「全部已被数据保留策略清理」（与给人用的 CR4 同一口径），
+  否则 **404**；未绑定任何考试的本机首次扫描照旧放行，那是扫描流程的正常起点。
+  拒绝时的状态码与文案与用户路径**完全一致**，避免「换一种凭据就能探测 ID 是否存在」。
+  残留口径（如实写进代码注释与 README）：扫描端 Key 目前仍是全场共享的一把，它覆盖所有*未清理*的考试；
+  收到「这台机器只能扫这几场」需要给 `api_keys` 加归属列（新迁移 + 签发界面 + 存量 Key 回迁），
+  v59 已被 #311 占用，合并顺序归维护者。列表类端点（`scanner-sync.ts` 的 `/exams`、`/exam-groups`）
+  保持 Key 直通是有意的——它们的职责就是「把未清理的考试列出来给扫描端挑」，没有可绑定的 ID，
+  且查询本身已经带 `EXAM_NOT_SOFT_DELETED_SQL`。
+- **A2 原卷上传不再每次作废容量缓存**（`paperQuota.ts`、`routes/paper-routes.ts`）：CR14 那条改动的
+  `finally { invalidatePaperUsageCache(); }` 把**五条返回路径**（成功、转换后越界回滚、写盘失败、预算拒绝、
+  参数错误）全部变成「缓存作废」，于是每次上传都要重扫一遍整个 `papers/`——R10 的 60 秒 TTL 与早停
+  本是给全局实测做的性能设计，结果被上传这条高频路径逐次清空。更要紧的是 `sumDirBytes` 没有并发合并：
+  N 个并发上传各扫一遍盘，越接近容量上限目录越大、扫得越久，形成**自我加宽的拒绝服务**。
+  修法是让写路径不再打自己的脸：提交成功后按**本轮实测落盘字节**把缓存向前推（`adjustPaperUsageCache`），
+  只有失败/回滚（字节数不可信）才作废缓存，删除页与**整卡删除**（这条此前漏了）才重扫；
+  同时给同上限的实测加在途合并（`inflightTotalScans`），并发上传共享一次扫描。
+  README 里「全局这一维沿用 admission 的缓存值加上本轮实测增量」这段文档从一开始就是对的，
+  **是代码没跟上文档**。回归不用计时器证伪，用计数 seams：`readPapersTotalScanCount()` 断言
+  「失效缓存后 +1 次」「四个并发读取只扫一次」「成功上传扫盘次数不变而总量增长」「删除后重扫且总量回落」。
+
+**重要**
+
+- **B1 同级路由与清单/溯源的逐生切片收口**（`server/index.ts`、`routes/review.ts`、`ReviewPoolService.ts`）：
+  `scanner/index.ts` 的 grading-image 拿到了 `requireScannerCardScope({wholePaperRead:true})`，
+  而**同一批物理文件**的另一条读取入口 `/api/cards/:cardId/grading/preview/:fileName` 只有 `cardGate`——
+  加上媒体白名单允许这条路径在 URL 里带凭据，收口等于留了一扇侧门。现在它复用同一个
+  `enforceScannerCardScope()`（与建会话入口共用一份判断，不会两边各自漂移）。
+  另一侧：`/api/review/exams/:examId/block-crops` 与 `/trace` 只挂了 `requireExamAccess` + 题块权限，
+  没有按 `assigned_student_ids` 收口，于是「读不到别人的切块图，却能在清单和溯源里看到他的
+  学生 ID 与学号」——横向越权从「看不见图」升级成「拿得到名单」。两处都接上
+  `buildAssignedSliceClause()`：它逐块调用**同一个** `getAssignedStudentIdSet()`，并沿用领取侧那条
+  「本人切片 ∪ 已离开首评队列 ∪ 本人已领取」的逃生口径，所以清单、溯源、领取、切块图四条路径
+  共用一份谓词，不会出现「这边放行那边拦」的二义。特权调用方（`getPermittedBlocks` 返回 null）
+  与非强制模式的本地扫描照旧不受限。
+- **B2 AI 准入锁不再在 COMMIT 之前释放**（`db/mysql.ts` 新增 `transactionWithNamedLock`，`aiQuota.ts` 改用）：
+  旧写法是 `db.transaction(tx => withLock(tx, fn))`，`RELEASE_LOCK` 在 `fn` 返回那一刻执行，
+  COMMIT 还要再往后一步——第二个进程拿到锁时读到的是上一笔**尚未提交**的快照，跨进程窗口照样超发。
+  现在整段临界区在同一条连接上按 GET_LOCK → BEGIN → fn → COMMIT → RELEASE_LOCK 顺序执行，
+  放锁时占位行已对外可见；锁超时仍映射成 429「请重试」而不是 500。
+- **B3 启动清理只碰出窗的在途行**（`aiTelemetry.ts`）：`markInterruptedAiRuns` 原来无条件把
+  `success IS NULL` 全判 `INTERRUPTED`，依据是「启动阶段不存在真正在途的调用」——这在多实例部署
+  与金丝雀/滚动更新下不成立：实例 A 启动会把实例 B 正在真实执行的调用改成失败，还顺手把它的占位
+  提前释放成可用名额（误杀 + 超发同时发生）。现在按 `AI_ACTIVE_RUN_STALE_MS` 划界，
+  且与准入读账本共用同一份归一化 SQL（`sqlTimeAt`，抽到 `db/timestamp.ts`）——
+  「哪一行算过期」这件事两边必须给同一个答案。**任务行那一半故意没有跟着改**：
+  `queued` 的名额计数没有时间边界，把清理也窗口化会让崩溃残留在此后不再重启的部署里永久压着名额，
+  比现状更糟；理由写在 `aiAnalysisJobs.ts` 的注释里。
+- **B4 历史公开口令按哈希事实判定**（`db/index.ts`）：`password_change_required` 是**后补的 `DEFAULT 0` 列**，
+  所以「建库早于那次迁移、管理员从未改过口令」的存量库标志位天然是 0，只看它就等于把
+  「一直没动过 `admin123`」读成「已完成首次改密」，跳过轮换——正好推翻 R01 对外承诺的「升级即失效」。
+  现在两条都判：标志位是**意图**，哈希能否被历史公开口令验通才是**事实**，不一致按事实办
+  （`LEGACY_PUBLIC_BOOTSTRAP_PASSWORDS` 集中一处，将来再泄露只加一个元素）。命中即换发一次性随机口令、
+  重新要求登录后改密，并打 `[SECURITY]` 日志说明原因。`readus/ADMIN-BOOTSTRAP-PASSWORD.md` 已补这格表格
+  和「这类库升级后第一次重启管理员会先登不进去」的取回口令路径。
+- **B5 首次登录也要过明文凭据闸门**（`client/auth/api.ts`）：R32 的闸门挂在「本机已存有 token / API Key」上，
+  于是**第一次登录**恰好漏在外面——那时两者都为空，而登录请求的 body 里就是明文口令，
+  配了跨机 `http://` 的 Web 端会把管理员口令直接发出去，正是这条整改要挡的事。判据改成
+  「这条请求会不会带出凭据」：`bodyCarriesCredentials()` 对 JSON 按**带引号的键名 + 冒号**匹配
+  （值里含 `password` 字样的普通请求不算），对 `URLSearchParams` 与 `FormData` **按键名**判
+  （它们序列化出来没有引号，照 JSON 正则匹配等于漏判——回归就是这么抓出第一版实现的）。
+  仍按「带凭据才拦」：无凭据的健康探测照常发出，界面才分得清「连不上」与「连得上但明文被拦」。
+- **B6 公布 409 只给人数**（`examPublication.ts`）：缺应考学生成绩时的 409 会把最多 5 个人的
+  「姓名(学号)」拼进消息，并原样出现在前端提示里；公布是教师一次点很多场的高频操作，
+  而这些人恰恰是「本场没有成绩」的学生，姓名本身就是可读结果（与 CR12 同一条口径）。
+  现在文案只给「应考 N 人，缺 M 名」，人数另以结构化字段 `missingCount` 提供，
+  批量路径拼接多条原因时也不再有第二处 PII 出口。
+
+验证：`verify:security-critical` 由 485 增至 **505 条、0 失败**（A1 的机器入口 404 矩阵与正向对照、
+A2 的扫盘计数 seams、B4 的三类口令态、B5 的源码不退化、B6 的响应体不含姓名/学号），
+`verify:permission-scope` 由 110 增至 **118 条、0 失败**（同级路由 200/403 与题块级教师改走 cards 路径同样 403、
+切块清单与阅卷溯源按逐生切片收口），`verify:insecure-remote-transport` 由 57 增至 **64 条、0 失败**。
+`npm run typecheck` 通过。本地 MariaDB 12.3.2（临时实例 @13306，CI 是 10.11，版本不同源、CI 仍是最终裁判）：
+`verify:mariadb` **16 段全 PASS**（含真库下的并发准入突发、命名锁跨提交、出窗/在窗两种在途行的清理结果、
+公布 409 不含姓名），`class-archive:mariadb` 9 段、`verify-ladder-students --mariadb` ALL PASS、
+`demo-credentials:mariadb` 91/0、`card-export-revision:mariadb` 66/0。
+SQLite 侧 CI 同款清单全绿：`auth` 137/0、`core-logic` ALL PASS、`ladder` ALL PASS、`class-teachers`、
+`student-score-display`、`class-archive`、`p1-integrity` 15/0、`p1-scope` 19/0、`p1-readgate` 15/0、
+`grading-published-exam`、`scan-page-numbering`、`scanner-page-timeout`、`scanner-batch-results`、
+`demo-credentials`、`systemd-hardening` 108/0、`release-integrity` 61/0、`card-export-revision` 66/0、
+`stage-vc-runtime`；CI 清单外补跑 `scanner-cancel` 33/0 与 `analysis-batches-2-4` 76/0（AI 异步任务流，
+直接覆盖 B2/B3 的改动面）。**CI 尚未跑过这批提交**——本分支是 stacked PR，`ci.yml` 只在
+`pull_request → main` 触发，要等合并顺序定了才有 CI 结论。
+
+本轮踩到的三个坑，记下来免得下次重踩：
+
+1. **回归夹具要用真图**：A2 的上传断言第一版直接拿脚本里那份「只有 PNG 魔数」的 `pngBytes` 当原卷，
+   转换器（sharp）报 `Input file has corrupt header` 把整条断言变成假红。用 `sharp` 现场生成
+   600×850 白底 PNG 才是这条路径的真实输入。
+2. **`URLSearchParams` 没有引号**：`bodyCarriesCredentials` 第一版复用 JSON 那条带引号的正则去测
+   `body.toString()`，于是 urlencoded 登录（正是 B5 要挡的那条）判为「不带凭据」。回归把这一形态
+   单独钉住后才发现，改按键名判。
+3. **本地跑 CI 全量时环境变量会串味**：把 `PROJECTX_MARIADB_*` 导出给 MariaDB 段之后，
+   只 `unset PROJECTX_DB_TYPE` 不够——只要 `PROJECTX_MARIADB_HOST` 还在，`db/index` 仍推断成 MariaDB 模式，
+   于是 SQLite 段的 `verify:grading-published-exam` 去连 `projectx` 库拿 `ER_DBACCESS_DENIED_ERROR`，
+   是一条**假红**。串行跑（两套都要起真实 HTTP 服务，并行会端口相撞）且 SQLite 段前把六个变量全部清掉。
+
 ## 2026-10-05：PR #312 复核返修（2 项 P2）
+
+
 
 冲突解除后评审又给了两条 P2。两条都是「闸门本身是对的，但交接处漏了一段」。
 
