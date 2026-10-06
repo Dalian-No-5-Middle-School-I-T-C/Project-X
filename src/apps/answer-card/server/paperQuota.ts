@@ -21,7 +21,9 @@ import {
  *  - 图片页会同时落 jpg 与配对 pdf，只有磁盘扫描量得到真实占盘；
  *  - 恢复/清理流程改动了目录也不需要维护一个会漂移的计数器。
  * 单卡体积扫的是该卡自己的目录（页数已被上限约束，量级可控）；全局体积扫整个 `papers/`，
- * 用 60 秒 TTL 缓存 + 越界早停，避免每次上传都走一遍全盘。
+ * 用 60 秒 TTL 缓存 + 越界早停 + **同一次实测的在途合并**，避免每次上传都走一遍全盘。
+ * 缓存的维护原则（PR #312 评审 A2）：写入按实测增量前推，删除才作废重测——「作废」本身
+ * 是有代价的，把它放在每条请求的 `finally` 里等于给攻击者一个免费的重扫描开关。
  */
 
 const MEBIBYTE = 1024 * 1024;
@@ -29,9 +31,42 @@ const TOTAL_SCAN_TTL_MS = 60_000;
 
 let cachedTotal: { bytes: number; exact: boolean; at: number } | null = null;
 
-/** 上传成功/删除页后调用：让下一次读取重新实测，而不是继续用 60 秒前的缓存。 */
+/**
+ * 同一把上限下的并发实测合并（PR #312 评审 A2）。
+ *
+ * 缓存失效后如果 10 条上传同时到达，它们会各自发起一次 `papers/` 递归 `stat`：
+ * 全目录扫描是 O(文件数) 的同步式 I/O 压力，最坏情况下「清缓存」这件事本身就是拒绝服务。
+ * 合并成一次在途扫描之后，同一时刻无论多少请求只走一遍目录。
+ */
+const inflightTotalScans = new Map<number, Promise<PapersUsage>>();
+
+/** 真实发生的 `papers/` 目录实测次数（评审 A2 的回归锚点：缓存策略改的是「扫几遍盘」） */
+let totalScanCount = 0;
+export function readPapersTotalScanCount(): number {
+  return totalScanCount;
+}
+
+/** 删除页/删除整卡后调用：让下一次读取重新实测，而不是继续用 60 秒前的缓存。 */
 export function invalidatePaperUsageCache(): void {
   cachedTotal = null;
+}
+
+/**
+ * 写入成功后按**实际落盘增量**修正缓存（PR #312 评审 A2）。
+ *
+ * 上传成功不再作废缓存，而是把它向前推：全局闸门要防的是「累计占盘越界」，
+ * 增量的符号与大小都是本轮已经量出来的真相（`jpg` + 配对 PDF），不需要重扫目录。
+ * 缓存本来就不存在（TTL 过期后由别处实测、或首次启动）时什么都不做——
+ * 下一次读取自然会实测，绝不自作聪明地造一个基线。
+ *
+ * 已知的一次少算：本轮增量落进缓存的同时，可能恰有一条**更早开始**的实测在收尾，
+ * 它扫盘时还没看到本轮写的文件，发布时会把缓存覆盖成不含本轮增量的值。差值上界就是
+ * 这条并发上传的字节数——与「早停实测只是下界」同一条容忍口径（README 的判定因此用
+ * 严格大于），60 秒 TTL 到点即自愈，不需要为此给缓存加版本链。
+ */
+export function adjustPaperUsageCache(deltaBytes: number): void {
+  if (!cachedTotal || !Number.isFinite(deltaBytes) || deltaBytes === 0) return;
+  cachedTotal = { ...cachedTotal, bytes: Math.max(0, cachedTotal.bytes + deltaBytes) };
 }
 
 /** 测试用：确认可无配置回落到默认口径。 */
@@ -122,10 +157,21 @@ export async function readPapersTotalBytes(limitBytes: number = MAX_PAPER_BYTES_
   if (cachedTotal && Date.now() - cachedTotal.at < TOTAL_SCAN_TTL_MS) {
     return { bytes: cachedTotal.bytes, exact: cachedTotal.exact };
   }
-  const scanned = await sumDirBytes(papersDir, limitBytes, new Set([paperTmpDir]));
-  if (scanned.stoppedEarly) return { bytes: scanned.bytes, exact: false };
-  cachedTotal = { bytes: scanned.bytes, exact: !scanned.partial, at: Date.now() };
-  return { bytes: scanned.bytes, exact: !scanned.partial };
+  // 缓存过期 ≠ 每次都扫盘：并发请求共用同一次在途实测（评审 A2）
+  const running = inflightTotalScans.get(limitBytes);
+  if (running) return await running;
+  const scan: Promise<PapersUsage> = (async (): Promise<PapersUsage> => {
+    totalScanCount += 1;
+    const scanned = await sumDirBytes(papersDir, limitBytes, new Set([paperTmpDir]));
+    if (scanned.stoppedEarly) return { bytes: scanned.bytes, exact: false };
+    const usage: PapersUsage = { bytes: scanned.bytes, exact: !scanned.partial };
+    cachedTotal = { ...usage, at: Date.now() };
+    return usage;
+  })().finally(() => {
+    if (inflightTotalScans.get(limitBytes) === scan) inflightTotalScans.delete(limitBytes);
+  });
+  inflightTotalScans.set(limitBytes, scan);
+  return await scan;
 }
 
 export interface PaperQuotaSnapshot {

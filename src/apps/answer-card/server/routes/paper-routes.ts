@@ -17,6 +17,7 @@ import {
   MAX_PAPER_REQUEST_BYTES,
 } from "../../../../shared/paperStorageLimits";
 import {
+  adjustPaperUsageCache,
   assertWrittenPaperWithinQuota,
   evaluatePaperQuota,
   invalidatePaperUsageCache,
@@ -183,6 +184,10 @@ export function paperRoutes(): Router {
       const staged = ((req.files as Express.Multer.File[]) || []).filter(Boolean);
       // 本次已落盘但尚未被 DB 行引用的文件；提交成功后清空，失败时逐个删除（安全 R14）
       const storedPaths: string[] = [];
+      // 本轮**实际落盘**的页数与字节数：事务内累加。声明在 try 之外，成功路径用它前推缓存、
+      // 失败路径用它判断「磁盘被本轮动过，缓存要重测」（评审 A2）
+      let writtenPages = 0;
+      let writtenBytes = 0;
       try {
         const cardId = String(req.params.cardId);
         if (staged.length === 0) {
@@ -242,7 +247,6 @@ export function paperRoutes(): Router {
         let firstFilename = "";
         let firstRelPath = "";
 
-
         await db.transaction(async (tx) => {
           const maxRow = await tx.get(
             "SELECT COALESCE(MAX(page_index), 0) AS mx FROM original_paper_pages WHERE card_id = ?",
@@ -250,8 +254,6 @@ export function paperRoutes(): Router {
           ) as { mx: number } | undefined;
           let nextIndex = (maxRow?.mx ?? 0) + 1;
 
-          let writtenPages = 0;
-          let writtenBytes = 0;
           for (const { file, originalname } of validFiles) {
             const pageIndex = nextIndex;
             nextIndex += 1;
@@ -280,6 +282,13 @@ export function paperRoutes(): Router {
         });
         // 事务已提交：这些文件正式被 DB 行引用，回滚窗口到此结束
         storedPaths.length = 0;
+        // 安全（PR #312 评审 A2）：写入成功是**增量修正**缓存，不是作废缓存。
+        // 原先 `finally` 里无条件 `invalidatePaperUsageCache()`，5 条返回路径（400 校验失败 /
+        // 413 admission / 413 落盘复测 / 500 / 200）每条都把 60 秒缓存清掉——而请求在被拒之前
+        // 已经先读过一次配额（`readPaperQuota`），于是「持续上传垃圾」的开销被放大成
+        // 每一次都重扫整个 `papers/`：配额闸门本身成了可被打的靶子。
+        // 现在只有真正改了磁盘占用的路径才动缓存：写入按实测增量前推，删除走重新实测。
+        adjustPaperUsageCache(writtenBytes);
 
 
         // legacy 字段保留首页，向后兼容预览/导出/AI 读取
@@ -307,6 +316,10 @@ export function paperRoutes(): Router {
       } catch (err: any) {
         // 事务未提交就失败：本轮落地的文件没有任何 DB 行引用，全部删掉（安全 R14）
         if (storedPaths.length > 0) await discardStoredPaths(storedPaths);
+        // 回滚删了文件就把可能被本轮写盘污染的实测值丢掉：`assertWrittenPaperWithinQuota`
+        // 里的那一次全局实测会把「即将被删掉的文件」算进缓存（评审 A2 的反面情形——
+        // 不删就会让后续请求凭空多算一整批原卷，直到 60 秒 TTL 到期）。
+        if (writtenBytes > 0) invalidatePaperUsageCache();
         if (err instanceof PaperQuotaRollbackError) {
           // 落盘后复测越界（CR14）：页行已随事务回滚、文件已删，这里给出与 admission 同一形状的 413
           res.status(413).json({
@@ -325,7 +338,8 @@ export function paperRoutes(): Router {
         for (const file of staged) {
           try { unlinkSync(file.path); } catch {}
         }
-        invalidatePaperUsageCache();
+        // 评审 A2：这里**不再**无条件作废用量缓存——`_tmp` 本来就不计入长期占盘，
+        // 清临时文件不需要重扫 `papers/`；缓存的增减由上面的写入增量与下面的删除路径负责。
       }
     }
   );
@@ -427,6 +441,9 @@ export function paperRoutes(): Router {
         "UPDATE answer_cards SET has_original_paper = 0, original_paper_filename = NULL, original_paper_path = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         cardId
       );
+      // 安全（PR #312 评审 A2）：整卡删除此前**不作废**用量缓存——删掉的几十 MiB 原卷在 60 秒内
+      // 仍然算在总量里，管理员「删了腾地方」立刻再上传会被 413 拒绝。删除量无从增量推算，走重测。
+      invalidatePaperUsageCache();
 
       res.json({ success: true });
     } catch (err: any) {
