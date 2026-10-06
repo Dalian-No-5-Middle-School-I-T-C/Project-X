@@ -17,6 +17,15 @@
 
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
+import { databaseTimestamp, SQL_TIME_ARG, sqlTimeAt } from "../db/timestamp";
+import { AI_ACTIVE_RUN_STALE_MS } from "../../shared/aiQuotaLimits";
+
+/**
+ * 与 `aiQuota` 的账本读取共用同一份归一化片段（`sqlTimeAt`）：
+ * 「哪一行算过期」这件事，准入判定与启动清理必须给出同一个答案。
+ */
+const RUN_TIME_AT = sqlTimeAt("created_at");
+const RUN_TIME_CUTOFF = SQL_TIME_ARG;
 
 export type AiRunFeature = "exam_analysis" | "student_analysis" | "exam_group_analysis";
 
@@ -105,19 +114,36 @@ export async function finalizeAiRun(runId: number | null, patch: AiRunPatch): Pr
 }
 
 /**
- * 服务启动时清理上次进程留下的在途占位（PR #312 CR8）。
+ * 服务启动时清理**过期**的在途占位（PR #312 CR8，评审 B3 收紧）。
  *
  * `success IS NULL` 的行现在同时是并发名额的占位：进程被 kill 时没人回填，
- * 不清理就会一直占用名额直到失效窗口过去。启动阶段不存在真正在途的调用
- * （本进程还没开始服务），所以残留一律判为中断。失败只告警，不阻塞启动。
+ * 不清理就会一直压着名额。但「启动」不等于「全局没有在途调用」——多实例部署或
+ * 金丝雀/滚动更新时，实例 A 启动那一刻会把实例 B 正在真实执行的请求无条件改成失败，
+ * 同时把它的占位提前释放成可用名额（既是误杀真实工作，也是超发）。
+ *
+ * 所以清理只针对**已经超过失效窗口**的行：
+ *  - 窗口内可能真有别的实例在跑，不能碰；
+ *  - 窗口外的行 `readAiQuotaSnapshot` 本来就不再计入并发名额（同一个 `AI_ACTIVE_RUN_STALE_MS`、
+ *    同一份归一化 SQL），把它们标成 INTERRUPTED 只是补上账本标注，不改变任何放行结果。
+ * 于是单实例部署照旧自愈，多实例部署不再互相误杀。返回被标记的行数供启动日志与回归断言。
  */
-export async function markInterruptedAiRuns(db: DbAdapter): Promise<void> {
+export async function markInterruptedAiRuns(
+  db: DbAdapter,
+  staleMs: number = AI_ACTIVE_RUN_STALE_MS
+): Promise<number> {
   try {
-    await db.run(
-      `UPDATE ai_analysis_runs SET success = 0, error_code = 'INTERRUPTED' WHERE success IS NULL`
+    const cutoff = databaseTimestamp(new Date(Date.now() - staleMs));
+    const res = await db.run(
+      `UPDATE ai_analysis_runs SET success = 0, error_code = 'INTERRUPTED'
+       WHERE success IS NULL AND ${RUN_TIME_AT} < ${RUN_TIME_CUTOFF}`,
+      cutoff
     );
+    const changed = Number(res.changes ?? 0);
+    if (changed > 0) console.warn(`[aiTelemetry] 启动清理：${changed} 条超过 ${staleMs} 毫秒的在途 AI 调用判为 INTERRUPTED`);
+    return changed;
   } catch (err) {
     console.warn("[aiTelemetry] markInterruptedAiRuns failed:", (err as Error)?.message);
+    return 0;
   }
 }
 

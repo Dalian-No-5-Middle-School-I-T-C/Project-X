@@ -113,6 +113,16 @@ export async function markInterruptedJobsFailed(db: DbAdapter): Promise<void> {
   );
   // PR #312 CR8：运行行的 success IS NULL 现在同时是并发名额的占位，
   // 崩溃残留若不清掉会一直压着名额，直到失效窗口过去。
+  //
+  // 评审 B3 只收紧了**运行行**那一半（`markInterruptedAiRuns` 改为只处理出窗行），任务行这一半
+  // 仍按「启动即无条件判中断」处理，口径不同是有意的：
+  //  - 名额账本对 `queued` 任务行**没有时间边界**（见 `readAiQuotaSnapshot`），一旦这里的清理
+  //    也改成「只碰出窗行」，崩溃残留的 queued 任务就要等到下一次重启才可能释放名额；
+  //    若此后不再重启，它会永久压着该用户的名额——比维持现状更糟。
+  //  - 多实例下这一步的最坏后果是**暂时**把别的实例正在跑的任务显示成「服务重启中断」，
+  //    而它执行完仍会把状态写回 done/error；运行行被误杀则是不可逆的账本污染 + 名额超发。
+  // 要让两边彻底同口径，需要给任务行也加时间边界（并同步放宽 queued 的名额计数），
+  // 那是配额语义的改动，不在本条评审范围内。
   await markInterruptedAiRuns(db);
 }
 

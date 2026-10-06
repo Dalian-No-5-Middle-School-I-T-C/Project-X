@@ -1,5 +1,7 @@
 import type { DbAdapter } from "../db";
+import { NamedLockTimeoutError } from "../db/mysql";
 import { databaseTimestamp } from "../db/timestamp";
+import { SQL_TIME_ARG, sqlTimeAt } from "../db/timestamp";
 import { insertAiRunRow } from "./aiTelemetry";
 import {
   AI_ACTIVE_RUN_STALE_MS,
@@ -63,18 +65,12 @@ async function countOf(db: DbAdapter, sql: string, ...params: unknown[]): Promis
 }
 
 /**
- * 时间窗比较的归一化口径。
- *
- * `ai_analysis_runs.created_at` 由列默认值写入：SQLite 的 `CURRENT_TIMESTAMP` 是**空格分隔的 UTC**
- * （`2026-10-04 06:00:00`），而本仓库的 `databaseTimestamp()` 在 SQLite 上按既有约定产出 **ISO**
- * （`2026-10-04T06:00:00.000Z`）。两者直接做字符串比较时 `'T' > ' '`，任何默认值写入的行都会被判成
- * 「早于窗口起点」——配额看起来生效，实际永远读 0。这里把两侧都截成 `YYYY-MM-DD HH:MM:SS` 再比：
- *  - SQLite：比较双方同为 UTC，只消掉分隔符差异；
- *  - MariaDB：`DATETIME` 与 `databaseTimestamp()` 同为本地时间，归一是无操作。
- * 只用 `REPLACE` / `SUBSTR`（两方言同名同义），不引入 `date_format`、相关子查询或 `IN ()`。
+ * 时间窗比较的归一化口径见 `sqlTimeAt` / `SQL_TIME_ARG`（`src/server/db/timestamp.ts`）。
+ * 这里与 `aiTelemetry.markInterruptedAiRuns` 共用同一份片段：准入读账本与启动清理**必须**
+ * 对「哪一行算过期」给出同一个答案，否则一边认为还占着名额、另一边已经把它判成中断。
  */
-const RUN_TIME_AT = "SUBSTR(REPLACE(created_at, 'T', ' '), 1, 19)";
-const RUN_TIME_CUTOFF = "SUBSTR(REPLACE(?, 'T', ' '), 1, 19)";
+const RUN_TIME_AT = sqlTimeAt("created_at");
+const RUN_TIME_CUTOFF = SQL_TIME_ARG;
 
 /**
  * 读取当前账本。未登录（`userId` 为空）时没有可归因的账本，返回全 0，
@@ -184,7 +180,7 @@ export function evaluateAiQuota(
 }
 
 /**
- * 准入临界区（PR #312 CR9）：把「读账本 → 判定 → 占位」串在同一把锁里原子完成。
+ * 准入临界区（PR #312 CR9 + 评审 B2）：把「读账本 → 判定 → 占位」串在同一把锁里原子完成。
  *
  * 两层互斥，各挡一种并发：
  *  - **进程内一条串行链**：SQLite 适配器复用同一条 better-sqlite3 连接，并发调用
@@ -193,38 +189,36 @@ export function evaluateAiQuota(
  *  - **数据库命名锁 `px_ai_admission`**：挡跨连接/跨进程的并发。MariaDB 下两个请求各自读到
  *    同一份旧账本（COUNT 走一致性快照，看不见对方未提交的 INSERT），上限 8 的名额能放到 11 个任务。
  * 锁是**全局一把**而不是按用户：全局名额本身也是全局的，多个用户同时挤占时必须一起结算。
- * 命名锁必须与事务共用同一条连接（`GET_LOCK` 是连接级状态），因此只在 tx 内取放；
- * 它是连接级状态、不随提交释放，本连接归还池中前必须显式放锁，否则后续请求会白等超时。
+ *
+ * B2 的修正：锁**不能**在事务内部取放。写成 `transaction(tx => withLock(tx, fn))` 时，
+ * `RELEASE_LOCK` 在 `fn` 返回的那一刻就执行了，而 COMMIT 还要再往后一步——于是第二个进程
+ * 拿到锁时读到的是上一笔**尚未提交**的快照，跨进程窗口照样超发。现在整段临界区交给
+ * `db.transactionWithNamedLock()`：同一条连接上 GET_LOCK → BEGIN → fn → COMMIT → RELEASE_LOCK，
+ * 放锁时占位行已经对外可见。（`GET_LOCK` 是连接级状态，锁与事务共用同一条连接还有一个好处：
+ * 等待者每个只占一条连接，不会出现「锁连接与事务连接互相等对方」的池内死锁。）
  */
 export async function runInAiAdmission<T>(db: DbAdapter, fn: (tx: DbAdapter) => Promise<T>): Promise<T> {
-  return withAdmissionQueue(() => db.transaction((tx) => withAdmissionNamedLock(tx, () => fn(tx))));
+  return withAdmissionQueue(async () => {
+    try {
+      return await db.transactionWithNamedLock(ADMISSION_LOCK_NAME, AI_ADMISSION_LOCK_TIMEOUT_MS, fn);
+    } catch (error) {
+      // 锁没抢到是「稍后再试」，不是服务端故障：保持 429 语义，别退化成 500。
+      if (error instanceof NamedLockTimeoutError) {
+        throw new AiQuotaError(`AI 准入排队超过 ${AI_ADMISSION_LOCK_TIMEOUT_MS} 毫秒，请重试`, 2);
+      }
+      throw error;
+    }
+  });
 }
+
+/** 命名锁的名字（回归脚本与 MariaDB 侧 `IS_USED_LOCK` 体检都用它）。 */
+export const ADMISSION_LOCK_NAME = "px_ai_admission";
 
 let admissionChain: Promise<unknown> = Promise.resolve();
 function withAdmissionQueue<T>(fn: () => Promise<T>): Promise<T> {
   const run = admissionChain.then(() => fn());
   admissionChain = run.then(() => undefined, () => undefined);
   return run;
-}
-
-async function withAdmissionNamedLock<T>(db: DbAdapter, fn: () => Promise<T>): Promise<T> {
-  if (db.dialect !== "mariadb") return await fn();
-  const lockName = "px_ai_admission";
-  // GET_LOCK 的等待参数单位是**秒**，而档位按毫秒交付（与其它 PROJECTX_* 时间口径一致）。
-  // 直接把 2000 传进去等于等 2000 秒：并发一挤就是几十分钟挂住请求并占满连接池。
-  const waitSeconds = Math.max(1, Math.round(AI_ADMISSION_LOCK_TIMEOUT_MS / 1000));
-  const acquired = await db.get<{ locked: number | string | null }>(
-    "SELECT GET_LOCK(?, ?) AS locked",
-    lockName, waitSeconds
-  ) as { locked: number | string | null } | undefined;
-  if (Number(acquired?.locked ?? 0) !== 1) {
-    throw new AiQuotaError(`AI 准入排队超过 ${AI_ADMISSION_LOCK_TIMEOUT_MS} 毫秒，请重试`, 2);
-  }
-  try {
-    return await fn();
-  } finally {
-    await db.get("SELECT RELEASE_LOCK(?) AS released", lockName);
-  }
 }
 
 /**
