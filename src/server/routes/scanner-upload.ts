@@ -30,7 +30,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import crypto from "node:crypto";
 import { dualAuth } from "../middleware/scanner-auth";
-import { requireScannerExamScope, requireScannerRecordScope } from "../middleware/scanner-scope";
+import { requireScannerExamScope, requireScannerRecordScope, enforceScannerCardScope } from "../middleware/scanner-scope";
 import { resolveScannerExam } from "../services/scannerExam";
 import { getMysqlDb } from "../db";
 import { persistAnswerBlockCrops, isInsideDir, type CropPersistenceStats } from "../services/AnswerBlockCropService";
@@ -211,6 +211,14 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
       res.status(400).json({ message: `pageCount 需为 1–${MAX_SCAN_SESSION_PAGES} 的整数` });
       return;
     }
+    // 安全（PR #312 复核 · 会话创建越权）：先收口考试归属，再谈版本号。
+    // `/sessions/:sessionId` 那组范围中间件在此刻还没有 sessionId，挂不上来；而 R35 的版本核验
+    // 只证明「这张卡是真的」。于是原先一个读得到答题卡、却不在该考试范围内的教师（例如只被分配
+    // 了另一场考试的阅卷人），可以对着这张卡反复建会话：每个会话落 1 行 session 与最多
+    // MAX_SCAN_SESSION_PAGES 行待上传记录 + 令牌，后续页上传虽被 403 挡住，垃圾行已经写进去了。
+    // 这里复用列表端点同一份判断（enforceScannerCardScope），API Key 扫描端凭据按设计继续直连。
+    // 放在版本核验之前还有第二层作用：越权调用方不会从 409 文案里读到服务器侧的版本指纹。
+    if (!(await enforceScannerCardScope(req, res, String(cardId)))) return;
     // 安全 R35：会话都不给建，旧版本的页自然一张也传不上来
     const versionProblem = await cardVersionProblem(String(cardId), req.body?.cardVersion);
     if (versionProblem) {

@@ -2,6 +2,37 @@
 
 > **项目起点：2026-06-07 建库**（GitHub 仓库创建，`Initial commit` 于同一分钟提交）。本文件只记录建库之后的真实提交与发版；建库之前的任何日期/版本均为误记，已删除。
 
+## 2026-10-05：PR #312 复核返修（2 项 P2）
+
+冲突解除后评审又给了两条 P2。两条都是「闸门本身是对的，但交接处漏了一段」。
+
+- **P2 建会话入口补考试范围**（`src/server/middleware/scanner-scope.ts`、`src/server/routes/scanner-upload.ts`）：
+  扫描接口的范围中间件按 `/sessions/:sessionId` 挂，而建会话的请求**此刻还没有 sessionId**、卡号又在请求体里，
+  于是这个入口从来没过范围校验。R35 的版本核验只证明「这张卡是真的」。叠加起来的结果是：一个能读到这张卡、
+  却不在该考试范围内的教师，可以对着它反复建会话——后续的页上传会被 403 挡住，但每个会话已经落
+  1 行 `twain_scan_sessions` 与最多 `MAX_SCAN_SESSION_PAGES`（默认 200）行待上传记录和令牌，
+  属于**越权者可无限堆积的写入**。
+  修法是把列表端点那份判断抽成 `enforceScannerCardScope(req, res, cardId)`（中间件与新入口共用同一份逻辑，
+  避免两处各自漂移），在事务之前调用。顺序上放在版本核验**之前**：越权方因此也读不到 409 文案里的服务器版本指纹。
+  `isApiClient`（扫描端 API Key）按设计继续直连，非强制模式下的本地扫描与「卡还没绑定任何考试」也不受影响。
+- **P2 AI 任务交接期间名额不再出现空隙**（`src/server/services/aiAnalysisJobs.ts`）：CR8 的账本是
+  「`queued` 任务行 + `success IS NULL` 运行行」两段接力，相加才是不重复的在途数。但旧实现是**先**把任务改成
+  `running`，运行行要等到 `trackAnalysisCall` 内部才插——中间那一刻两条腿都不占位。串行队列本身不放大它，
+  放大它的是准入：另一个提交恰好在交接间隙读账本，看到 0 个排队、0 个在途，上限 8 就能放进 9 个。
+  现在新增 `claimAiAnalysisJobForRun(jobId, spec)`，把「建运行行」和「任务转 running」写进同一把准入锁、
+  同一个事务，返回的 `runId` 作为 `reservedRunId` 交给 `runAiAnalysis`（它只回填这一行，不再另起一行）。
+  交接失败（准入锁超时、连接故障）时任务就地判 `error`，否则它会一直停在 `queued` 压着名额、轮询方永远等不到终态。
+
+验证：`verify:security-critical` 由 478 条增至 **485 条、0 失败**，新增的 7 条分别钉住
+「越权教师建会话被 403 且一行都不落」「拒绝响应不含版本指纹」「API Key 直连未被误伤」，以及
+「交接前后名额总数不变、既不空洞也不双计」「交接建出的运行行按任务创建者归因、口径与自建一致」
+「回填即释放」。类型检查通过；CI 同款清单已复跑全绿——`verify:auth` 137、`core-logic` 93、
+`permission-scope` 110、`p1-integrity` 15、`p1-scope` 19、`p1-readgate` 15、
+`insecure-remote-transport` 57、`card-export-revision` 66、`scanner-cancel` 33、
+`analysis-batches-2-4` 76（含 AI 异步任务流一节，直接覆盖交接改动），另有扫描页码 / 页超时 /
+批量结果 / LLM 用量四条 smoke 全部通过，0 失败。仓库外唯一另建会话的脚本是
+`scripts/deployment-business-smoke.ts`，它以管理员身份登录且不在 CI 清单内，新闸门对管理员按设计放行。
+
 ## 2026-10-05：PR #313 评审返修（3 项 P1 + 9 项 P2）
 
 第五批提上去之后评审给了十二条：3 个「上线前必须修」的 P1，9 个「这一轮改动自己带出来的」P2 回归。

@@ -677,6 +677,36 @@ async function main(): Promise<void> {
     db.prepare("DELETE FROM twain_scan_records WHERE session_id=?").run(maxPageSession.sessionId);
     db.prepare("DELETE FROM twain_scan_sessions WHERE id=?").run(maxPageSession.sessionId);
 
+    // ── PR #312 复核 P2：建会话的入口也要过考试范围
+    // 卡号在请求体里、此刻又还没有 sessionId，`/sessions/:sessionId` 那组范围中间件挂不上来；
+    // R35 的版本核验只证明「这张卡是真的」。三者叠加时，能读卡但不在该考试范围内的教师
+    // 可以反复建会话——页上传会被 403 挡住，但 session 与最多 MAX_SCAN_SESSION_PAGES 条
+    // 待上传记录/令牌已经落库了。
+    const scopeSessions = rowCount("SELECT COUNT(*) count FROM twain_scan_sessions");
+    const scopeRecords = rowCount("SELECT COUNT(*) count FROM twain_scan_records");
+    const outOfScopeSession = await fetch(`${base}/api/scanner/upload/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders(teacherToken) },
+      body: JSON.stringify({
+        cardId: "critical-card", cardVersion: criticalCardVersion,
+        name: "越权建会话", pageCount: MAX_SCAN_SESSION_PAGES
+      })
+    });
+    const sessionScopeBody = JSON.stringify(await outOfScopeSession.json().catch(() => ({})));
+    check(outOfScopeSession.status === 403
+      && rowCount("SELECT COUNT(*) count FROM twain_scan_sessions") === scopeSessions
+      && rowCount("SELECT COUNT(*) count FROM twain_scan_records") === scopeRecords,
+      `越权教师为「另一场考试也在用」的答题卡建会话被 ${outOfScopeSession.status} 拒绝，且不落 session 与待上传记录`);
+    check(!sessionScopeBody.includes(criticalCardVersion.slice(0, 12)),
+      "范围拒绝的响应里不含服务器侧版本指纹（越权者连这张卡当前是哪一版都读不到）");
+    // 设计内的机器入口不能被误伤：同一个卡号、同一份体，带扫描端 API Key 仍然建得起来
+    const bypassSession = await newScanSession();
+    check(bypassSession.status === 201
+      && rowCount("SELECT COUNT(*) count FROM twain_scan_sessions") === scopeSessions + 1,
+      "扫描端 API Key 凭据建会话不受本次收口影响（isApiClient 直连是设计内行为）");
+    db.prepare("DELETE FROM twain_scan_records WHERE session_id=?").run(bypassSession.sessionId);
+    db.prepare("DELETE FROM twain_scan_sessions WHERE id=?").run(bypassSession.sessionId);
+
     // ── 上限可配置（安全 R22/R28 的三档设计）：默认值 / 环境变量覆盖 / 非法回落 / 天花板夹紧
     check(SCAN_UPLOAD_ENV_VARS.slice().sort().join() === uploadEnvVarsClearedHere.slice().sort().join()
       && SCAN_UPLOAD_ENV_VARS.every((name) => !(name in process.env)),
@@ -1319,6 +1349,37 @@ async function main(): Promise<void> {
     check((await readAiQuotaSnapshot(quotaDb, teacher.id)).activeJobsForUser === 0,
       "在途行回填即释放名额：完成/失败的回填不只是埋点");
     db.prepare("DELETE FROM ai_analysis_runs WHERE user_id = ? AND feature = 'knowledge_points'").run(teacher.id);
+
+    // ── PR #312 复核 P2：queued → running 的交接期间名额不能出现空隙
+    // CR8 的账本是「queued 任务行 + success IS NULL 运行行」两段接力，但旧实现先改状态、
+    // 运行行要等 trackAnalysisCall 才插——中间那一刻两条腿都不占位，并发提交读到空账本就能超放。
+    const handoffJob = Number(db.prepare(
+      "INSERT INTO ai_analysis_jobs (exam_id,status,created_by) VALUES (?, 'queued', ?)")
+      .run(visibleExam, teacher.id).lastInsertRowid);
+    const { claimAiAnalysisJobForRun } = await import("../src/server/services/aiAnalysisJobs");
+    const handoffBefore = await readAiQuotaSnapshot(quotaDb, teacher.id);
+    const handoff = await claimAiAnalysisJobForRun(handoffJob, { examId: visibleExam });
+    const handoffAfter = await readAiQuotaSnapshot(quotaDb, teacher.id);
+    const handoffState = db.prepare("SELECT status FROM ai_analysis_jobs WHERE id=?")
+      .get(handoffJob) as { status: string };
+    const handoffRun = db.prepare("SELECT user_id, feature, stage, success FROM ai_analysis_runs WHERE id=?")
+      .get(handoff.runId) as { user_id: number; feature: string; stage: string; success: number | null };
+    check(handoffBefore.activeJobsForUser === 1 && handoffBefore.queuedJobs!.user === 1
+      && handoffBefore.inFlightRuns!.user === 0,
+      "交接前任务只在「排队」这一侧占位（否则下面数的是残留而不是接力）");
+    check(handoffState.status === "running" && handoffRun.success === null
+      && handoffAfter.queuedJobs!.user === 0 && handoffAfter.inFlightRuns!.user === 1
+      && handoffAfter.activeJobsForUser === handoffBefore.activeJobsForUser,
+      "交接把两笔写入合成一步：任务离开 queued 的同一刻在途行已存在，名额总数不变、既不空洞也不双计");
+    check(handoffRun.user_id === teacher.id && handoffRun.feature === "exam_analysis"
+      && handoffRun.stage === "request",
+      "交接建出的运行行按任务创建者归因，观测口径与 trackAnalysisCall 自建的一致");
+    await finalizeAiRun(handoff.runId, { success: true, latencyMs: 1 });
+    const handoffReleased = await readAiQuotaSnapshot(quotaDb, teacher.id);
+    check(handoffState.status === "running" && handoffReleased.activeJobsForUser === 0,
+      "运行行回填后名额释放，任务停在 running 不会长期占用（回填既是埋点也是释放）");
+    db.prepare("DELETE FROM ai_analysis_jobs WHERE id=?").run(handoffJob);
+    db.prepare("DELETE FROM ai_analysis_runs WHERE id=?").run(handoff.runId);
 
     // ── 微信出站超时、并发与绑定配额（安全 R20）
     const {

@@ -208,43 +208,70 @@ export function requireScannerRecordScope(params: { recordIdParam?: string } = {
 }
 
 /**
+ * 只有 cardId 的请求共用的考试范围校验（PR #312 复核 CR3，本次抽成函数）。
+ *
+ * 返回值 true 表示放行；false 表示**响应已经写出**，调用方直接 return。
+ * 判断口径与原 `requireScannerCardScope` 完全一致：卡号映射回它绑定的全部考试，逐一要求可见；
+ * 学生一律 403；绑过的考试全被软删除按「不存在」处理；命中后把题块范围挂进 `res.locals`。
+ *
+ * 抽成函数而不是只留中间件，是因为 `POST /api/scanner/upload/sessions` 的卡号在**请求体**里，
+ * 而且此刻还没有 sessionId，挂不上 `/sessions/:sessionId` 那组中间件（评审 P2：能读卡但不能
+ * 读该考试扫描列表的教师，照样可以反复建会话，每个会话落 1 条 session + 最多
+ * `MAX_SCAN_SESSION_PAGES` 条待上传记录与令牌）。两处共用同一份判断，才不会一边「读不到」一边「照样建」。
+ * API Key 扫描端凭据保持原样绕过——它本来就没有 user 身份，是设计内的机器入口。
+ */
+export async function enforceScannerCardScope(
+  req: Request,
+  res: Response,
+  cardId: string,
+  opts: { wholePaperRead?: boolean } = {}
+): Promise<boolean> {
+  if ((req as Request & { isApiClient?: boolean }).isApiClient) return true;
+  if (!req.user) {
+    if (isAuthEnforced()) { res.status(401).json({ message: "未提供认证令牌" }); return false; }
+    return true;
+  }
+  if (!cardId) { res.status(400).json({ message: "缺少答题卡编号" }); return false; }
+  const resolved = await resolveScannerExam(cardId, "");
+  if (refuseSoftDeletedOnly(res, req.user, resolved)) return false;
+  if (resolved.exams.length === 0) {
+    attachScanPageScope(res, { restricted: false, pages: new Set(), blocks: new Set() });
+    return true;
+  }
+  if (req.user.role_name === "student") {
+    res.status(403).json({ message: "权限不足：扫描原卷仅限阅卷侧访问" }); return false;
+  }
+  const visible = await getVisibleExamIds(req.user);
+  for (const exam of resolved.exams) {
+    const examId = Number(exam.id);
+    if (visible !== null && !visible.includes(examId)) {
+      res.status(403).json({ message: "权限不足：无权访问此答题卡所属考试" }); return false;
+    }
+    if (req.user.role_name !== "admin" && await isExamSoftDeleted(examId)) {
+      res.status(404).json({ message: "考试不存在或已按数据保留策略清理" }); return false;
+    }
+  }
+  const scope = await resolveScanPageScope(req.user, cardId, resolved.exams.map(e => Number(e.id)));
+  attachScanPageScope(res, scope);
+  if (opts.wholePaperRead && scope.restricted) {
+    res.status(403).json({ message: "权限不足：整卷原图预览需要整份答题卡的阅卷权限" }); return false;
+  }
+  return true;
+}
+
+/**
  * 只有 cardId 的扫描列表/会话列表端点（PR #312 复核 CR3）。
  *
  * `/sessions/:cardId`、`/card/:cardId/scans`、`/grading-image/:cardId/:fileName` 都不带 examId，
  * 因此此前完全绕开了考试范围：详情端点已经拒绝的教师，仍可以按卡号从列表读回其它考试的
- * 学号、记录 ID 与总分。这里把卡号映射回它绑定的全部考试，要求逐一可见。
+ * 学号、记录 ID 与总分。范围判断本身见 `enforceScannerCardScope`。
  */
 export function requireScannerCardScope(params: { cardIdParam: string; wholePaperRead?: boolean }) {
   return async function scannerCardScope(req: Request, res: Response, next: NextFunction): Promise<void> {
-    if ((req as Request & { isApiClient?: boolean }).isApiClient) { next(); return; }
-    if (!req.user) {
-      if (isAuthEnforced()) { res.status(401).json({ message: "未提供认证令牌" }); return; }
-      next(); return;
-    }
     try {
       const cardId = String(req.params[params.cardIdParam] ?? "");
-      if (!cardId) { res.status(400).json({ message: "缺少答题卡编号" }); return; }
-      const resolved = await resolveScannerExam(cardId, "");
-      if (refuseSoftDeletedOnly(res, req.user, resolved)) return;
-      if (resolved.exams.length === 0) { attachScanPageScope(res, { restricted: false, pages: new Set(), blocks: new Set() }); next(); return; }
-      if (req.user.role_name === "student") {
-        res.status(403).json({ message: "权限不足：扫描原卷仅限阅卷侧访问" }); return;
-      }
-      const visible = await getVisibleExamIds(req.user);
-      for (const exam of resolved.exams) {
-        const examId = Number(exam.id);
-        if (visible !== null && !visible.includes(examId)) {
-          res.status(403).json({ message: "权限不足：无权访问此答题卡所属考试" }); return;
-        }
-        if (req.user.role_name !== "admin" && await isExamSoftDeleted(examId)) {
-          res.status(404).json({ message: "考试不存在或已按数据保留策略清理" }); return;
-        }
-      }
-      const scope = await resolveScanPageScope(req.user, cardId, resolved.exams.map(e => Number(e.id)));
-      attachScanPageScope(res, scope);
-      if (params.wholePaperRead && scope.restricted) {
-        res.status(403).json({ message: "权限不足：整卷原图预览需要整份答题卡的阅卷权限" }); return;
-      }
+      const allowed = await enforceScannerCardScope(req, res, cardId, { wholePaperRead: params.wholePaperRead });
+      if (!allowed) return;
       next();
     } catch (error) { next(error); }
   };
