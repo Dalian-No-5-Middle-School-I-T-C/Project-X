@@ -248,7 +248,11 @@ export async function listAnswerBlockCropsForStudent(
 }
 
 export async function listReviewBlockCrops(
-  params: { examId: number; blockId?: string; blockIds?: string[]; classId?: number; status?: string; cropId?: string },
+  params: {
+    examId: number; blockId?: string; blockIds?: string[]; classId?: number; status?: string; cropId?: string;
+    /** 逐生分配的可阅范围（评审 B1）：`{sql, params}` 以 `abc` 为切块表别名，null/缺省 = 不追加条件 */
+    assignedSlice?: { sql: string; params: unknown[] } | null;
+  },
   db: DbAdapter = getMysqlDb()
 ): Promise<AnswerBlockCrop[]> {
   const filters = ["abc.exam_id = ?"];
@@ -262,6 +266,11 @@ export async function listReviewBlockCrops(
     if (params.blockIds.length === 0) return [];
     filters.push(`abc.block_id IN (${params.blockIds.map(() => "?").join(",")})`);
     values.push(...params.blockIds);
+  }
+  // 安全 B1：题块之内再按逐生分配切片收口（清单里能看见的卷子 = 能领/能回看的卷子）
+  if (params.assignedSlice) {
+    filters.push(params.assignedSlice.sql);
+    values.push(...params.assignedSlice.params);
   }
   if (params.status) {
     filters.push("abc.status = ?");

@@ -158,7 +158,11 @@ async function loadBlockMaxScores(
 }
 
 export async function listReviewBlockCropItems(
-  params: { examId: number; blockId?: string; blockIds?: string[]; classId?: number; status?: string },
+  params: {
+    examId: number; blockId?: string; blockIds?: string[]; classId?: number; status?: string;
+    /** 逐生分配切片（评审 B1），透传给 `listReviewBlockCrops` */
+    assignedSlice?: { sql: string; params: unknown[] } | null;
+  },
   db: DbAdapter = getMysqlDb()
 ): Promise<ReviewBlockCropItem[]> {
   const crops = await listReviewBlockCrops(params, db);
@@ -701,7 +705,10 @@ export async function getReviewTrace(
   examId: number,
   blockId: string | undefined,
   db: DbAdapter = getMysqlDb(),
-  permittedBlockIds?: string[] | null
+  permittedBlockIds?: string[] | null,
+  // 安全 B1：题块级 + 逐生切片级双重收口。溯源表比切块清单更敏感（全卷每题得分 + 评审人），
+  // 但两者此前都只收到题块粒度，同块不同切片的学生的分数与轨迹照样读得到。
+  assignedSlice?: { sql: string; params: unknown[] } | null
 ): Promise<ReviewTraceItem[]> {
   let query = `
     SELECT abc.id AS crop_id, abc.student_id, u.name AS student_name,
@@ -724,6 +731,11 @@ export async function getReviewTrace(
     if (permittedBlockIds.length === 0) return [];
     query += ` AND abc.block_id IN (${permittedBlockIds.map(() => "?").join(",")})`;
     params.push(...permittedBlockIds);
+  }
+  // 安全 B1：题块内再按逐生分配切片收口（同块不同教师的两半学生互相读不到分数与轨迹）
+  if (assignedSlice) {
+    query += ` AND ${assignedSlice.sql}`;
+    params.push(...assignedSlice.params);
   }
 
   query += " ORDER BY u.student_number, abc.block_id";

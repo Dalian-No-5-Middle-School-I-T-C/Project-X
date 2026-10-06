@@ -139,6 +139,7 @@ import { parseIdentityMode } from "../../../shared/cardIdentity";
 import { recognizeAnswerCard, recognizeObjectiveAnswers } from "./recognition";
 import { createScannerRouter } from "./scanner/index";
 import { makeScannerAuth } from "../../../server/middleware/scanner-auth";
+import { enforceScannerCardScope } from "../../../server/middleware/scanner-scope";
 
 import { assertImageFile, imageContentTypeFor, isImageExtension, rejectReasonForImportedAsset, safeImageExtension } from "./validate-upload";
 import {
@@ -1686,10 +1687,19 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.get("/api/cards/:cardId/grading/preview/:fileName", (req, res, next) => {
+  app.get("/api/cards/:cardId/grading/preview/:fileName", async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const fileName = path.basename(paramValue(req.params.fileName));
+      // 安全（PR #312 评审 B1）：这条路由与扫描端的
+      // `GET /api/scanner/grading-image/:cardId/:fileName` 读的是**同一个物理目录**
+      // （`recognition/uploads/<cardId>/`），而 CR3 的整卷原图收口只挂在扫描端那一侧：
+      // 只有部分题块权限的教师走 scanner 路径拿不到整卷原图，换成 cards 路径就拿到了。
+      // 同一条媒体白名单（`mediaAllowlist`）还允许它在 URL 里带令牌，等于给同级路由留了后门。
+      // 现在两边共用 `enforceScannerCardScope`，整卷原图一律按「整份答题卡的阅卷权限」收口；
+      // 校验放在扩展名判断之前，避免越权者用 403/404 的差别探测文件名与类型。
+      const allowed = await enforceScannerCardScope(req, res, cardId, { wholePaperRead: true });
+      if (!allowed) return;
       const ext = path.extname(fileName).toLowerCase();
       // 安全：只按图片类型提供内容，历史遗留的非图片上传文件不得按 HTML 同源执行。
       if (!isImageExtension(ext)) {

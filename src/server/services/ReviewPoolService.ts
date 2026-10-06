@@ -121,6 +121,62 @@ function postFirstRoundSqlClause(): string {
   return "(answer_block_crops.review_round > 0 OR answer_block_crops.status IN ('pending','disputed'))";
 }
 
+/** 可阅范围 SQL 片段：以 `abc` 为 `answer_block_crops` 别名的布尔条件 + 对应占位符参数 */
+export interface AssignedSliceClause {
+  sql: string;
+  params: unknown[];
+}
+
+/** 别名版的「离开首评队列」判定，与 `isClaimableForAssignedSet` 同口径 */
+const POST_FIRST_ROUND_ALIASED = "(abc.review_round > 0 OR abc.status IN ('pending','disputed'))";
+
+/**
+ * 把逐生分配翻译成 SQL（安全 R15 的读取侧补全，PR #312 评审 B1）。
+ *
+ * `assigned_student_ids` 此前只作用在**领取**与**切块原图**两处，切块清单
+ * （`GET /api/review/exams/:examId/block-crops`）与阅卷溯源（`.../trace`）只收到题块粒度：
+ * 同一题块被切成两半时，A 教师能从清单里读到 B 教师那半学生的姓名、学号、每题得分与评审人，
+ * 只是点开原图会被拒——「看不见图但看得见答案与分数」仍然是一次横向越权。
+ *
+ * 判定与 `isClaimableForAssignedSet` 逐条对齐，保证「清单里有的卷子」= 「能领/能回看的卷子」：
+ *  - 本人切片内的学生 → 放行；
+ *  - 已离开首评队列（二评/争议/已评完）→ 放行（题块内互不重叠的切片不该挡住复核与回看）；
+ *  - 本人已领取（`claimed_by`）→ 放行；
+ *  - 该教师在本题块没有切片（无分配行 / 分配行为空 / 脏数据）→ 整块放行，与存量部署一致。
+ *
+ * 全场景无切片时返回 `null`：调用方**不追加任何条件**，行为与改动前完全一致。
+ * 逐块查询而不是批量捞：一个教师的可见题块本就个位数，且这样能与 `getAssignedStudentIdSet`
+ * 共用同一份「首行 + JSON 解析失败视为无约束」的判据，不会出现清单与原图口径不一致。
+ */
+export async function buildAssignedSliceClause(
+  examId: number,
+  teacherId: number,
+  blockIds: string[],
+  db: DbAdapter = getMysqlDb()
+): Promise<AssignedSliceClause | null> {
+  if (blockIds.length === 0) return null;
+  const parts: AssignedSliceClause[] = [];
+  const unconstrained: string[] = [];
+  for (const blockId of blockIds) {
+    const assigned = await getAssignedStudentIdSet(examId, blockId, teacherId, db);
+    if (!assigned) { unconstrained.push(blockId); continue; }
+    const ids = Array.from(assigned);
+    const inList = ids.length > 0 ? `abc.student_id IN (${ids.map(() => "?").join(",")})` : "0";
+    parts.push({
+      sql: `(abc.block_id = ? AND (${inList} OR ${POST_FIRST_ROUND_ALIASED} OR abc.claimed_by = ?))`,
+      params: [blockId, ...ids, teacherId]
+    });
+  }
+  if (parts.length === 0) return null;
+  if (unconstrained.length > 0) {
+    parts.unshift({
+      sql: `abc.block_id IN (${unconstrained.map(() => "?").join(",")})`,
+      params: unconstrained
+    });
+  }
+  return { sql: `(${parts.map(p => p.sql).join(" OR ")})`, params: parts.flatMap(p => p.params) };
+}
+
 /** 统计教师当前持有（已领取未提交）的卷子数：题块内与全局（安全 R15 的持有量约束） */
 export async function countHeldPapers(
   teacherId: number,

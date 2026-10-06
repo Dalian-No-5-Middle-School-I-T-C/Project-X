@@ -115,6 +115,93 @@ function refuseSoftDeletedOnly(res: Response, user: NonNullable<Request["user"]>
   return true;
 }
 
+// ── 机器调用者（扫描端 X-Api-Key）的范围收口 ───────────────
+//
+// 安全（PR #312 评审 A1，本次把「Key = 免检」改成「Key = 身份 + 数据绑定」）：
+// 这三处此前都是函数第一行的 `if (isApiClient) { next(); return; }`。它让 R04/CR3/CR5
+// 建立起来的考试 / 卡 / 页三级收口，对「手里有扫描端 Key 的人」整体失效——而 Key 就写在
+// 扫描机的 config.yml 里，同一局域网内可访问的教师随手就能拿到，等于给整套范围校验留了
+// 一根常开的手柄。
+//
+// 扫描端确实没有教师身份可谈：它不代表某个用户，可见考试集合、题块矩阵、逐生分配这些
+// 「人的授权」在它身上都没有对应物。但「无法按人授权」不等于「按 ID 任意读」——它至少必须
+// 是一个**真实存在、且仍在其保留期内**的对象。于是机器调用者走这条数据绑定校验：
+//   1. recordId / sessionId / cardId / examId 必须解析得到真实行，悬挂外键不放行；
+//   2. 记录 → 会话 → 答题卡 → 考试的归属链必须完整；
+//   3. 绑定的考试若**全部被软删除**（`exam_archives.is_deleted = 1`），按「不存在」处理——
+//      与 CR4 给人用的口径一致：已按数据保留策略清理过的原卷，机器也不该再读出来；
+//   4. 尚未绑定任何考试的本机扫描（还没提交过）照旧放行，这是扫描流程的正常起点。
+// 拒绝时沿用与用户路径**相同的状态码与文案**，避免「换个凭据就能探测 ID 是否存在」。
+//
+// 残留限制（如实记录，不粉饰）：扫描端 Key 是**全场共享**的一把，因此它仍然覆盖所有
+// *未清理*的考试。要收口到「这台机器只能扫这几场考试」，需要给 `api_keys` 加考试绑定列
+// （新迁移 + 签发界面 + 存量 Key 的归属回迁），v59 已被 #311 占用，合并顺序由维护者定。
+
+/** 机器调用者：`apiKeyAuth({scope:"scanner"})` 命中后置位，请求上没有 `req.user`。 */
+function isMachineCaller(req: Request): boolean {
+  return Boolean((req as Request & { isApiClient?: boolean }).isApiClient);
+}
+
+/** 归属链断裂 / 考试已清理：与用户路径同码同文案的拒绝。 */
+function refuseUnbound(res: Response, message: string): false {
+  res.status(404).json({ message });
+  return false;
+}
+
+/** 卡绑过的考试全部被软删除（但它确实绑过）——CR4 口径，机器与人在这一点上对齐。 */
+function allBoundExamsSoftDeleted(resolved: { exams: unknown[]; allExamIds: number[] }): boolean {
+  return resolved.allExamIds.length > 0 && resolved.exams.length === 0;
+}
+
+/**
+ * 机器调用者读 recordId / sessionId 时的归属链校验（`requireScannerRecordScope` 的机器分支）。
+ * 未挂中间件时读取侧仍有各自的 handler 兜底，这里只负责「链断或已清理就 404」。
+ */
+async function enforceMachineRecordBinding(
+  req: Request, res: Response, params: { recordIdParam?: string } = {}
+): Promise<boolean> {
+  const recordId = params.recordIdParam ? String(req.params[params.recordIdParam] ?? "") : "";
+  const sessionId = recordId
+    ? (await sessionIdOfScanRecord(recordId)) ?? ""
+    : String(req.params.sessionId ?? "");
+  if (!sessionId) return refuseUnbound(res, "扫描记录不存在");
+  const session = await getMysqlDb().get<{ card_id: string }>(
+    "SELECT card_id FROM twain_scan_sessions WHERE id = ?", sessionId);
+  if (!session) return refuseUnbound(res, "扫描会话不存在");
+  const resolved = await resolveScannerExam(session.card_id, sessionId);
+  if (allBoundExamsSoftDeleted(resolved)) return refuseUnbound(res, "考试不存在或已按数据保留策略清理");
+  return true;
+}
+
+/** 机器调用者只有 cardId 时的校验：卡是真的，且不是「只剩被清理考试」的卡。 */
+async function enforceMachineCardBinding(res: Response, cardId: string): Promise<boolean> {
+  if (!cardId) { res.status(400).json({ message: "缺少答题卡编号" }); return false; }
+  const card = await new CardRepository().findById(cardId);
+  if (!card) return refuseUnbound(res, "答题卡不存在");
+  const resolved = await resolveScannerExam(cardId, "");
+  if (allBoundExamsSoftDeleted(resolved)) return refuseUnbound(res, "考试不存在或已按数据保留策略清理");
+  return true;
+}
+
+/** 机器调用者按 examId / sessionId 操作时的校验（`requireScannerExamScope` 的机器分支）。 */
+async function enforceMachineExamBinding(req: Request, res: Response): Promise<boolean> {
+  if (!req.params.examId) {
+    const session = await getMysqlDb().get<{ card_id: string }>(
+      "SELECT card_id FROM twain_scan_sessions WHERE id = ?", req.params.sessionId);
+    if (!session) return refuseUnbound(res, "扫描会话不存在");
+    return enforceMachineRecordBinding(req, res, {});
+  }
+  const examId = Number(req.params.examId);
+  if (!Number.isSafeInteger(examId) || examId < 1) {
+    res.status(400).json({ message: "无效的考试编号" });
+    return false;
+  }
+  const exam = await getMysqlDb().get<{ id: number }>("SELECT id FROM exams WHERE id = ?", examId);
+  if (!exam) return refuseUnbound(res, "考试不存在");
+  if (await isExamSoftDeleted(examId)) return refuseUnbound(res, "考试不存在或已按数据保留策略清理");
+  return true;
+}
+
 /**
  * 安全（R04）：记录/会话级路由（读取原卷图片、查看扫描结果、删除扫描记录）的访问校验。
  *
@@ -125,7 +212,12 @@ function refuseSoftDeletedOnly(res: Response, user: NonNullable<Request["user"]>
  */
 export function requireScannerRecordScope(params: { recordIdParam?: string } = {}) {
   return async function scannerRecordScope(req: Request, res: Response, next: NextFunction): Promise<void> {
-    if ((req as Request & { isApiClient?: boolean }).isApiClient) { next(); return; }
+    if (isMachineCaller(req)) {
+      try {
+        if (await enforceMachineRecordBinding(req, res, params)) next();
+      } catch (error) { next(error); }
+      return;
+    }
     if (!req.user) {
       if (isAuthEnforced()) { res.status(401).json({ message: "未提供认证令牌" }); return; }
       next(); return;
@@ -218,7 +310,8 @@ export function requireScannerRecordScope(params: { recordIdParam?: string } = {
  * 而且此刻还没有 sessionId，挂不上 `/sessions/:sessionId` 那组中间件（评审 P2：能读卡但不能
  * 读该考试扫描列表的教师，照样可以反复建会话，每个会话落 1 条 session + 最多
  * `MAX_SCAN_SESSION_PAGES` 条待上传记录与令牌）。两处共用同一份判断，才不会一边「读不到」一边「照样建」。
- * API Key 扫描端凭据保持原样绕过——它本来就没有 user 身份，是设计内的机器入口。
+ * API Key 扫描端凭据不再无条件放行：它没有教师身份可套用可见考试/题块矩阵，改为按
+ * 数据绑定校验（卡是否存在、绑定的考试是否已被保留策略清理），见评审 A1。
  */
 export async function enforceScannerCardScope(
   req: Request,
@@ -226,7 +319,7 @@ export async function enforceScannerCardScope(
   cardId: string,
   opts: { wholePaperRead?: boolean } = {}
 ): Promise<boolean> {
-  if ((req as Request & { isApiClient?: boolean }).isApiClient) return true;
+  if (isMachineCaller(req)) return await enforceMachineCardBinding(res, cardId);
   if (!req.user) {
     if (isAuthEnforced()) { res.status(401).json({ message: "未提供认证令牌" }); return false; }
     return true;
@@ -277,9 +370,20 @@ export function requireScannerCardScope(params: { cardIdParam: string; wholePape
   };
 }
 
-/** Mount only after scanner authentication. A raw X-Api-Key header never grants a bypass. */
+/**
+ * 挂载点必须在扫描端鉴权之后。
+ *
+ * 安全（PR #312 评审 A1）：X-Api-Key **不授予任何范围豁免**——它只是身份凭证。
+ * 机器调用者在此走 `enforceMachineExamBinding`（考试必须存在且未被保留策略清理），
+ * 用户调用者走可见考试 + 整卷阅卷权限。
+ */
 export async function requireScannerExamScope(req: Request, res: Response, next: NextFunction) {
-  if ((req as Request & { isApiClient?: boolean }).isApiClient) { next(); return; }
+  if (isMachineCaller(req)) {
+    try {
+      if (await enforceMachineExamBinding(req, res)) next();
+    } catch (error) { next(error); }
+    return;
+  }
   if (!req.user) {
     if (isAuthEnforced()) { res.status(401).json({ message: "未提供认证令牌" }); return; }
     next(); return;
