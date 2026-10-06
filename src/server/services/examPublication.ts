@@ -48,15 +48,17 @@ export async function assertScoresPublishable(db: DbAdapter, exam: { id: number 
 
   const missing = await listMissingParticipants(db, exam.id);
   if (missing.length > 0) {
-    const sample = missing.slice(0, 5)
-      .map((m) => (m.student_number ? `${m.name}(${m.student_number})` : m.name))
-      .join("、");
-    const detail = sample ? `，缺：${sample}${missing.length > 5 ? ` 等 ${missing.length} 人` : ""}` : "";
+    // 安全（PR #312 评审 B6，与 CR12 同一口径）：错误消息**只给人数，不给姓名/学号**。
+    // 公布校验的 409 会原样出现在前端提示里，而晨测这类高频场景下教师一次要公布很多场，
+    // 拼进「张三(20250101)」名单等于把未出分学生的身份明细批量外送到调用方的屏幕上——
+    // 而这些学生恰恰是「本场没有成绩」的人，他们的姓名本身就是一种可读结果。
+    // 服务端日志同样只记人数：不在这里另开一个 PII 汇聚点。
     throw Object.assign(
       new Error(
-        `该考试成绩记录不完整（应考 ${snapshot.participantCount} 人，缺 ${missing.length} 名应考学生成绩${detail}），无法公布成绩；缺考学生请从应考名单中剔除`
+        `该考试成绩记录不完整（应考 ${snapshot.participantCount} 人，缺 ${missing.length} 名应考学生成绩），`
+        + `无法公布成绩；请在「考试管理 → 应考名单」中核对应考范围，把缺考学生从名单中剔除后再公布`
       ),
-      { status: 409, code: ApiError.INVALID_VALUE }
+      { status: 409, code: ApiError.INVALID_VALUE, missingCount: missing.length }
     );
   }
 }

@@ -166,6 +166,28 @@ function readBootstrapAdminPassword(): string | null {
 }
 
 /**
+ * 库里的哈希是否仍能被**历史公开口令**验通（评审 B4）。
+ *
+ * 为什么要有这一步：`password_change_required` 是后来才以 `DEFAULT 0` 补进 `users` 的列，
+ * 所以「建库早于那次迁移、且管理员从未改过口令」的存量库，这一位天然是 0。
+ * 只看标志位就会把「一直没动过 admin123」读成「已完成首次改密」，直接跳过轮换——
+ * 而 R01 对外承诺的正是「升级即失效，admin123 当场不可用」。
+ * 标志位是**意图**的记录，哈希能否被公开口令验通才是**事实**；两者不一致时按事实办。
+ */
+async function matchesLegacyBootstrapPassword(passwordHash: string | null | undefined): Promise<boolean> {
+  if (!passwordHash) return false;
+  for (const candidate of LEGACY_PUBLIC_BOOTSTRAP_PASSWORDS) {
+    try {
+      if (await verifyPassword(candidate, passwordHash)) return true;
+    } catch {
+      // 哈希串本身畸形（不是 bcrypt 格式）时按不匹配处理：交给原有分支判断，别在这里抛崩启动。
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
  * 部署逃生阀：显式设置 `PROJECTX_ADMIN_PASSWORD` 时，引导态口令由该环境变量决定，
  * 不再写 `bootstrap-admin.txt`（用于容器/一键部署等「读不到数据目录文件」的场景）。
  * 仅在账号仍处于引导态时生效；完成首次改密后该变量再改也不会覆盖在用口令。
@@ -220,7 +242,9 @@ export interface DefaultAdminBootstrapResult {
  *
  * 四种情形：
  * 1. 库中没有 admin（新库）：生成随机口令、写哈希、写引导文件，`rotated: true`。
- * 2. admin 已完成首次改密（`password_change_required = 0`）：完全不做任何变更。
+ * 2. admin 已完成首次改密（`password_change_required = 0`）**且哈希不是任何历史公开口令**：
+ *    完全不做任何变更。（评审 B4：`password_change_required` 是后补的 `DEFAULT 0` 列，
+ *    单看它会放过「建库早于该列、从未改密、现在仍是 admin123」的存量库。）
  * 3. admin 停留在引导态且引导文件里的口令与库中哈希对得上：不做任何变更（`rotated: false`）。
  *    这一条是整改的核心 —— 重启不再把口令恢复到任何固定值，也不再吊销既有会话。
  * 4. admin 停留在引导态，但口令事实源不可信（文件缺失/为空、内容是历史公开口令，
@@ -245,10 +269,18 @@ export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult>
   };
 
   if (existing) {
-    if (!existing.password_change_required) {
-      // 已完成首次改密（或显式沿用初始密码）的在用账号：不做任何变更
+    // 评审 B4：标志位说「已改密」还不够，还得确认它现在用的不是历史公开口令。
+    const legacyPasswordStillWorks = await matchesLegacyBootstrapPassword(existing.password_hash);
+    if (!existing.password_change_required && !legacyPasswordStillWorks) {
+      // 已完成首次改密、且新口令不在历史公开清单里：不做任何变更
       await ensureApiKey();
       return { adminId: existing.id, rotated: false, passwordFile };
+    }
+    if (legacyPasswordStillWorks && !existing.password_change_required) {
+      console.warn(
+        `[SECURITY] 管理员账号仍在使用历史公开引导口令（${[...LEGACY_PUBLIC_BOOTSTRAP_PASSWORDS].join("/")}）：`
+        + "该口令已在公开渠道流传，本次启动换发一次性随机口令并要求登录后立即改密。"
+      );
     }
     if (envPassword) {
       // 逃生阀态：环境变量是口令事实源，引导文件让位。
