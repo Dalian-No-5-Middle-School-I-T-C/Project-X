@@ -2,18 +2,20 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { raw as expressRaw } from "express";
 import { ZipArchive } from "archiver";
-import AdmZip from "adm-zip";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { mkdir, readdir, copyFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 
 import { authMiddleware, requirePermission } from "../middleware/auth";
+import { extractZipWithinBudget, RestoreZipError } from "../services/restoreZip";
+import { sanitizeOpsMessage } from "../lib/opsErrorMessage";
 import { PERMISSIONS } from "../auth/permissions";
 import { closeDatabase, getDatabase, getMysqlDb, getMariadbConfig, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, detectDialect, ensureDefaultAdmin, removeBootstrapAdminFile } from "../db";
 import { closeDb } from "../../apps/answer-card/server/database";
 import { seedDemoData, clearDemoData } from "../services/DemoDataService";
+import { DEMO_IMPORT_PRODUCTION_CONFIRM } from "../services/demo/demoDataPolicy";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -161,7 +163,7 @@ router.get("/backup", async (_req: Request, res: Response) => {
     console.error("[Backup] Export failed:", error);
     cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     if (!res.headersSent) {
-      res.status(500).json({ message: error instanceof Error ? error.message : "导出失败" });
+      respondOpsFailure(res, error, "导出失败");
     }
   }
 });
@@ -193,8 +195,8 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
   try {
     await mkdir(tmpDir, { recursive: true });
 
-    // 使用 adm-zip 解压
-    extractZipFromBuffer(zipBuffer, tmpDir);
+    // 使用 adm-zip 解压（条目名越界与解压预算见 services/restoreZip.ts，安全 R43）
+    extractZipWithinBudget(zipBuffer, tmpDir);
 
     // 验证 metadata
     const metadataPath = path.join(tmpDir, "metadata.json");
@@ -250,11 +252,18 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
     }
     await copyFile(projectxBak, projectxDbPath);
 
-    // 恢复后重新引导管理员账号（#185 安全模型）：还原出的库若使用旧默认口令 admin123
-    // 或引导文件丢失，则重新生成一次性口令并写入 bootstrap-admin.txt，确保还原后可用引导文件登录。
+    // 恢复后重新引导管理员账号（#185 安全模型 + R01 整改）：先删掉当前引导文件，
+    // 让 ensureDefaultAdmin() 以「文件缺失」判定口令事实源不可用——
+    // 还原出的库若仍停留在引导态，会换发一个新的随机一次性口令并写入 bootstrap-admin.txt；
+    // 若还原出的库已完成首次改密，则口令与改密标记都不受影响（只清理泄露过的引导文件）。
     try {
       removeBootstrapAdminFile();
-      await ensureDefaultAdmin();
+      const rebootstrap = await ensureDefaultAdmin();
+      if (rebootstrap.rotated) {
+        // 换发了新口令，说明还原前的管理员会话已不再可信，全部吊销（与启动时的处理一致）。
+        const { authService } = await import("../services/AuthService");
+        authService.revokeUserTokens(rebootstrap.adminId);
+      }
     } catch (e) {
       console.warn("[Restore] 管理员再引导失败（可重启服务自动修复）:", e);
     }
@@ -287,7 +296,7 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
   } catch (error) {
     console.error("[Restore] Import failed:", error);
     await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
-    res.status(500).json({ message: error instanceof Error ? error.message : "导入失败" });
+    respondOpsFailure(res, error, "导入失败");
   }
 });
 
@@ -299,16 +308,49 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
  * 鉴权：路由级 requirePermission(USER_MANAGE) 已过滤非管理员；此路由额外要求
  * SYSTEM_MANAGE「系统维护（数据清理、归档等）」权限，作为「最高权限管理员」语义闸口。
  * 当前仅 admin（持 "*" 通配）能通过；未来若要拆分管理子角色，SYSTEM_MANAGE 可单独授予。
+ *
+ * 安全 R33：库里已有真实数据时必须带 `confirm: "IMPORT_DEMO_INTO_PRODUCTION"` 才执行，
+ * 否则 409 —— 权限够不等于「知道自己在往生产库里塞 16 个演示账号」。
+ * 演示教师口令每次导入随机换发，只在这一次的响应里出现（不再回显文档里的固定口令）。
  */
-router.post("/import-demo", requirePermission(PERMISSIONS.SYSTEM_MANAGE), async (_req: Request, res: Response) => {
+router.post("/import-demo", requirePermission(PERMISSIONS.SYSTEM_MANAGE), async (req: Request, res: Response) => {
   try {
-    const stats = await seedDemoData();
+    const confirm = typeof req.body?.confirm === "string" ? req.body.confirm.trim() : "";
+    const stats = await seedDemoData({ confirmedProductionImport: confirm === DEMO_IMPORT_PRODUCTION_CONFIRM });
+    const credentials = stats.teacherCredentials
+      .map((c) => `${c.username} / ${c.password}`)
+      .join("，");
+    const credentialNote = stats.teacherCredentials.some((c) => c.fixed)
+      ? `⚠️ 当前使用公开文档里的固定演示口令（PROJECTX_DEMO_FIXED_CREDENTIALS 已打开），仅限隔离测试环境。`
+      : `演示教师口令本次随机生成、只显示这一次：${credentials}（也已存入账号的「初始密码」，可在账号导出里查回）。`;
+    const studentNote = stats.studentPasswordIsStudentNumber
+      ? "演示学生口令＝学号（固定凭据模式）。"
+      : "演示学生口令随机生成，可在学生账号导出里查回。";
     res.json({
       ok: true,
-      message: `演示数据已重置并重新导入：${stats.exams} 场考试 / 16 名学生 / ${stats.groups} 个合集（教师 demo-teacher，密码 teacher123）。⚠️ 原有「演示-」前缀数据（含在其上完成的阅卷/改分）会被清空并更换考试 ID；演示账号凭据固定且可预测，仅限测试环境使用，请勿在生产环境导入。`,
-      stats
+      message: `演示数据已重置并重新导入：${stats.exams} 场考试 / 16 名学生 / ${stats.groups} 个合集。`
+        + `${credentialNote}${studentNote}`
+        + `⚠️ 原有「演示-」前缀数据（含在其上完成的阅卷/改分）会被清空并更换考试 ID；演示账号只应存在于测试环境，生产库请导入后尽快用「清除演示数据」移除。`,
+      stats: {
+        ...stats,
+        // 口令只在 message 里出现一次；stats 里留用户名与「是否固定口令」即可，
+        // 避免同一份明文口令在响应体里出现两遍（前端日志/抓包都会原样带走）。
+        teacherCredentials: stats.teacherCredentials.map(({ username, fixed }) => ({ username, fixed })),
+      },
     });
   } catch (error) {
+    const status = typeof (error as any)?.status === "number" ? (error as any).status : 500;
+    const code = typeof (error as any)?.code === "string" ? (error as any).code : undefined;
+    if (status !== 500) {
+      // 409 是「本次导入被闸门拒绝、库里没动过」，不是失败到需要看日志的程度：把原因原样交给前端。
+      console.warn(`[DemoData] 导入被拒绝（${code ?? status}）:`, error instanceof Error ? error.message : error);
+      res.status(status).json({
+        message: error instanceof Error ? error.message : "演示数据导入被拒绝",
+        code,
+        confirm: (error as any)?.confirm,
+      });
+      return;
+    }
     console.error("[DemoData] 导入失败:", error);
     res.status(500).json({ message: error instanceof Error ? error.message : "演示数据导入失败" });
   }
@@ -352,7 +394,7 @@ async function backupMariadb(res: Response): Promise<void> {
     const db = getMysqlDb();
     const health = await (await import("../db")).healthCheck();
     if (!health.ok) {
-      res.status(500).json({ message: `数据库连接失败: ${health.error}` });
+      res.status(500).json({ message: `数据库连接失败: ${sanitizeOpsMessage(health.error, { fallback: "数据库连接失败，请查看服务端日志" })}` });
       return;
     }
 
@@ -388,7 +430,10 @@ async function backupMariadb(res: Response): Promise<void> {
       try {
         await execFileAsync("mariadb-dump", args, { timeout: 300_000 });
       } catch (err2: any) {
-        res.status(500).json({ message: `mysqldump 执行失败: ${err2.message}。请确保已安装 MariaDB 客户端工具。` });
+        res.status(500).json({
+          // 报错里的 `--result-file=<绝对路径>` 与账号信息不外发（安全 R25）
+          message: `mysqldump 执行失败: ${sanitizeOpsMessage(err2?.message, { fallback: "导出失败" })}。请确保已安装 MariaDB 客户端工具。`,
+        });
         return;
       }
     }
@@ -438,7 +483,7 @@ async function backupMariadb(res: Response): Promise<void> {
     console.error("[Backup] MariaDB export failed:", error);
     cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     if (!res.headersSent) {
-      res.status(500).json({ message: error instanceof Error ? error.message : "导出失败" });
+      respondOpsFailure(res, error, "导出失败");
     }
   }
 }
@@ -460,7 +505,7 @@ async function restoreMariadb(req: Request, res: Response): Promise<void> {
   const tmpDir = path.join(os.tmpdir(), `projectx-restore-${crypto.randomUUID()}`);
   try {
     await mkdir(tmpDir, { recursive: true });
-    extractZipFromBuffer(zipBuffer, tmpDir);
+    extractZipWithinBudget(zipBuffer, tmpDir);
 
     const dumpFile = path.join(tmpDir, "dump.sql");
     if (!existsSync(dumpFile)) {
@@ -505,16 +550,32 @@ async function restoreMariadb(req: Request, res: Response): Promise<void> {
         await copyDirectory(bakDataDir, dataDir, () => true);
       }
 
+      // 与 SQLite 还原分支同口径（#185 + R01）：还原出来的库可能带着另一台机器的
+      // 引导态口令，本机 bootstrap-admin.txt 会对不上而把管理员锁死。这里主动清理并
+      // 重新引导：引导态库换发新的随机口令写回引导文件；已改密库口令与标记都不受影响。
+      try {
+        removeBootstrapAdminFile();
+        const rebootstrap = await ensureDefaultAdmin();
+        if (rebootstrap.rotated) {
+          const { authService } = await import("../services/AuthService");
+          authService.revokeUserTokens(rebootstrap.adminId);
+        }
+      } catch (e) {
+        console.warn("[Restore] MariaDB 管理员再引导失败（可重启服务自动修复）:", e);
+      }
+
       await cleanupDir(tmpDir);
       res.json({ ok: true, message: "数据已恢复！请重启服务器以使更改完全生效。" });
     } catch (err: any) {
-      await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
-      res.status(500).json({ message: `mysql 导入失败: ${err.message}` });
+      console.error("[Restore] MariaDB mysql 导入失败:", err);
+      await cleanupDir(tmpDir).catch((e) => console.warn("[Backup] cleanupDir 异常:", e));
+      // mysql 客户端的报错自带 dump 文件绝对路径与 `user@host`，只进日志（安全 R25）
+      respondOpsFailure(res, err, "数据库导入失败，请查看服务端日志中的 [Restore] 记录");
     }
   } catch (error) {
     console.error("[Restore] MariaDB import failed:", error);
     await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
-    res.status(500).json({ message: error instanceof Error ? error.message : "导入失败" });
+    respondOpsFailure(res, error, "导入失败");
   }
 }
 
@@ -555,28 +616,19 @@ async function moveDir(src: string, dest: string): Promise<void> {
 }
 
 /**
- * 从 Buffer 解压 ZIP 到目标目录（使用 adm-zip，全内存操作，稳定可靠）
+ * 恢复/导出失败时的统一应答（安全 R25 + R43）。
+ *
+ *  - `RestoreZipError` 的消息本身就是为对外而写的（只有数量与限额，不含主机路径），原样给出；
+ *  - 其余底层错误（copyFile/mysqldump/mysql 导入）几乎必然带绝对路径或数据库账号，
+ *    一律走 `sanitizeOpsMessage`，完整原文只进服务端日志。
  */
-function extractZipFromBuffer(zipBuffer: Buffer, destDir: string): void {
-  const zip = new AdmZip(zipBuffer);
-  const entries = zip.getEntries();
-  for (const entry of entries) {
-    // 安全检查：防止路径穿越攻击
-    const relativePath = path.normalize(entry.entryName).replace(/^[\\/]+/, "");
-    const resolvedDest = path.resolve(destDir);
-    const safePath = path.join(resolvedDest, relativePath);
-    const rel = path.relative(resolvedDest, safePath);
-    // 拒绝解析到目标目录之外的条目（防止前缀绕过，如 destDir-evil）
-    if (rel.startsWith("..") || path.isAbsolute(rel)) {
-      continue;
-    }
-    if (entry.isDirectory) {
-      mkdirSync(safePath, { recursive: true });
-    } else {
-      mkdirSync(path.dirname(safePath), { recursive: true });
-      writeFileSync(safePath, entry.getData());
-    }
+function respondOpsFailure(res: Response, error: unknown, fallback: string): void {
+  if (error instanceof RestoreZipError) {
+    res.status(error.status).json({ code: "RESTORE_ZIP_REJECTED", message: error.message });
+    return;
   }
+  const raw = error instanceof Error ? error.message : "";
+  res.status(500).json({ message: sanitizeOpsMessage(raw, { fallback }) });
 }
 
 /**

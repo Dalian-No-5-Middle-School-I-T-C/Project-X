@@ -5,12 +5,13 @@
   "compatibleWith": ["v1.9.4", "v1.9.5", "v1.9.6", "v1.9.7", "v1.9.8", "v1.9.9", "v2.0.0", "v2.1.0", "v2.2.0", "v2.2.1", "v2.3.0", "v2.2.9"],
   "prefix": "演示-",
   "accounts": {
+    "credentialPolicy": "安全 R33：演示账号口令默认每次导入随机换发。本清单里的固定口令只在 scripts/seed.ts 导入时生效——它会显式设 PROJECTX_DEMO_FIXED_CREDENTIALS=1，好让 scripts/verify.ts 能按本清单登录断言；仅限隔离测试库。生产环境请用前端「导入演示数据」：教师口令在导入响应里只显示一次，学生口令走批量导入的随机初始密码，两者都加密存入 users.initial_password，可从管理员「导出账密」查回。",
     "admin": { "identifier": "admin", "password": "见数据库旁 bootstrap-admin.txt（#185 起为随机一次性密码，首次登录强制改密；seed 后 verify 会自动改密为 Admin@Demo2026 并回写文件）" },
-    "teacher": { "identifier": "demo-teacher", "password": "teacher123" },
-    "teacher2": { "identifier": "demo-teacher-2", "password": "teacher123" },
+    "teacher": { "identifier": "demo-teacher", "password": "teacher123（仅 seed.ts 的固定凭据模式；teacher_role=subject_teacher，只任课演示1班/演示2班）" },
+    "teacher2": { "identifier": "demo-teacher-2", "password": "teacher123（仅 seed.ts 的固定凭据模式）" },
     "students": {
       "range": "20260101-20260116",
-      "passwordRule": "与学号相同（seed 显式传 password=学号；batchCreateStudents 默认生成随机密码，此处覆盖为可读值以便验证登录）",
+      "passwordRule": "固定凭据模式下与学号相同（seed.ts 打开 PROJECTX_DEMO_FIXED_CREDENTIALS=1 后显式传 password=学号）；默认随机口令模式下由 batchCreateStudents 生成 8 位十六进制初始密码并加密存入 users.initial_password",
       "trackRule": "20260101~20260108 = science（演示1班·理科班）、20260109~20260116 = arts（演示2班·文科班）"
     }
   },

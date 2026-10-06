@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
 import { getScannerMode, isRemoteServerConfigured, readServerUrl, useScannerMode } from "../lib/scannerMode";
+import { canSendCredentialsToConfiguredServer, isInsecureRemoteTarget } from "../lib/remoteCredentialTransport";
 import { downloadGradingCsv } from "../lib/gradingCsv";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
 import { ScannerPanel } from "./ScannerPanel";
@@ -25,6 +26,7 @@ import { SkinSwitcher } from "./SkinSwitcher";
 import type { AnswerCard, CombinedGradingBatchResult, CombinedGradingRow } from "../../../../shared/types";
 import { buildLayout } from "../../../../shared/layout";
 import { mapImportedScanPages } from "../../../../shared/scanPages";
+import { cardFingerprint } from "../../../../shared/cardVersion";
 import {
   Badge,
   Button,
@@ -52,6 +54,8 @@ interface Props {
   /** v2.5.0: 受控皮肤（由 ScannerApp 下发；未传时不渲染切换器，保持组件独立可用） */
   skin?: string;
   onSkinChange?: (skin: string) => void;
+  /** 安全 R35：离线用本机缓存卡进入时的版本提示；空/未传表示版本与服务器一致 */
+  cardVersionNote?: string;
 }
 
 const directoryInputProps = {
@@ -63,7 +67,7 @@ function isImageFile(file: File): boolean {
   return file.type.startsWith("image/") || /\.(png|jpe?g|bmp|webp|tiff?)$/i.test(file.name);
 }
 
-export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange }: Props) {
+export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange, cardVersionNote }: Props) {
   const [cfgOpen, setCfgOpen] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [status, setStatus] = useState("");
@@ -112,6 +116,8 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
             kind: "import",
             identityMode: legacyIdentity ? "legacy" : "strict",
             cardId,
+            // 安全 R35：本机识别用的就是这份卡，上传时把它的版本指纹交给服务器核验
+            cardVersion: cardFingerprint(card),
             name: `导入_${cardTitle}_${new Date().toISOString().slice(0, 10)}`,
             paperSize: card.paper.size,
             pages: gradingFiles.map((file, i) => ({
@@ -171,6 +177,15 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
           <ServerConfigDialog mode="dialog" open={cfgOpen} onOpenChange={setCfgOpen} />
         </header>
 
+        {/* 安全 R35：离线用本机缓存卡时把版本常驻显示出来——旧卡判分会算错分，
+            且上传会被服务器按版本不一致拒绝，老师必须一眼看到自己用的是哪一版。 */}
+        {cardVersionNote && (
+          <div className="shrink-0 border-b border-amber-500/40 bg-amber-500/10 px-5 py-2 text-xs text-amber-700 dark:text-amber-400">
+            离线模式：{cardVersionNote}。服务器上的版面或答案可能已修改，按本机版本判分可能算错，
+            上传时也会被服务器以「答题卡版本不一致」拒绝。连上服务器后请重新选择该答题卡以同步最新版本。
+          </div>
+        )}
+
         <div className="flex min-h-0 flex-1 flex-row-reverse">
           {/* ── Main area: ScannerPanel or GradingResults ── */}
           <section className="min-w-0 flex-1 overflow-auto bg-background p-6">
@@ -227,6 +242,14 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
                   isRemoteServerConfigured() ? (
                     <p className="mt-2 m-0 rounded-md bg-secondary p-2 text-xs text-muted-foreground">
                       已连接服务器：<code className="font-mono">{readServerUrl()}</code>。扫描与导入的图片都会上传。
+                      {isInsecureRemoteTarget(readServerUrl()) && (
+                        <span className="mt-1 block text-warning-foreground">
+                          该地址是跨机明文 HTTP：
+                          {canSendCredentialsToConfiguredServer(readServerUrl()).allowed
+                            ? "已按你的显式确认继续发送 API Key，建议尽快换成 https://。"
+                            : "API Key 不会被发送，上传会失败。请在「服务器连接」中改用 https:// 或显式勾选明文许可。"}
+                        </span>
+                      )}
                     </p>
                   ) : (
                     <div className="mt-2 flex flex-col gap-2 rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-xs text-warning-foreground">

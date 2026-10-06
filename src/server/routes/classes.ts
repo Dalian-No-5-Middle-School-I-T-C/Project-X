@@ -5,6 +5,8 @@ import { UserRepository } from "../repositories/UserRepository";
 import { authMiddleware, requirePermission, requireRole } from "../middleware/auth";
 import { PERMISSIONS, ROLE_IDS, ROLE_NAMES } from "../auth/permissions";
 import { isTeacherSubject } from "../../shared/subjects";
+import { hasClassViewPermission } from "../../apps/answer-card/server/middleware";
+import { getAccessibleClassIds } from "./scores";
 
 /**
  * 年级 / 班级 / 花名册管理 API
@@ -18,6 +20,36 @@ router.use(authMiddleware);
 
 const readRoles = requireRole(ROLE_NAMES.ADMIN, ROLE_NAMES.TEACHER);
 const manage = requirePermission(PERMISSIONS.CLASS_MANAGE);
+
+/**
+ * 花名册读取范围门（安全 R21）：`readRoles` 只校验角色，任意教师此前可对
+ * 1..N 遍历 `:id` 列举全校学生的姓名/学号/账号，属于跨组织个人数据泄漏。
+ * 这里把可见范围收敛到成绩侧同一份口径（`getAccessibleClassIds`：管理员/学年主任
+ * /未配置精细角色的旧数据教师 → 全校；任课与班主任 → 仅其班级），
+ * 并叠加权限矩阵的 `can_view_students` 班级级开关。
+ */
+const canReadClassRoster = async (req: Request, res: Response, next: express.NextFunction): Promise<void> => {
+  const user = req.user;
+  if (!user) {
+    res.status(401).json({ message: "未认证" });
+    return;
+  }
+  const classId = Number(req.params.id);
+  if (!Number.isInteger(classId) || classId <= 0) {
+    res.status(400).json({ message: "无效的班级 ID" });
+    return;
+  }
+  const accessible = await getAccessibleClassIds(user);
+  if (accessible !== null && !accessible.includes(classId)) {
+    res.status(403).json({ message: "无权查看该班级花名册：你不在该班任教，也不是班主任" });
+    return;
+  }
+  if (!(await hasClassViewPermission(user, classId, "can_view_students"))) {
+    res.status(403).json({ message: "权限不足：管理员已关闭你对该班级「学生名单」的查看权限" });
+    return;
+  }
+  next();
+};
 
 // ── 年级 ──────────────────────────────────────────────
 
@@ -181,7 +213,7 @@ router.put("/:id/head-teacher", manage, async (req: Request, res: Response) => {
 
 // ── 花名册 ────────────────────────────────────────────
 
-router.get("/:id/students", readRoles, async (req: Request, res: Response) => {
+router.get("/:id/students", readRoles, canReadClassRoster, async (req: Request, res: Response) => {
   const cls = await classRepo.findClassById(Number(req.params.id));
   if (!cls) {
     res.status(404).json({ message: "班级不存在" });

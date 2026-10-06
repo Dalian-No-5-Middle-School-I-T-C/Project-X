@@ -4,6 +4,7 @@
  */
 import { useEffect, useState } from "react";
 import { fetchJson } from "../auth/api";
+import { objectiveModeLabel } from "../../../../shared/objectiveMode";
 import type { OptionAnalysisResponse } from "../../../../shared/types";
 
 interface Props {
@@ -59,7 +60,8 @@ export function OptionAnalysisPanel({ examId, classId }: Props) {
           <div key={q.questionNumber} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "10px 12px", background: "var(--surface)" }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
               <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>第 {q.questionNumber} 题</span>
-              <span>{q.mode === "multiple" ? "多选" : q.mode === "indeterminate" ? "不定项" : "单选"} · 满分 {q.maxScore}</span>
+              {/* R46：模式判定走统一口径，`indefinite`（规范拼写）以前匹配不到，不定项会被显示成「单选」 */}
+              <span>{objectiveModeLabel(q.mode)} · 满分 {q.maxScore}</span>
               <span>作答 {q.answeredCount} / 未答 {q.unansweredCount}</span>
               {q.correctRate != null && <span>满分率 {q.correctRate}%</span>}
             </div>

@@ -370,6 +370,9 @@ async function main(): Promise<void> {
     );
 
     section("学生自助详情契约（小程序 detail 依赖，后端 PR #232）");
+    // v41（PR #256）把「成绩已公布」做成了后端硬过滤：未公布时 /api/scores/me/exams/:id 返回 404。
+    // 本夹具走的是公布后的自助查分契约，故先把本场考试置为已公布，避免契约测试因门禁本身空转。
+    db.prepare("UPDATE exams SET score_published = 1 WHERE id = ?").run(examId);
     writeFileSync(path.join(tempDir, "crop1.png"), "fake-crop-image");
     db.prepare(
       "UPDATE users SET password_hash = ? WHERE id = ?"

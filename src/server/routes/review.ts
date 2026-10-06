@@ -2,10 +2,10 @@
  * 网上阅卷 API
  * 挂载点: /api/review
  */
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
-import { requireExamAccess, requireGradingScope } from "../../apps/answer-card/server/middleware";
+import { requireExamAccess, requireGradingScope, getPermittedBlocks } from "../../apps/answer-card/server/middleware";
 import { optionalPositiveNumber } from "../../apps/answer-card/server/helpers";
 import {
   listReviewBlockCropItems,
@@ -14,10 +14,27 @@ import {
   ReviewValidationError
 } from "../services/ReviewService";
 import { getReviewTrace } from "../services/ReviewService";
+import { buildAssignedSliceClause, type AssignedSliceClause } from "../services/ReviewPoolService";
 import type { ReviewSubmitScoreInput } from "../../shared/types";
 import { getMysqlDb } from "../db";
 
 const router = Router();
+
+/**
+ * 当前调用者在这些题块内的逐生切片条件（PR #312 评审 B1）。
+ *
+ * `permitted === null` 表示 `getPermittedBlocks` 判定的「整场不受题块限制」（管理员 /
+ * 学年主任 / 没有权限矩阵），这类账号本来就读全卷，不额外收口；本地模式未强制鉴权时
+ * 也没有 `req.user`，同样返回 null 保持既有行为。
+ */
+async function assignedSliceFor(
+  user: Request["user"],
+  examId: number,
+  blockIds: string[] | null
+): Promise<AssignedSliceClause | null> {
+  if (!user || !blockIds) return null;
+  return buildAssignedSliceClause(examId, Number(user.id), blockIds);
+}
 
 // GET /api/review/my-exams — 教师有哪些考试有待阅任务
 router.get("/my-exams", async (req, res) => {
@@ -61,7 +78,9 @@ router.get("/exams/:examId/blocks", requireExamAccess, async (req, res, next) =>
       res.status(400).json({ message: "Invalid examId" });
       return;
     }
-    const blocks = await listReviewBlocks(examId);
+    // 安全 R03：`requireExamAccess` 只判定「能否看到这场考试」，题块级阅卷人因此能
+    // 列出全卷题块与每题统计。读取侧按 `getPermittedBlocks` 收敛（null = 不受限）。
+    const blocks = await listReviewBlocks(examId, getMysqlDb(), await getPermittedBlocks(req.user, examId));
     res.json({ examId, blocks });
   } catch (error) {
     next(error);
@@ -78,11 +97,22 @@ router.get("/exams/:examId/block-crops", requireExamAccess, async (req, res, nex
     const blockId = typeof req.query.blockId === "string" ? req.query.blockId.trim() : "";
     const status = typeof req.query.status === "string" ? req.query.status.trim() : "";
     const classId = optionalPositiveNumber(req.query.classId);
+    // 安全 R03：切块清单含学生姓名/学号与答案图，题块级阅卷人只能读本人题块；
+    // 显式请求了越权题块时直接 403（而非静默返回空列表，避免前端误判「无待阅」）。
+    const permitted = await getPermittedBlocks(req.user, examId);
+    if (permitted && blockId && !permitted.includes(blockId)) {
+      res.status(403).json({ message: `权限不足：未获分配题块 ${blockId}` });
+      return;
+    }
+    // 安全 B1：题块内按逐生分配再切一刀，清单口径与领取/原图三处对齐
+    const slice = await assignedSliceFor(req.user, examId, blockId && permitted ? [blockId] : permitted);
     const rows = await listReviewBlockCropItems({
       examId,
       blockId: blockId || undefined,
+      blockIds: permitted ?? undefined,
       classId: classId ?? undefined,
-      status: status || undefined
+      status: status || undefined,
+      assignedSlice: slice
     });
     res.json({ examId, rows });
   } catch (error) {
@@ -158,7 +188,20 @@ router.get("/exams/:examId/trace", requireExamAccess, async (req, res, next) => 
       return;
     }
     const blockId = typeof req.query.blockId === "string" ? req.query.blockId : undefined;
-    const trace = await getReviewTrace(examId, blockId);
+    // 安全 R03：溯源表暴露全卷每题得分与评审人，同样按题块范围收敛。
+    const permitted = await getPermittedBlocks(req.user, examId);
+    if (permitted && blockId && !permitted.includes(blockId)) {
+      res.status(403).json({ message: `权限不足：未获分配题块 ${blockId}` });
+      return;
+    }
+    const trace = await getReviewTrace(
+      examId,
+      blockId,
+      getMysqlDb(),
+      permitted,
+      // 安全 B1：溯源比清单更敏感（每题得分 + 评审人 + 学号），同样要收到逐生切片
+      await assignedSliceFor(req.user, examId, blockId && permitted ? [blockId] : permitted)
+    );
     res.json({ ok: true, data: trace });
   } catch (error) {
     next(error);

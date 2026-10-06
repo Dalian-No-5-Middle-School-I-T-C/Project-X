@@ -9,6 +9,9 @@
  *      cancelScan 记录取消意图并返回 false；随后 runBridge/scan
  *      必须在 spawn 前被拦截，不能启动扫描仪进程。
  *   2. 会话取消状态持久化：cancelled 写入后不被后台任务覆盖。
+ *   3. 取消后的资源释放与 dismiss 语义。
+ *   4. 桥接 list 输出分类。
+ *   5. 兜底强杀的 PID 复用防线（安全 R38）：认不出身份就不 taskkill。
  *
  * 全部用例通过则进程退出码为 0，否则为 1。
  */
@@ -155,6 +158,7 @@ async function main(): Promise<void> {
   const jobId = um.startUpload({
     kind: "scan",
     cardId: "card-cancel-test",
+    cardVersion: "0123456789abcdef01234567",
     name: "取消资源释放测试",
     pages,
     dpi: 300,
@@ -196,6 +200,56 @@ async function main(): Promise<void> {
   ok(deriveSourcesCode({}, "", 1) === "BRIDGE_EXIT_NONZERO", "无可解析 sources 且非零退出 → BRIDGE_EXIT_NONZERO");
   ok(deriveSourcesCode({}, "LoadLibrary TWAINDSM.dll 失败", 1) === "DSM_LOAD_FAILED",
     "stderr 指出 DSM 加载失败 → DSM_LOAD_FAILED（优先于退出码）");
+
+  // ── 5. 兜底强杀的 PID 复用防线（安全 R38） ──────────────
+  section("5. 兜底强杀身份校验（R38：taskkill 不得打到复用的 PID）");
+  const { matchesBridgeProcess, decideForceKill, liveBridgeCount } = await import(
+    "../src/apps/answer-card/server/scanner/twain-bridge"
+  );
+
+  const identity = {
+    exePath: path.join(tmpDir, "scanner-bridge.exe"),
+    startedAtMs: 1_700_000_000_000,
+    parentPid: 4242,
+  };
+  const sameProcess = {
+    exePath: identity.exePath.toUpperCase(), // 大小写与分隔符差异不算「另一个进程」
+    startedAtMs: identity.startedAtMs + 1200,
+    parentPid: identity.parentPid,
+  };
+  ok(matchesBridgeProcess(sameProcess, identity), "父 PID + 可执行路径 + 启动时刻吻合 → 认账（允许 5 秒时钟余量）");
+  ok(!matchesBridgeProcess({ ...sameProcess, parentPid: 9999 }, identity), "父 PID 不同 → 不认账（PID 已被别的进程树复用）");
+  ok(
+    !matchesBridgeProcess({ ...sameProcess, exePath: "C:\\Windows\\System32\\notepad.exe" }, identity),
+    "可执行路径不同 → 不认账"
+  );
+  ok(
+    !matchesBridgeProcess({ ...sameProcess, startedAtMs: identity.startedAtMs + 5001 }, identity),
+    "启动时刻偏差超过 5000ms → 不认账"
+  );
+  ok(!matchesBridgeProcess(null, identity), "读不到进程信息（权限不足 / 已消失）→ 不认账");
+  ok(
+    !matchesBridgeProcess({ exePath: null, startedAtMs: identity.startedAtMs, parentPid: identity.parentPid }, identity),
+    "可执行路径读不到 → 不认账"
+  );
+  ok(
+    !matchesBridgeProcess({ exePath: identity.exePath, startedAtMs: null, parentPid: identity.parentPid }, identity),
+    "启动时刻读不到 → 不认账"
+  );
+  ok(
+    !matchesBridgeProcess({ exePath: identity.exePath, startedAtMs: identity.startedAtMs, parentPid: null }, identity),
+    "父 PID 读不到 → 不认账"
+  );
+
+  ok(decideForceKill(sameProcess, identity, false) === "kill", "存活且身份吻合 → kill（活着的扫描子树仍能取消）");
+  ok(decideForceKill(sameProcess, identity, true) === "skip-exited", "已退出 → skip-exited，即使 PID 查得到也不杀");
+  ok(
+    decideForceKill({ ...sameProcess, parentPid: 9999 }, identity, false) === "skip-unverified",
+    "身份不吻合 → skip-unverified，交由桥接超时兜底"
+  );
+  ok(decideForceKill(null, identity, false) === "skip-unverified", "查询失败 → skip-unverified");
+
+  ok(liveBridgeCount() === 0, `前序扫描尝试结束后注册表已清空（实际 ${liveBridgeCount()} 个存活桥接）`);
 
   // ── 汇总 ───────────────────────────────────────────────
   console.log("");

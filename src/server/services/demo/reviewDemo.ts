@@ -3,7 +3,8 @@ import path from "node:path";
 import { buildInsertIgnore, resolveAnswerCardDataDir, type DbAdapter } from "../../db";
 import { rebalanceWorkload } from "../ReviewAssignmentService";
 import { makePlaceholderPng } from "./png";
-const REVIEW_CARD_ID = "88000999";
+import { DEMO_REVIEW_CARD_ID, isDemoCard } from "./demoCardIds";
+const REVIEW_CARD_ID = DEMO_REVIEW_CARD_ID;
 const REVIEW_EXAM_NAME = "演示-网阅测试";
 
 function ensurePlaceholderImage(): string {
@@ -73,6 +74,12 @@ export async function seedReviewDemo(
     buildInsertIgnore(db.dialect, "answer_cards", ["id", "title", "subject_label", "exam_date", "is_demo"]),
     REVIEW_CARD_ID, "演示-网阅卡", "数学", "2026-06-25", 1
   );
+  // 安全 R48：上面是 INSERT IGNORE——ID 被真实卡占用时它会静默跳过，
+  // 再往下就是把演示题块 A/B 挂到真实卡上（真实考试按演示题块判分）。
+  if (!(await isDemoCard(db, REVIEW_CARD_ID))) {
+    console.warn(`[seed] 网阅演示: 卡号 ${REVIEW_CARD_ID} 被真实答题卡占用，跳过「${REVIEW_EXAM_NAME}」种子`);
+    return false;
+  }
   const insertReviewBlock = buildInsertIgnore(db.dialect, "subjective_blocks", ["id", "card_id", "sort_order", "block_kind", "title"]);
   const insertReviewQuestion = buildInsertIgnore(db.dialect, "subjective_questions", [
     "id", "block_id", "number", "score", "style", "kind", "min_height_mm", "sort_order"

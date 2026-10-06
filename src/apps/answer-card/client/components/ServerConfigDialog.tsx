@@ -1,12 +1,20 @@
-import { useEffect, useSyncExternalStore, useState } from "react";
+import { useEffect, useRef, useSyncExternalStore, useState } from "react";
 import { Eye, EyeOff, Globe } from "lucide-react";
 import { isValidServerUrl, normalizeServerUrl, readServerUrl, writeServerUrl } from "../lib/scannerMode";
+import {
+  evaluateCredentialTransport,
+  grantInsecureTransportAllowance,
+  parseServerTarget,
+  readInsecureTransportHosts,
+  revokeInsecureTransportAllowance,
+} from "../lib/remoteCredentialTransport";
 import { getStoredApiKey, storeApiKey } from "../auth/api";
 import { serverStatus } from "../lib/remoteServerStatus";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
 import {
   Badge,
   Button,
+  Checkbox,
   Dialog,
   DialogContent,
   DialogHeader,
@@ -44,6 +52,25 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
   const [showKey, setShowKey] = useState(false);
   const [testStatus, setTestStatus] = useState<"" | "testing" | "ok" | "fail">("");
   const [testMessage, setTestMessage] = useState("");
+  // 安全（R32）：跨机明文 HTTP 的显式同意。初值取「已保存地址是否曾被勾选过」，
+  // 之后一旦目标 host 变化就清零——同意是给某一个 host:port 的，不随地址搬家。
+  const [allowInsecure, setAllowInsecure] = useState(
+    () => evaluateCredentialTransport(loadUrl(), readInsecureTransportHosts()).reason === "explicit-allowance",
+  );
+
+  const typedUrl = normalizeServerUrl(serverUrl);
+  const typedHost = parseServerTarget(typedUrl)?.host ?? "";
+  const savedHost = parseServerTarget(loadUrl())?.host ?? "";
+  const transportDecision = evaluateCredentialTransport(typedUrl, readInsecureTransportHosts());
+  // blocked-plaintext = 跨机明文且当前没有勾选：此时 Key 一律不发
+  const insecureTarget = transportDecision.reason === "blocked-plaintext";
+  const maySendCredential = !insecureTarget || allowInsecure;
+  const hostRef = useRef(typedHost);
+  useEffect(() => {
+    if (hostRef.current === typedHost) return;
+    hostRef.current = typedHost;
+    setAllowInsecure(false);
+  }, [typedHost]);
 
   const initialKey = (() => {
     try {
@@ -73,7 +100,7 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
     const base = normalizeServerUrl(serverUrl);
     if (!isValidServerUrl(serverUrl)) {
       setTestStatus("fail");
-      setTestMessage(`地址格式不正确：${serverUrl.trim()}。请填写形如 http://192.168.1.100:5174 的完整地址`);
+      setTestMessage(`地址格式不正确：${serverUrl.trim()}。请填写形如 https://projectx.school.edu.cn 的完整地址`);
       return;
     }
     setServerUrl(base);
@@ -81,7 +108,9 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
       const url = `${base}/api/app/health`;
       const headers: Record<string, string> = {};
       const key = apiKey.trim();
-      if (key) headers["X-Api-Key"] = key;
+      // 安全（R32）：明文跨机且未勾选时，健康探测照做（不带凭据），Key 不发出去
+      const sendKey = Boolean(key) && maySendCredential;
+      if (sendKey) headers["X-Api-Key"] = key;
       const res = await fetch(url, {
         method: "GET",
         headers,
@@ -93,6 +122,11 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
       };
       if (res.ok && body.ok === true && body.capabilities?.scannerClientApi === true) {
         if (!key) throw new Error("服务器可达，请填写 API Key 后验证上传权限");
+        if (!sendKey) {
+          setTestStatus("ok");
+          setTestMessage(`服务器可达，但 ${base} 是跨机明文 HTTP，未发送 API Key。勾选下方确认后才能验证上传权限并保存`);
+          return;
+        }
         const authRes = await fetch(`${base}/api/scanner/upload/check`, {
           headers,
           signal: AbortSignal.timeout(5000),
@@ -125,12 +159,27 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
     if (blockedByActiveJobs) return;
     if (serverUrl.trim() && !isValidServerUrl(serverUrl)) {
       setTestStatus("fail");
-      setTestMessage(`地址格式不正确：${serverUrl.trim()}。请填写形如 http://192.168.1.100:5174 的完整地址`);
+      setTestMessage(`地址格式不正确：${serverUrl.trim()}。请填写形如 https://projectx.school.edu.cn 的完整地址`);
+      return;
+    }
+    // 安全（R32）：跨机明文 HTTP 必须先显式勾选，否则不保存——保存了也只会让上传在
+    // 发送 Key 前被闸门拦下，界面上表现为「配置好了但一直失败」，比这里直接拒绝更难查。
+    const decision = evaluateCredentialTransport(normalizeServerUrl(serverUrl), readInsecureTransportHosts());
+    if (decision.reason === "blocked-plaintext" && !allowInsecure) {
+      setTestStatus("fail");
+      setTestMessage(decision.message);
       return;
     }
     saveUrl(serverUrl);
     setServerUrl(loadUrl()); // 回显归一化后的实际生效地址
     storeApiKey(apiKey.trim() || null);
+    // 同意只留给当前这一个 host:port；改成 https/回环时把历史明文同意一并清掉。
+    // 评审 P2：已获许可的地址也要一并保住——它命中许可时 decision.reason 是
+    // explicit-allowance 而不是 blocked-plaintext，下面这句只按后者补发，
+    // 于是「原样再点一次保存」就把正在用的许可抹掉了：同步与上传从此在闸门处失败。
+    const keepAllowance = decision.reason === "blocked-plaintext" || decision.reason === "explicit-allowance";
+    revokeInsecureTransportAllowance();
+    if (keepAllowance) grantInsecureTransportAllowance(loadUrl());
     serverStatus.refresh();
     scannerUploadManager.notifyNetworkChanged();
     if (mode === "dialog") onOpenChange?.(false);
@@ -150,6 +199,7 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
     <div className="flex flex-col gap-3">
       <p className="m-0 text-xs text-muted-foreground">
         扫描、识别和账号登录始终在本机完成。填入服务器地址和 API Key 后，可将扫描结果上传到远端服务器。
+        跨机部署请填写 <code className="font-mono">https://</code> 地址；明文 HTTP 只在勾选确认后才会发送凭据。
       </p>
       {blockedByActiveJobs && (
         <p className="m-0 rounded border border-destructive-border bg-destructive-soft px-2 py-1 text-xs text-destructive-fg">
@@ -170,13 +220,39 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
             setTestStatus("");
             setTestMessage("");
           }}
-          placeholder="http://192.168.1.100:5174"
+          placeholder="https://projectx.school.edu.cn"
           autoComplete="off"
         />
       </Field>
       {serverUrl.trim() && normalizeServerUrl(serverUrl) !== serverUrl.trim() && (
         <p className="m-0 -mt-1 text-xs text-muted-foreground">
           将按 <code className="font-mono">{normalizeServerUrl(serverUrl)}</code> 使用
+        </p>
+      )}
+      {insecureTarget && (
+        <div className="m-0 rounded border border-warning-border bg-warning-soft px-2 py-1.5 text-xs text-warning-foreground">
+          <p className="m-0">
+            <code className="font-mono">{typedHost}</code> 是<strong>跨机明文 HTTP</strong>：
+            API Key 与登录凭据会以明文经过整个网段，同网段任何人都能截走它，而这把 Key 能向服务器写入扫描结果。
+            正式部署请改用 <code className="font-mono">https://</code> 地址（本机 <code className="font-mono">127.0.0.1</code> 不受此限）。
+          </p>
+          <label className="mt-1.5 flex cursor-pointer items-start gap-2">
+            <Checkbox
+              checked={allowInsecure}
+              onCheckedChange={(checked) => setAllowInsecure(checked === true)}
+              disabled={testStatus === "testing"}
+              className="mt-0.5"
+            />
+            <span>
+              我确认这是<strong>隔离的内网测试环境</strong>，允许向 <code className="font-mono">{typedHost}</code> 明文发送凭据。
+              未勾选时不会保存该地址，上传也不会发出 API Key。
+            </span>
+          </label>
+        </div>
+      )}
+      {!insecureTarget && typedHost && typedHost === savedHost && allowInsecure && (
+        <p className="m-0 -mt-1 text-xs text-muted-foreground">
+          已对 <code className="font-mono">{typedHost}</code> 勾选过明文发送许可；改成 https 后保存即可撤销。
         </p>
       )}
       <Field label="API Key">

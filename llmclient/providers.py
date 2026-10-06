@@ -25,6 +25,43 @@ SYSTEM_PROMPT = system
 # 防止 providerOverride 被用于 SSRF 探测内网（含 https://127.0.0.1、云元数据 169.254.169.254 等）。
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 
+# 安全审计（R27）：回环 http 此前只校验「主机是不是 loopback」，端口完全不设限，
+# 于是个人 AI 供应商配置能把这个 LLM sidecar 变成本机端口探测器——
+# `http://127.0.0.1:631`（CUPS）、`:9200`（ES）、`:8080/actuator` 等只监听本机的
+# 管理面都会被带上模型请求打一遍。现在回环地址只允许「已知本机推理服务端口」白名单，
+# 现场需要别的端口时通过环境变量显式加白（不做成硬编码）：
+#   PROJECTX_LLM_LOOPBACK_PORTS=11434,8000,1234
+# 非法值/空集合一律回落默认白名单——「能配」不等于「能关」。
+DEFAULT_LOOPBACK_PORTS = frozenset({11434, 8000, 8080, 1234, 5001, 3000, 30000})
+LOOPBACK_PORTS_ENV = "PROJECTX_LLM_LOOPBACK_PORTS"
+
+logger = logging.getLogger(__name__)
+
+
+def allowed_loopback_ports() -> frozenset[int]:
+    """解析回环端口白名单；任何非法输入都退回默认值而不是退回「全放行」。"""
+    raw = env_value(LOOPBACK_PORTS_ENV)
+    if not raw:
+        return DEFAULT_LOOPBACK_PORTS
+    ports: set[int] = set()
+    for token in raw.replace(";", ",").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            port = int(token)
+        except ValueError:
+            logger.warning("[llm-loopback] ignored non-numeric port entry: %s", token)
+            continue
+        if 1 <= port <= 65535:
+            ports.add(port)
+        else:
+            logger.warning("[llm-loopback] ignored out-of-range port entry: %s", token)
+    if not ports:
+        logger.warning("[llm-loopback] %s produced no valid port; falling back to the default allowlist", LOOPBACK_PORTS_ENV)
+        return DEFAULT_LOOPBACK_PORTS
+    return frozenset(ports)
+
 
 def _ip_is_unsafe(ip_str: str) -> bool:
     """判断 IP 是否属于 SSRF 高危段（回环/私网/链路本地/保留/组播/未指定）。"""
@@ -80,8 +117,20 @@ def validate_base_url(base_url: str | None) -> str | None:
             )
         return base_url
     if parsed.scheme == "http" and hostname in LOOPBACK_HOSTS:
+        try:
+            port = parsed.port
+        except ValueError as exc:  # 端口写成非数字/超范围时 urlsplit 直接抛错
+            raise ValueError("base_url carries an invalid port; refused to avoid SSRF") from exc
+        if port is None:
+            port = 80
+        if port not in allowed_loopback_ports():
+            raise ValueError(
+                "http:// loopback base_url must use an allowed local-inference port "
+                f"(current allowlist: {sorted(allowed_loopback_ports())}); "
+                "refused to avoid probing local services (set PROJECTX_LLM_LOOPBACK_PORTS to add one)"
+            )
         return base_url
-    raise ValueError("base_url must be https:// (public host) or http://127.0.0.1 (loopback only); refused to avoid SSRF")
+    raise ValueError("base_url must be https:// (public host) or http://127.0.0.1:<allowed port> (loopback only); refused to avoid SSRF")
 
 
 class _GeminiNonTextWarningFilter(logging.Filter):

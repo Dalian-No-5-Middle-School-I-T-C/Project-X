@@ -9,6 +9,10 @@
  *   WECHAT_MINIPROGRAM_STATE（可选，developer/trial/formal，默认 formal）
  */
 
+// 安全（R20）：所有出站呼叫统一走带超时 + 并发闸门的封装，不再裸用 fetch
+import { wechatFetch, type WechatFetchResponse } from "./wechatThrottle";
+import { describeWechatLimits } from "../../shared/wechatLimits";
+
 type WechatSessionResponse = {
   openid?: string;
   session_key?: string;
@@ -117,10 +121,13 @@ export function logWechatSubscriptionStatus(): void {
     return;
   }
   const { page, miniprogramState } = getWechatRuntimeConfig();
+  // 安全（R20）：把实际生效的超时/并发/绑定档位打在启动日志里，现场调过
+  // PROJECTX_WECHAT_* 后只看这一行就能确认「真的生效了」，不必猜拼错的数字。
+  console.log(`[wechat-limits] ${describeWechatLimits()}`);
   console.log(`[wechat] 成绩发布订阅推送已启用 (miniprogram_state=${miniprogramState}, page=${page})`);
 }
 
-async function readWechatJson<T>(response: globalThis.Response): Promise<T> {
+async function readWechatJson<T>(response: WechatFetchResponse): Promise<T> {
   if (!response.ok) {
     throw new WechatApiError(`WeChat API request failed with status ${response.status}`, null);
   }
@@ -135,7 +142,7 @@ export async function getOpenIdByLoginCode(code: string): Promise<string> {
   url.searchParams.set("js_code", code);
   url.searchParams.set("grant_type", "authorization_code");
 
-  const data = await readWechatJson<WechatSessionResponse>(await fetch(url));
+  const data = await readWechatJson<WechatSessionResponse>(await wechatFetch(url));
   if (!data.openid) {
     // 不回显 errmsg 原文以免泄露 AppID 相关信息，仅记 errcode
     throw new WechatApiError(`WeChat jscode2session failed: errcode=${data.errcode ?? "unknown"}`, data.errcode ?? null);
@@ -149,7 +156,7 @@ async function requestAccessToken(): Promise<string> {
   url.searchParams.set("appid", getAppId());
   url.searchParams.set("secret", getAppSecret());
 
-  const data = await readWechatJson<WechatAccessTokenResponse>(await fetch(url));
+  const data = await readWechatJson<WechatAccessTokenResponse>(await wechatFetch(url));
   if (!data.access_token) {
     throw new WechatApiError(`WeChat access token failed: errcode=${data.errcode ?? "unknown"}`, data.errcode ?? null);
   }
@@ -196,7 +203,7 @@ export async function sendGradeReleaseMessage(input: {
   const courseName = input.courseName.length > 20 ? `${input.courseName.slice(0, 19)}…` : input.courseName;
   const scoreValue = String(Math.round(input.score * 10) / 10);
 
-  const response = await fetch(url, {
+  const response = await wechatFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

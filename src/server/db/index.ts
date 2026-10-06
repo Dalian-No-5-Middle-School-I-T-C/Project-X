@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runMigrations } from "./migrations";
-import { resolveProjectDbPath } from "./paths";
+import { diagnoseProjectDbPath, resolveProjectDbPath } from "./paths";
 import { seedDefaultData } from "./seeds";
 import { detectDialect, getMysqlDb, initMariadbSchema, buildInsertIgnore } from "./mysql";
 import type { DbAdapter } from "./mysql";
@@ -22,6 +22,9 @@ function schemaPath(): string {
 export function getDatabase(): Database.Database {
   if (!dbInstance) {
     const dbPath = resolveProjectDbPath();
+    // 安全 R31：先说清「即将用哪个库、它是否已存在」，再创建文件——新建空库在事后是看不出原因的。
+    const diagnosis = diagnoseProjectDbPath();
+    for (const warning of diagnosis.warnings) console.warn(`[db-path] ${warning}`);
     mkdirSync(path.dirname(dbPath), { recursive: true });
     dbInstance = new Database(dbPath);
     dbInstance.pragma("journal_mode = WAL");
@@ -47,7 +50,10 @@ export function initializeDatabase(): void {
   if (dialect === "mariadb") {
     // v1.6.0: MariaDB 增量迁移机制 — 检测并执行缺失的 schema_migrations
     console.log("[DB] MariaDB mode: schema seeded via schema.mariadb.sql");
-    // initMariadbSchema() 在 getMysqlDb() 首次调用时自动执行
+    // 注意：这行日志只是**口径声明**，本函数并不建表。`getMysqlDb()` 是同步的构造适配器，
+    // 建表/迁移由调用方显式 `await initMariadbSchema()` 完成（见 scripts/verify-mariadb.ts）。
+    // 只 `initializeDatabase()` 就直接写 SQL 的脚本因此只能跑 SQLite 模式——
+    // MariaDB 下会在第一条 INSERT 上撞 ER_NO_SUCH_TABLE（表 'grades' doesn't exist）。
     // ensureDefaultAdmin() 在外部调用，自动生成 API Key
     return;
   }
@@ -100,12 +106,110 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 
 const BOOTSTRAP_ADMIN_FILE = "bootstrap-admin.txt";
 
-// v2.x: 初始/恢复密码固定为 admin123（部署便利优先，主理人决策）。
-// 生产环境暴露网络端口时，部署完成后请立即在界面中修改 admin 密码。
-const BOOTSTRAP_ADMIN_PASSWORD = "admin123";
+// R01 安全整改：管理员初始/恢复口令改为**一次性随机口令**，且引导文件是引导态口令的事实源。
+// 旧实现把口令固定为 admin123 并在每次启动重置哈希，等于向公开渠道永久提供可用凭据；
+// 同时任何停留在引导态的存量库都会被「重启恢复到公开口令」，可被自助改密永久接管。
+//
+// 历史公开口令清单：出现在任何公开文档/旧版本代码里的引导口令一律视为**无效**。
+// 升级到本修复后，仍停留在引导态（未改密）的库会在首次启动时被换发新的随机口令，
+// 这些历史口令当场失效 —— 这是本次整改的目的，不是回归。
+const LEGACY_PUBLIC_BOOTSTRAP_PASSWORDS = new Set(["admin123"]);
 
 export function getBootstrapAdminPath(): string {
   return path.join(path.dirname(resolveProjectDbPath()), BOOTSTRAP_ADMIN_FILE);
+}
+
+// 口令字母表剔除易混淆字符（i/l/o/I/O/0/1）与 shell/引号敏感字符，便于运维抄录。
+const PWD_LOWER = "abcdefghjkmnpqrstuvwxyz";
+const PWD_UPPER = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+const PWD_DIGITS = "23456789";
+const PWD_SYMBOLS = "!#$%&*+-=?@^~";
+const PWD_ALL = PWD_LOWER + PWD_UPPER + PWD_DIGITS + PWD_SYMBOLS;
+const BOOTSTRAP_ADMIN_PASSWORD_LENGTH = 16;
+
+function randomInt(bound: number): number {
+  // 拒绝采样消除取模偏置（bounded integers 的标准做法）。
+  const max = Math.floor(0x100000000 / bound) * bound;
+  let value = Number.MAX_SAFE_INTEGER;
+  while (value >= max) {
+    value = randomBytes(4).readUInt32BE(0);
+  }
+  return value % bound;
+}
+
+function pickFrom(alphabet: string): string {
+  return alphabet[randomInt(alphabet.length)];
+}
+
+/**
+ * 生成管理员一次性引导口令：长度 16，四类字符至少各一，随机排布。
+ * 纯本地函数（不依赖数据库），便于脚本化回归。
+ */
+export function generateBootstrapAdminPassword(): string {
+  const chars = [pickFrom(PWD_LOWER), pickFrom(PWD_UPPER), pickFrom(PWD_DIGITS), pickFrom(PWD_SYMBOLS)];
+  while (chars.length < BOOTSTRAP_ADMIN_PASSWORD_LENGTH) {
+    chars.push(pickFrom(PWD_ALL));
+  }
+  // Fisher-Yates 洗牌，保证四类字符的位置随机。
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join("");
+}
+
+/** 读取引导文件中的口令；文件缺失或内容为空返回 null。 */
+function readBootstrapAdminPassword(): string | null {
+  try {
+    const value = readFileSync(getBootstrapAdminPath(), "utf8").trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 库里的哈希是否仍能被**历史公开口令**验通（评审 B4）。
+ *
+ * 为什么要有这一步：`password_change_required` 是后来才以 `DEFAULT 0` 补进 `users` 的列，
+ * 所以「建库早于那次迁移、且管理员从未改过口令」的存量库，这一位天然是 0。
+ * 只看标志位就会把「一直没动过 admin123」读成「已完成首次改密」，直接跳过轮换——
+ * 而 R01 对外承诺的正是「升级即失效，admin123 当场不可用」。
+ * 标志位是**意图**的记录，哈希能否被公开口令验通才是**事实**；两者不一致时按事实办。
+ */
+async function matchesLegacyBootstrapPassword(passwordHash: string | null | undefined): Promise<boolean> {
+  if (!passwordHash) return false;
+  for (const candidate of LEGACY_PUBLIC_BOOTSTRAP_PASSWORDS) {
+    try {
+      if (await verifyPassword(candidate, passwordHash)) return true;
+    } catch {
+      // 哈希串本身畸形（不是 bcrypt 格式）时按不匹配处理：交给原有分支判断，别在这里抛崩启动。
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * 部署逃生阀：显式设置 `PROJECTX_ADMIN_PASSWORD` 时，引导态口令由该环境变量决定，
+ * 不再写 `bootstrap-admin.txt`（用于容器/一键部署等「读不到数据目录文件」的场景）。
+ * 仅在账号仍处于引导态时生效；完成首次改密后该变量再改也不会覆盖在用口令。
+ */
+const ADMIN_PASSWORD_ENV = "PROJECTX_ADMIN_PASSWORD";
+
+function readEnvAdminPassword(): string | null {
+  const value = (process.env[ADMIN_PASSWORD_ENV] ?? "").trim();
+  return value || null;
+}
+
+/** 换发口令后落地事实源：环境变量态删除引导文件，随机态写入引导文件。 */
+function publishBootstrapPassword(password: string, fromEnv: boolean): void {
+  if (fromEnv) {
+    removeBootstrapAdminFile();
+    console.warn(`[DB] 管理员引导口令由环境变量 ${ADMIN_PASSWORD_ENV} 指定（不写引导文件）`);
+    return;
+  }
+  writeBootstrapAdminPassword(password);
 }
 
 function writeBootstrapAdminPassword(password: string): void {
@@ -121,7 +225,7 @@ function writeBootstrapAdminPassword(password: string): void {
     renameSync(temp, target);
   }
   try { chmodSync(target, 0o600); } catch { /* Windows ACLs may ignore POSIX modes. */ }
-  console.warn(`[DB] 管理员初始密码已写入引导文件（生产环境请尽快修改）: ${target}`);
+  console.warn(`[DB] 管理员一次性初始口令已写入引导文件（请读取后尽快修改）: ${target}`);
 }
 
 export function removeBootstrapAdminFile(): void {
@@ -136,6 +240,24 @@ export interface DefaultAdminBootstrapResult {
   passwordFile: string;
 }
 
+/**
+ * 确保存在管理员账号，并维护「引导态口令」的唯一事实源 = `bootstrap-admin.txt`。
+ *
+ * 四种情形：
+ * 1. 库中没有 admin（新库）：生成随机口令、写哈希、写引导文件，`rotated: true`。
+ * 2. admin 已完成首次改密（`password_change_required = 0`）**且哈希不是任何历史公开口令**：
+ *    完全不做任何变更。（评审 B4：`password_change_required` 是后补的 `DEFAULT 0` 列，
+ *    单看它会放过「建库早于该列、从未改密、现在仍是 admin123」的存量库。）
+ * 3. admin 停留在引导态且引导文件里的口令与库中哈希对得上：不做任何变更（`rotated: false`）。
+ *    这一条是整改的核心 —— 重启不再把口令恢复到任何固定值，也不再吊销既有会话。
+ * 4. admin 停留在引导态，但口令事实源不可信（文件缺失/为空、内容是历史公开口令，
+ *    或与库中哈希对不上）：换发新的随机口令并重写文件（`rotated: true`）。覆盖三类场景：
+ *    升级到本修复时的存量 `admin123` 库（旧口令当场失效）、备份还原/误删文件后的自愈，
+ *    以及「换了库但文件没换」导致的锁死。
+ *
+ * 设置了 `PROJECTX_ADMIN_PASSWORD` 时，引导态口令改由该环境变量决定（见逃生阀说明），
+ * 引导文件被删除，且口令与库中哈希一致时不轮换、不吊销会话。
+ */
 export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult> {
   const dialect = detectDialect();
   const db = getMysqlDb();
@@ -144,29 +266,69 @@ export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult>
     "admin"
   );
   const passwordFile = getBootstrapAdminPath();
+  const envPassword = readEnvAdminPassword();
+  const ensureApiKey = async () => {
+    await (dialect === "mariadb" ? ensureDefaultApiKey(db) : ensureDefaultApiKeySqlite(getDatabase()));
+  };
 
   if (existing) {
-    if (!existing.password_change_required) {
-      // 已完成首次改密（或显式沿用初始密码）的在用账号：不做任何变更
-      await (dialect === "mariadb" ? ensureDefaultApiKey(db) : ensureDefaultApiKeySqlite(getDatabase()));
+    // 评审 B4：标志位说「已改密」还不够，还得确认它现在用的不是历史公开口令。
+    const legacyPasswordStillWorks = await matchesLegacyBootstrapPassword(existing.password_hash);
+    if (!existing.password_change_required && !legacyPasswordStillWorks) {
+      // 已完成首次改密、且新口令不在历史公开清单里：不做任何变更
+      await ensureApiKey();
       return { adminId: existing.id, rotated: false, passwordFile };
     }
-    // 停留在引导态的存量库（旧随机一次性密码残留、改密标记未清除等）：统一重置为固定初始密码
+    if (legacyPasswordStillWorks && !existing.password_change_required) {
+      console.warn(
+        `[SECURITY] 管理员账号仍在使用历史公开引导口令（${[...LEGACY_PUBLIC_BOOTSTRAP_PASSWORDS].join("/")}）：`
+        + "该口令已在公开渠道流传，本次启动换发一次性随机口令并要求登录后立即改密。"
+      );
+    }
+    if (envPassword) {
+      // 逃生阀态：环境变量是口令事实源，引导文件让位。
+      const alreadyMatches = await verifyPassword(envPassword, existing.password_hash);
+      if (!alreadyMatches) {
+        await db.run(
+          "UPDATE users SET password_hash = ?, password_change_required = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          await hashPassword(envPassword), existing.id
+        );
+      }
+      publishBootstrapPassword(envPassword, true);
+      await ensureApiKey();
+      return { adminId: existing.id, rotated: !alreadyMatches, passwordFile };
+    }
+    const filePassword = readBootstrapAdminPassword();
+    if (
+      filePassword
+      && !LEGACY_PUBLIC_BOOTSTRAP_PASSWORDS.has(filePassword)
+      && await verifyPassword(filePassword, existing.password_hash)
+    ) {
+      // 引导文件与库中哈希对得上：它仍是可信的口令事实源，保持现状，
+      // 不重置哈希、不重写文件（重启既不恢复到固定值，也不吊销既有会话）。
+      await ensureApiKey();
+      return { adminId: existing.id, rotated: false, passwordFile };
+    }
+    // 口令事实源不可信：文件缺失/为空、内容是历史公开口令，或与库中哈希对不上
+    // （例如手工导入了另一台机器的备份、文件被单独改动）——换发一次性随机口令，
+    // 否则会出现「文件里的口令登录不进去」这种无人能自愈的锁死状态。
+    const password = generateBootstrapAdminPassword();
     await db.run(
       "UPDATE users SET password_hash = ?, password_change_required = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      await hashPassword(BOOTSTRAP_ADMIN_PASSWORD), existing.id
+      await hashPassword(password), existing.id
     );
-    writeBootstrapAdminPassword(BOOTSTRAP_ADMIN_PASSWORD);
-    await (dialect === "mariadb" ? ensureDefaultApiKey(db) : ensureDefaultApiKeySqlite(getDatabase()));
+    writeBootstrapAdminPassword(password);
+    await ensureApiKey();
     return { adminId: existing.id, rotated: true, passwordFile };
   }
 
+  const newPassword = envPassword ?? generateBootstrapAdminPassword();
   if (dialect === "mariadb") {
     const insertAdminSql = buildInsertIgnore("mariadb", "users", [
       "username", "password_hash", "name", "role_id", "is_active", "password_change_required",
     ]);
-    const result = await db.run(insertAdminSql, "admin", await hashPassword(BOOTSTRAP_ADMIN_PASSWORD), "系统管理员", 1, 1, 1);
-    writeBootstrapAdminPassword(BOOTSTRAP_ADMIN_PASSWORD);
+    const result = await db.run(insertAdminSql, "admin", await hashPassword(newPassword), "系统管理员", 1, 1, 1);
+    publishBootstrapPassword(newPassword, Boolean(envPassword));
     await ensureDefaultApiKey(db);
     return { adminId: result.lastInsertRowid, rotated: true, passwordFile };
   }
@@ -176,8 +338,8 @@ export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult>
   const result = sqlite.prepare(
     `INSERT INTO users (username, password_hash, name, role_id, is_active, password_change_required)
      VALUES (?, ?, ?, ?, ?, ?)`
-  ).run("admin", await hashPassword(BOOTSTRAP_ADMIN_PASSWORD), "系统管理员", 1, 1, 1);
-  writeBootstrapAdminPassword(BOOTSTRAP_ADMIN_PASSWORD);
+  ).run("admin", await hashPassword(newPassword), "系统管理员", 1, 1, 1);
+  publishBootstrapPassword(newPassword, Boolean(envPassword));
   await ensureDefaultApiKeySqlite(sqlite);
   return { adminId: Number(result.lastInsertRowid), rotated: true, passwordFile };
 }
@@ -258,7 +420,7 @@ export async function migrateLegacyPlaintextApiKeys(db: DbAdapter): Promise<void
 }
 
 export { runMigrations };
-export { resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath } from "./paths";
+export { resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, diagnoseProjectDbPath, candidateProjectDbPaths } from "./paths";
 
 // ── 跨方言 DB 适配器 ──────────────────────────────────
 export {

@@ -8,6 +8,7 @@ import { analysisCache } from "../services/analysisCache";
 import { coefficientOfVariation, cronbachAlpha, discriminationByExtremeGroup, difficulty, histogram, histogramSegmentSize, kr20, mean, stdDev, normality, qqPlot } from "../../shared/stats";
 import { CardRepository } from "./CardRepository";
 import { objectiveQuestionDefinitions } from "../../shared/grading";
+import { examClassJoin, examClassPredicate, examDisplayClass, examClassId, examClassJoinedAt } from "../services/examClassMemberships";
 import type {
   BorderlineLineKind, BorderlineResponse, BorderlineStudentItem, ClassComparisonClassSummary,
   ClassComparisonOptionStat, ClassComparisonQuestionStat, ClassComparisonResponse, ClassKnowledgeResponse,
@@ -65,13 +66,13 @@ export const CURRENT_CLASS_JOIN_SUBQUERY =
 
 function classFilter(classId?: number): { join: string; where: string; params: unknown[] } {
   if (classId === undefined) return { join: "", where: "", params: [] };
-  if (classId === 0) return { join: "", where: "AND NOT EXISTS (SELECT 1 FROM class_students cs_scope WHERE cs_scope.student_id = ss.student_id)", params: [] };
-  return { join: "JOIN class_students cs ON cs.student_id = ss.student_id", where: "AND cs.class_id = ?", params: [classId] };
+  if (classId === 0) return { join: "", where: `AND ${examClassPredicate("ss.student_id", "ss.exam_id", true)}`, params: [] };
+  return { join: "", where: `AND ${examClassPredicate("ss.student_id", "ss.exam_id")}`, params: [classId] };
 }
 function classFilterQs(classId?: number): { join: string; where: string; params: unknown[] } {
   if (classId === undefined) return { join: "", where: "", params: [] };
-  if (classId === 0) return { join: "", where: "AND NOT EXISTS (SELECT 1 FROM class_students cs_scope WHERE cs_scope.student_id = qs.student_id)", params: [] };
-  return { join: "JOIN class_students cs ON cs.student_id = qs.student_id", where: "AND cs.class_id = ?", params: [classId] };
+  if (classId === 0) return { join: "", where: `AND ${examClassPredicate("qs.student_id", "qs.exam_id", true)}`, params: [] };
+  return { join: "", where: `AND ${examClassPredicate("qs.student_id", "qs.exam_id")}`, params: [classId] };
 }
 
 function round1(v: number): number { return Math.round(v * 10) / 10; }
@@ -108,7 +109,7 @@ function placeholders(v: unknown[]): string { return v.map(() => "?").join(",");
  */
 const DISPLAY_CLASS_ORDER = `
       (c.id IS NOT NULL AND c.archived_at IS NULL AND g.archived_at IS NULL) DESC,
-      cs.joined_at DESC,
+      ${examClassJoinedAt()} DESC,
       c.id DESC`;
 
 function normalizeExamIds(v: Array<number | string | null | undefined> | undefined): number[] {
@@ -128,8 +129,8 @@ export class AnalysisRepository {
   constructor() { this.db = getMysqlDb(); this.cardRepo = new CardRepository(); }
 
   async getExamClasses(examId: number): Promise<Array<{ classId: number; className: string; gradeName?: string }>> {
-    const classes = await this.db.all(`SELECT DISTINCT cs.class_id as classId, c.name as className, g.name as gradeName FROM student_scores ss JOIN class_students cs ON cs.student_id = ss.student_id JOIN classes c ON c.id = cs.class_id LEFT JOIN grades g ON g.id = c.grade_id WHERE ss.exam_id = ? ORDER BY g.sort_order, c.sort_order, c.name`, examId);
-    const unknown = await this.db.get(`SELECT COUNT(*) as count FROM student_scores ss WHERE ss.exam_id = ? AND NOT EXISTS (SELECT 1 FROM class_students cs WHERE cs.student_id = ss.student_id)`, examId) as { count: number };
+    const classes = await this.db.all(`SELECT DISTINCT ${examClassId()} as classId, c.name as className, g.name as gradeName FROM student_scores ss ${examClassJoin("ss.student_id", "ss.exam_id")} JOIN classes c ON c.id = ${examClassId()} LEFT JOIN grades g ON g.id = c.grade_id WHERE ss.exam_id = ? ORDER BY g.sort_order, c.sort_order, c.name`, examId);
+    const unknown = await this.db.get(`SELECT COUNT(*) as count FROM student_scores ss WHERE ss.exam_id = ? AND ${examClassPredicate("ss.student_id", "ss.exam_id", true)}`, examId) as { count: number };
     const result = classes.map((c: any) => ({ ...c, gradeName: c.gradeName ?? undefined }));
     return unknown.count > 0 ? [...result, { classId: 0, className: "未知班级", gradeName: "无年级" }] : result;
   }
@@ -194,7 +195,7 @@ export class AnalysisRepository {
     return (await this.db.all(sql, ...q) as Array<{ id: number }>).map(r => r.id);
   }
 
-  async getCrossExamTotal(request: CrossExamTotalRequest, options?: { visibleExamIds?: number[] | null; onlyPublished?: boolean }): Promise<CrossExamTotalResponse> {
+  async getCrossExamTotal(request: CrossExamTotalRequest, options?: { visibleExamIds?: number[] | null; onlyPublished?: boolean; participatedByStudentId?: number }): Promise<CrossExamTotalResponse> {
     const mode = request.mode;
     const group = mode === "group" && request.groupId ? await this.getExamGroup(request.groupId) : null;
     let examIds = mode === "week"
@@ -204,6 +205,10 @@ export class AnalysisRepository {
     if (options?.visibleExamIds) { const v = new Set(options.visibleExamIds); examIds = examIds.filter(id => v.has(id)); }
     // PR #256（v41）：学生端跨考聚合仅统计已公布考试（教师端不受限），在考试集合解析后统一过滤
     if (options?.onlyPublished) { examIds = await this.filterPublishedExamIds(examIds); }
+    // PR #312 CR7：week/month 等日期模式没有调用者给定的考试集合，走不到路由那道
+    // 「明确集合」参与校验，于是学生能读到范围内任意考试的姓名、学号与分数。
+    // 集合在此解析完（含公布过滤）后再按「本人参与」收敛，与明确集合模式同一口径。
+    if (options?.participatedByStudentId != null) { examIds = await this.filterParticipatedExamIds(examIds, options.participatedByStudentId); }
     examIds = normalizeExamIds(examIds);
     if (examIds.length === 0) return this.emptyCrossExamTotal(mode, group);
     const exams = await this.getCrossExamTotalExams(examIds);
@@ -277,9 +282,9 @@ export class AnalysisRepository {
     const classes = await this.getExamClasses(examId);
     // N+1 收敛：一次 LEFT JOIN 拉全部成绩并按 class_id 分桶（classId=null 即无班级记录 → 未知班级）
     const rows = await this.db.all(
-      `SELECT ss.total_score as totalScore, cs.class_id as classId
+      `SELECT ss.total_score as totalScore, ${examClassId()} as classId
        FROM student_scores ss
-       LEFT JOIN class_students cs ON cs.student_id = ss.student_id
+       ${examClassJoin("ss.student_id", "ss.exam_id")}
        WHERE ss.exam_id = ?`,
       examId
     ) as Array<{ totalScore: number; classId: number | null }>;
@@ -390,8 +395,8 @@ export class AnalysisRepository {
     const gradeRows = await this.db.all(`SELECT e.id as examId, e.name as examName, e.subject as subject, COALESCE(e.start_time, e.end_time, e.created_at) as examTime, ROUND(AVG(ss.total_score), 1) as gradeAvg, COUNT(*) as gradeCount FROM exams e JOIN student_scores ss ON ss.exam_id = e.id WHERE e.subject = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}${scopeSql} GROUP BY e.id ORDER BY COALESCE(e.start_time, e.end_time, e.created_at) ASC, e.id ASC`, s, ...scopeParams) as any[];
     if (classId === undefined) return gradeRows.map(r => ({ examId: r.examId, examName: r.examName, subject: r.subject, examTime: r.examTime, gradeAvg: r.gradeAvg, gradeCount: r.gradeCount }));
     const classRows = classId === 0
-      ? await this.db.all(`SELECT e.id as examId, ROUND(AVG(ss.total_score), 1) as classAvg, COUNT(*) as classCount FROM exams e JOIN student_scores ss ON ss.exam_id = e.id WHERE e.subject = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}${scopeSql} AND NOT EXISTS (SELECT 1 FROM class_students cs_scope WHERE cs_scope.student_id = ss.student_id) GROUP BY e.id`, s, ...scopeParams) as any[]
-      : await this.db.all(`SELECT e.id as examId, ROUND(AVG(ss.total_score), 1) as classAvg, COUNT(*) as classCount FROM exams e JOIN student_scores ss ON ss.exam_id = e.id JOIN class_students cs ON cs.student_id = ss.student_id WHERE e.subject = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}${scopeSql} AND cs.class_id = ? GROUP BY e.id`, s, ...scopeParams, classId) as any[];
+      ? await this.db.all(`SELECT e.id as examId, ROUND(AVG(ss.total_score), 1) as classAvg, COUNT(*) as classCount FROM exams e JOIN student_scores ss ON ss.exam_id = e.id WHERE e.subject = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}${scopeSql} AND ${examClassPredicate("ss.student_id", "ss.exam_id", true)} GROUP BY e.id`, s, ...scopeParams) as any[]
+      : await this.db.all(`SELECT e.id as examId, ROUND(AVG(ss.total_score), 1) as classAvg, COUNT(*) as classCount FROM exams e JOIN student_scores ss ON ss.exam_id = e.id ${examClassJoin("ss.student_id", "ss.exam_id")} WHERE e.subject = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}${scopeSql} AND ${examClassId()} = ? GROUP BY e.id`, s, ...scopeParams, classId) as any[];
     const m = new Map(classRows.map(r => [r.examId, r]));
     return gradeRows.map(r => ({ ...r, classAvg: m.get(r.examId)?.classAvg ?? null, classCount: m.get(r.examId)?.classCount ?? 0 }));
   }
@@ -683,17 +688,19 @@ export class AnalysisRepository {
     const classScope = classId === undefined
       ? { where: "", params: [] as unknown[] }
       : classId === 0
-        ? { where: "AND NOT EXISTS (SELECT 1 FROM class_students cs_scope WHERE cs_scope.student_id = qs.student_id)", params: [] as unknown[] }
-        : { where: "AND EXISTS (SELECT 1 FROM class_students cs_scope WHERE cs_scope.student_id = qs.student_id AND cs_scope.class_id = ?)", params: [classId] as unknown[] };
-    const displayClassConstraint = classId !== undefined && classId > 0 ? "AND cs_display.class_id = ?" : "";
+        ? { where: `AND ${examClassPredicate("qs.student_id", "qs.exam_id", true)}`, params: [] as unknown[] }
+        : { where: `AND ${examClassPredicate("qs.student_id", "qs.exam_id")}`, params: [classId] as unknown[] };
+    const displayClassConstraint = classId !== undefined && classId > 0 ? `AND ${examClassId("cs_display")} = ?` : "";
     const displayClassParams = displayClassConstraint ? [classId] : [];
     const rows = await this.db.all(`
       SELECT qs.student_id, qs.score, qs.max_score, u.student_number, u.name,
-             (SELECT c.name FROM class_students cs_display JOIN classes c ON c.id = cs_display.class_id
+             (SELECT c.name FROM users display_user
+               ${examClassJoin("display_user.id", "qs.exam_id", "cs_display")}
+               JOIN classes c ON c.id = ${examClassId("cs_display")}
                JOIN grades g_disp ON g_disp.id = c.grade_id
-              WHERE cs_display.student_id = qs.student_id ${displayClassConstraint}
+              WHERE display_user.id = qs.student_id ${displayClassConstraint}
               ORDER BY (c.archived_at IS NULL AND g_disp.archived_at IS NULL) DESC,
-                       cs_display.joined_at DESC, cs_display.class_id DESC
+                       ${examClassJoinedAt("cs_display")} DESC, ${examClassId("cs_display")} DESC
               LIMIT 1) as class_name
       FROM question_scores qs
       JOIN users u ON u.id = qs.student_id
@@ -771,7 +778,8 @@ export class AnalysisRepository {
     // #246 auto_delete：软删除成员考试不参与大考组全部统计（该方法是组指标的成员唯一入口）
     const rows = await this.db.all<{ exam_id: number; track_type: string | null }>(
       `SELECT egm.exam_id, egm.track_type FROM exam_group_members egm
-       WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL}`,
+       WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL}
+       ORDER BY egm.sort_order, egm.exam_id`,
       groupId
     );
     const map = new Map<number, string>();
@@ -982,18 +990,22 @@ export class AnalysisRepository {
     const results: DistributionResult[] = [];
     if (mode === "total" || mode === "class") {
       const classRows = await this.db.all(`
-        SELECT ss.student_id, c.id as class_id, c.name as class_name
+        SELECT ss.exam_id, ss.student_id, c.id as class_id, c.name as class_name
         FROM student_scores ss
-        LEFT JOIN class_students cs ON cs.student_id = ss.student_id
-        LEFT JOIN classes c ON c.id = cs.class_id
+        ${examClassJoin("ss.student_id", "ss.exam_id")}
+        LEFT JOIN classes c ON c.id = ${examClassId()}
         LEFT JOIN grades g ON g.id = c.grade_id
         WHERE ss.exam_id IN (${examIds.map(() => "?").join(",")}) ${participantClause}
-        ORDER BY c.id IS NULL ASC, (c.id IS NOT NULL AND c.archived_at IS NULL AND g.archived_at IS NULL) DESC, cs.joined_at DESC, c.id DESC
-      `, ...examIds, ...participants) as Array<{ student_id: number; class_id: number | null; class_name: string | null }>;
-      // B12：归班统一口径——在读班级优先，再取最近加入（joined_at DESC），
-      // 与 CURRENT_CLASS_SUBQUERY 一致；归档班 id 更大且同刻时不得选中归档班（评审 P2）。
-      const classOf = new Map<number, { classId: number; className: string }>();
-      for (const r of classRows) if (!classOf.has(r.student_id)) classOf.set(r.student_id, { classId: r.class_id ?? 0, className: r.class_name ?? "未知班级" });
+        ORDER BY c.id IS NULL ASC, (c.id IS NOT NULL AND c.archived_at IS NULL AND g.archived_at IS NULL) DESC, ${examClassJoinedAt()} DESC, c.id DESC
+      `, ...examIds, ...participants) as Array<{ exam_id: number; student_id: number; class_id: number | null; class_name: string | null }>;
+      // Each student contributes once per exam-time class, even with several
+      // group subjects. Display-class selection must not discard memberships.
+      const classesOf = new Map<number, Map<number, string>>();
+      for (const r of this.groupReferenceClassRows(classRows, examIds)) {
+        const memberships = classesOf.get(r.student_id) ?? new Map<number, string>();
+        memberships.set(r.class_id ?? 0, r.class_name ?? "未知班级");
+        classesOf.set(r.student_id, memberships);
+      }
       const fullScoreMap = await this.getExamFullScoreMap(examIds);
       const totalFull = sumKnownFullScores(examIds.map(id => fullScoreMap.get(id) ?? 0));
       // B9：赋分可用性——模式为 assigned 且存在「带赋分公式并已落库 assigned_score」的成员考试才算点亮
@@ -1035,9 +1047,10 @@ export class AnalysisRepository {
         const classDisc = await this.groupOverallDiscrimination(groupId, track);
         const byClass = new Map<number, { className: string; scores: number[] }>();
         for (const [sid, t] of totals) {
-          const cls = classOf.get(sid) ?? { classId: 0, className: "未知班级" };
-          if (!byClass.has(cls.classId)) byClass.set(cls.classId, { className: cls.className, scores: [] });
-          byClass.get(cls.classId)!.scores.push(t);
+          for (const [classId, className] of classesOf.get(sid) ?? new Map([[0, "未知班级"]])) {
+            if (!byClass.has(classId)) byClass.set(classId, { className, scores: [] });
+            byClass.get(classId)!.scores.push(t);
+          }
         }
         for (const [classId, info] of byClass) {
           const classRes = this.buildDistribution("class", String(classId), info.className, totalFull, thresholds.segmentSize, info.scores, classDisc);
@@ -1088,6 +1101,19 @@ export class AnalysisRepository {
     return qa.overall.discrimination;
   }
 
+  /** For groups spanning a move, totals use the first attended member in group
+   * order; subjects retain their own exam-time classes. All memberships of the
+   * reference exam are retained, rather than selecting only a display class. */
+  private groupReferenceClassRows<T extends { exam_id: number; student_id: number }>(rows: T[], examIds: number[]): T[] {
+    const order = new Map(examIds.map((id, index) => [id, index]));
+    const first = new Map<number, number>();
+    for (const row of rows) {
+      const index = order.get(row.exam_id)!;
+      first.set(row.student_id, Math.min(first.get(row.student_id) ?? index, index));
+    }
+    return rows.filter(row => order.get(row.exam_id) === first.get(row.student_id));
+  }
+
   /** 大考班级对比（班级总分统计 + 逐科班级均分对比） */
   async getGroupClassComparison(groupId: number, track: "all" | "arts" | "science" = "all"): Promise<GroupClassComparisonResponse> {
     const group = await this.getExamGroup(groupId);
@@ -1101,26 +1127,29 @@ export class AnalysisRepository {
     const fullScoreMap = await this.getExamFullScoreMap(examIds);
     const totalFull = sumKnownFullScores(examIds.map(id => fullScoreMap.get(id) ?? 0));
     const classRows = await this.db.all(`
-      SELECT ss.student_id, c.id as class_id, c.name as class_name, g.name as grade_name
+      SELECT ss.exam_id, ss.student_id, c.id as class_id, c.name as class_name, g.name as grade_name
       FROM student_scores ss
-      LEFT JOIN class_students cs ON cs.student_id = ss.student_id
-      LEFT JOIN classes c ON c.id = cs.class_id
+      ${examClassJoin("ss.student_id", "ss.exam_id")}
+      LEFT JOIN classes c ON c.id = ${examClassId()}
       LEFT JOIN grades g ON g.id = c.grade_id
       WHERE ss.exam_id IN (${examIds.map(() => "?").join(",")})
-      ORDER BY c.id IS NULL ASC, (c.id IS NOT NULL AND c.archived_at IS NULL AND g.archived_at IS NULL) DESC, cs.joined_at DESC, c.id DESC
-    `, ...examIds) as Array<{ student_id: number; class_id: number | null; class_name: string | null; grade_name: string | null }>;
+      ORDER BY c.id IS NULL ASC, (c.id IS NOT NULL AND c.archived_at IS NULL AND g.archived_at IS NULL) DESC, ${examClassJoinedAt()} DESC, c.id DESC
+    `, ...examIds) as Array<{ exam_id: number; student_id: number; class_id: number | null; class_name: string | null; grade_name: string | null }>;
     const classMeta = new Map<number, { className: string; gradeName?: string }>();
     for (const r of classRows) classMeta.set(r.class_id ?? 0, { className: r.class_name ?? "未知班级", gradeName: r.grade_name ?? undefined });
-    // B12：多班学生归班统一口径——在读班级优先，再按 joined_at DESC 取首条
-    // （等价 CURRENT_CLASS_SUBQUERY，与下钻详情一致；归档班同刻 id 更大时不得选中）。
-    const classOf = new Map<number, number>();
-    for (const r of classRows) if (!classOf.has(r.student_id)) classOf.set(r.student_id, r.class_id ?? 0);
+    const classesOf = new Map<number, Set<number>>();
+    for (const r of this.groupReferenceClassRows(classRows, examIds)) {
+      const memberships = classesOf.get(r.student_id) ?? new Set<number>();
+      memberships.add(r.class_id ?? 0);
+      classesOf.set(r.student_id, memberships);
+    }
 
     const byClass = new Map<number, number[]>();
     for (const [sid, t] of totals) {
-      const cid = classOf.get(sid) ?? 0;
-      if (!byClass.has(cid)) byClass.set(cid, []);
-      byClass.get(cid)!.push(t);
+      for (const cid of classesOf.get(sid) ?? new Set([0])) {
+        if (!byClass.has(cid)) byClass.set(cid, []);
+        byClass.get(cid)!.push(t);
+      }
     }
     const classes: GroupClassComparisonResponse["classes"] = [];
     for (const [classId, scores] of byClass) {
@@ -1166,8 +1195,8 @@ export class AnalysisRepository {
       ? await this.db.all(
           `SELECT ss.exam_id, ss.student_id, ss.total_score, c.id as class_id
            FROM student_scores ss
-           LEFT JOIN class_students cs ON cs.student_id = ss.student_id
-           LEFT JOIN classes c ON c.id = cs.class_id
+           ${examClassJoin("ss.student_id", "ss.exam_id")}
+           LEFT JOIN classes c ON c.id = ${examClassId()}
            WHERE ss.exam_id IN (${placeholders(examIds)}) ${participantClause}`,
           ...examIds,
           ...participantIds
@@ -1408,8 +1437,8 @@ export class AnalysisRepository {
 
   async getExportData(examId: number, classId?: number): Promise<ExportData> {
     // 与 getScoreTableData 同口径：一名学生可有多行班级关联，导出必须按学生去重；
-    // 每生首行由 DISPLAY_CLASS_ORDER 选出「展示班级」（在读优先），不得落到归档旧班。
-    const memberships = await this.db.all(`SELECT ss.student_id, u.student_number, u.name, ss.total_score, ss.objective_score, ss.subjective_score, c.name as class_name, c.id as class_id FROM student_scores ss JOIN users u ON u.id = ss.student_id LEFT JOIN class_students cs ON cs.student_id = ss.student_id LEFT JOIN classes c ON c.id = cs.class_id LEFT JOIN grades g ON g.id = c.grade_id WHERE ss.exam_id = ? ORDER BY ss.total_score DESC, ss.student_id ASC,${DISPLAY_CLASS_ORDER}`, examId) as any[];
+    // 首行按 DISPLAY_CLASS_ORDER 从考试快照（旧数据回落现有花名册）选出展示班级。
+    const memberships = await this.db.all(`SELECT ss.student_id, u.student_number, u.name, ss.total_score, ss.objective_score, ss.subjective_score, c.name as class_name, c.id as class_id FROM student_scores ss JOIN users u ON u.id = ss.student_id ${examClassJoin("ss.student_id", "ss.exam_id")} LEFT JOIN classes c ON c.id = ${examClassId()} LEFT JOIN grades g ON g.id = c.grade_id WHERE ss.exam_id = ? ORDER BY ss.total_score DESC, ss.student_id ASC,${DISPLAY_CLASS_ORDER}`, examId) as any[];
     if (memberships.length === 0) return { students: [], questionHeaders: [] };
     const questionList = await this.db.all(`SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type ORDER BY question_number`, examId) as any[];
     const qHeaders = questionList.map((q: any) => String(q.question_number));
@@ -1442,11 +1471,10 @@ export class AnalysisRepository {
     const exam = await this.db.get(`SELECT e.name, e.subject, ac.exam_date, e.assigned_formula FROM exams e LEFT JOIN answer_cards ac ON ac.id = e.card_id WHERE e.id = ?`, examId) as any;
     if (!exam) throw new Error("考试不存在");
     const hasAssigned = !!(exam.assigned_formula && exam.assigned_formula !== "");
-    const memberships = await this.db.all(`SELECT ss.student_id, u.student_number, u.name, ss.total_score, ss.objective_score, ss.subjective_score, ss.assigned_score, c.name as class_name, c.id as class_id, g.name as grade_name FROM student_scores ss JOIN users u ON u.id = ss.student_id LEFT JOIN class_students cs ON cs.student_id = ss.student_id LEFT JOIN classes c ON c.id = cs.class_id LEFT JOIN grades g ON g.id = c.grade_id WHERE ss.exam_id = ? ORDER BY ss.total_score DESC, ss.student_id ASC,${DISPLAY_CLASS_ORDER}`, examId) as any[];
+    const memberships = await this.db.all(`SELECT ss.student_id, u.student_number, u.name, ss.total_score, ss.objective_score, ss.subjective_score, ss.assigned_score, c.name as class_name, c.id as class_id, g.name as grade_name FROM student_scores ss JOIN users u ON u.id = ss.student_id ${examClassJoin("ss.student_id", "ss.exam_id")} LEFT JOIN classes c ON c.id = ${examClassId()} LEFT JOIN grades g ON g.id = c.grade_id WHERE ss.exam_id = ? ORDER BY ss.total_score DESC, ss.student_id ASC,${DISPLAY_CLASS_ORDER}`, examId) as any[];
     if (memberships.length === 0) return { examName: exam.name, subject: exam.subject, examDate: exam.exam_date, hasAssignedScore: hasAssigned, rows: [], totalCount: 0 };
     // 一名学生可属于多个班级：年排/人数/分布按学生计算，班排仍使用各班完整成员。
-    // 无班级筛选时每生取 SQL 首行 = DISPLAY_CLASS_ORDER 选出的「展示班级」（在读优先），
-    // 已转入新班的学生不再显示归档旧班。
+    // 无筛选时每生取首行作为展示班级；优先使用考试快照，调班不改写历史班级。
     const uniqueStudents = new Map<number, any>();
     for (const s of memberships) if (!uniqueStudents.has(s.student_id)) uniqueStudents.set(s.student_id, s);
     const allStudents = [...uniqueStudents.values()];
@@ -1524,19 +1552,15 @@ export class AnalysisRepository {
     const gradeByExam = new Map<number, { gradeAvg: number; classSize: number }>();
     for (const r of gradeRows) gradeByExam.set(Number(r.exam_id), { gradeAvg: r.gradeAvg ?? 0, classSize: r.classSize });
 
-    const classRow = await this.db.get(`SELECT ${CURRENT_CLASS_SUBQUERY("?")} as class_id`, studentId) as { class_id: number | null } | undefined;
-    const classId = classRow?.class_id ?? null;
     const classAvgByExam = new Map<number, number>();
-    if (classId != null) {
-      const rows = await this.db.all(
-        `SELECT ss.exam_id, ROUND(AVG(ss.total_score), 1) as classAvg
-         FROM student_scores ss
-         JOIN class_students cs ON cs.student_id = ss.student_id AND cs.class_id = ?
-         WHERE ss.exam_id IN (${placeholders(examIds)}) GROUP BY ss.exam_id`,
-        classId, ...examIds
-      ) as Array<{ exam_id: number; classAvg: number | null }>;
-      for (const r of rows) classAvgByExam.set(Number(r.exam_id), r.classAvg ?? 0);
-    }
+    const classRows = await this.db.all(
+      `SELECT ss.exam_id, ROUND(AVG(ss.total_score), 1) as classAvg
+       FROM student_scores ss
+       WHERE ${examClassPredicate("ss.student_id", "ss.exam_id", false, examDisplayClass("?", "ss.exam_id"))}
+         AND ss.exam_id IN (${placeholders(examIds)}) GROUP BY ss.exam_id`,
+      studentId, ...examIds
+    ) as Array<{ exam_id: number; classAvg: number | null }>;
+    for (const r of classRows) classAvgByExam.set(Number(r.exam_id), r.classAvg ?? 0);
 
     // 排名兜底：未落库 rank 时按每场总分 competitionRank 现算
     const rankByExam = new Map<number, number>();
@@ -1605,19 +1629,19 @@ export class AnalysisRepository {
 
     const classId = options.classId;
     // 班级显示用「每生一行」的 csm（当前班 = joined_at DESC），过滤用 EXISTS 归属语义（多班级学生可命中任一所属班）
-    const csmJoin = `LEFT JOIN (${CURRENT_CLASS_JOIN_SUBQUERY}) csm ON csm.student_id = ss.student_id`;
+    const csmJoin = `LEFT JOIN classes csm ON csm.id = ${examDisplayClass("ss.student_id", "ss.exam_id")}`;
     const clsWhere = classId === 0
-      ? "AND NOT EXISTS (SELECT 1 FROM class_students cs WHERE cs.student_id = ss.student_id)"
+      ? `AND ${examClassPredicate("ss.student_id", "ss.exam_id", true)}`
       : classId != null
-        ? "AND EXISTS (SELECT 1 FROM class_students cs WHERE cs.student_id = ss.student_id AND cs.class_id = ?)"
+        ? `AND ${examClassPredicate("ss.student_id", "ss.exam_id")}`
         : "";
     const clsParams = classId != null && classId > 0 ? [classId] : [];
     const rows = await this.db.all(
-      `SELECT ss.student_id, ss.total_score, u.student_number, u.name, csm.class_id, c.name as class_name
+      `SELECT ss.student_id, ss.total_score, u.student_number, u.name, csm.id as class_id, c.name as class_name
        FROM student_scores ss
        JOIN users u ON u.id = ss.student_id
        ${csmJoin}
-       LEFT JOIN classes c ON c.id = csm.class_id
+       LEFT JOIN classes c ON c.id = csm.id
        WHERE ss.exam_id = ? ${clsWhere}
        ORDER BY ss.total_score DESC`,
       examId, ...clsParams
@@ -1649,11 +1673,11 @@ export class AnalysisRepository {
     const subjectOf = new Map(exams.map((e) => [Number(e.id), e.subject ?? String(e.id)]));
     const scoreRows = await this.db.all(
       `SELECT ss.exam_id, ss.student_id, ss.total_score, u.student_number, u.name,
-              csm.class_id, c.name as class_name
+              csm.id as class_id, c.name as class_name
        FROM student_scores ss
        JOIN users u ON u.id = ss.student_id
-       LEFT JOIN (${CURRENT_CLASS_JOIN_SUBQUERY}) csm ON csm.student_id = ss.student_id
-       LEFT JOIN classes c ON c.id = csm.class_id
+       LEFT JOIN classes csm ON csm.id = ${examDisplayClass("ss.student_id", "ss.exam_id")}
+       LEFT JOIN classes c ON c.id = csm.id
        WHERE ss.exam_id IN (${placeholders(ids)})`,
       ...ids
     ) as Array<{ exam_id: number; student_id: number; total_score: number; student_number: string; name: string; class_id: number | null; class_name: string | null }>;
@@ -1754,18 +1778,18 @@ export class AnalysisRepository {
     const empty = taggedTotal === 0;
 
     const classFilterClause = classIds && classIds.length > 0
-      ? `AND cs.class_id IN (${placeholders(classIds)})`
+      ? `AND ${examClassId()} IN (${placeholders(classIds)})`
       : "";
     const params: unknown[] = [examId];
     if (classIds && classIds.length > 0) params.push(...classIds);
     const rows = await this.db.all(
       `SELECT qs.student_id, qs.question_number, qs.score, qs.max_score,
-              cs.class_id, c.name as class_name, kp.point_text
+              ${examClassId()} AS class_id, c.name as class_name, kp.point_text
        FROM question_scores qs
        JOIN exams e ON e.id = qs.exam_id
        JOIN knowledge_points kp ON kp.card_id = e.card_id AND kp.question_number = qs.question_number
-       LEFT JOIN class_students cs ON cs.student_id = qs.student_id
-       LEFT JOIN classes c ON c.id = cs.class_id
+       ${examClassJoin("qs.student_id", "qs.exam_id")}
+       LEFT JOIN classes c ON c.id = ${examClassId()}
        WHERE qs.exam_id = ? ${classFilterClause}`,
       ...params
     ) as Array<{ student_id: number; question_number: number; score: number; max_score: number; class_id: number | null; class_name: string | null; point_text: string }>;
@@ -1868,9 +1892,9 @@ export class AnalysisRepository {
     const classId = options.classId;
     // 班级显示用 csm（每生一行），过滤用 EXISTS 归属语义
     const clsWhere = classId === 0
-      ? "AND NOT EXISTS (SELECT 1 FROM class_students cs WHERE cs.student_id = ss.student_id)"
+      ? `AND ${examClassPredicate("ss.student_id", "ss.exam_id", true)}`
       : classId != null
-        ? "AND EXISTS (SELECT 1 FROM class_students cs WHERE cs.student_id = ss.student_id AND cs.class_id = ?)"
+        ? `AND ${examClassPredicate("ss.student_id", "ss.exam_id")}`
         : "";
     const clsParams = classId != null && classId > 0 ? [classId] : [];
     const rows = await this.db.all(
@@ -1879,8 +1903,8 @@ export class AnalysisRepository {
        FROM question_scores qs
        JOIN student_scores ss ON ss.exam_id = qs.exam_id AND ss.student_id = qs.student_id
        JOIN users u ON u.id = ss.student_id
-       LEFT JOIN (${CURRENT_CLASS_JOIN_SUBQUERY}) csm ON csm.student_id = ss.student_id
-       LEFT JOIN classes c ON c.id = csm.class_id
+       LEFT JOIN classes csm ON csm.id = ${examDisplayClass("ss.student_id", "ss.exam_id")}
+       LEFT JOIN classes c ON c.id = csm.id
        WHERE qs.exam_id = ? AND qs.max_score > 0 AND qs.score < qs.max_score * ${threshold} ${clsWhere}
        ORDER BY ss.total_score DESC, u.student_number, qs.question_number`,
       examId, ...clsParams
@@ -1913,6 +1937,27 @@ export class AnalysisRepository {
     );
     const pub = new Set(rows.map((r) => Number(r.id)));
     return examIds.filter((id) => pub.has(id));
+  }
+
+  /**
+   * 安全 R13 + PR #312 CR7：仅保留该生**真的参加**过的考试，保持原顺序。
+   *
+   * 「参加」= 冻结/显式应考名单里有他，或该场已有他的成绩记录（存量库未冻结快照时仍能查分）。
+   * 判定口径与 `examParticipants` 的名单来源一致，但这里只问「在不在名单」，
+   * 不用当前班级关系反推——天梯是按场聚合的历史事实，班级可能早已变动（CR10 同源）。
+   */
+  async filterParticipatedExamIds(examIds: number[], studentId: number): Promise<number[]> {
+    if (examIds.length === 0) return [];
+    const rows = await this.db.all<{ eid: number }>(
+      `SELECT DISTINCT eid FROM (
+         SELECT exam_id AS eid FROM exam_participants WHERE student_id = ? AND exam_id IN (${placeholders(examIds)})
+         UNION
+         SELECT exam_id AS eid FROM student_scores WHERE student_id = ? AND exam_id IN (${placeholders(examIds)})
+       ) t`,
+      studentId, ...examIds, studentId, ...examIds
+    );
+    const joined = new Set(rows.map((r) => Number(r.eid)));
+    return examIds.filter((id) => joined.has(id));
   }
 
   private async getCrossExamTotalExams(examIds: number[]): Promise<CrossExamTotalExam[]> {
@@ -1962,7 +2007,7 @@ export class AnalysisRepository {
   }
 
   private async getCrossExamScoreRows(examIds: number[], gradeId?: number, classId?: number): Promise<Array<any>> {
-    let sql = `SELECT ss.exam_id, ss.student_id, u.student_number, u.name, c.id as class_id, c.name as class_name, g.name as grade_name, ss.total_score FROM student_scores ss JOIN users u ON u.id = ss.student_id LEFT JOIN class_students cs ON cs.student_id = ss.student_id LEFT JOIN classes c ON c.id = cs.class_id LEFT JOIN grades g ON g.id = c.grade_id WHERE ss.exam_id IN (${placeholders(examIds)})`;
+    let sql = `SELECT ss.exam_id, ss.student_id, u.student_number, u.name, c.id as class_id, c.name as class_name, g.name as grade_name, ss.total_score FROM student_scores ss JOIN users u ON u.id = ss.student_id ${examClassJoin("ss.student_id", "ss.exam_id")} LEFT JOIN classes c ON c.id = ${examClassId()} LEFT JOIN grades g ON g.id = c.grade_id WHERE ss.exam_id IN (${placeholders(examIds)})`;
     const params: unknown[] = [...examIds];
     if (classId === 0) sql += " AND c.id IS NULL";
     else if (classId !== undefined) { sql += " AND c.id = ?"; params.push(classId); }

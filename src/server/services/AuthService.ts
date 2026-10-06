@@ -2,6 +2,7 @@ import { UserRepository, type UserRecord } from "../repositories/UserRepository"
 import { verifyPassword, hashPassword, getMysqlDb, removeBootstrapAdminFile } from "../db";
 import { permissionsForRole } from "../auth/permissions";
 import { validateUserChosenPassword } from "../auth/passwordPolicy";
+import { revokeMediaTicketsForUser } from "./mediaTicket";
 import { randomBytes, createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
@@ -198,7 +199,12 @@ export class AuthService {
   }
 
   /**
-   * 吊销指定用户的所有 token（改密 / 禁用账号时调用）。
+   * 吊销指定用户的所有 token（改密 / 重置密码 / 禁用账号时调用）。
+   *
+   * 安全（评审 P1）：单次资源票据 `?mt=` 在这一句里一起作废。票据存在独立的内存表里，
+   * 原先只清 tokenStore，于是「改过密码 / 被禁用的账号」仍然能让浏览器历史里的旧链接
+   * 在剩余寿命内继续读图片和 PDF——撤销看上去生效了，实际留着第二条通道。
+   * 收进统一入口，是为了让今后新增的撤销调用点自动覆盖票据，不靠各处记得清两遍。
    */
   revokeUserTokens(userId: number): void {
     let changed = false;
@@ -209,6 +215,7 @@ export class AuthService {
       }
     }
     if (changed) this.scheduleSave();
+    revokeMediaTicketsForUser(userId);
   }
 
   /**
@@ -233,10 +240,20 @@ export class AuthService {
   async getUserByToken(token: string): Promise<Omit<UserRecord, "password_hash"> | null> {
     const record = this.verifyToken(token);
     if (!record) return null;
+    return await this.getActiveUserById(record.userId);
+  }
 
-    const user = await this.userRepo.findById(record.userId);
+  /**
+   * 按 id 取「当前仍启用」的账号（含最新角色），不存在/已停用返回 null。
+   *
+   * 安全（评审 P1）：资源票据在签发时冻结了一份用户快照，票据本身只能证明「某刻这个
+   * 用户授权过这条路径」。命中票据后必须回到这里取现状——账号可能在这份寿命里被停用、
+   * 删除或降权。令牌路径本来就走实时读取（findById 只认 is_active=1），票据路径此前
+   * 直接吃快照，等于撤销之外还留了一条不查库的通道。
+   */
+  async getActiveUserById(userId: number): Promise<Omit<UserRecord, "password_hash"> | null> {
+    const user = await this.userRepo.findById(userId);
     if (!user) return null;
-
     const { password_hash, ...safeUser } = user;
     return safeUser;
   }

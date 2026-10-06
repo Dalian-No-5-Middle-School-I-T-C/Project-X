@@ -167,6 +167,7 @@
     <ClCompile Include="common.cpp" />
     <ClCompile Include="layout_io.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="recognizer_limits.cpp" />
     <ClCompile Include="vision_utils.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -174,6 +175,7 @@
     <ClInclude Include="card_identity.hpp" />
     <ClInclude Include="common.hpp" />
     <ClInclude Include="layout_io.hpp" />
+    <ClInclude Include="recognizer_limits.hpp" />
     <ClInclude Include="vision_utils.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

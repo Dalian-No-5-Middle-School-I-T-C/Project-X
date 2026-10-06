@@ -12,12 +12,19 @@ import {
   claimNextPaper,
   claimSpecificPaper,
   releasePaper,
-  ReviewPoolError
+  getAssignedStudentIdSet,
+  ReviewPoolError,
+  ReviewPoolScopeError
 } from "../services/ReviewPoolService";
 
 const router = Router();
 
 function poolError(res: any, err: unknown): void {
+  if (err instanceof ReviewPoolScopeError) {
+    // 安全 R15：越权领取（逐生分配范围外 / 持有量超限）与「池里没有卷」语义不同
+    res.status(403).json({ ok: false, error: err.message });
+    return;
+  }
   if (err instanceof ReviewPoolError) {
     res.status(409).json({ ok: false, error: err.message });
     return;
@@ -25,11 +32,19 @@ function poolError(res: any, err: unknown): void {
   res.status(500).json({ ok: false, error: err instanceof Error ? err.message : "服务器错误" });
 }
 
+/** 特权阅卷人（管理员 / 学年主任）：处理积压与争议卷，不受持有量配额限制 */
+function isPrivilegedCaller(user: any): boolean {
+  return user?.role_id === 1 || (user?.role_name === "teacher" && user?.teacher_role === "grade_leader");
+}
+
 // GET /api/review-pool/exams/:examId/blocks/:blockId — 试卷池汇总 + 条目
 router.get(
   "/exams/:examId/blocks/:blockId",
   requireExamAccess,
   requirePermission(PERMISSIONS.GRADE_READ),
+  // PR #312 CR6：清单带学生姓名/学号与领取人，读取同样要过题块级正向授权——
+  // 此前只有 claim/release 挂了范围门，未被分配本题块的教师可以把整块清单连人带卷读走。
+  requireGradingScope,
   async (req, res) => {
     try {
       const examId = Number(req.params.examId);
@@ -37,10 +52,17 @@ router.get(
       const mine = req.query.mine === "1" || req.query.mine === "true";
       const teacherId = (req as any).user?.id;
       const summary = await getPoolSummary(examId, blockId, teacherId);
+      // 安全 R15：逐生分配的教师列出的是「谁的卷子」清单，不应包含未分配给他的学生
+      const assignedIds = isPrivilegedCaller((req as any).user) || !teacherId
+        ? null
+        : await getAssignedStudentIdSet(examId, blockId, Number(teacherId));
       const entries = await getPoolEntries(
         examId,
         blockId,
-        mine && teacherId ? { claimedBy: teacherId } : {}
+        {
+          ...(mine && teacherId ? { claimedBy: teacherId } : {}),
+          ...(assignedIds ? { assignedStudentIds: assignedIds } : {})
+        }
       );
       res.json({ ok: true, data: { summary, entries } });
     } catch (err: unknown) {
@@ -63,7 +85,8 @@ router.post(
       if (!teacherId) return res.status(401).json({ ok: false, error: "未登录" });
       const classId = req.body?.classId ? Number(req.body.classId) : undefined;
       const entry = await claimNextPaper(examId, blockId, teacherId, undefined, {
-        classId: classId && Number.isFinite(classId) ? classId : undefined
+        classId: classId && Number.isFinite(classId) ? classId : undefined,
+        privileged: isPrivilegedCaller((req as any).user)
       });
       res.json({ ok: true, data: entry });
     } catch (err: unknown) {
@@ -85,7 +108,9 @@ router.post(
       const cropId = String(req.params.cropId ?? "");
       const teacherId = (req as any).user?.id;
       if (!teacherId) return res.status(401).json({ ok: false, error: "未登录" });
-      const entry = await claimSpecificPaper(examId, blockId, cropId, teacherId);
+      const entry = await claimSpecificPaper(examId, blockId, cropId, teacherId, undefined, {
+        privileged: isPrivilegedCaller((req as any).user)
+      });
       res.json({ ok: true, data: entry });
     } catch (err: unknown) {
       poolError(res, err);

@@ -1,6 +1,14 @@
 import { processScannerSession } from "../../../../server/services/scannerSubmissions";
 import { scannerLegacyRecoveryRouter } from "../../../../server/routes/scanner-legacy-recovery";
-import { requireScannerExamScope } from "../../../../server/middleware/scanner-scope";
+import {
+  filterRecognitionJson,
+  requireScannerCardScope,
+  requireScannerExamScope,
+  requireScannerRecordScope,
+  scanPageAllowed,
+  scanPageScopeOf,
+  scanRecordLayoutPage
+} from "../../../../server/middleware/scanner-scope";
 import { parseIdentityMode } from "../../../../shared/cardIdentity";
 import { parseRecognitionDpi } from "../helpers";
 import { Router, type Response } from "express";
@@ -69,6 +77,17 @@ export function normalizePageTimeoutMs(value: unknown): number {
 export function createScannerRouter(twainEnabled = true): Router {
   const router = Router();
   router.use("/session/:sessionId", requireScannerExamScope);
+  // 安全（R04）：这些路由只带 sessionId / recordId，此前完全不受考试范围约束——
+  // 任何具备扫描侧凭据的账号都能按 ID 遍历读取甚至删除其它考试的扫描记录与原卷图片。
+  router.use("/scan/:sessionId", requireScannerRecordScope());
+  router.use(["/record/:recordId", "/scan-image/:recordId"], requireScannerRecordScope({ recordIdParam: "recordId" }));
+  // 安全（PR #312 CR3）：进度流、会话列表、扫描列表与评分表预览原图同样要收口。
+  // 漏挂的列表端点让「详情已被拒绝」的教师仍能按 sessionId / cardId 读回其它考试的学号、
+  // 记录 ID 与总分；grading-image 与 exam 预览返回的是整卷原图，页→题块映射不可得，按整卷权限收口。
+  router.use("/progress/:sessionId", requireScannerRecordScope());
+  router.use(["/sessions/:cardId", "/card/:cardId/scans"], requireScannerCardScope({ cardIdParam: "cardId" }));
+  router.use("/grading-image/:cardId/:fileName", requireScannerCardScope({ cardIdParam: "cardId", wholePaperRead: true }));
+  router.use("/exam/:examId", requireScannerExamScope);
   router.use(scannerLegacyRecoveryRouter());
 
   // Write scanner result to projectx.db for linked exams
@@ -243,9 +262,14 @@ export function createScannerRouter(twainEnabled = true): Router {
       }
 
       const records = await listScanRecords(session.id);
+      // 安全（PR #312 CR5）：题块教师只保留含本人题块的排版页。
+      const scope = scanPageScopeOf(res);
+      const card = scope?.restricted ? await findCardForLayout(session.card_id) : null;
       res.json({
         session,
-        records: records.map((r) => ({
+        // 安全（R04）：不再回传服务端绝对路径；预览走 /api/scanner/scan-image/:recordId
+        records: records.filter(r => scanPageAllowed(scope,
+          scanRecordLayoutPage(card, r.page_num, r.side === "back" ? "back" : "front"))).map((r) => ({
           id: r.id,
           pageNum: r.page_num,
           side: r.side,
@@ -253,7 +277,7 @@ export function createScannerRouter(twainEnabled = true): Router {
           studentConf: r.student_conf,
           ocrStatus: r.ocr_status,
           scanQuality: r.scan_quality,
-          imagePath: r.image_path
+          hasImage: Boolean(r.image_path && !String(r.image_path).startsWith("pending:"))
         }))
       });
     } catch (error) {
@@ -298,7 +322,21 @@ export function createScannerRouter(twainEnabled = true): Router {
         res.status(404).json({ message: "扫描记录不存在" });
         return;
       }
-      res.json(record);
+      // 安全（R04）：绝对路径不外发，图片预览走 /scan-image
+      const { image_path, recognition, ...safeRecord } = record;
+      // 安全（PR #312 CR5）：同页上他人题块的识别结果与整卷分数不外发。
+      // 整页越权已由 requireScannerRecordScope 直接 403，这里处理「同页混块」的情况。
+      const scope = scanPageScopeOf(res);
+      const visible = recognition && scope?.restricted
+        ? {
+            ...recognition,
+            objective_json: filterRecognitionJson(recognition.objective_json, scope),
+            subjective_json: filterRecognitionJson(recognition.subjective_json, scope),
+            total_score: null,
+            max_score: null
+          }
+        : recognition;
+      res.json({ ...safeRecord, recognition: visible ?? null, hasImage: Boolean(image_path && !image_path.startsWith("pending:")) });
     } catch (error) {
       next(error);
     }
@@ -326,21 +364,27 @@ export function createScannerRouter(twainEnabled = true): Router {
   router.get("/card/:cardId/scans", async (req, res, next) => {
     try {
       const scans = await getCardScansWithStudents(safeId(req.params.cardId));
+      // 安全（PR #312 CR5）：列表同样按排版页收口，且不外发整卷分数。
+      const scope = scanPageScopeOf(res);
+      const card = scope?.restricted ? await findCardForLayout(safeId(req.params.cardId)) : null;
       res.json(
-        scans.map((s) => ({
+        scans.filter(s => scanPageAllowed(scope,
+          scanRecordLayoutPage(card, s.record.page_num, s.record.side === "back" ? "back" : "front")))
+          .map((s) => ({
           recordId: s.record.id,
           studentId: s.record.student_id,
           studentConf: s.record.student_conf,
           ocrStatus: s.record.ocr_status,
           pageNum: s.record.page_num,
           side: s.record.side,
-          imagePath: s.record.image_path,
+          // 安全（R04）：不外发服务端绝对路径，预览走 /api/scanner/scan-image/:recordId
+          hasImage: Boolean(s.record.image_path && !String(s.record.image_path).startsWith("pending:")),
           scanQuality: s.record.scan_quality,
           createdAt: s.record.created_at,
           recognition: s.recognition
             ? {
-                totalScore: s.recognition.total_score,
-                maxScore: s.recognition.max_score,
+                totalScore: scope?.restricted ? null : s.recognition.total_score,
+                maxScore: scope?.restricted ? null : s.recognition.max_score,
                 gradeStatus: s.recognition.grade_status
               }
             : null
@@ -509,19 +553,26 @@ export function createScannerRouter(twainEnabled = true): Router {
   router.get("/scan-image/:recordId", async (req, res, next) => {
     try {
       const record = await getScanRecordWithResult(safeId(req.params.recordId));
-      if (!record || !record.image_path) {
+      if (!record || !record.image_path || !existsSync(record.image_path)) {
         res.status(404).json({ message: "扫描记录不存在" });
         return;
       }
-      if (!existsSync(record.image_path)) {
+      // 安全（R04）：只允许读取数据目录内的图片；遗留的绝对路径/被改写的路径不外发任意文件
+      const imagePath = path.resolve(record.image_path);
+      const dataRoot = path.resolve(dataDir);
+      if (imagePath !== dataRoot && !imagePath.startsWith(dataRoot + path.sep)) {
         res.status(404).json({ message: "图片文件不存在" });
         return;
       }
-      const ext = path.extname(record.image_path).toLowerCase();
+      if (!existsSync(imagePath)) {
+        res.status(404).json({ message: "图片文件不存在" });
+        return;
+      }
+      const ext = path.extname(imagePath).toLowerCase();
       const contentType = ext === ".png" ? "image/png" : "image/jpeg";
       res.setHeader("Content-Type", contentType);
       res.setHeader("Cache-Control", "private, max-age=3600");
-      res.sendFile(record.image_path);
+      res.sendFile(imagePath);
     } catch (error) {
       next(error);
     }

@@ -34,8 +34,10 @@ import {
   ArrowLeft,
 } from "lucide-react";
 import { useAuth } from "./auth/AuthContext";
-import { apiUrl, authFetch, fetchJson, mediaUrl, urlWithToken } from "./auth/api";
+import { apiUrl, authFetch, fetchJson, mediaUrl, ticketedMediaUrl, urlWithToken } from "./auth/api";
 import { cn } from "./lib/utils";
+import { useSkinPreferenceWriter } from "./lib/skinSync";
+import { skinPatchDecision } from "./lib/skinPatchGuard";
 import { PROMO_SITE_URL } from "./lib/external-links";
 import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
@@ -201,6 +203,10 @@ type GroupDeleteTarget = {
 
 type AutoSaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 
+// 导出 PDF 前把待存改动收敛掉的最多轮数（安全 R45）。正常一轮就够；只有在「保存期间用户又改了」
+// 时才需要第二轮。有界是为了避免用户持续敲键时无限重试。
+const EXPORT_SETTLE_ATTEMPTS = 3;
+
 
 
 
@@ -268,7 +274,9 @@ function asArray<T>(value: unknown): T[] {
 
 
 function App() {
-  const { user, loading, hasPermission, persona, teacherRoleOverride } = useAuth();
+  const { user, loading, hasPermission, persona, teacherRoleOverride, patchUserLocal, refreshUser } = useAuth();
+  // 皮肤偏好回写（R49）：成功要更新本地权威快照，失败要以服务端为准。
+  const writeSkinPreference = useSkinPreferenceWriter();
   // v1.6.0: 运行时 persona 替换 compile-time VITE_PROJECTX_VARIANT
   const appVariant = useMemo(
     () => getProjectXVariantConfig(persona),
@@ -576,16 +584,28 @@ function App() {
   }, [user?.id, user?.themeSkin]);
 
   // v2.1.0: 皮肤变更 → 同步到账号（已登录时）。fire-and-forget，离线/失败静默。
+  // 评审 P2：Web 端缺了扫描端那道 skinPatchDecision 护栏。登录瞬态里「按账号偏好初始化」
+  // 与「变更即回写」两条 effect 在同一轮中先后执行，闭包里的 skin 还是本机残留值——
+  // 本机与账号皮肤不同 initialization 正要覆盖的那个值时，回写 effect 先把它 PATCH 回账号，
+  // patchUserLocal 又把账号快照改成它，两条 effect 交替、PATCH 一发接一发。
+  // 现在首见某个 user.id 的那一轮按「同步落定值」判定，不信任陈旧闭包 skin（与扫描端同一口径）。
+  const skinPatchPrevUserRef = useRef<string | number | null>(null);
   useEffect(() => {
-    if (!user) return;
-    const serverSkin = user.themeSkin || DEFAULT_SKIN;
-    if (skin === serverSkin) return;
-    void fetchJson("/api/users/me/settings", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ themeSkin: skin }),
-    }).catch(() => { /* 皮肤偏好同步失败不打扰用户 */ });
-  }, [skin, user?.id, user?.themeSkin]);
+    const userId = user?.id ?? null;
+    const serverSkin = user?.themeSkin || DEFAULT_SKIN;
+    let chosen: string | null = null;
+    try { chosen = sessionStorage.getItem(SKIN_CHOSEN_KEY); } catch { /* ignore */ }
+    const decision = skinPatchDecision(skinPatchPrevUserRef.current, userId, skin, serverSkin, chosen);
+    skinPatchPrevUserRef.current = decision.nextPrevUserId;
+    if (!decision.patch) return;
+    // R49：PATCH 成功后把值写回本地用户快照，A→B→A 才不会被「与登录快照相同」的判断跳过；
+    // 失败则 refresh，避免本地与账号长期背离。
+    void writeSkinPreference(
+      skin,
+      (applied) => patchUserLocal({ themeSkin: applied }),
+      () => { void refreshUser(); }
+    );
+  }, [skin, user?.id, user?.themeSkin, writeSkinPreference, patchUserLocal, refreshUser]);
 
   // v37: 明暗变更 → 同步到账号（与皮肤同步对称）。仅在与服务端读取值不一致时写入；
   // fire-and-forget，离线/失败静默。账号值更新后，theme_change_events 审计与
@@ -764,6 +784,26 @@ function App() {
     return persistCardSnapshot(cloneCard(snapshot), revision, source);
   }
 
+  /**
+   * 导出前的收敛：等到「手上这版就是已落库那版」。
+   * 一次 PUT 期间用户可能又改了卡，persistCardSnapshot 会再排一次自动保存、却返回上一版，
+   * 所以循环复查而不是只 flush 一次（安全 R45）。
+   */
+  async function settleCardForExport(card: AnswerCard): Promise<AnswerCard | null> {
+    let settled = card;
+    for (let attempt = 0; attempt < EXPORT_SETTLE_ATTEMPTS; attempt++) {
+      if (editRevisionRef.current === savedRevisionRef.current) return settled;
+      const next = await flushPendingCardSave("pdf");
+      if (!next) return null;
+      settled = next;
+    }
+    if (editRevisionRef.current !== savedRevisionRef.current) {
+      setStatus("答题卡仍在持续改动，已取消导出：请停手一两秒后重试");
+      return null;
+    }
+    return settled;
+  }
+
   function saveCurrentCardBestEffort() {
     const snapshot = latestCardRef.current;
     if (!snapshot || editRevisionRef.current === savedRevisionRef.current) return;
@@ -774,10 +814,20 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(snapshot),
       keepalive: true
-    }).then((response) => {
+    }).then(async (response) => {
       if (response.ok && editRevisionRef.current === revision) {
         savedRevisionRef.current = revision;
         setAutoSaveState("saved");
+        // 评审 P2：这次 PUT 同样让服务器 revision +1。不接住返回值，本地 card.revision
+        // 就停在改动前的版本，回到页面点导出会被自己的版本闸门判成「答题卡已被其他窗口改动」。
+        // 页面真在卸载时读不到 body（连接被掐断），这里就什么也不更新——下次 flush 会带回正确版本。
+        const saved = await response.json().catch(() => null) as AnswerCard | null;
+        if (saved && typeof saved.revision === "number"
+          && editRevisionRef.current === revision
+          && latestCardRef.current?.id === saved.id) {
+          latestCardRef.current = { ...latestCardRef.current!, revision: saved.revision };
+          setCard((current) => (current ? { ...current, revision: saved.revision } : current));
+        }
       }
     }).catch(() => undefined);
   }
@@ -979,7 +1029,8 @@ function App() {
 
   async function exportCard(cardId: string) {
     const a = document.createElement("a");
-    a.href = urlWithToken(`/api/cards/${cardId}/export`);
+    // 安全（R30）：下载链接走单次资源票据，不把主会话令牌写进会被历史/日志记录的 URL。
+    a.href = await ticketedMediaUrl(`/api/cards/${cardId}/export`);
     a.download = `答题卡_${cardId}.projectx-card.json`;
     document.body.appendChild(a);
     a.click();
@@ -1029,12 +1080,27 @@ function App() {
     let savedCard: AnswerCard | null = null;
     try {
       savedCard = await flushPendingCardSave("pdf");
+      if (savedCard) savedCard = await settleCardForExport(savedCard);
     } catch {
       return;
     }
     if (!savedCard) return;
 
-    const pdfUrl = urlWithToken(`/api/cards/${savedCard.id}/pdf?v=${encodeURIComponent(savedCard.updatedAt)}`);
+    // 安全 R45：PDF 在新标签页打开，服务端版本闸门回 409 时这边接不到，
+    // 所以先在本地比一次 revision，不一致就当场说清楚，而不是让用户打开一个渲染失败的空白页。
+    const serverCard = await fetchJson<AnswerCard>(`/api/cards/${savedCard.id}`).catch(() => null);
+    const localRevision = typeof savedCard.revision === "number" ? savedCard.revision : undefined;
+    const serverRevision = typeof serverCard?.revision === "number" ? serverCard.revision : undefined;
+    if (localRevision !== undefined && serverRevision !== undefined && localRevision !== serverRevision) {
+      setStatus(`答题卡已被其他窗口改动（本地 v${localRevision}，服务器 v${serverRevision}），请重新加载后再导出`);
+      return;
+    }
+    const revision = localRevision ?? serverRevision;
+
+    // 安全（R30）：PDF 地址走单次资源票据（可 await，不必把主令牌放进 URL）。
+    const pdfUrl = await ticketedMediaUrl(
+      `/api/cards/${savedCard.id}/pdf` + (revision === undefined ? "" : `?v=${revision}`)
+    );
     await showExportCheck(savedCard, pdfUrl);
   }
 
@@ -1118,8 +1184,10 @@ function App() {
 
   /** 根据题块顺序和类型自动生成标题，如 "一、单选（共10题，共50分）"；格式与识别共用 cardModel */
   function autoNameBlocks(draft: AnswerCard) {
+    // 数据保真（R46）：规范拼写是 `indefinite`（shared/types.ts 的 ObjectiveMode），
+    // 这里此前只写了 `indeterminate`——合法的不定项题块取不到名字，只能落到兜底的「客观题」。
     const modeName: Record<string, string> = {
-      single: "单选", multiple: "多选", indeterminate: "不定项"
+      single: "单选", multiple: "多选", indefinite: "不定项", indeterminate: "不定项"
     };
     let index = 0;
     for (const block of draft.bodyBlocks) {
@@ -1316,10 +1384,12 @@ function App() {
     return `grading_${Date.now()}_${randomPart}`;
   }
 
-  function listenGradingProgress(cardId: string, progressId: string, initialTotal: number) {
+  async function listenGradingProgress(cardId: string, progressId: string, initialTotal: number) {
     gradingProgressSourceRef.current?.close();
     setGradingProgress({ active: true, finished: 0, total: initialTotal });
-    const es = new EventSource(urlWithToken(`/api/cards/${encodeURIComponent(cardId)}/grading/progress/${encodeURIComponent(progressId)}`));
+    // 安全（R30）：SSE 地址用单次资源票据；票据按路径绑定，重连由上层重新发起。
+    const streamUrl = await ticketedMediaUrl(`/api/cards/${encodeURIComponent(cardId)}/grading/progress/${encodeURIComponent(progressId)}`);
+    const es = new EventSource(streamUrl);
     gradingProgressSourceRef.current = es;
 
     es.onmessage = (event) => {

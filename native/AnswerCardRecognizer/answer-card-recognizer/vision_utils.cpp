@@ -1,9 +1,12 @@
 #include "vision_utils.hpp"
 
 #include "common.hpp"
+#include "recognizer_limits.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <limits>
@@ -11,6 +14,162 @@
 #include <stdexcept>
 
 using json = nlohmann::json;
+
+namespace {
+
+// 单边像素的常识上界：真实扫描件最长边不超过几万像素，超过就说明头部被伪造过。
+// 面积上限（可配置）才是真正的资源边界，这里只用来避免 declared_w * declared_h 溢出 long long。
+constexpr long long MAX_IMAGE_SIDE = 1000000;
+
+bool has_bytes_at(const std::vector<unsigned char>& buffer, size_t offset, const char* literal, size_t length) {
+    return buffer.size() >= offset + length && std::memcmp(buffer.data() + offset, literal, length) == 0;
+}
+
+unsigned long long read_be(const std::vector<unsigned char>& buffer, size_t offset, size_t length) {
+    unsigned long long value = 0;
+    for (size_t index = 0; index < length; ++index) {
+        value = (value << 8) | buffer[offset + index];
+    }
+    return value;
+}
+
+unsigned long long read_le(const std::vector<unsigned char>& buffer, size_t offset, size_t length) {
+    unsigned long long value = 0;
+    for (size_t index = 0; index < length; ++index) {
+        value |= static_cast<unsigned long long>(buffer[offset + index]) << (8 * index);
+    }
+    return value;
+}
+
+std::pair<long long, long long> probe_png(const std::vector<unsigned char>& buffer) {
+    if (!has_bytes_at(buffer, 0, "\x89PNG\r\n\x1a\n", 8) || !has_bytes_at(buffer, 12, "IHDR", 4) || buffer.size() < 24) {
+        return {0, 0};
+    }
+    return {static_cast<long long>(read_be(buffer, 16, 4)), static_cast<long long>(read_be(buffer, 20, 4))};
+}
+
+std::pair<long long, long long> probe_bmp(const std::vector<unsigned char>& buffer) {
+    if (!has_bytes_at(buffer, 0, "BM", 2) || buffer.size() < 26) {
+        return {0, 0};
+    }
+    const unsigned long long header_size = read_le(buffer, 14, 4);
+    if (header_size == 12) {  // BITMAPCOREHEADER：宽高各 2 字节
+        return {static_cast<long long>(read_le(buffer, 18, 2)), static_cast<long long>(read_le(buffer, 20, 2))};
+    }
+    const auto width = static_cast<long long>(read_le(buffer, 18, 4));
+    // 高度按**有符号** INT32 读：BITMAPINFOHEADER 用负高表示自顶向下（top-down）位图，
+    // 绝对值才是真实行高。按无符号读会把 -3000 变成 4294964296，既过不了单边常识上界，
+    // 又把扫描仪/驱动产出的合法 top-down BMP 误拒成「头部伪造」（CR #313 P2-5）。
+    // 宽度仍按无符号读：负宽在规范里本就非法，留着大值让 read_image 的 R19 闸门拒绝。
+    const auto raw_height = static_cast<long long>(static_cast<int32_t>(read_le(buffer, 22, 4)));
+    return {width, raw_height < 0 ? -raw_height : raw_height};
+}
+
+std::pair<long long, long long> probe_jpeg(const std::vector<unsigned char>& buffer) {
+    if (buffer.size() < 4 || buffer[0] != 0xFF || buffer[1] != 0xD8) {
+        return {0, 0};
+    }
+    size_t position = 2;
+    while (position + 9 <= buffer.size()) {
+        if (buffer[position] != 0xFF) {
+            ++position;
+            continue;
+        }
+        while (position < buffer.size() && buffer[position] == 0xFF) {
+            ++position;  // 段间填充字节
+        }
+        if (position >= buffer.size()) {
+            break;
+        }
+        const unsigned char marker = buffer[position++];
+        if (marker == 0x01 || marker == 0xD8 || marker == 0xD9 || (marker >= 0xD0 && marker <= 0xD7)) {
+            continue;  // 无长度字段的独立标记
+        }
+        if (marker == 0xDA) {
+            break;  // 之后是熵编码数据，头部信息已读完
+        }
+        const size_t segment_length = static_cast<size_t>(read_be(buffer, position, 2));
+        if (segment_length < 2) {
+            break;
+        }
+        const bool is_sof = marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC;
+        if (is_sof) {
+            if (position + 7 > buffer.size()) {
+                break;
+            }
+            return {static_cast<long long>(read_be(buffer, position + 5, 2)), static_cast<long long>(read_be(buffer, position + 3, 2))};
+        }
+        position += segment_length;
+    }
+    return {0, 0};
+}
+
+std::pair<long long, long long> probe_tiff(const std::vector<unsigned char>& buffer) {
+    bool little_endian = false;
+    if (has_bytes_at(buffer, 0, "II", 2) && buffer.size() >= 8 && read_le(buffer, 2, 2) == 42) {
+        little_endian = true;
+    } else if (has_bytes_at(buffer, 0, "MM", 2) && buffer.size() >= 8 && read_be(buffer, 2, 2) == 42) {
+        little_endian = false;
+    } else {
+        return {0, 0};
+    }
+
+    const auto read_value = [&](size_t offset, size_t length) {
+        return little_endian ? read_le(buffer, offset, length) : read_be(buffer, offset, length);
+    };
+    const unsigned long long ifd_offset = read_value(4, 4);
+    if (ifd_offset + 2 > buffer.size()) {
+        return {0, 0};
+    }
+    const unsigned long long entry_count = read_value(static_cast<size_t>(ifd_offset), 2);
+    long long width = 0;
+    long long height = 0;
+    // 512 条上限：IFD 条目数由文件自己声明，不设界就会变成解析阶段的循环放大器
+    for (unsigned long long index = 0; index < entry_count && index < 512; ++index) {
+        const size_t entry = static_cast<size_t>(ifd_offset) + 2 + static_cast<size_t>(index) * 12;
+        if (entry + 12 > buffer.size()) {
+            break;
+        }
+        const unsigned long long tag = read_value(entry, 2);
+        const unsigned long long type = read_value(entry + 2, 2);
+        unsigned long long value = 0;
+        if (type == 3) {
+            value = read_value(entry + 8, 2);
+        } else if (type == 4) {
+            value = read_value(entry + 8, 4);
+        } else {
+            continue;
+        }
+        if (tag == 256) {
+            width = static_cast<long long>(value);
+        } else if (tag == 257) {
+            height = static_cast<long long>(value);
+        }
+    }
+    return {width, height};
+}
+
+std::pair<long long, long long> probe_webp(const std::vector<unsigned char>& buffer) {
+    if (!has_bytes_at(buffer, 0, "RIFF", 4) || !has_bytes_at(buffer, 8, "WEBP", 4) || buffer.size() < 30) {
+        return {0, 0};
+    }
+    if (has_bytes_at(buffer, 12, "VP8X", 4)) {
+        return {static_cast<long long>(read_le(buffer, 24, 3)) + 1, static_cast<long long>(read_le(buffer, 27, 3)) + 1};
+    }
+    if (has_bytes_at(buffer, 12, "VP8L", 4)) {
+        if (buffer[20] != 0x2F) {
+            return {0, 0};
+        }
+        const unsigned long long bits = read_le(buffer, 21, 4);
+        return {static_cast<long long>(bits & 0x3FFF) + 1, static_cast<long long>((bits >> 14) & 0x3FFF) + 1};
+    }
+    if (has_bytes_at(buffer, 12, "VP8 ", 4) && buffer[23] == 0x9D && buffer[24] == 0x01 && buffer[25] == 0x2A) {
+        return {static_cast<long long>(read_le(buffer, 26, 2) & 0x3FFF), static_cast<long long>(read_le(buffer, 28, 2) & 0x3FFF)};
+    }
+    return {0, 0};
+}
+
+}  // namespace
 
 json MarkerScore::to_json() const {
     return {
@@ -84,19 +243,38 @@ json MarkerMatch::to_json() const {
     return data;
 }
 
+std::pair<long long, long long> probe_declared_image_size(const std::vector<unsigned char>& buffer) {
+    for (const auto& probe : {probe_png, probe_bmp, probe_jpeg, probe_tiff, probe_webp}) {
+        const auto size = probe(buffer);
+        if (size.first > 0 && size.second > 0) {
+            return size;
+        }
+    }
+    return {0, 0};
+}
+
 cv::Mat read_image(const std::filesystem::path& path) {
-    if (!std::filesystem::exists(path)) {
-        throw std::runtime_error("Image not found: " + path_to_utf8(path));
+    const auto& limits = recognizer_limits();
+    // 安全 R19：先按字节上限整份读入，再按头部声明尺寸判断，最后才让 OpenCV 解码。
+    // 顺序不能反——一张几十 KB 的 PNG 就能声明 60000×60000，等 imdecode 去分配上百 GB 已经太晚。
+    const std::vector<unsigned char> buffer = read_capped_file(path, limits.max_image_bytes, "答题卡图片");
+
+    const auto [declared_width, declared_height] = probe_declared_image_size(buffer);
+    if (declared_width > 0 && declared_height > 0) {
+        if (declared_width > MAX_IMAGE_SIDE || declared_height > MAX_IMAGE_SIDE) {
+            throw std::runtime_error("答题卡图片头部声明的 " + std::to_string(declared_width) + "×" + std::to_string(declared_height)
+                + " 单边超过 " + std::to_string(MAX_IMAGE_SIDE) + " 像素，已拒绝解码（安全 R19）: " + path_to_utf8(path));
+        }
+        assert_pixel_budget(declared_width * declared_height,
+            "答题卡图片头部声明的 " + std::to_string(declared_width) + "×" + std::to_string(declared_height) + " 尺寸");
     }
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
-        throw std::runtime_error("Failed to read image: " + path_to_utf8(path));
-    }
-    std::vector<unsigned char> buffer((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+
     cv::Mat image = cv::imdecode(buffer, cv::IMREAD_COLOR);
     if (image.empty()) {
-        throw std::runtime_error("Failed to read image: " + path_to_utf8(path));
+        throw std::runtime_error("答题卡图片无法解码（不是有效的 PNG/JPEG/BMP/TIFF/WebP，或文件已损坏）: " + path_to_utf8(path));
     }
+    assert_pixel_budget(static_cast<long long>(image.total()),
+        "解码后的答题卡图片 " + std::to_string(image.cols) + "×" + std::to_string(image.rows) + " 尺寸");
     return image;
 }
 
@@ -510,6 +688,14 @@ std::tuple<cv::Mat, std::vector<double>, std::vector<int>> estimate_homography(c
 }
 
 cv::Mat warp_to_layout(const cv::Mat& image, const cv::Mat& homography, std::pair<int, int> output_size) {
+    // 安全 R19：输出尺寸由「布局 mm × DPI」算出，两个输入都来自文件/请求；
+    // 分配前再校一次，避免负尺寸或几十亿像素直接进 warpPerspective。
+    if (output_size.first <= 0 || output_size.second <= 0) {
+        throw std::runtime_error("校正输出尺寸非法: " + std::to_string(output_size.first) + "×" + std::to_string(output_size.second));
+    }
+    assert_pixel_budget(static_cast<long long>(output_size.first) * static_cast<long long>(output_size.second),
+        "校正后的整页图 " + std::to_string(output_size.first) + "×" + std::to_string(output_size.second) + " 尺寸");
+
     cv::Mat warped;
     cv::warpPerspective(image, warped, homography, cv::Size(output_size.first, output_size.second), cv::INTER_CUBIC);
     return warped;

@@ -1,7 +1,26 @@
 import { databaseTimestamp } from "../../../server/db/timestamp";
 import express from "express";
 import multer from "multer";
-import { MAX_SCAN_IMAGE_BYTES } from "../../../shared/scanUploadLimits";
+import {
+  MAX_SCAN_IMAGE_BYTES,
+  MAX_SCAN_PAGE_REQUEST_TOTAL_BYTES,
+  MAX_GRADING_BATCH_FILES,
+  MAX_GRADING_BATCH_TOTAL_BYTES,
+  describeScanUploadLimits,
+} from "../../../shared/scanUploadLimits";
+import { requestUploadBudget } from "../../../server/lib/uploadBudget";
+import { describeReviewPoolLimits } from "../../../shared/reviewPoolLimits";
+import { describeRestoreZipLimits } from "../../../shared/restoreZipLimits";
+import { describePaperStorageLimits } from "../../../shared/paperStorageLimits";
+import { describeAiQuotaLimits } from "../../../shared/aiQuotaLimits";
+import { safeErrorForLog } from "../../../server/lib/logRedaction";
+import {
+  MAX_CARD_ASSET_BYTES,
+  MAX_CARD_ASSET_UPLOAD_BYTES,
+  MAX_CARD_ASSETS_PER_IMPORT,
+  MAX_CARD_ASSETS_TOTAL_BYTES,
+  describeCardAssetLimits,
+} from "../../../shared/cardAssetLimits";
 import { cpus } from "node:os";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -52,7 +71,7 @@ import { isAuthEnforced } from "../../../server/lib/authEnforce";
 import { isScannerClientApiEnabled, isScannerClientOrigin } from "../../../server/lib/scannerClientAccess";
 import { recordLifecycleEvent } from "../../../server/services/lifecycleEvents";
 import { markScoreMutated } from "../../../server/services/examPublishEvents";
-import { ensureExamParticipants, isExamParticipant, listParticipants, searchStudentsForExam, setExplicitParticipants, clearExplicitParticipants, hasExplicitParticipants } from "../../../server/services/examParticipants";
+import { ensureExamParticipants, isExamParticipant, listParticipants, searchStudentsForExam, setExplicitParticipants, clearExplicitParticipants, hasExplicitParticipants, findStudentsOutsideParticipantScope } from "../../../server/services/examParticipants";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -120,8 +139,9 @@ import { parseIdentityMode } from "../../../shared/cardIdentity";
 import { recognizeAnswerCard, recognizeObjectiveAnswers } from "./recognition";
 import { createScannerRouter } from "./scanner/index";
 import { makeScannerAuth } from "../../../server/middleware/scanner-auth";
+import { enforceScannerCardScope } from "../../../server/middleware/scanner-scope";
 
-import { assertImageFile, isImageExtension, safeImageExtension } from "./validate-upload";
+import { assertImageFile, imageContentTypeFor, isImageExtension, rejectReasonForImportedAsset, safeImageExtension } from "./validate-upload";
 import {
   paramValue, fieldValue, boolField, isValidExamDate,
   MIN_EXAM_YEAR, MAX_EXAM_YEAR, requestFlag, numberArray,
@@ -129,8 +149,11 @@ import {
 } from "./helpers";
 import {
   makeGate, getVisibleExamIds, requireExamAccess,
-  validateExamIdsAccess, setAuthEnforced, hasViewPermission, makeViewPermissionGate, isTeacherPermittedForWholeExam
+  validateExamIdsAccess, setAuthEnforced, hasViewPermission, makeViewPermissionGate, isTeacherPermittedForWholeExam,
+  requirePermissionCompat, requireWholeExamGradingAccess, canManageExamOrganization, hasExamOrganizationAffinity,
+  canGradeBlock, isExamSoftDeleted
 } from "./middleware";
+import { getAssignedStudentIdSet, isClaimableForAssignedSet } from "../../../server/services/ReviewPoolService";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
 import { paperRoutes } from "./routes/paper-routes";
@@ -145,6 +168,10 @@ import {
 import { assertScoresPublishable } from "../../../server/services/examPublication";
 import { ApiError } from "../../../server/api-error";
 import { assetsDir, cardAssetsDir, dataDir, ensureDataDirs, layoutPath, rootDir, safeId } from "./storage";
+import {
+  CARD_REVISION_INVALID, CARD_REVISION_MISMATCH,
+  pdfRevisionInvalidMessage, pdfRevisionMismatchMessage, resolvePdfRevisionGate
+} from "./cardRevision";
 
 
 
@@ -282,15 +309,18 @@ async function saveCardWithLayout(cardRepo: CardRepository, card: AnswerCard, cr
   const layout = buildLayout(normalized);
   const exists = await cardRepo.findById(normalized.id);
 
+  let revision: number;
   if (exists) {
-    await cardRepo.updateCard(normalized);
+    revision = await cardRepo.updateCard(normalized);
   } else {
     await cardRepo.createCard(normalized, createdBy);
-    await cardRepo.updateCard(normalized);
+    revision = await cardRepo.updateCard(normalized);
   }
 
   await writeLayoutDocument(normalized.id, layout);
-  return normalized;
+  // 回给前端的 revision 一律取落库后的值：normalizeCard 是展开请求体的，
+  // 直接返回 normalized 会把调用方自带的版本号原样吐回去（安全 R45）。
+  return { ...normalized, revision };
 }
 
 async function prepareLayoutForCard(cardRepo: CardRepository, card: AnswerCard): Promise<string> {
@@ -788,6 +818,14 @@ export async function createApp(): Promise<express.Express> {
   app.get("/api/assets/:cardId/:assetId", optionalAuth, makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.CARD_READ), (req, res) => {
     const cardId = safeId(paramValue(req.params.cardId));
     const assetId = path.basename(String(req.params.assetId));
+    // 安全（R05）：本端点按扩展名给出内容，历史上「导入」入口可以放进 .html/任意字节，
+    // 于是试卷插图能变成该域名下的同源脚本执行（CSP 允许 inline script）。
+    // 现在服务端只承认图片扩展名，且响应类型由闭合映射给出，不让 sendFile 猜。
+    const contentType = imageContentTypeFor(assetId);
+    if (!contentType) {
+      res.status(404).json({ message: "资源不存在" });
+      return;
+    }
     const dir = cardAssetsDir(cardId);
     const target = path.join(dir, assetId);
     if (!target.startsWith(dir)) {
@@ -798,6 +836,13 @@ export async function createApp(): Promise<express.Express> {
       res.status(404).json({ message: "资源不存在" });
       return;
     }
+    // nosniff：即使历史数据里已落盘了伪装成图片的 HTML，浏览器也不会嗅探执行。
+    // 再叠一层响应级 CSP：全局 CSP 允许 'unsafe-inline'（旧版内联脚本依赖），但资源端点
+    // 只该出图——把这一条响应的可执行能力单独关到零，历史脏数据也渲染不出脚本。
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Security-Policy", "default-src 'none'; img-src 'self'; sandbox");
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Disposition", `inline; filename="${assetId.replace(/[^\w.\-]/g, "_")}"`);
     res.setHeader("Cache-Control", "private, max-age=86400");
     res.sendFile(target);
   });
@@ -1109,16 +1154,16 @@ export async function createApp(): Promise<express.Express> {
         cb(null, dir);
       },
       filename: (_req, file, cb) => {
-        const ext = path.extname(file.originalname).toLowerCase() || ".png";
+        // 安全（R05）：扩展名走闭合白名单，非图片一律回落 .png（与扫描上传入口同口径）。
+        const ext = safeImageExtension(file.originalname);
         const name = `asset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
         cb(null, name);
       }
     }),
-    limits: { fileSize: 12 * 1024 * 1024 },
+    limits: { fileSize: MAX_CARD_ASSET_UPLOAD_BYTES },
     fileFilter: (_req, file, cb) => {
       const ext = path.extname(file.originalname).toLowerCase();
-      const allowedExts = [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"];
-      if (!allowedExts.includes(ext)) {
+      if (!isImageExtension(ext)) {
         cb(new Error("仅支持图片文件"));
         return;
       }
@@ -1131,6 +1176,9 @@ export async function createApp(): Promise<express.Express> {
   });
 
   const recognitionUpload = multer({
+    // 安全（R28）：批量判分/识别上传此前只有单文件 50 MiB 上限，文件数量与单次请求累计
+    // 字节都不受约束（一次提交可以压进任意多张原卷）。数量用 multer 原生 limits.files，
+    // 累计字节用 requestUploadBudget 在请求层拦截；单文件上限保持不变以免影响真实扫描尺寸。
     storage: multer.diskStorage({
       destination: async (req, _file, cb) => {
         const cardId = safeId(paramValue(req.params.cardId));
@@ -1145,7 +1193,15 @@ export async function createApp(): Promise<express.Express> {
         cb(null, name);
       }
     }),
-    limits: { fileSize: MAX_SCAN_IMAGE_BYTES }
+    limits: { fileSize: MAX_SCAN_IMAGE_BYTES, files: MAX_GRADING_BATCH_FILES }
+  });
+
+  /** 识别/判分上传的请求级预算：单页识别按一页原卷，批量判分按整场提交。 */
+  const recognitionPageBudget = requestUploadBudget({
+    maxTotalBytes: MAX_SCAN_PAGE_REQUEST_TOTAL_BYTES, label: "答题卡识别上传",
+  });
+  const recognitionBatchBudget = requestUploadBudget({
+    maxTotalBytes: MAX_GRADING_BATCH_TOTAL_BYTES, label: "答题卡批量上传",
   });
 
   app.get("/api/cards", async (_req, res, next) => {
@@ -1250,7 +1306,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards/:cardId/recognition/objective", recognitionUpload.single("file"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/recognition/objective", recognitionPageBudget, recognitionUpload.single("file"), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const card = await cardRepo.findById(cardId);
@@ -1287,7 +1343,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards/:cardId/recognition", recognitionUpload.single("file"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/recognition", recognitionPageBudget, recognitionUpload.single("file"), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const card = await cardRepo.findById(cardId);
@@ -1390,7 +1446,7 @@ export async function createApp(): Promise<express.Express> {
     });
   });
 
-  app.post("/api/cards/:cardId/grading/objective", recognitionUpload.array("files"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/grading/objective", recognitionBatchBudget, recognitionUpload.array("files"), async (req, res, next) => {
     let progressId = "";
     try {
       const cardId = safeId(paramValue(req.params.cardId));
@@ -1486,7 +1542,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards/:cardId/grading", recognitionUpload.array("files"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/grading", recognitionBatchBudget, recognitionUpload.array("files"), async (req, res, next) => {
     let progressId = "";
     try {
       const cardId = safeId(paramValue(req.params.cardId));
@@ -1631,10 +1687,19 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.get("/api/cards/:cardId/grading/preview/:fileName", (req, res, next) => {
+  app.get("/api/cards/:cardId/grading/preview/:fileName", async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const fileName = path.basename(paramValue(req.params.fileName));
+      // 安全（PR #312 评审 B1）：这条路由与扫描端的
+      // `GET /api/scanner/grading-image/:cardId/:fileName` 读的是**同一个物理目录**
+      // （`recognition/uploads/<cardId>/`），而 CR3 的整卷原图收口只挂在扫描端那一侧：
+      // 只有部分题块权限的教师走 scanner 路径拿不到整卷原图，换成 cards 路径就拿到了。
+      // 同一条媒体白名单（`mediaAllowlist`）还允许它在 URL 里带令牌，等于给同级路由留了后门。
+      // 现在两边共用 `enforceScannerCardScope`，整卷原图一律按「整份答题卡的阅卷权限」收口；
+      // 校验放在扩展名判断之前，避免越权者用 403/404 的差别探测文件名与类型。
+      const allowed = await enforceScannerCardScope(req, res, cardId, { wholePaperRead: true });
+      if (!allowed) return;
       const ext = path.extname(fileName).toLowerCase();
       // 安全：只按图片类型提供内容，历史遗留的非图片上传文件不得按 HTML 同源执行。
       if (!isImageExtension(ext)) {
@@ -1656,9 +1721,17 @@ export async function createApp(): Promise<express.Express> {
     try {
       const cropId = safeId(paramValue(req.params.cropId));
       const cropRow = await getMysqlDb().get(
-        "SELECT image_path, student_id FROM answer_block_crops WHERE id = ?",
+        "SELECT image_path, student_id, exam_id, block_id, status, review_round, claimed_by FROM answer_block_crops WHERE id = ?",
         cropId
-      ) as { image_path: string; student_id: number | null } | undefined;
+      ) as {
+        image_path: string;
+        student_id: number | null;
+        exam_id: number | null;
+        block_id: string | null;
+        status: string | null;
+        review_round: number | null;
+        claimed_by: number | null;
+      } | undefined;
       const targetPath = cropRow?.image_path ?? await getAnswerBlockCropFile(cropId);
       if (!cropRow || !targetPath || !existsSync(targetPath)) {
         res.status(404).json({ message: "作答切块图片不存在" });
@@ -1673,6 +1746,43 @@ export async function createApp(): Promise<express.Express> {
       ) {
         res.status(403).json({ message: "权限不足" });
         return;
+      }
+      // PR #312 CR6：切块 ID 是 UUID 也不是授权。此前只有 cropGate 的权限位，
+      // 任何拿到 grade:read 的教师都能按 cropId 读别场考试、别人题块的原图。
+      if (enforceAuth && req.user && req.user.role_name === "teacher") {
+        const examId = Number(cropRow.exam_id);
+        if (!examId) {
+          res.status(403).json({ message: "权限不足" });
+          return;
+        }
+        if (await isExamSoftDeleted(examId)) {
+          res.status(404).json({ message: "作答切块图片不存在" });
+          return;
+        }
+        const visibleIds = await getVisibleExamIds(req.user);
+        if (visibleIds !== null && !visibleIds.includes(examId)) {
+          res.status(403).json({ message: "权限不足：无权访问此考试" });
+          return;
+        }
+        const blockId = String(cropRow.block_id ?? "");
+        if (blockId && !(await canGradeBlock(req.user, examId, blockId))) {
+          res.status(403).json({ message: "权限不足：你未被分配批改该题块" });
+          return;
+        }
+        // 逐生分配下仍按可阅范围收敛图片：未开评的切片外卷子读不到原图；
+        // 一旦离开首评队列（待二评/争议/已评完）本块教师都可回看，与领取/清单同一谓词
+        const assignedIds = await getAssignedStudentIdSet(examId, blockId, Number(req.user.id));
+        if (!isClaimableForAssignedSet(
+          {
+            studentId: cropRow.student_id,
+            status: cropRow.status,
+            reviewRound: cropRow.review_round,
+          },
+          assignedIds
+        ) && cropRow.claimed_by !== req.user.id) {
+          res.status(403).json({ message: "权限不足：该切块不在你的阅卷范围内" });
+          return;
+        }
       }
       res.setHeader("Content-Type", "image/png");
       res.sendFile(targetPath);
@@ -1713,6 +1823,25 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
 
+      // 安全 R45：把这次导出绑到「调用方认为已经保存好」的那一版。闸门必须在 createPdf 之前判定——
+      // 否则自动保存竞态会让老师打印到旧版式的纸，而阅卷用的是新版式的坐标。
+      const currentRevision = Number(card.revision ?? 0);
+      res.setHeader("X-Card-Revision", String(currentRevision));
+      const revisionGate = resolvePdfRevisionGate(currentRevision, req.query.v);
+      if (revisionGate.decision === "invalid") {
+        res.status(400).json({ code: CARD_REVISION_INVALID, message: pdfRevisionInvalidMessage(revisionGate.raw) });
+        return;
+      }
+      if (revisionGate.decision === "mismatch") {
+        res.status(409).json({
+          code: CARD_REVISION_MISMATCH,
+          message: pdfRevisionMismatchMessage(revisionGate.requested, revisionGate.current),
+          requestedRevision: revisionGate.requested,
+          currentRevision: revisionGate.current
+        });
+        return;
+      }
+
       const doc = createPdf(card);
       const filename = encodeURIComponent(`${card.title || card.id}.pdf`);
       res.setHeader("Content-Type", "application/pdf");
@@ -1742,6 +1871,17 @@ export async function createApp(): Promise<express.Express> {
       const examRepo = new ExamRepository();
       const exams = await examRepo.listExams();
       const referenced = exams.filter((e: any) => e.card_id === cardId);
+      // 安全 R06：删除答题卡本身是设计器操作，但 `unlinkExams` / `deleteReferencedExams`
+      // 两个分支实际改的是**别人的考试**。这里按「与考试有组织归属关系」过滤
+      // （管理员/学年主任/本人创建/该班班主任或任课教师），越权引用既不被改写也不被点名。
+      const manageable: number[] = [];
+      for (const e of referenced as Array<{ id: number }>) {
+        // 未开启强制鉴权（单机设计器，无身份）→ 不收敛；与 `requirePermissionCompat` 同口径
+        if (!req.user || await hasExamOrganizationAffinity(req.user, Number(e.id))) manageable.push(Number(e.id));
+      }
+      const visibleNames = (referenced as Array<{ id: number; name: string }>)
+        .filter((e) => manageable.includes(Number(e.id)))
+        .map((e) => e.name);
       if (referenced.length > 0) {
         const body = (req.body ?? {}) as Record<string, unknown>;
         const unlinkExams = requestFlag(body.unlinkExams);
@@ -1750,7 +1890,16 @@ export async function createApp(): Promise<express.Express> {
           res.status(409).json({
             message: `无法直接删除答题卡：已被 ${referenced.length} 个考试引用`,
             referencedExamCount: referenced.length,
-            referencedExamNames: referenced.map((e: any) => e.name)
+            referencedExamNames: visibleNames
+          });
+          return;
+        }
+        if (manageable.length !== referenced.length) {
+          res.status(403).json({
+            ok: false,
+            code: "EXAM_OUT_OF_SCOPE",
+            message: `无法删除答题卡：其关联考试中有 ${referenced.length - manageable.length} 场不属于你的任教/创建范围，请先由该范围的责任教师处理`,
+            outOfScopeExamCount: referenced.length - manageable.length
           });
           return;
         }
@@ -1761,7 +1910,11 @@ export async function createApp(): Promise<express.Express> {
             await recordLifecycleEvent({ entityType: "exam", entityId: e.id, action: "delete", actorId: req.user?.id });
           }
         } else {
-          await db.run("UPDATE exams SET card_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE card_id = ?", cardId);
+          // 只解绑已确认在范围内的考试，避免 `card_id = ?` 的全表 UPDATE 波及范围外考试
+          await db.run(
+            `UPDATE exams SET card_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE card_id = ? AND id IN (${manageable.map(() => "?").join(",")})`,
+            cardId, ...manageable
+          );
         }
         // 解绑/删除关联考试后满分依据失效，清掉这些考试的分析缓存（评审 P1）
         for (const e of referenced as Array<{ id: number }>) analysisCache.invalidateExam(Number(e.id));
@@ -1774,7 +1927,7 @@ export async function createApp(): Promise<express.Express> {
           unlinkedExamCount: deleteReferencedExams ? 0 : referenced.length,
           deletedExamCount: deleteReferencedExams ? referenced.length : 0,
           referencedExamCount: referenced.length,
-          referencedExamNames: referenced.map((e: any) => e.name)
+          referencedExamNames: visibleNames
         });
         return;
       }
@@ -1786,7 +1939,7 @@ export async function createApp(): Promise<express.Express> {
         ok: true,
         deleted,
         referencedExamCount: referenced.length,
-        referencedExamNames: referenced.map((e: any) => e.name)
+        referencedExamNames: visibleNames
       });
     } catch (error) {
       next(error);
@@ -1854,6 +2007,14 @@ export async function createApp(): Promise<express.Express> {
       }
       if (!imported.card) {
         res.status(400).json({ message: "文件中缺少答题卡数据" });
+        return;
+      }
+      // 资源条数在落库前判定：超预算时直接拒收，不能先建卡再报错留下半成品。
+      const importedAssetCount = imported.assets ? Object.keys(imported.assets).length : 0;
+      if (importedAssetCount > MAX_CARD_ASSETS_PER_IMPORT) {
+        res.status(413).json({
+          message: `导入文件包含 ${importedAssetCount} 个资源，超过单次导入上限 ${MAX_CARD_ASSETS_PER_IMPORT} 个（${describeCardAssetLimits()}）`
+        });
         return;
       }
       // Apply overrides from import modal (deep clone to avoid reference issues)
@@ -1932,23 +2093,50 @@ export async function createApp(): Promise<express.Express> {
       const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
 
       // 导入 assets
+      // 安全（R05）：导入走 JSON body，不经过 multer——原先只看文件名字符集，
+      // 于是 `.html` + 任意字节可以落成一张「插图」，再由资源端点按 text/html 同源返回。
+      // 现在与图片上传入口共用同一套判定：扩展名白名单 + 解码字节魔数一致 + 三道容量闸。
       const failedImports: string[] = [];
-      if (imported.assets && Object.keys(imported.assets).length > 0) {
+      const rejectedAssets: Array<{ name: string; reason: string }> = [];
+      if (imported.assets && importedAssetCount > 0) {
+        const entries = Object.entries(imported.assets);
         const assetsPath = cardAssetsDir(newId);
         await mkdir(assetsPath, { recursive: true });
-        for (const [filename, base64] of Object.entries(imported.assets)) {
+        let importedBytesTotal = 0;
+        for (const [filename, base64] of entries) {
           const safeFilename = path.basename(filename);
-          if (safeFilename && /^[a-zA-Z0-9_\-\.]+$/.test(safeFilename)) {
-            try {
-              const buffer = Buffer.from(base64, "base64");
-              if (buffer.length === 0) throw new Error("空数据");
-              await writeFile(path.join(assetsPath, safeFilename), buffer);
-            } catch (err) {
-              console.warn(`[Import Card] 写入资源失败 ${safeFilename}:`, err);
-              failedImports.push(safeFilename);
+          try {
+            const buffer = Buffer.from(typeof base64 === "string" ? base64 : "", "base64");
+            if (buffer.length === 0) throw new Error("空数据");
+            if (buffer.length > MAX_CARD_ASSET_BYTES) {
+              rejectedAssets.push({
+                name: safeFilename,
+                reason: `单图 ${Math.round(buffer.length / 1024 / 1024)}MiB 超过上限 ${Math.round(MAX_CARD_ASSET_BYTES / 1024 / 1024)}MiB`
+              });
+              continue;
             }
+            const reason = rejectReasonForImportedAsset(safeFilename, buffer);
+            if (reason) {
+              rejectedAssets.push({ name: safeFilename, reason });
+              continue;
+            }
+            if (importedBytesTotal + buffer.length > MAX_CARD_ASSETS_TOTAL_BYTES) {
+              rejectedAssets.push({ name: safeFilename, reason: "导入资源累计体积超预算" });
+              continue;
+            }
+            await writeFile(path.join(assetsPath, safeFilename), buffer);
+            importedBytesTotal += buffer.length;
+          } catch (err) {
+            console.warn(`[Import Card] 写入资源失败 ${safeFilename}:`, err);
+            failedImports.push(safeFilename);
           }
         }
+      }
+      if (rejectedAssets.length > 0) {
+        console.warn(
+          `[Import Card] 已拒绝 ${rejectedAssets.length} 个不合规资源（卡 ${newId}）：` +
+          rejectedAssets.slice(0, 5).map((r) => `${r.name}=${r.reason}`).join("；")
+        );
       }
 
       // Handle exam action
@@ -1970,6 +2158,16 @@ export async function createApp(): Promise<express.Express> {
           createdExamId = exam.id;
         }
       } else if (imported.examAction === "link" && imported.linkExamId) {
+        // 安全 R06：`link` 会改写目标考试的 `card_id`，即换掉那场考试的判分依据。
+        // 此前对目标毫无校验：任何持 `card:write` 者可把**别人的考试**指向这张卡。
+        if (req.user && !(await hasExamOrganizationAffinity(req.user, Number(imported.linkExamId)))) {
+          res.status(403).json({
+            ok: false,
+            code: "EXAM_OUT_OF_SCOPE",
+            message: "无权关联该考试：它不由你创建，也不在你的任教/班主任范围内"
+          });
+          return;
+        }
         const { getMysqlDb } = await import("../../../server/db");
         const db = getMysqlDb();
         await db.run("UPDATE exams SET card_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -1981,7 +2179,9 @@ export async function createApp(): Promise<express.Express> {
         createdExamId,
         duplicateExamName: duplicateExamName || undefined,
         idConflictMsg: conflictMsg || undefined,
-        ...(failedImports.length > 0 ? { warnings: { failedImports } } : {})
+        ...(failedImports.length > 0 || rejectedAssets.length > 0
+          ? { warnings: { failedImports, ...(rejectedAssets.length > 0 ? { rejectedAssets } : {}) } }
+          : {})
       });
     } catch (error) {
       next(error);
@@ -2103,6 +2303,20 @@ export async function createApp(): Promise<express.Express> {
         );
         examSubject = card?.subject_label || card?.subject || undefined;
       }
+      // 安全（R18）：`getVisibleExamIds` 把「本人创建的考试」计入可见范围，因此教师指定任意
+      // grade_id / class_id 等于自行开通那个组织的名单与成绩可见性。建考的目标组织必须落在
+      // 调用者真正任教（或担任班主任）的班级/年级内；管理员与学年主任不受此约束。
+      if (!(await canManageExamOrganization(req.user, {
+        gradeId: gradeId ? Number(gradeId) : null,
+        classId: classId ? Number(classId) : null,
+        subject: examSubject ?? null
+      }))) {
+        res.status(403).json({
+          message: "权限不足：只能在本人任教（或担任班主任）的班级/年级创建考试，如需跨组织建考请联系管理员",
+          code: "ORG_OUT_OF_SCOPE"
+        });
+        return;
+      }
       const exam = await examRepo.createExam({
         name: String(name),
         card_id: String(cardId),
@@ -2147,9 +2361,13 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  // 安全（R09）：赋分公式变更可在 recalculate=true 时重算全场 assigned_score，
+  // 属于整卷写操作，与逐题改分同门禁（grade:write + 整卷写授权 / 组织归属）。
   app.put(
     "/api/exams/:examId/assigned-formula",
     requireExamAccess,
+    requirePermissionCompat(PERMISSIONS.GRADE_WRITE),
+    requireWholeExamGradingAccess,
     validateBody(UpdateAssignedFormulaSchema),
     async (req, res, next) => {
       try {
@@ -2342,6 +2560,29 @@ export async function createApp(): Promise<express.Express> {
         }
       }
 
+      // 安全（R18）：改年级/班级即改组织数据范围，`getVisibleExamIds` 会把本人创建的考试计入
+      // 可见集合，因此「把已有考试重定向到无权组织」与「建考时任意指定」是同一个洞；
+      // 改学科同样改变任教学科匹配，改 exam_mode=quiz 会经 `withQuizExamIds` 放大为全体教师可见。
+      // 现要求目标组织仍落在调用者可管理范围内（管理员/学年主任不受限）。
+      const touchesScope = updates.grade_id !== undefined || updates.class_id !== undefined
+        || updates.subject !== undefined || updates.exam_mode !== undefined;
+      if (touchesScope) {
+        const current = await getMysqlDb().get<{ grade_id: number | null; class_id: number | null; subject: string | null }>(
+          "SELECT grade_id, class_id, subject FROM exams WHERE id = ?", exam.id
+        );
+        if (!(await canManageExamOrganization(req.user, {
+          gradeId: updates.grade_id !== undefined ? Number(updates.grade_id) : (current?.grade_id ?? null),
+          classId: updates.class_id !== undefined ? Number(updates.class_id) : (current?.class_id ?? null),
+          subject: updates.subject !== undefined ? String(updates.subject) : (current?.subject ?? null)
+        }))) {
+          res.status(403).json({
+            message: "权限不足：只能变更本人任教（或担任班主任）班级/年级的考试范围、学科与模式，如需跨组织调整请联系管理员",
+            code: "ORG_OUT_OF_SCOPE"
+          });
+          return;
+        }
+      }
+
       // Whitelist: only these columns may appear in a dynamic UPDATE
       const ALLOWED_COLUMNS = new Set(["updated_at", "card_id", "name", "subject", "exam_mode", "grade_id", "class_id", "retention_policy_id", "show_original_paper"]);
       for (const col of Object.keys(updates)) {
@@ -2383,7 +2624,7 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
-      // 阅卷中已有成绩也可先公布，无需等待全场结考。
+      // 允许阅卷中先公布，但完整性校验照常生效（应考集合 ⊆ 已评分集合）。
       if (exam.status !== "closed" && exam.status !== "grading") {
         res.status(409).json({ message: "考试尚未进入阅卷阶段，无法公布成绩" });
         return;
@@ -2393,7 +2634,7 @@ export async function createApp(): Promise<express.Express> {
         res.json({ ok: true, scorePublished: 1, showOriginalPaper: exam.show_original_paper === 1 ? 1 : 0 });
         return;
       }
-      // 已有成绩即可公布，不要求应考名单全部出分。
+      // 收紧校验：应考集合 ⊆ 已评分集合，缺任何一名应考学生即 409（缺考者走应考名单剔除）。
       await assertScoresPublishable(db, exam);
       // 状态更新与审计日志在同一事务中保证原子性；
       // WHERE 带状态条件，防止校验与写入之间考试被并发改回阅卷中（TOCTOU）
@@ -2484,7 +2725,7 @@ export async function createApp(): Promise<express.Express> {
       const toPublish = existing
         .filter((item) => item.score_published !== 1)
         .map((item) => item.id);
-      // 任一场无成绩或存在身份异常时整体拒绝，部分学生尚未出分不阻塞公布。
+      // 任一场未通过完整性校验（无成绩 / 无应考范围 / 名单为空 / 缺应考学生成绩）时整体拒绝。
       const incompleteReasons: string[] = [];
       for (const exam of existing.filter((item) => item.score_published !== 1)) {
         try {
@@ -2577,7 +2818,10 @@ export async function createApp(): Promise<express.Express> {
   // 显式名单用于核对学生身份，不作为公布已有成绩的前置条件。
 
   // GET /api/exams/:examId/participants — 查看当前应考名单（含来源标记）
-  app.get("/api/exams/:examId/participants", requireExamAccess, async (req, res, next) => {
+  // 安全 R29：名单是整班/整年级的姓名+学号集合，`requireExamAccess` 对**学生**也放行 GET，
+  // 学生因此可读到同班/同年级全部同学的名单。改为按成绩读取权限 + 名单查看门收敛，
+  // 与 `participant-search` 同口径（用 compat 版以免破坏未开启强制鉴权的存量部署）。
+  app.get("/api/exams/:examId/participants", requireExamAccess, requirePermissionCompat(PERMISSIONS.GRADE_READ), makeViewPermissionGate("can_view_students"), async (req, res, next) => {
     try {
       const examId = Number(req.params.examId);
       if (!Number.isInteger(examId) || examId <= 0) {
@@ -2644,7 +2888,7 @@ export async function createApp(): Promise<express.Express> {
       }
       const body = (req.body ?? {}) as { studentIds?: unknown; studentNumbers?: unknown };
       const db = getMysqlDb();
-      const exam = await db.get("SELECT id FROM exams WHERE id = ?", examId) as { id: number } | undefined;
+      const exam = await db.get("SELECT id, class_id, grade_id FROM exams WHERE id = ?", examId) as { id: number; class_id: number | null; grade_id: number | null } | undefined;
       if (!exam) {
         res.status(404).json({ message: "考试不存在" });
         return;
@@ -2661,6 +2905,9 @@ export async function createApp(): Promise<express.Express> {
       }
 
       let ids: number[];
+      // 安全 CR12：403 只能回显**调用者本来就给了**的标识，不能把范围外学生的姓名/学号查出来拼进消息。
+      // 走 studentNumbers 入口时用请求里的学号回显，走 studentIds 入口时用请求里的 ID 回显。
+      const numberById = new Map<number, string>();
       if (hasIds) {
         ids = [...new Set((body.studentIds as unknown[]).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
         if (ids.length === 0 && (body.studentIds as unknown[]).length > 0) {
@@ -2684,6 +2931,7 @@ export async function createApp(): Promise<express.Express> {
             return;
           }
           ids = [...new Set(rows.map((r) => r.id))];
+          for (const r of rows) if (r.student_number) numberById.set(Number(r.id), r.student_number);
         }
       }
 
@@ -2695,6 +2943,30 @@ export async function createApp(): Promise<express.Express> {
         const missingIds = ids.filter((id) => !found.has(id));
         if (missingIds.length > 0) {
           res.status(400).json({ message: `以下学生不存在或非学生账号：${missingIds.join("、")}` });
+          return;
+        }
+      }
+
+      // 安全 R29：显式名单是权威应考集合，写入前必须收敛范围——否则教师可把任意
+      // 年级/班级的学生挂进自己的考试（既越权建立名单，也借名单读到范围外学生的姓名与学号）。
+      // 考试无班级/年级（历史无范围考试）时只做调用者可访问班级一侧的收敛。
+      if (ids.length > 0) {
+        const outside = await findStudentsOutsideParticipantScope(
+          db,
+          examId,
+          { class_id: exam.class_id, grade_id: exam.grade_id },
+          ids,
+          await getAccessibleClassIds(req.user)
+        );
+        if (outside.length > 0) {
+          // PR #312 CR12：回显只取调用者自己提交过的标识（学号或 ID），
+          // 原先把范围外学生的「姓名(学号)」查出来拼进消息，等于用一次拒绝换取身份。
+          const labels = outside.map((id) => numberById.get(id) ?? String(id));
+          res.status(403).json({
+            message: `以下学生不在本考试的应考范围内，或你不具备其所在班级的管理权限：${labels.join("、")}`,
+            code: "PARTICIPANT_OUT_OF_SCOPE",
+            studentIds: outside,
+          });
           return;
         }
       }
@@ -2770,7 +3042,13 @@ export async function createApp(): Promise<express.Express> {
   }
 
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    console.error(error);
+    // 安全（R30）：错误对象里可能带着完整 URL（侧车/第三方接口失败时 message 常含请求地址），
+    // 落日志前先打码凭据类查询参数。
+    console.error(safeErrorForLog(error));
+    // 请求级上传预算（R28）已经给出 413 并销毁请求，随后 multer 抛出的断流错误不再改写响应。
+    // 已经结束/已销毁的响应连 `end()` 都不能调：那是对写完的 writable 再写一次，只会得到 write-after-end。
+    if (res.writableEnded || res.destroyed) return;
+    if (res.headersSent) { res.end(); return; }
     // 上传类错误映射：multer 超限应 413、其它上传错误 400，而不是 500
     if (error && typeof error === "object" && (error as any)?.name === "MulterError") {
       const multerCode = String((error as any)?.code ?? "");
@@ -2781,15 +3059,27 @@ export async function createApp(): Promise<express.Express> {
       });
       return;
     }
+    // multer 的 fileFilter 拒绝（非图片扩展名/MIME）抛出的是普通 Error，不是 MulterError：
+    // 落到下面的通用分支会变成 500，而它是用户直接可控的输入，应当是 400。
+    if (error && error instanceof Error && error.message === "仅支持图片文件") {
+      res.status(400).json({ code: "UPLOAD_ERROR", message: "仅支持图片文件" });
+      return;
+    }
     // JSON 请求体解析失败应 400
     if (error && typeof error === "object" && (error as any)?.type === "entity.parse.failed") {
       res.status(400).json({ code: "INVALID_JSON", message: "请求体不是有效的 JSON" });
       return;
     }
-    const typed = error as { status?: unknown; code?: unknown; message?: unknown };
+    const typed = error as { status?: unknown; code?: unknown; message?: unknown; retryAfterSeconds?: unknown };
     const status = typeof typed?.status === "number" && typed.status >= 400 && typed.status < 600 ? typed.status : 500;
     const code = typeof typed?.code === "string" ? typed.code : ApiError.INTERNAL;
     const message = typeof typed?.message === "string" ? typed.message : "服务器内部错误";
+    // 安全（R11）：配额类错误自带建议重试间隔，转成标准 Retry-After 头，
+    // 客户端（含扫描端、学生端）据此退避，而不是把它当 500 反复重试打爆模型。
+    const retryAfter = Number(typed?.retryAfterSeconds);
+    if (status === 429 && Number.isFinite(retryAfter) && retryAfter > 0) {
+      res.setHeader("Retry-After", String(Math.min(86400, Math.ceil(retryAfter))));
+    }
     res.status(status).json({ code, message });
   });
 
@@ -2810,6 +3100,19 @@ export async function startServer(port = Number(process.env.PORT ?? 5174)): Prom
       (server as ProjectXServer).actualPort = actualPort;
       (server as ProjectXServer).localUrl = `http://127.0.0.1:${actualPort}`;
       console.log(`Answer card designer API running at http://127.0.0.1:${actualPort}`);
+      // 安全（R22/R28）：把当前生效的上传闸门打在启动日志里，现场调过 PROJECTX_UPLOAD_* 后
+      // 只需看这一行即可确认「实际生效值」，而不是去猜默认值有没有被一个拼错的数字带跑。
+      console.log(`[upload-limits] ${describeScanUploadLimits()}`);
+      // 安全（R15）：试卷池持有量配额同样按「默认 + 环境变量 + 天花板」解析，启动即打印生效档位
+      console.log(`[review-pool-limits] ${describeReviewPoolLimits()}`);
+      // 安全（R43）：备份恢复的 ZIP 解压预算，同样打印实际生效档位
+      console.log(`[restore-zip-limits] ${describeRestoreZipLimits()}`);
+      // 安全（R10/R14）：原卷容量与每请求体积档位，现场排查「为什么 413」时先看这一行
+      console.log(`[paper-storage-limits] ${describePaperStorageLimits()}`);
+      // 安全（R11）：AI 并发与计费配额档位
+      console.log(`[ai-quota] ${describeAiQuotaLimits()}`);
+      // 安全（R05）：答题卡插图导入/上传档位
+      console.log(`[card-asset-limits] ${describeCardAssetLimits()}`);
       logWechatSubscriptionStatus();
       startLlmClientSidecar();
       const shutdown = () => {

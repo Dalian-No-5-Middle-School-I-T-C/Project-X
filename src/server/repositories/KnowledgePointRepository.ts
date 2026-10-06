@@ -1,5 +1,6 @@
 import type { DbAdapter } from "../db/mysql";
 import { getMysqlDb, buildInsertIgnore } from "../db/mysql";
+import { examClassPredicate } from "../services/examClassMemberships";
 import { getAnalysisThresholds } from "../services/analysisConfig";
 import { discriminationByExtremeGroup } from "../../shared/stats";
 import type { KnowledgeSeverity, KnowledgeWeaknessItem } from "../../shared/types";
@@ -100,7 +101,7 @@ export class KnowledgePointRepository {
     const params: any[] = [examId];
 
     if (classId) {
-      sql += " AND qs.student_id IN (SELECT student_id FROM class_students WHERE class_id = ?)";
+      sql += ` AND ${examClassPredicate("qs.student_id", "qs.exam_id")}`;
       params.push(classId);
     }
 
@@ -109,9 +110,9 @@ export class KnowledgePointRepository {
 
     // 分组基准：学生总分（用于极端组法区分度）
     const totalRows = await this.db.all(
-      `SELECT student_id, total_score FROM student_scores
-       WHERE exam_id = ?
-       ${classId ? " AND student_id IN (SELECT student_id FROM class_students WHERE class_id = ?)" : ""}`,
+      `SELECT ss.student_id, ss.total_score FROM student_scores ss
+       WHERE ss.exam_id = ?
+       ${classId ? ` AND ${examClassPredicate("ss.student_id", "ss.exam_id")}` : ""}`,
       ...(classId ? [examId, classId] : [examId])
     ) as Array<{ student_id: number; total_score: number }>;
     const totalsMap = new Map(totalRows.map((r) => [r.student_id, r.total_score]));

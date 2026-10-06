@@ -11,7 +11,8 @@
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { fetchLlmClient } from "../../apps/answer-card/server/llm-client";
-import { trackAnalysisCall } from "./aiTelemetry";
+import { trackAnalysisCall, markInterruptedAiRuns, insertAiRunRow } from "./aiTelemetry";
+import { checkAiQuotaInAdmission, runInAiAdmission } from "./aiQuota";
 import type { AiAnalysisResponse, AiJobPollResponse, AiJobState } from "../../shared/types";
 
 export interface AiJobSpec {
@@ -52,12 +53,21 @@ function rowToPoll(row: any): AiJobPollResponse {
   };
 }
 
-/** 执行一次 LLM 学情分析（同步阻塞，由后台队列串行调用）。 */
-export async function runAiAnalysis(spec: AiJobSpec): Promise<AiAnalysisResponse> {
+/**
+ * 执行一次 LLM 学情分析（同步阻塞，由后台队列串行调用）。
+ *
+ * 这里只写观测、不再判一次配额：准入在建任务时已经做过（`reserveAiAnalysisJob`），
+ * 名额的接力由 `claimAiAnalysisJobForRun` 负责——任务转入 `running` 与那条
+ * `success IS NULL` 的运行行在同一个事务里交接（PR #312 CR8 的分工，两者相加才是不重复的
+ * 在途数）。若在此重新准入，排队中的任务会把自己挡住。
+ * `reservedRunId` 就是交接时建好的那条运行行，本函数只回填它，不再另起一行。
+ */
+export async function runAiAnalysis(spec: AiJobSpec, reservedRunId?: number | null): Promise<AiAnalysisResponse> {
   const model = spec.model ?? null;
   // AI 调用观测（逻辑任务层 + 实际模型调用层双层埋点），埋点失败不影响业务调用
   const response = await trackAnalysisCall({
     userId: spec.userId ?? null,
+    reservedRunId: reservedRunId ?? null,
     feature: spec.groupId != null ? "exam_group_analysis" : "exam_analysis",
     model,
     doCall: (runId) => fetchLlmClient(
@@ -101,6 +111,19 @@ export async function markInterruptedJobsFailed(db: DbAdapter): Promise<void> {
   await db.run(
     `UPDATE ai_analysis_jobs SET status = 'error', error = '服务重启中断，任务未完成' WHERE status IN ('queued', 'running')`
   );
+  // PR #312 CR8：运行行的 success IS NULL 现在同时是并发名额的占位，
+  // 崩溃残留若不清掉会一直压着名额，直到失效窗口过去。
+  //
+  // 评审 B3 只收紧了**运行行**那一半（`markInterruptedAiRuns` 改为只处理出窗行），任务行这一半
+  // 仍按「启动即无条件判中断」处理，口径不同是有意的：
+  //  - 名额账本对 `queued` 任务行**没有时间边界**（见 `readAiQuotaSnapshot`），一旦这里的清理
+  //    也改成「只碰出窗行」，崩溃残留的 queued 任务就要等到下一次重启才可能释放名额；
+  //    若此后不再重启，它会永久压着该用户的名额——比维持现状更糟。
+  //  - 多实例下这一步的最坏后果是**暂时**把别的实例正在跑的任务显示成「服务重启中断」，
+  //    而它执行完仍会把状态写回 done/error；运行行被误杀则是不可逆的账本污染 + 名额超发。
+  // 要让两边彻底同口径，需要给任务行也加时间边界（并同步放宽 queued 的名额计数），
+  // 那是配额语义的改动，不在本条评审范围内。
+  await markInterruptedAiRuns(db);
 }
 
 /** 服务启动时调用：把上次进程残留的 queued/running 任务标记为 failed。 */
@@ -109,8 +132,7 @@ export async function cleanupInterruptedAiJobs(): Promise<void> {
 }
 
 /** 创建任务并立即返回 jobId。 */
-export async function createAiAnalysisJob(input: AiJobCreateInput): Promise<number> {
-  const db = getMysqlDb();
+export async function createAiAnalysisJob(input: AiJobCreateInput, db: DbAdapter = getMysqlDb()): Promise<number> {
   const info = await db.run(
     `INSERT INTO ai_analysis_jobs (exam_id, group_id, class_id, status, model, created_by)
      VALUES (?, ?, ?, 'queued', ?, ?)`,
@@ -123,17 +145,82 @@ export async function createAiAnalysisJob(input: AiJobCreateInput): Promise<numb
   return info.lastInsertRowid;
 }
 
+/**
+ * 建任务 + 过配额，合成一个原子步骤（PR #312 CR9）。
+ *
+ * 旧写法是 `assertAiQuota()` 之后 `createAiAnalysisJob()`：两步之间没有互斥，
+ * 一波并发请求读到同一份「还有名额」的旧账本，上限 8 照样能放进 11 个任务。
+ * 现在判定与 `queued` 行写入在同一把锁的同一个事务里——任务行本身就是占位。
+ * 超限时抛 `AiQuotaError`（路由渲染为 429 + Retry-After），事务回滚，不落任务行。
+ */
+export async function reserveAiAnalysisJob(input: AiJobCreateInput): Promise<number> {
+  const db = getMysqlDb();
+  return runInAiAdmission(db, async (tx) => {
+    await checkAiQuotaInAdmission(tx, input.createdBy ?? null);
+    return createAiAnalysisJob(input, tx);
+  });
+}
+
+/**
+ * 队列交接：把「任务转 running」与「它的在途占位出现」合成同一步（PR #312 复核 P2）。
+ *
+ * CR8 的名额账本是「`queued` 任务行 + `success IS NULL` 运行行」，两段接力本该无缝；
+ * 但旧实现先把任务改成 `running`，运行行要等到 `trackAnalysisCall` 里才插入——中间那一段
+ * 两条腿都不占位。串行队列本身不放大这个窗口，放大它的是准入：另一个提交恰好在交接间隙
+ * 读账本，看到的既是 0 个排队也是 0 个在途，于是上限 8 能放进 9 个。
+ *
+ * 现在两条写语句落在同一把准入锁、同一个事务里：读取侧要么看到 `queued` 任务行，要么看到
+ * 在途运行行，不存在两者皆空的瞬间；任务行已离开 `queued`，也不会被重复计数。
+ * 占位写在准入锁内还有一层作用——它与「同步调用」的 `reserveAiCall` 互斥，交接不再能插到
+ * 别人的「读账本 → 占位」中间。
+ */
+export async function claimAiAnalysisJobForRun(
+  jobId: number,
+  spec: AiJobSpec,
+): Promise<{ runId: number; userId: number | null }> {
+  return runInAiAdmission(getMysqlDb(), async (tx) => {
+    // 创建者从任务表读：运行行的 user_id 决定这次调用算在谁的头上，缺了就退化成全局计数。
+    const row = await tx.get<{ created_by: number | null }>(
+      "SELECT created_by FROM ai_analysis_jobs WHERE id = ?", jobId);
+    const userId = spec.userId ?? row?.created_by ?? null;
+    const runId = await insertAiRunRow(tx, {
+      userId,
+      feature: spec.groupId != null ? "exam_group_analysis" : "exam_analysis",
+      model: spec.model ?? null,
+      stage: "request",
+    });
+    await tx.run(
+      "UPDATE ai_analysis_jobs SET status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      jobId,
+    );
+    return { runId, userId };
+  });
+}
+
 /** 将任务入队执行（fire-and-forget，调用方负责 catch 日志）。 */
 export function enqueueAiAnalysisJob(jobId: number, spec: AiJobSpec): Promise<AiAnalysisResponse> {
   const db = getMysqlDb();
   return enqueueSerial(async () => {
     // 队列是串行的，DB 单连接下不会插队
-    await db.run("UPDATE ai_analysis_jobs SET status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ?", jobId);
+    let claimed: { runId: number; userId: number | null };
+    try {
+      claimed = await claimAiAnalysisJobForRun(jobId, spec);
+    } catch (err) {
+      // 交接失败（准入锁超时、连接故障）时任务还停在 queued：它会一直压着一个名额，
+      // 而轮询方永远等不到终态。就地判失败，让账本与客户端状态一起回到一致。
+      const message = err instanceof Error ? err.message : String(err);
+      await db.run(
+        `UPDATE ai_analysis_jobs SET status = 'error', error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'queued'`,
+        message.slice(0, 2000), jobId,
+      ).catch(() => {});
+      throw err;
+    }
+    const createdBy = claimed.userId;
+    const reservedRunId = claimed.runId;
     try {
       const startedAt = Date.now();
-      // 任务创建者从任务表读取，注入遥测（AI 调用观测 user_id 归属）
-      const createdBy = spec.userId ?? await db.get("SELECT created_by FROM ai_analysis_jobs WHERE id = ?", jobId).then((r: any) => r?.created_by ?? null);
-      const result = await runAiAnalysis({ ...spec, userId: createdBy ?? null });
+      // 任务创建者已由交接步骤读出并写进运行行，这里只透传，不再另起观测行
+      const result = await runAiAnalysis({ ...spec, userId: createdBy ?? null }, reservedRunId);
       await db.run(
         `UPDATE ai_analysis_jobs SET status = 'done', result = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
         JSON.stringify(result),

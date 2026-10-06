@@ -20,8 +20,13 @@
 
 - **年级**：高一(演示)
 - **班级**：演示1班（理科班）、演示2班（文科班），各 8 人
-- **学生**：`20260101` ~ `20260116`，密码 = 学号（seed 显式覆盖默认随机密码）；`01~08` 理科、`09~16` 文科（`users.track`）
-- **教师**：`demo-teacher` / `teacher123`、`demo-teacher-2` / `teacher123`
+- **学生**：`20260101` ~ `20260116`，密码 = 学号；`01~08` 理科、`09~16` 文科（`users.track`）
+- **教师**：`demo-teacher` / `teacher123`、`demo-teacher-2` / `teacher123`（`teacher_role='subject_teacher'`，只任课上面两个演示班级）
+
+> 上述固定口令是**本测试数据包的口径**：`scripts/seed.ts` 会显式设 `PROJECTX_DEMO_FIXED_CREDENTIALS=1`，
+> 否则 `scripts/verify.ts` 无法按 `manifest.json` 登录断言。生产环境的前端「导入演示数据」默认随机换发口令、
+> 口令只回显一次并加密存入 `users.initial_password`（安全 R33），且库中已有真实数据时需二次确认、
+> 演示卡号撞真实答题卡时整单拒绝（安全 R48）。
 - **考试**：8 场周考/月考 + 1 场网阅测试 + 9 场周报晨测（共 18 场；周报晨测日期按导入时动态计算）
 - **大考合集**：演示-2026高考摸底大考（7 科：语数英=共同、物化生=理科、历史=文科）
 - **跨考已存组**：演示-第25周考试包（6/16~6/22，6 科全共同）
@@ -88,8 +93,9 @@ verify.ts 会自动处理管理员首次强制改密：读 `bootstrap-admin.txt`
 ## 手动 API 导入
 
 ```bash
-# #185 起管理员为随机一次性密码，读取数据库旁的 bootstrap-admin.txt
-ADMIN_PW="$(tr -d '[:space:]' < data/bootstrap-admin.txt 2>/dev/null || echo admin123)"
+# R01 起管理员为一次性随机口令，只写在 bootstrap-admin.txt；文件缺失就直接报错，无固定兜底值
+[[ -f data/bootstrap-admin.txt ]] || { echo "缺少 data/bootstrap-admin.txt：请确认服务已启动过（首次启动自动生成）" >&2; exit 1; }
+ADMIN_PW="$(tr -d '[:space:]' < data/bootstrap-admin.txt)"
 TOKEN=$(curl -s -X POST http://127.0.0.1:5174/api/auth/login \
   -H 'Content-Type: application/json' \
   -d "{\"identifier\":\"admin\",\"password\":\"$ADMIN_PW\"}" | jq -r .token)

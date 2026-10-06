@@ -1300,6 +1300,31 @@ MIGRATIONS.push({ version: 56, name: "block-title-locked", up(db) {
 // （repositories/AnalysisRepository.ts 的 CURRENT_CLASS_* 与 DISPLAY_CLASS_ORDER），
 // 显式调班走 moveStudent 只移除原班关联。号位保留，避免复用造成判重歧义。
 
+function ensureExamClassMemberships(db: Database.Database): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS exam_class_memberships (
+    exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    class_id INTEGER NOT NULL,
+    joined_at DATETIME,
+    PRIMARY KEY (exam_id, student_id, class_id)
+  ); CREATE INDEX IF NOT EXISTS idx_ecm_student ON exam_class_memberships(student_id, exam_id);`);
+}
+
+// v59 preserves the migration identity from PR #311.
+MIGRATIONS.push({ version: 59, name: "exam-class-memberships", up: ensureExamClassMemberships });
+
+// v60: 答题卡保存计数器（安全 R45）。前端导出 PDF 时需要把「打印出来的这张卡」和「阅卷时用的坐标布局」
+// 绑到同一个版本上，否则自动保存竞态会让老师拿到旧版式的纸、学生答的却是新版式的格子。
+// 不能用 updated_at 当版本令牌：它由 CURRENT_TIMESTAMP 写入，只有秒级精度，
+// 同一秒内的两次保存会取到同一个值；PUT 返回的 updatedAt 又是 normalizeCard 里 new Date() 生成的，
+// 与库里的值本就不相等。单调递增的 revision 才能唯一标识一次保存。
+MIGRATIONS.push({ version: 60, name: "answer-card-revision", up(db) {
+  addColumnIfMissing(db, "answer_cards", "revision", "INTEGER NOT NULL DEFAULT 0");
+  // Earlier PR #312 builds recorded answer-card-revision as v59.
+  // Those databases skip v59 above, so also recover the missing snapshot table.
+  ensureExamClassMemberships(db);
+} });
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

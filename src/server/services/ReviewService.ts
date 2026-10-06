@@ -76,7 +76,16 @@ async function recomputeStudentTotals(
   return newTotal;
 }
 
-export async function listReviewBlocks(examId: number, db: DbAdapter = getMysqlDb()): Promise<ReviewBlockSummary[]> {
+export async function listReviewBlocks(
+  examId: number,
+  db: DbAdapter = getMysqlDb(),
+  permittedBlockIds?: string[] | null
+): Promise<ReviewBlockSummary[]> {
+  // 安全 R03：题块级阅卷人只应看到自己被分配的题块（空集合 = 看不到任何题块）。
+  if (permittedBlockIds && permittedBlockIds.length === 0) return [];
+  const blockFilter = permittedBlockIds
+    ? ` AND abc.block_id IN (${permittedBlockIds.map(() => "?").join(",")})`
+    : "";
   const rows = await db.all(
     `SELECT
        abc.block_id AS blockId,
@@ -85,21 +94,13 @@ export async function listReviewBlocks(examId: number, db: DbAdapter = getMysqlD
        COUNT(*) AS totalCount,
        SUM(CASE WHEN COALESCE(abc.status, 'ready') IN ('ready', 'pending') THEN 1 ELSE 0 END) AS pendingCount,
        SUM(CASE WHEN abc.status = 'reviewed' THEN 1 ELSE 0 END) AS reviewedCount,
-       COALESCE(MAX(bgc.has_half_point), 0) AS hasHalfPoint,
-       COALESCE((
-         SELECT SUM(mx) FROM (
-           SELECT MAX(qs2.max_score) AS mx
-           FROM question_scores qs2
-           WHERE qs2.exam_id = abc.exam_id AND qs2.block_id = abc.block_id
-           GROUP BY qs2.question_number
-         )
-       ), 0) AS maxScore
+       COALESCE(MAX(bgc.has_half_point), 0) AS hasHalfPoint
      FROM answer_block_crops abc
      LEFT JOIN block_grading_config bgc ON bgc.exam_id = abc.exam_id AND bgc.block_id = abc.block_id
-     WHERE abc.exam_id = ?
+     WHERE abc.exam_id = ?${blockFilter}
      GROUP BY abc.block_id
      ORDER BY abc.block_id`,
-    examId
+    examId, ...(permittedBlockIds ?? [])
   ) as Array<{
     blockId: string;
     blockTitle: string | null;
@@ -108,8 +109,15 @@ export async function listReviewBlocks(examId: number, db: DbAdapter = getMysqlD
     pendingCount: number;
     reviewedCount: number;
     hasHalfPoint: number;
-    maxScore: number;
   }>;
+
+  if (rows.length === 0) return [];
+
+  // 题块满分 = 该题块内各小题权威满分之和。
+  // 原先实现为「相关子查询里再套派生表」，MariaDB 的派生表不能引用外层 abc.*
+  // （ERROR 1054 Unknown column 'abc.exam_id'），而 SQLite 又不要求派生表别名，
+  // 两方言的写法无法统一；改为独立查询按 (block_id, question_number) 聚合后在内存合并。
+  const maxScoreByBlock = await loadBlockMaxScores(examId, db);
 
   return rows.map((row) => ({
     blockId: row.blockId,
@@ -119,12 +127,42 @@ export async function listReviewBlocks(examId: number, db: DbAdapter = getMysqlD
     pendingCount: Number(row.pendingCount),
     reviewedCount: Number(row.reviewedCount),
     hasHalfPoint: Number(row.hasHalfPoint ?? 0),
-    maxScore: Number(row.maxScore ?? 0)
+    maxScore: maxScoreByBlock.get(row.blockId) ?? 0
   }));
 }
 
+/** 按题块汇总满分（question_scores 为权威满分落库表）；dialect-agnostic 写法 */
+async function loadBlockMaxScores(
+  examId: number,
+  db: DbAdapter
+): Promise<Map<string, number>> {
+  const rows = await db.all(
+    `SELECT sub.block_id AS blockId, SUM(sub.mx) AS maxScore
+     FROM (
+       SELECT block_id, question_number, MAX(max_score) AS mx
+       FROM question_scores
+       WHERE exam_id = ?
+       GROUP BY block_id, question_number
+     ) sub
+     WHERE sub.block_id IS NOT NULL
+     GROUP BY sub.block_id`,
+    examId
+  ) as Array<{ blockId: string | null; maxScore: number | null }>;
+  const maxScoreByBlock = new Map<string, number>();
+  for (const row of rows) {
+    if (row.blockId == null) continue;
+    const maxScore = Number(row.maxScore ?? 0);
+    if (Number.isFinite(maxScore)) maxScoreByBlock.set(row.blockId, maxScore);
+  }
+  return maxScoreByBlock;
+}
+
 export async function listReviewBlockCropItems(
-  params: { examId: number; blockId?: string; classId?: number; status?: string },
+  params: {
+    examId: number; blockId?: string; blockIds?: string[]; classId?: number; status?: string;
+    /** 逐生分配切片（评审 B1），透传给 `listReviewBlockCrops` */
+    assignedSlice?: { sql: string; params: unknown[] } | null;
+  },
   db: DbAdapter = getMysqlDb()
 ): Promise<ReviewBlockCropItem[]> {
   const crops = await listReviewBlockCrops(params, db);
@@ -196,6 +234,36 @@ export function splitBlockTotal(
 
   nums.forEach((q, i) => result.set(q, rounded[i]));
   return result;
+}
+
+/** `answer_block_crops.score_breakdown` 的单条评阅记录（落库结构，与 demo/reviewDemo.ts 保持一致） */
+interface ReviewBreakdownEntry {
+  round: number;
+  reviewerId: number;
+  score: number;
+  reviewedAt: string;
+  questionScores?: Record<string, number>;
+}
+
+/**
+ * 安全 R47：把评阅历史收敛为「每位评阅人的最后一票」。
+ *
+ * 争议卷会回退给原老师追加复评以打破僵局，但复评是修正自己那张票，不是多出一票。
+ * 历史实现把 `score_breakdown` 的每一条都当独立投票：A=10、B=4 触发争议后，A 再提交一次
+ * 就成了 [10,4,10] 三票，中位数/均值被同一人重复计票拉向自己——原老师可以靠重复提交
+ * 把争议判成自己想要的结果。这里按 reviewerId 取最后一轮，并保持首次出现顺序，
+ * 供总票聚合与逐题合并共同使用。
+ */
+function latestVotesByReviewer(breakdown: ReviewBreakdownEntry[]): ReviewBreakdownEntry[] {
+  const lastByReviewer = new Map<number, ReviewBreakdownEntry>();
+  const firstSeen = new Map<number, number>();
+  breakdown.forEach((entry, index) => {
+    if (!firstSeen.has(entry.reviewerId)) firstSeen.set(entry.reviewerId, index);
+    const prev = lastByReviewer.get(entry.reviewerId);
+    if (!prev || Number(entry.round) >= Number(prev.round)) lastByReviewer.set(entry.reviewerId, entry);
+  });
+  return [...lastByReviewer.values()]
+    .sort((a, b) => (firstSeen.get(a.reviewerId) ?? 0) - (firstSeen.get(b.reviewerId) ?? 0));
 }
 
 export async function submitReviewCropScores(params: {
@@ -376,7 +444,7 @@ export async function submitReviewCropScores(params: {
         });
   let totalScore = 0;
   let finalReviewRound = 0;
-  let scoreBreakdown: Array<{ round: number; reviewerId: number; score: number; reviewedAt: string; questionScores: Record<string, number> }> = [];
+  let scoreBreakdown: ReviewBreakdownEntry[] = [];
   let disputed = false;
   let disputeReason = "";
   let finalScore: number | null = null;
@@ -426,7 +494,9 @@ export async function submitReviewCropScores(params: {
     );
 
     if (scoreBreakdown.length >= reviewMode) {
-      const allScores = scoreBreakdown.map((b) => b.score);
+      // R47：票数按评阅人去重（每人取其最后一轮），复评不叠加票数
+      const effectiveVotes = latestVotesByReviewer(scoreBreakdown);
+      const allScores = effectiveVotes.map((b) => b.score);
       const disputeResult = computeMultiReviewResult(allScores, config.disputeThreshold, config.rounding);
       disputed = disputeResult.disputed;
       disputeReason = disputeResult.reason;
@@ -434,8 +504,8 @@ export async function submitReviewCropScores(params: {
         finalScore = disputeResult.finalScore;
         const resolvedQuestionScores: Array<{ item: typeof submittedScores[number]; score: number }> = [];
         for (const item of submittedScores) {
-          const values = scoreBreakdown.map((round) => round.questionScores?.[String(item.questionNumber)]).filter((v): v is number => typeof v === "number");
-          if (values.length !== scoreBreakdown.length) throw new Error("历史评审缺少逐题分数，无法安全合并，请转仲裁处理");
+          const values = effectiveVotes.map((round) => round.questionScores?.[String(item.questionNumber)]).filter((v): v is number => typeof v === "number");
+          if (values.length !== effectiveVotes.length) throw new Error("历史评审缺少逐题分数，无法安全合并，请转仲裁处理");
           const resolved = computeMultiReviewResult(values, config.disputeThreshold, config.rounding);
           if (resolved.disputed || resolved.finalScore == null) {
             disputed = true;
@@ -634,11 +704,15 @@ async function autoAssignDisputedCrop(
 export async function getReviewTrace(
   examId: number,
   blockId: string | undefined,
-  db: DbAdapter = getMysqlDb()
+  db: DbAdapter = getMysqlDb(),
+  permittedBlockIds?: string[] | null,
+  // 安全 B1：题块级 + 逐生切片级双重收口。溯源表比切块清单更敏感（全卷每题得分 + 评审人），
+  // 但两者此前都只收到题块粒度，同块不同切片的学生的分数与轨迹照样读得到。
+  assignedSlice?: { sql: string; params: unknown[] } | null
 ): Promise<ReviewTraceItem[]> {
   let query = `
     SELECT abc.id AS crop_id, abc.student_id, u.name AS student_name,
-           u.student_number, abc.block_title, abc.status,
+           u.student_number, abc.block_id, abc.block_title, abc.status,
            abc.score_breakdown, abc.final_score,
            arb.name AS resolved_by
     FROM answer_block_crops abc
@@ -651,6 +725,17 @@ export async function getReviewTrace(
   if (blockId) {
     query += " AND abc.block_id = ?";
     params.push(blockId);
+  }
+  // 安全 R03：题块级阅卷人的溯源只覆盖本人被分配的题块（空集合 = 无行）。
+  if (permittedBlockIds) {
+    if (permittedBlockIds.length === 0) return [];
+    query += ` AND abc.block_id IN (${permittedBlockIds.map(() => "?").join(",")})`;
+    params.push(...permittedBlockIds);
+  }
+  // 安全 B1：题块内再按逐生分配切片收口（同块不同教师的两半学生互相读不到分数与轨迹）
+  if (assignedSlice) {
+    query += ` AND ${assignedSlice.sql}`;
+    params.push(...assignedSlice.params);
   }
 
   query += " ORDER BY u.student_number, abc.block_id";

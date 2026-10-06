@@ -162,6 +162,11 @@ def call_tool(
         safe_args.pop("classId", None)
 
     allowed_args = set(inspect.signature(handler).parameters)
+    if class_id is not None and "classId" not in allowed_args:
+        # 强制班级范围必须能落到查询参数里。工具签名不收 classId 时，
+        # 下面按签名过滤会把它静默丢弃，结果就是把整场考试（含其它班级）交出去——
+        # 安全 R26。宁可拒绝这一次调用，也不退化成无范围口径。
+        return {"error": f"tool {name} cannot honour the forced class scope"}
     safe_args = {key: value for key, value in safe_args.items() if key in allowed_args}
     return handler(**safe_args)
 

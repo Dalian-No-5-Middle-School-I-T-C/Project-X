@@ -11,6 +11,7 @@ import { analysisCache } from "./analysisCache";
 import { ensureExamParticipants, isExamParticipant } from "./examParticipants";
 import { databaseTimestamp } from "../db/timestamp";
 import { markScoreMutated } from "./examPublishEvents";
+import { captureExamClasses } from "./examClassMemberships";
 
 /** Resolve persisted receipt ownership, including retries after exam closure. */
 export async function findSavedScannerOwners(db: DbAdapter, sessionId: string, groupId: string,
@@ -34,6 +35,28 @@ interface Receipt {
   state: string; previously_saved: number; pages_json: string;
   result_json: string | null; score_snapshot: string | null;
 }
+/**
+ * 该扫描页是否已被一张 `state='saved'` 的回执认领（PR #312 复核 CR2）。
+ *
+ * `/complete` 只在**全部**分组入库成功时把会话与页面推到 `completed`；部分失败时它先 409 返回，
+ * 那些已经保存成功的分组留下 `saved` 回执，但页面状态仍是 `uploaded`、会话仍是 `incomplete`。
+ * 于是 R02 的「会话已完成/页面已入库」闸门对它们不生效，历史上传队列仍能把这一页的图片与
+ * 识别结果换掉，再点一次提交就会覆盖已入库成绩。归属判据用回执，不用状态字段。
+ */
+export async function savedReceiptOwnerOfPage(sessionId: string,
+  recordId: string): Promise<{ exam_id: number; group_id: string; student_number: string } | null> {
+  const rows = await getMysqlDb().all<Receipt>(
+    "SELECT * FROM scanner_submissions WHERE session_id = ? AND state = 'saved'", sessionId);
+  for (const row of rows) {
+    let pages: ScanBatchPage[] = [];
+    try { pages = JSON.parse(row.pages_json) as ScanBatchPage[]; } catch { pages = []; }
+    if (pages.some(page => page.recordId === recordId)) {
+      return { exam_id: Number(row.exam_id), group_id: row.group_id, student_number: row.student_number };
+    }
+  }
+  return null;
+}
+
 // SQLite uses one connection. MariaDB additionally locks the exam row, including across processes.
 let writes: Promise<unknown> = Promise.resolve();
 export function enqueueScannerSubmission<T>(work: () => Promise<T>): Promise<T> {
@@ -156,6 +179,7 @@ export async function recoverLegacyScannerSubmission(examId: number, groupId: st
         return typeof raw === "string" && column.endsWith("_at") ? databaseTimestamp(raw, tx.dialect) : raw ?? null;
       };
       const scoreColumns = ["exam_id", "student_id", "objective_score", "subjective_score", "total_score", "graded_at", "manually_modified", "modified_by", "modified_at"];
+      await captureExamClasses(tx, examId, user.id);
       await tx.run(buildUpsertSQL(tx.dialect, "student_scores", scoreColumns, ["exam_id", "student_id"]),
         examId, user.id, ...scoreColumns.slice(2).map(c => value(snapshot.score, c)));
       const questionColumns = ["exam_id", "student_id", "question_number", "question_id", "block_id", "score", "max_score", "score_type", "selected_options", "manually_modified", "modified_by", "modified_at"];

@@ -39,6 +39,11 @@ static std::string toUtf8(const wchar_t* wstr) {
 }
 
 int wmain(int argc, wchar_t* argv[]) {
+    // 安全 R40：整个进程的 DLL 搜索只保留「exe 目录 + System32 + AddDllDirectory 添加的目录」，
+    // 当前工作目录与 PATH 一律不参与——扫描端的工作目录由启动方式决定，不该成为加载点。
+    // 老系统没有这个 API 时忽略失败，DSM 加载侧仍按绝对路径 + 受限搜索兜底。
+    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+
     // 统一转为 UTF-8 参数
     std::vector<std::string> args;
     args.reserve(argc > 0 ? static_cast<size_t>(argc) : 0);

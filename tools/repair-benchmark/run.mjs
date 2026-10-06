@@ -66,10 +66,11 @@ async function waitHealth(url, timeout=180000) {
   throw new Error(`Infrastructure: health timeout ${url}`);
 }
 async function login(root) {
-  const result=await request(root,'/api/auth/login','POST',{identifier:'admin',password:'admin123'});
+  // R01 起不再有固定初始口令：隔离部署通过 PROJECTX_ADMIN_PASSWORD 逃生阀预置为 password 常量。
+  const result=await request(root,'/api/auth/login','POST',{identifier:'admin',password});
   tokens.set(root,result.token);
   if(result.passwordChangeRequired) {
-    await request(root,'/api/auth/change-password','POST',{oldPassword:'admin123',newPassword:password});
+    await request(root,'/api/auth/change-password','POST',{oldPassword:password,newPassword:password});
     tokens.set(root,(await request(root,'/api/auth/login','POST',{identifier:'admin',password})).token);
   }
 }
@@ -116,7 +117,7 @@ try {
   await fs.writeFile(path.join(out,'ports.json'),JSON.stringify(ports,null,2));console.log('Allocated ports',JSON.stringify(ports));
   console.log('Starting isolated WSL MariaDB, Nginx and application');
   wslStarted=true;wsl(['start',runId,linux(packaged),linux(stage),linux(out)],true);
-  const env={...process.env,PORT:String(ports.scanner),PROJECTX_AUTH_ENFORCE:'1',PROJECTX_ENABLE_SCANNER:'1',PROJECTX_DB_PATH:path.join(out,'scanner/projectx.db'),ANSWER_CARD_DATA_DIR:path.join(out,'scanner/cards'),ANSWER_CARD_CLIENT_DIST:path.join(stage,'dist/scanner'),USERPROFILE:path.join(out,'scanner/profile'),LLMCLIENT_AUTOSTART:'0'};
+  const env={...process.env,PORT:String(ports.scanner),PROJECTX_AUTH_ENFORCE:'1',PROJECTX_ENABLE_SCANNER:'1',PROJECTX_DB_PATH:path.join(out,'scanner/projectx.db'),ANSWER_CARD_DATA_DIR:path.join(out,'scanner/cards'),ANSWER_CARD_CLIENT_DIST:path.join(stage,'dist/scanner'),USERPROFILE:path.join(out,'scanner/profile'),LLMCLIENT_AUTOSTART:'0',PROJECTX_ADMIN_PASSWORD:password};
   for(const key of Object.keys(env))if(key.startsWith('PROJECTX_MARIADB_')||key.startsWith('MYSQL_'))delete env[key];
   await new Promise(resolve=>scannerReservation.close(resolve));
   processRun(process.execPath,['dist/server/index.mjs'],stage,env,true,'scanner');

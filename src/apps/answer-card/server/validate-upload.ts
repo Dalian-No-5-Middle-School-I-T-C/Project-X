@@ -41,6 +41,67 @@ export function isImageExtension(ext: string): boolean {
   return IMAGE_EXTENSIONS.includes(ext.toLowerCase());
 }
 
+/**
+ * 扩展名 → Content-Type 的**闭合**映射（安全 R05）。
+ *
+ * 资源端点原先走 `res.sendFile()`，由扩展名推导响应类型：`.html` 会以 `text/html` 同源返回，
+ * 而本仓库的 CSP 允许 inline script，于是「导入一张带插图的答题卡」= 「在该域名下执行任意脚本」。
+ * 这里不给 sendFile 推导的机会：只查表，查不到就拒绝提供。
+ * 注意没有 `.svg`——SVG 是 XML 文本，可以内嵌 `<script>`，不能进这张表。
+ */
+export const IMAGE_CONTENT_TYPES: Readonly<Record<string, string>> = Object.freeze({
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".bmp": "image/bmp",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
+  ".webp": "image/webp",
+});
+
+/** 扩展名 → 允许的魔数标签；两者必须一致，`<html>…` 改名 .png 不算图片。 */
+const EXTENSION_MAGIC_LABELS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  ".png": ["PNG"],
+  ".jpg": ["JPEG"],
+  ".jpeg": ["JPEG"],
+  ".bmp": ["BMP"],
+  ".tif": ["TIFF (LE)", "TIFF (BE)"],
+  ".tiff": ["TIFF (LE)", "TIFF (BE)"],
+  ".webp": ["RIFF (WebP)"],
+});
+
+/** 取扩展名对应的响应类型；非图片扩展名返回 null。 */
+export function imageContentTypeFor(filename: string): string | null {
+  const ext = path.extname(filename || "").toLowerCase();
+  return IMAGE_CONTENT_TYPES[ext] ?? null;
+}
+
+/** 从内存态字节判断魔数标签；不是受支持的图片时返回 null。 */
+export function detectImageLabel(buffer: Buffer | undefined): string | null {
+  if (!buffer || buffer.length < 4) return null;
+  if (buffer.subarray(0, 4).equals(Buffer.from([0x52, 0x49, 0x46, 0x46]))) {
+    return buffer.length >= 12 && buffer.subarray(8, 12).toString("ascii") === "WEBP" ? "RIFF (WebP)" : null;
+  }
+  return MAGIC_BYTES.find(({ signature }) => buffer.subarray(0, signature.length).equals(signature))?.label ?? null;
+}
+
+/**
+ * 导入资源的单条校验（安全 R05）：文件名字符集 + 扩展名白名单 + 解码字节的魔数与扩展名一致。
+ * 返回 null 表示通过，否则返回可直接回给前端的拒绝原因。
+ */
+export function rejectReasonForImportedAsset(filename: string, buffer: Buffer): string | null {
+  const safe = path.basename(filename);
+  if (!safe || !/^[a-zA-Z0-9_\-\.]+$/.test(safe)) return "文件名含非法字符";
+  const ext = path.extname(safe).toLowerCase();
+  if (!isImageExtension(ext)) return `不支持的资源类型「${ext || "无扩展名"}」，插图只能是 png/jpg/bmp/tiff/webp`;
+  const label = detectImageLabel(buffer);
+  if (!label) return "内容不是受支持的图片格式";
+  if (!(EXTENSION_MAGIC_LABELS[ext] ?? []).includes(label)) {
+    return `扩展名 ${ext} 与实际内容（${label}）不一致`;
+  }
+  return null;
+}
+
 /** Reads the first N bytes of a file and checks magic signatures. */
 export async function isValidImageFile(filePath: string): Promise<boolean> {
   let fd;

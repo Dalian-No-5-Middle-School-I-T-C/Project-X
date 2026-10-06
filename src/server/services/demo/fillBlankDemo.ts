@@ -2,10 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildInsertIgnore, resolveAnswerCardDataDir, type DbAdapter } from "../../db";
 import { makePlaceholderPng } from "./png";
+import { DEMO_LANGUAGE_CARD_ID, isDemoCard } from "./demoCardIds";
 // 填空题升级演示种子（#211）：自定义横线 / 文字注释 / 插入图片
 // ────────────────────────────────────────────────────────────────────────────
 
-const FILL_BLANK_CARD_ID = "88000001"; // 演示-语文卡
+const FILL_BLANK_CARD_ID = DEMO_LANGUAGE_CARD_ID; // 演示-语文卡
 
 /**
  * 为演示-语文卡补一个填空题块（3 道题）：
@@ -15,9 +16,9 @@ const FILL_BLANK_CARD_ID = "88000001"; // 演示-语文卡
  * 清除演示数据时经 subjective_blocks.card_id → answer_cards ON DELETE CASCADE 自动级联，无需额外清理。
  */
 export async function seedFillBlankDemo(db: DbAdapter): Promise<void> {
-  // 卡片不存在时跳过（防御性检查；演示卡号被真实数据占用时 seedExam 的 INSERT 会先行报错）
-  const card = await db.get("SELECT id FROM answer_cards WHERE id = ?", FILL_BLANK_CARD_ID) as { id: string } | undefined;
-  if (!card) return;
+  // 安全 R48：卡不存在时跳过；卡存在但**不是演示卡**时也必须跳过——
+  // 建卡用的是 INSERT IGNORE，撞上真实卡不会报错，往下走就是把演示块与演示图片塞进真实卡。
+  if (!(await isDemoCard(db, FILL_BLANK_CARD_ID))) return;
 
   const blockId = "fb-demo-1";
   await db.run(

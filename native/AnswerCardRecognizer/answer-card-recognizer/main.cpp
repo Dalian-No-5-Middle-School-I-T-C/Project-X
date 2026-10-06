@@ -1,6 +1,8 @@
 #include "answer_recognition.hpp"
 #include "common.hpp"
+#include "recognizer_limits.hpp"
 
+#include <cstdio>
 #include <filesystem>
 #include <iostream>
 #include <optional>
@@ -82,6 +84,11 @@ CliOptions parse_args(int argc, wchar_t* argv[]) {
     if (options.image_path.empty() || options.layout_path.empty()) {
         throw std::runtime_error(usage());
     }
+    // 安全 R19：--page / --dpi 直接参与像素换算，越界就地报错，别等 OpenCV 分配时才失败
+    if (options.page < 1 || options.page > 100000) {
+        throw std::runtime_error("--page must be between 1 and 100000");
+    }
+    assert_recognizer_dpi(options.dpi);
     return options;
 }
 
@@ -98,7 +105,14 @@ nlohmann::json cli_failed_result(const std::string& message) {
 
 int wmain(int argc, wchar_t* argv[]) {
     configure_utf8_output();
+#ifdef _WIN32
+    // 安全 R19：本进程是服务端/扫描端拉起的子进程，弹一个「找不到磁盘或 DLL」的模态框
+    // 只会让调用方白等满 30 秒超时——直接失败返回更有用。
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+#endif
     try {
+        // stdout 只留给 JSON 结果，生效档位写 stderr：现场排查「为什么这张图被拒」时不用猜默认值
+        std::fprintf(stderr, "[recognizer-limits] %s\n", describe_recognizer_limits().c_str());
         const CliOptions options = parse_args(argc, argv);
         const nlohmann::json result = recognize_objective_answers(
             options.image_path,

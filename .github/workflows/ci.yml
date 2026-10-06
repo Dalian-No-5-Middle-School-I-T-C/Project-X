@@ -53,6 +53,23 @@ jobs:
       - name: Class archive / student link regression
         run: npm run verify:class-archive
 
+      # 安全整改回归：关键安全项（R01/R02/R04/R07/R22/R28 + 上传/试卷池配额）与
+      # 权限边界项（R03/R06/R08/R09/R13/R15/R18/R21/R29/R47）。两者都用临时隔离库，
+      # 不依赖服务容器，可并行在 SQLite 上跑。
+      - name: Security-critical regression
+        run: npm run verify:security-critical
+
+      - name: Permission-scope regression
+        run: npm run verify:permission-scope
+
+      # 成绩公布完整性（#248 P1-1/P1-2）：公布前必须「应考集合 ⊆ 已评分集合」，
+      # 且不存在「仅校验非空」退路。三条脚本各自使用临时 SQLite 库。
+      - name: Score publication integrity regression
+        run: npm run verify:p1-integrity && npm run verify:p1-scope && npm run verify:p1-readgate
+
+      - name: Exam-time class membership regression
+        run: npm run verify:exam-class-memberships
+
       # v57 空置 + 「阅卷中已公布」考试不被强制结考，并检查两套方言迁移版本号不撞号
       - name: Grading-published exam and migration numbering
         run: npm run verify:grading-published-exam
@@ -66,13 +83,49 @@ jobs:
       - name: Scanner batch results smoke
         run: npm run verify:scanner-batch-results
 
+      - name: Plaintext remote transport guard (R32)
+        run: npm run verify:insecure-remote-transport
+
+      # 演示数据凭据与导入闸门（R33/R48）：随机口令、teacher_role 收敛、生产库二次确认、
+      # 演示卡号撞真实卡整单拒绝。脚本自带一次性临时库，不依赖服务容器。
+      - name: Demo credentials / import gates (R33/R48)
+        run: npm run verify:demo-credentials
+
+      # Ubuntu 服务器包的 systemd 单元与安装脚本（R37）：非 root 身份、UMask=0027、
+      # 数据目录 0750、沙箱指令齐全，且刻意不启用会打死 V8 JIT 的 MemoryDenyWriteExecute。
+      # 纯静态断言 + bash -n 语法检查，直接 require 生成器，不需要 dist/。
+      - name: Ubuntu server package systemd hardening (R37)
+        run: npm run verify:systemd-hardening
+
+      # 发布产物完整性清单（R42）：exe/msi 没有代码签名（无证书，且证书不得入库），
+      # 处置是每次打包都生成 SHA256SUMS.txt + BUILD-INTEGRITY.txt，并把签名状态如实写出来。
+      # 脚本用一次性临时目录真跑生成与校验（含篡改 / 多出文件 / 缺清单三条失败路径）。
+      - name: Release artifact integrity manifest (R42)
+        run: npm run verify:release-integrity
+
+      # 答题卡导出版本绑定（R45）：/pdf 现在会核对 ?v= 传来的 revision，
+      # 版本对不上就 409，不再让「打印的这版」和「阅卷坐标那版」悄悄分叉。
+      # 脚本自带一次性临时库，并证明同一秒内多次保存靠 updated_at 分不开、靠 revision 分得开。
+      - name: Answer card export revision gate (R45)
+        run: npm run verify:card-export-revision
+
+      # 上面锁的是生成物内容；这里再用 systemd 自己的解析器复核单元能否被接受。
+      # 运行器上既没有 projectx 账号也没有 /usr/bin/node，告警属预期，所以只作参考、不判失败。
+      - name: systemd-analyze verify (advisory)
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/px-unit
+          node -e "const p=require('./scripts/package-server-ubuntu.cjs');require('fs').writeFileSync('/tmp/px-unit/project-x-server.service',p.createSystemdUnit())"
+          systemd-analyze verify /tmp/px-unit/project-x-server.service || true
+          systemd-analyze security --offline --root=/ /tmp/px-unit/project-x-server.service || true
+
       - name: UCRT staging path regression
         run: npm run verify:stage-vc-runtime
 
   mariadb-test:
     name: MariaDB 10.11 Integration
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     services:
       mariadb:
         image: mariadb:10.11
@@ -106,8 +159,8 @@ jobs:
         run: npm install --no-save --ignore-scripts @rollup/rollup-linux-x64-gnu @esbuild/linux-x64
       - name: MariaDB integration tests
         run: npm run verify:mariadb
-      # 归档/分班关联与天梯排名都改的是 SQL，生产方言是 MariaDB，只在 SQLite 上跑等于
-      # 没验证。两个脚本各自要求「空的专用库」（verify:mariadb 已经在 projectx_ci 里
+      # 归档/分班关联、天梯排名与演示数据闸门改的都是 SQL，生产方言是 MariaDB，只在 SQLite 上跑等于
+      # 没验证。三个脚本各自要求「空的专用库」（verify:mariadb 已经在 projectx_ci 里
       # 留下建表与成绩数据，不能复用），故先用 root 建库并授权给 projectx_ci。
       - name: Create disposable databases for the MariaDB regressions
         env:
@@ -117,8 +170,17 @@ jobs:
           mysql -h 127.0.0.1 -u root -p"$MARIADB_ROOT_PASSWORD" <<'SQL'
           CREATE DATABASE IF NOT EXISTS projectx_class_archive_test CHARACTER SET utf8mb4;
           CREATE DATABASE IF NOT EXISTS projectx_ladder_test CHARACTER SET utf8mb4;
+          CREATE DATABASE IF NOT EXISTS projectx_demo_credentials_test CHARACTER SET utf8mb4;
+          CREATE DATABASE IF NOT EXISTS projectx_card_revision_test CHARACTER SET utf8mb4;
           GRANT ALL PRIVILEGES ON projectx_class_archive_test.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_ladder_test.* TO 'projectx_ci'@'%';
+          GRANT ALL PRIVILEGES ON projectx_demo_credentials_test.* TO 'projectx_ci'@'%';
+          GRANT ALL PRIVILEGES ON projectx_card_revision_test.* TO 'projectx_ci'@'%';
+
+          CREATE DATABASE IF NOT EXISTS projectx_exam_classes_test CHARACTER SET utf8mb4;
+          CREATE DATABASE IF NOT EXISTS projectx_migration_test CHARACTER SET utf8mb4;
+          GRANT ALL PRIVILEGES ON projectx_exam_classes_test.* TO 'projectx_ci'@'%';
+          GRANT ALL PRIVILEGES ON projectx_migration_test.* TO 'projectx_ci'@'%';
           FLUSH PRIVILEGES;
           SQL
       - name: Class archive MariaDB regression
@@ -129,11 +191,59 @@ jobs:
         env:
           PROJECTX_MARIADB_DATABASE: projectx_ladder_test
         run: npx tsx scripts/verify-ladder-students.ts --mariadb
+      # 演示数据的归属判据（is_demo 是 TINYINT）、buildInsertIgnore、IN 占位符与 COUNT 取整
+      # 都是方言敏感点，R33/R48 的闸门必须在 MariaDB 上同样成立。
+      - name: Demo credentials / import gates (R33/R48, MariaDB)
+        env:
+          PROJECTX_MARIADB_DATABASE: projectx_demo_credentials_test
+        run: npm run verify:demo-credentials:mariadb
+      # revision 自增走的是 SQL（revision = revision + 1）、updated_at 是 DATETIME（无小数位），
+      # 两处都是方言敏感点：MariaDB 上同样要证明秒级时间戳分不开同批保存、revision 分得开。
+      - name: Answer card export revision gate (R45, MariaDB)
+        env:
+          PROJECTX_MARIADB_DATABASE: projectx_card_revision_test
+        run: npm run verify:card-export-revision:mariadb
+
+      - name: Exam-time class membership regression (MariaDB)
+        env:
+          PROJECTX_MARIADB_DATABASE: projectx_exam_classes_test
+        run: npm run verify:exam-class-memberships:mariadb
+
+      - name: Rebuild SQLite module for migration regression
+        run: npm rebuild better-sqlite3
+      - name: SQLite to MariaDB migration regression
+        env:
+          PROJECTX_MARIADB_DATABASE: projectx_migration_test
+        run: npm run verify:mariadb-migration
+
+  llmclient-python-test:
+    name: LLM Sidecar (Python) Regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 边车回归必须真装依赖跑：`requirements.txt` 里的 PyMuPDF 是 R16 渲染隔离用例的前提，
+      # 缺它时那几条会自动 skip——「CI 全绿」就证明不了「解压炸弹页被拒绝」这类边界被验过。
+      - name: Install sidecar dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r llmclient/requirements.txt
+
+      - name: PDF render isolation regression (R16)
+        run: python llmclient/scripts/verify_pdf_render_isolation.py
+
+      - name: LLM usage accounting regression
+        run: python llmclient/scripts/verify_llm_usage.py
 
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [typecheck-and-test, mariadb-test]
+    needs: [typecheck-and-test, mariadb-test, llmclient-python-test]
     steps:
       - uses: actions/checkout@v4
 

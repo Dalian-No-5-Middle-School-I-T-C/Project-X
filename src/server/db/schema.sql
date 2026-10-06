@@ -148,6 +148,8 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     knowledge_points_text TEXT,                            -- v1.8.0: 知识点纯文本备份
     created_by       INTEGER REFERENCES users(id),
     is_demo          INTEGER NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示答题卡（clearDemoData 仅按此标记清理）
+    revision         INTEGER NOT NULL DEFAULT 0,  -- v59: 每次保存 +1（安全 R45）。updated_at 只有秒级精度，
+                                                  -- 同一秒内的两次保存无法区分，导出 PDF 需要单调版本号绑定快照
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -173,7 +175,7 @@ CREATE TABLE IF NOT EXISTS objective_blocks (
     question_start   INTEGER NOT NULL,
     question_count   INTEGER NOT NULL,
     option_count     INTEGER NOT NULL,
-    mode             TEXT NOT NULL,                -- single / multiple / indeterminate
+    mode             TEXT NOT NULL,                -- single / multiple / indefinite
     score_per_question REAL NOT NULL,
     density          TEXT DEFAULT 'compact',       -- loose / normal / compact / dense
     option_layout    TEXT DEFAULT 'horizontal',    -- horizontal / vertical
@@ -710,6 +712,16 @@ CREATE TABLE IF NOT EXISTS exam_participants (
 );
 CREATE INDEX IF NOT EXISTS idx_ep_student ON exam_participants(student_id);
 
+-- class_id=0 is an explicit unknown-class snapshot, not a classes foreign key.
+CREATE TABLE IF NOT EXISTS exam_class_memberships (
+  exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+  student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  class_id INTEGER NOT NULL,
+  joined_at DATETIME,
+  PRIMARY KEY (exam_id, student_id, class_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ecm_student ON exam_class_memberships(student_id, exam_id);
+
 CREATE INDEX IF NOT EXISTS idx_users_student_number ON users(student_number);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role_id);
 CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
@@ -760,7 +772,7 @@ INSERT OR IGNORE INTO roles (id, name, display_name, permissions) VALUES
     (3, 'student', '学生', '["score:read"]');
 
 -- 注意：默认管理员账号由应用程序在启动时通过 ensureDefaultAdmin() 自动创建
--- 账号: admin / 固定初始密码 admin123（同步写入数据库旁的 bootstrap-admin.txt；首次登录强制改密）
+-- 账号: admin / 一次性随机口令（写在数据库同目录 bootstrap-admin.txt；首次登录强制改密，改密后文件即删除）
 
 -- 插入默认数据保留策略
 INSERT OR IGNORE INTO data_retention_policies (id, name, retain_days, auto_archive, auto_delete) VALUES

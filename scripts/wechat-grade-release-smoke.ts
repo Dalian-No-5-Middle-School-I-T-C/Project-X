@@ -86,7 +86,12 @@ function installFetchStub(): void {
 }
 
 function jsonResponse(body: unknown): Response {
-  return { ok: true, status: 200, json: async () => body } as unknown as Response;
+  // 必须是真 `Response`：出站封装会把「响应头 + 正文」一起在闸门与截止时间内读完，
+  // 用 `{ ok, json() }` 这种缺体的替身会绕过正文路径，等于没测到 PR #312 CR15 修的那段。
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 async function main(): Promise<void> {
@@ -227,7 +232,10 @@ async function main(): Promise<void> {
 
   tokenResult = null;
   nextScenario([{ errcode: 43101 }, { errcode: 43101 }]); // 两人都没订阅额度
+  const beforeRejected = calls.send;
   await notifyGradeReleaseSubscribers(examPublished);
+  ok(calls.send - beforeRejected === 2,
+    "上一次 access_token 单飞失败后，后续推送照常发出（失败留在在途 promise 上会永久卡住全校推送）");
   ok((await db.get<{ c: number }>("SELECT COUNT(*) AS c FROM wechat_grade_release_notifications WHERE exam_id = ?", examPublished))?.c === 0,
     "全员 43101（零送达）→ 释放去重位");
 

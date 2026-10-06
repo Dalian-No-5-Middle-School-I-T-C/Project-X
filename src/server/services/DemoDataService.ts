@@ -8,18 +8,30 @@
  * 假定调用方已完成 initializeDatabase()；SQLite / MariaDB 双方言兼容（DbAdapter）。
  */
 
-import { buildInsertIgnore, getMysqlDb, hashPassword, type DbAdapter } from "../db";
+import { buildInsertIgnore, generateBootstrapAdminPassword, getMysqlDb, hashPassword, type DbAdapter } from "../db";
+import { encryptField } from "../lib/field-crypto";
 import { UserRepository } from "../repositories/UserRepository";
 import { ClassRepository } from "../repositories/ClassRepository";
 import { ROLE_IDS } from "../auth/permissions";
 import { seedFillBlankDemo } from "./demo/fillBlankDemo";
 import { seedEssayDemo } from "./demo/essayDemo";
 import { seedReviewDemo } from "./demo/reviewDemo";
+import {
+  DEMO_REVIEW_CARD_ID,
+  DEMO_VERTICAL_OPTIONS_CARD_ID,
+  isDemoCard,
+} from "./demo/demoCardIds";
+import {
+  DEMO_IMPORT_PRODUCTION_CONFIRM,
+  DEMO_TEACHER_USERNAMES,
+  LEGACY_PUBLIC_DEMO_TEACHER_PASSWORD,
+  demoFixedCredentialsEnabled,
+  demoProductionImportAllowedByEnv,
+} from "./demo/demoDataPolicy";
 import { getWeekWindow, WeeklyAuditService } from "./WeeklyAuditService";
 import { removeExamAnswerKeyFiles } from "../../apps/answer-card/server/helpers";
 
 const DEMO_PREFIX = "演示-";
-const CARD_ID_PREFIX = "88000";
 const STUDENT_NUMBERS = [
   "20260101", "20260102", "20260103", "20260104",
   "20260105", "20260106", "20260107", "20260108",
@@ -190,6 +202,20 @@ const QUIZ_PREV1_EXAMS: QuizExamSpec[] = [
 const QUIZ_PENDING_EXAM: QuizExamSpec = {
   cardId: "89000009", name: `${DEMO_PREFIX}晨测数学(待出分)`, subject: "数学", weekDay: 0, weekOffset: 0
 };
+
+/**
+ * 本次导入会写入的全部演示答题卡 ID（安全 R48 的比对清单）。
+ * 由上面的种子规格推导，不另写一份常量——加一场演示考试就自动进清单，不会漏比。
+ */
+export const DEMO_CARD_IDS: readonly string[] = Object.freeze([
+  ...WEEK_EXAMS.map((spec) => spec.cardId),
+  PRIOR_MATH_EXAM.cardId,
+  OUTSIDE_WEEK_EXAM.cardId,
+  ...QUIZ_PREV2_EXAMS.map((spec) => spec.cardId),
+  ...QUIZ_PREV1_EXAMS.map((spec) => spec.cardId),
+  QUIZ_PENDING_EXAM.cardId,
+  DEMO_REVIEW_CARD_ID,
+]);
 
 /** 晨测演示知识点（5 题 × 科目）——周报「薄弱题 Top5」可展示知识点名称 */
 const QUIZ_KNOWLEDGE: Record<string, string[]> = {
@@ -407,10 +433,13 @@ const DEMO_ANSWER_KEYS: Record<number, string[]> = { 1: ["A"], 2: ["B"], 3: ["C"
 const DEMO_OPTIONS = ["A", "B", "C", "D"];
 // 答题卡设计器修复：演示-数学卡客观题块按新规范使用「选项竖排」（A/B/C/D 在题号下方纵向堆叠），
 // 其余演示卡保持默认横向——与 manifest 「选项竖排」用例一一对应。
-const DEMO_VERTICAL_OPTIONS_CARD_ID = "88000002";
+// 卡号本身取自 demo/demoCardIds.ts（与安全 R48 的比对清单同一来源）。
 
 /** 为演示答题卡补一个客观题块 + 标准答案，使选项分析端点能解析题元数据 */
 async function ensureDemoObjectiveBlock(db: DbAdapter, cardId: string, optionLayout: "horizontal" | "vertical" | "vertical-options" = "horizontal"): Promise<void> {
+  // 安全 R48：标准答案是写死的 A/B/C/D/A。挂到真实卡上＝按演示答案给真实答卷判分，
+  // 所以这里再确认一次归属（导入前的整单比对是第一道，这里是第二道）。
+  if (!(await isDemoCard(db, cardId))) return;
   const blockId = `${cardId}-obj`;
   await db.run(
     buildInsertIgnore(db.dialect, "objective_blocks", [
@@ -466,6 +495,132 @@ export interface SeedDemoStats {
   studentsSkipped: number;
   exams: number;
   groups: number;
+  /**
+   * 安全 R33：本次导入生效的演示教师凭据。默认口令随机（每次导入都换发），
+   * 因此必须把它交回调用方展示一次；`fixed: true` 表示当前用的是公开文档里的固定口令
+   * （只在 `PROJECTX_DEMO_FIXED_CREDENTIALS` 显式打开时出现，调用方应据此加警告）。
+   */
+  teacherCredentials: Array<{ username: string; password: string; fixed: boolean }>;
+  /** 演示学生口令是否与学号相同（同上，只有固定凭据模式下才为 true）。 */
+  studentPasswordIsStudentNumber: boolean;
+}
+
+/** 安全 R33/R48：导入被拒时抛出的错误形状（路由据此映射状态码，前端据此决定是否二次确认）。 */
+export interface DemoImportRefusal extends Error {
+  status: number;
+  code: "DEMO_CARD_ID_CONFLICT" | "DEMO_TEACHER_USERNAME_TAKEN" | "DEMO_IMPORT_REQUIRES_CONFIRMATION";
+  /** 需要前端回传的确认串（仅 DEMO_IMPORT_REQUIRES_CONFIRMATION）。 */
+  confirm?: string;
+  cardIds?: string[];
+  usernames?: string[];
+  realExams?: number;
+  realUsers?: number;
+}
+
+function refuse(
+  code: DemoImportRefusal["code"],
+  message: string,
+  extra: Partial<DemoImportRefusal> = {}
+): DemoImportRefusal {
+  return Object.assign(new Error(message), { status: 409, code, ...extra }) as DemoImportRefusal;
+}
+
+/**
+ * 安全 R48：演示卡号撞上真实答题卡时，**整单拒绝且不留任何改动**。
+ *
+ * 建卡用的是 `INSERT ... IGNORE`，撞号不会报错：演示考试会挂到那张真实卡上，
+ * 随后 `ensureDemoObjectiveBlock` 给它补一个标准答案为 A/B/C/D/A 的 5 题选择题块、
+ * 作文/填空块与 `assets/<cardId>/` 下的演示图片——真实考试从此按演示答案判分。
+ * 真实卡号由 `generateCardId()` 产出，落在 10000000–99999999，演示卡号就在同一区间内。
+ */
+async function assertDemoCardIdsFree(db: DbAdapter): Promise<void> {
+  const placeholders = DEMO_CARD_IDS.map(() => "?").join(",");
+  const rows = await db.all(
+    `SELECT id, title FROM answer_cards WHERE is_demo = 0 AND id IN (${placeholders})`,
+    ...DEMO_CARD_IDS
+  ) as Array<{ id: string; title: string | null }>;
+  if (rows.length === 0) return;
+  const detail = rows.map((r) => `${r.id}（${r.title ?? "无标题"}）`).join("、");
+  throw refuse(
+    "DEMO_CARD_ID_CONFLICT",
+    `演示答题卡号与 ${rows.length} 张真实答题卡冲突：${detail}。`
+    + `为避免把演示题块与演示答案写进真实卡（那会让真实考试按演示答案判分），本次导入已整单取消，未改动任何数据。`
+    + `请先删除或重建这些真实答题卡（重建会拿到新卡号），再导入演示数据。`,
+    { cardIds: rows.map((r) => String(r.id)) }
+  );
+}
+
+/**
+ * 安全 R33 / 评审 P1：`demo-teacher` / `demo-teacher-2` 是演示账号的保留用户名，
+ * 但**同名且查不到业务关系，不是「这是演示账号」的证据**。
+ *
+ * 旧判据是「三条在用证据（真实班级任课 / 阅卷分配 / 创建过考试）任一命中才拒绝」。
+ * 于是一个真实教师只要刚导入、还没任课、还没被分配阅卷，就会被改口令、改角色、标成
+ * `is_demo = 1`——而 `clearDemoData` 正是按 `is_demo = 1` 删账号的：一次演示导入
+ * 把真实账号交到了清理程序手里，之后任何人点一次「清理演示数据」它就消失了。
+ *
+ * 现在只认**明确的演示归属**：`is_demo = 1` 才算演示账号。v1.9.8 起建号与打标在同一条
+ * INSERT 里完成，正常流程不会再产出 `is_demo = 0` 的演示教师，所以这个名字下的非演示
+ * 账号一律整单拒绝、零改动，由人来定性（改名、删除，或确认是历史残留后显式认领）。
+ * 判定仍在任何写入之前，拒绝时库里一个字节都没动。
+ */
+async function assertDemoTeacherUsernamesAvailable(db: DbAdapter): Promise<void> {
+  const taken: string[] = [];
+  const details: string[] = [];
+  for (const username of DEMO_TEACHER_USERNAMES) {
+    const row = await db.get(
+      "SELECT id, name, is_demo FROM users WHERE username = ?",
+      username
+    ) as { id: number; name: string; is_demo: number | null } | undefined;
+    if (!row || Number(row.is_demo) === 1) continue;
+    taken.push(username);
+    details.push(
+      `${username}（id=${row.id}，名称「${row.name}」）不是演示账号：`
+      + `确认是历史版本中断导入留下的残留时，可显式认领 `
+      + `"UPDATE users SET is_demo = 1 WHERE id = ${row.id}"；是真实账号请先改名或删除`
+    );
+  }
+  if (taken.length === 0) return;
+  throw refuse(
+    "DEMO_TEACHER_USERNAME_TAKEN",
+    `用户名 ${taken.join("、")} 被非演示账号占用（该用户名是演示账号保留名）。`
+    + `本次导入已整单取消，未改动任何数据。${details.join("；")}。`,
+    { usernames: taken }
+  );
+}
+
+/**
+ * 安全 R33：库里已有真实数据时，导入演示数据需要显式确认。
+ * 演示导入会写入 16 个演示账号与十几场考试，误点一次就得靠 clear-demo 收拾，
+ * 而 clear-demo 只认「演示-」前缀与 is_demo=1 —— 中间态最难还原。
+ */
+async function assertDemoImportConfirmed(db: DbAdapter, confirmed?: boolean): Promise<void> {
+  if (confirmed || demoProductionImportAllowedByEnv()) return;
+  const examRow = await db.get(
+    "SELECT COUNT(*) AS n FROM exams WHERE name NOT LIKE ?",
+    `${DEMO_PREFIX}%`
+  ) as { n: number };
+  const userRow = await db.get(
+    "SELECT COUNT(*) AS n FROM users WHERE is_demo = 0 AND role_id <> ?",
+    ROLE_IDS.ADMIN
+  ) as { n: number };
+  const realExams = Number(examRow?.n ?? 0);
+  const realUsers = Number(userRow?.n ?? 0);
+  if (realExams === 0 && realUsers === 0) return;
+  throw refuse(
+    "DEMO_IMPORT_REQUIRES_CONFIRMATION",
+    `当前库已有真实数据（${realExams} 场真实考试 / ${realUsers} 个真实账号）。`
+    + `演示数据会新增 16 个演示账号与十几场「演示-」前缀考试，且演示账号口令会写进本库。`
+    + `确认要在这样的库上导入请重试并带上确认串 ${DEMO_IMPORT_PRODUCTION_CONFIRM}。`,
+    { confirm: DEMO_IMPORT_PRODUCTION_CONFIRM, realExams, realUsers }
+  );
+}
+
+/** 导入前的一切「宁可不做也不做错」检查：任一条命中都必须在写入之前抛出。 */
+async function assertDemoImportAllowed(db: DbAdapter, options?: SeedDemoOptions): Promise<void> {
+  await assertDemoCardIdsFree(db);
+  await assertDemoTeacherUsernamesAvailable(db);
+  await assertDemoImportConfirmed(db, options?.confirmedProductionImport);
 }
 
 /**
@@ -515,12 +670,23 @@ async function seedWeeklyQuizDemo(
   return count;
 }
 
+export interface SeedDemoOptions {
+  /**
+   * 安全 R33：库里已有真实数据时的显式确认（前端二次确认后回传
+   * `DEMO_IMPORT_PRODUCTION_CONFIRM`）。未确认、且未设 `PROJECTX_DEMO_ALLOW_PRODUCTION_IMPORT`
+   * 时导入被拒——拒绝发生在任何写入之前。
+   */
+  confirmedProductionImport?: boolean;
+}
+
 /**
  * 幂等导入演示数据：先清理「演示-」前缀数据再重建。
  * 假定 DB 已初始化且 admin 用户已存在（服务端运行态天然满足；CLI 需先 ensureDefaultAdmin）。
  */
-export async function seedDemoData(): Promise<SeedDemoStats> {
+export async function seedDemoData(options: SeedDemoOptions = {}): Promise<SeedDemoStats> {
   const db = getMysqlDb();
+  // 安全 R33/R48：三道「宁可不做也不做错」的闸全部在写入之前判完，拒绝时库里一个字节都没动。
+  await assertDemoImportAllowed(db, options);
   await ensureCrossExamTables(db);
   const userRepo = new UserRepository();
   const classRepo = new ClassRepository();
@@ -530,11 +696,26 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   // v1.9.8: 年级/班级/演示教师在单个事务内以 INSERT 直写 is_demo=1，创建与打标原子完成。
   // 此前「先创建再 UPDATE 打标」存在窗口：若进程在两步之间崩溃，demo-teacher 以 is_demo=0
   // 残留（users.username UNIQUE），cleanup 按 is_demo=1 识别无法清理，下次导入必撞 UNIQUE。
-  // 修复：教师改用 INSERT OR IGNORE（与本文件其它 seed 一致）兜底该残留，导入不再 500；
-  // 教师 id 在下方按 username SELECT 取用（line 429-430），OR IGNORE 不会丢失引用。
-  // 注意：is_demo=0 的残留教师不会被 cleanup 清除（安全语义：不清真实数据），但沿用其 id
-  // 即可完成演示数据回填。bcrypt 哈希为异步，须在同步事务外预先计算。
-  const teacherPasswordHash = await hashPassword("teacher123");
+  // 评审 P1：这种残留**不再自动收编**。一个 is_demo=0 的同名账号无法自证是演示残留，
+  // 收编＝改口令、改角色、打上 is_demo=1，随后就落进 clearDemoData 的删除集合——
+  // 那正是「演示导入删掉真实账号」的成因。归属判定统一由
+  // assertDemoTeacherUsernamesAvailable 在任何写入之前完成：只认 is_demo=1，其余整单拒绝，
+  // 历史残留由人显式认领（错误信息里给出该账号 id 与认领语句）。
+  // 口令一律随机换发：公开文档里的 teacher123 在升级后当场失效。
+  // teacher_role 不能留空：routes/scores.ts 的兼容分支把「未配置 teacher_role 的教师」当全校可见，
+  // 那等于把全校成绩挂在一个口令公开的账号上。
+  const fixedCredentials = demoFixedCredentialsEnabled();
+  const teacherSpecs = [
+    { username: "demo-teacher", name: "演示教师" },
+    { username: "demo-teacher-2", name: "演示教师乙" },
+  ].map((spec) => ({
+    ...spec,
+    password: fixedCredentials ? LEGACY_PUBLIC_DEMO_TEACHER_PASSWORD : generateBootstrapAdminPassword(),
+  }));
+  // bcrypt 哈希为异步，须在同步事务外预先计算。
+  const teacherRows = await Promise.all(
+    teacherSpecs.map(async (spec) => ({ ...spec, hash: await hashPassword(spec.password) }))
+  );
   const created = await db.transaction(async (tx) => {
     const gradeResult = await tx.run("INSERT INTO grades (name, sort_order, is_demo) VALUES (?, ?, 1)", "高一(演示)", 1);
     const gradeId = Number(gradeResult.lastInsertRowid);
@@ -542,23 +723,41 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
     const class1Id = Number(class1Result.lastInsertRowid);
     const class2Result = await tx.run("INSERT INTO classes (grade_id, name, sort_order, is_demo) VALUES (?, ?, ?, 1)", gradeId, "演示2班", 2);
     const class2Id = Number(class2Result.lastInsertRowid);
-    const insertTeacher = buildInsertIgnore(tx.dialect, "users", ["username", "password_hash", "name", "role_id", "subject", "is_demo"]);
-    await tx.run(insertTeacher, "demo-teacher", teacherPasswordHash, "演示教师", ROLE_IDS.TEACHER, "数学", 1);
-    await tx.run(insertTeacher, "demo-teacher-2", teacherPasswordHash, "演示教师乙", ROLE_IDS.TEACHER, "数学", 1);
-    return { gradeId, class1Id, class2Id };
+    const teacherIds: number[] = [];
+    for (const row of teacherRows) {
+      const info = await tx.run(
+        `INSERT INTO users (username, password_hash, name, role_id, subject, teacher_role, initial_password, is_demo)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+        row.username, row.hash, row.name, ROLE_IDS.TEACHER, "数学", "subject_teacher", encryptField(row.password)
+      );
+      teacherIds.push(Number(info.lastInsertRowid));
+    }
+    return { gradeId, class1Id, class2Id, teacherIds };
   });
   const grade = { id: created.gradeId };
   const class1 = { id: created.class1Id };
   const class2 = { id: created.class2Id };
 
-  // 显式传 password=学号：batchCreateStudents 默认生成随机不可推导密码，
-  // 此处覆盖为可读值以便 verify.ts 能用学号登录验证 学生端功能（与 manifest 一致）。
+  // 安全 R33：把演示教师任课到两个演示班级。teacher_role='subject_teacher' 的可见班级来自
+  // teacher_classes，不挂就等于什么都看不到（演示面板空转）；挂演示班级则可见范围恰好圈在演示数据里。
+  const insertTeacherClass = buildInsertIgnore(db.dialect, "teacher_classes", ["teacher_id", "class_id", "subject"]);
+  for (const teacherId of created.teacherIds) {
+    await db.run(insertTeacherClass, teacherId, class1.id, "数学");
+    await db.run(insertTeacherClass, teacherId, class2.id, "数学");
+  }
+  console.log(
+    `[seed] 演示教师: ${teacherSpecs.map((t) => t.username).join("、")}`
+    + `（口令${fixedCredentials ? "为固定值，仅限隔离测试环境" : "已随机换发，随导入结果返回一次"}，范围=任课教师/演示班级）`
+  );
+
+  // 安全 R33：演示学生口令默认交给 batchCreateStudents 随机生成（并存进加密的 initial_password，
+  // 管理员可从既有账号导出里查回）；只有显式打开固定凭据开关时才回落到「口令=学号」。
   const batch = await userRepo.batchCreateStudents(
     STUDENT_NUMBERS.map((num, i) => ({
       username: num,
       name: STUDENT_NAMES[i],
       student_number: num,
-      password: num
+      ...(fixedCredentials ? { password: num } : {}),
     }))
   );
   console.log(`[seed] 学生: 新增 ${batch.created}，跳过 ${batch.skipped}`);
@@ -631,10 +830,11 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   examCount += await seedWeeklyQuizDemo(db, grade.id, studentIdByNumber);
 
   // 网阅打分面板 DEV 演示数据（v1.9.4 路径 B 测试入口）
-  const teacherRow = await db.get("SELECT id FROM users WHERE username = 'demo-teacher'") as { id: number } | undefined;
-  const teacher2Row = await db.get("SELECT id FROM users WHERE username = 'demo-teacher-2'") as { id: number } | undefined;
-  if (teacherRow) {
-    const reviewSeeded = await seedReviewDemo(db, grade, studentIdByNumber, teacherRow.id, teacher2Row?.id, STUDENT_NUMBERS);
+  // 教师 id 直接用建号事务的返回值：演示账号名是保留名，同名账号一律在写入前被拒绝，
+  // 这里的 id 必然来自本次新建的演示教师，不必再按用户名回查。
+  const [demoTeacherId, demoTeacher2Id] = created.teacherIds;
+  if (demoTeacherId) {
+    const reviewSeeded = await seedReviewDemo(db, grade, studentIdByNumber, demoTeacherId, demoTeacher2Id, STUDENT_NUMBERS);
     if (reviewSeeded) examCount += 1;
   }
 
@@ -674,6 +874,14 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
     studentsCreated: batch.created,
     studentsSkipped: batch.skipped,
     exams: examCount,
-    groups: 3
+    groups: 3,
+    // 安全 R33：口令只在导入结果里出现一次（不落日志），并同步写进加密的 initial_password，
+    // 管理员事后可用既有的账号导出查回，不必把公开口令写进文档。
+    teacherCredentials: teacherSpecs.map((spec) => ({
+      username: spec.username,
+      password: spec.password,
+      fixed: fixedCredentials,
+    })),
+    studentPasswordIsStudentNumber: fixedCredentials,
   };
 }

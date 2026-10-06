@@ -6,6 +6,7 @@
 #include <map>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -54,6 +55,14 @@ struct MarkerMatch {
 
 cv::Mat read_image(const std::filesystem::path& path);
 void write_image(const std::filesystem::path& path, const cv::Mat& image);
+
+/**
+ * 安全 R19：不解码，只从文件头读出图片自己声明的宽高（PNG/JPEG/BMP/TIFF/WebP，
+ * 与上传侧 validate-upload.ts 认可的格式一致）。判不出来时返回 {0,0}，
+ * 此时仍由 read_image 解码后的像素校验兜底。
+ */
+std::pair<long long, long long> probe_declared_image_size(const std::vector<unsigned char>& buffer);
+
 cv::Mat preprocess_for_markers(const cv::Mat& image);
 std::pair<std::vector<MarkerCandidate>, cv::Mat> find_marker_candidates(const cv::Mat& image);
 std::vector<MarkerMatch> match_markers(std::vector<MarkerCandidate>& candidates, const cv::Size& image_size, const LayoutPage& layout_page, int output_dpi);

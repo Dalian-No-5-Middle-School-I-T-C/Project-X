@@ -72,6 +72,31 @@ export interface DbAdapter {
   exec(sql: string): Promise<void>;
   /** 事务 */
   transaction<T>(fn: (db: DbAdapter) => Promise<T>): Promise<T>;
+  /**
+   * 持锁事务（PR #312 评审 B2）：在数据库命名锁的持有期内跑完整个事务，
+   * 并且**一定在 COMMIT/ROLLBACK 之后**才释放锁。
+   *
+   * 为什么不能写成「`transaction(tx => withLock(tx, fn))`」：MariaDB 的 `RELEASE_LOCK`
+   * 会在那一刻立刻执行，而 COMMIT 要等回调返回之后才发生。于是等待锁的第二个进程
+   * 在拿到锁的一瞬间读到的仍是**上一笔尚未提交**的快照——跨进程的互斥形同没有加。
+   * 把锁、事务、连接三者绑在同一条专用连接上，才能保证「放锁时结果已对外可见」。
+   *
+   * `NamedLockTimeoutError` 表示没能在 `waitMs` 内拿到锁（锁本身被别人持着）。
+   * SQLite 侧没有命名锁：单连接 + 进程内串行链已经互斥，退化为普通事务。
+   */
+  transactionWithNamedLock<T>(lockName: string, waitMs: number, fn: (tx: DbAdapter) => Promise<T>): Promise<T>;
+}
+
+/** 没能在预算内取得数据库命名锁（调用方据此给出「可重试」的语义，而不是 500）。 */
+export class NamedLockTimeoutError extends Error {
+  readonly lockName: string;
+  readonly waitMs: number;
+  constructor(lockName: string, waitMs: number) {
+    super(`等待数据库锁 ${lockName} 超过 ${waitMs} 毫秒`);
+    this.name = "NamedLockTimeoutError";
+    this.lockName = lockName;
+    this.waitMs = waitMs;
+  }
 }
 
 // ── 跨方言 SQL 工具函数 ──────────────────────────────
@@ -193,6 +218,14 @@ class SqliteAdapter implements DbAdapter {
       throw e;
     }
   }
+
+  /**
+   * SQLite 没有 `GET_LOCK`：本适配器只有一条 better-sqlite3 连接，进程内互斥由调用方
+   * 的串行链保证，跨进程互斥由文件锁保证，因此持锁事务就是普通事务（锁名被忽略）。
+   */
+  async transactionWithNamedLock<T>(_lockName: string, _waitMs: number, fn: (tx: DbAdapter) => Promise<T>): Promise<T> {
+    return this.transaction(fn);
+  }
 }
 
 // ── MariaDB Adapter ────────────────────────────────────
@@ -310,6 +343,52 @@ class MariadbAdapter implements DbAdapter {
       await conn.rollback();
       throw e;
     } finally {
+      conn.release();
+    }
+  }
+
+  /**
+   * 持锁事务：GET_LOCK → BEGIN → fn → COMMIT → **然后** RELEASE_LOCK，全程同一条连接。
+   *
+   * 与 `transaction()` 一样要求「在池级适配器上调用」（`this.executor` 是 Pool）。
+   * 只借用**一条**连接而不是「锁连接 + 事务连接」两条：等锁期间就把连接占住，
+   * 一旦并发请求数接近 connectionLimit，会出现「所有人都攥着等锁的连接、
+   * 持锁者的事务连接取不到」这种自锁死锁。单连接下每个等待者最多占 1 条，
+   * 与事务本身占用的条数相同，不引入新的池压力。
+   */
+  async transactionWithNamedLock<T>(lockName: string, waitMs: number, fn: (tx: DbAdapter) => Promise<T>): Promise<T> {
+    const conn = await (this.executor as Pool).getConnection();
+    const txAdapter = new MariadbAdapter(conn);
+    let acquired = false;
+    let inTx = false;
+    try {
+      // GET_LOCK 的等待参数单位是**秒**，档位按毫秒交付（与其它 PROJECTX_* 时间口径一致）。
+      // 直接把 2000 传进去等于等 2000 秒：并发一挤就是几十分钟挂住请求并占满连接池。
+      const waitSeconds = Math.max(1, Math.round(waitMs / 1000));
+      const got = await txAdapter.get<{ locked: number | string | null }>(
+        "SELECT GET_LOCK(?, ?) AS locked", lockName, waitSeconds
+      );
+      acquired = Number(got?.locked ?? 0) === 1;
+      if (!acquired) throw new NamedLockTimeoutError(lockName, waitMs);
+      await conn.beginTransaction();
+      inTx = true;
+      const result = await fn(txAdapter);
+      await conn.commit();
+      inTx = false;
+      return result;
+    } catch (e) {
+      if (inTx) await conn.rollback();
+      throw e;
+    } finally {
+      // 只有真正取到过锁才释放：`RELEASE_LOCK` 对不属于自己的锁是无声的 NULL，
+      // 但更要紧的是别在超时路径上把别人的锁放掉。
+      if (acquired) {
+        try {
+          await txAdapter.get("SELECT RELEASE_LOCK(?) AS released", lockName);
+        } catch (err) {
+          console.warn(`[MariaDB] RELEASE_LOCK(${lockName}) 失败（连接归还后由服务端自动释放）:`, (err as Error)?.message);
+        }
+      }
       conn.release();
     }
   }
@@ -1045,6 +1124,25 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
   // 两条在读关联变成一条）。归班歧义由读取侧「在读优先 → joined_at 最新 →
   // class_id 最大」口径消解（AnalysisRepository 的 CURRENT_CLASS_* 与
   // DISPLAY_CLASS_ORDER）；显式调班走 moveStudent 只移除原班关联。留注释占号。
+  const examClassMembershipsSQL = `CREATE TABLE IF NOT EXISTS exam_class_memberships (
+      exam_id INT NOT NULL, student_id INT NOT NULL, class_id INT NOT NULL,
+      joined_at DATETIME,
+      PRIMARY KEY (exam_id, student_id, class_id),
+      INDEX idx_ecm_student (student_id, exam_id),
+      FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+      FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
+  mariadbMigrations.push({ version: 59, name: "exam-class-memberships", sqls: [examClassMembershipsSQL] });
+
+  // v60: 答题卡保存计数器（与 SQLite v60 对齐，安全 R45）。导出 PDF 要把打印件与阅卷坐标布局
+  // 绑到同一次保存上；updated_at 是秒级精度、且 PUT 返回的 updatedAt 来自 normalizeCard 的
+  // new Date()（与库里 CURRENT_TIMESTAMP 写的值并不相等），两者都不能当版本令牌，故加单调递增列。
+  mariadbMigrations.push({ version: 60, name: "answer-card-revision", sqls: [
+    "ALTER TABLE answer_cards ADD COLUMN revision INT NOT NULL DEFAULT 0",
+    // PR #312 previously used v59 for revision; recover its missing snapshot table too.
+    examClassMembershipsSQL,
+  ] });
+
   for (const m of mariadbMigrations) {
     if (applied.has(m.version)) continue;
     for (const sql of m.sqls) {

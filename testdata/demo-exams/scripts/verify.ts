@@ -17,6 +17,18 @@ import path from "node:path";
 const BASE = process.env.PROJECTX_API_BASE ?? "http://127.0.0.1:5174";
 const DEMO_ADMIN_PASSWORD = "Admin@Demo2026";
 
+/**
+ * 安全 R33：演示账号口令默认**每次导入随机换发**，而本脚本是按 `manifest.json` 的固定口令做登录断言的，
+ * 因此它要求被测库由 `testdata/demo-exams/scripts/seed.ts` 导入（该脚本会显式打开
+ * `PROJECTX_DEMO_FIXED_CREDENTIALS=1`）。若被测库走的是前端「导入演示数据」，请用下面两个环境变量把
+ * 实际口令传进来（教师口令在导入响应里只显示一次，也可从管理员「导出账密」查回），否则登录断言会失败。
+ */
+const DEMO_TEACHER_PASSWORD = process.env.PROJECTX_DEMO_TEACHER_PASSWORD ?? "teacher123";
+const DEMO_STUDENT_PASSWORD = process.env.PROJECTX_DEMO_STUDENT_PASSWORD ?? "20260102";
+const FIXED_CREDENTIAL_HINT =
+  "（安全 R33 起演示口令随机换发；请用 testdata/demo-exams/scripts/seed.ts 重新导入，"
+  + "或用 PROJECTX_DEMO_TEACHER_PASSWORD / PROJECTX_DEMO_STUDENT_PASSWORD 传入实际口令）";
+
 // #185 起管理员为随机一次性密码，写入数据库旁的 bootstrap-admin.txt；优先读取它
 function resolveBootstrapFile(): string {
   const dbPath = process.env.PROJECTX_DB_PATH
@@ -28,7 +40,10 @@ function resolveBootstrapFile(): string {
 function readAdminPassword(): string {
   const file = resolveBootstrapFile();
   if (existsSync(file)) return readFileSync(file, "utf8").trim();
-  return "admin123";
+  // R01 起管理员引导口令是随机一次性口令，只存在于引导文件里；没有固定兜底值可用。
+  throw new Error(
+    `找不到管理员引导口令文件：${file}。请确认服务已启动过（会自动生成），或用 PROJECTX_DB_PATH 指向被测部署的数据目录。`
+  );
 }
 
 function writeAdminPassword(pw: string): void {
@@ -136,9 +151,9 @@ async function main(): Promise<void> {
   ok(Boolean(saved), "跨考已存组存在");
   ok((saved?.examIds?.length ?? 0) === 6, `已存组含 6 场 (实际 ${saved?.examIds?.length ?? 0})`);
 
-  // 学生登录：seed 后密码=学号
-  const stuLogin = await login("20260102", "20260102");
-  ok(Boolean(stuLogin.token), `学生登录 (20260102)`);
+  // 学生登录：测试数据包口径下密码=学号（可用 PROJECTX_DEMO_STUDENT_PASSWORD 覆盖）
+  const stuLogin = await login("20260102", DEMO_STUDENT_PASSWORD);
+  ok(Boolean(stuLogin.token), `学生登录 (20260102)${stuLogin.token ? "" : " " + FIXED_CREDENTIAL_HINT}`);
   if (stuLogin.token) {
     const stuHeaders = { Authorization: `Bearer ${stuLogin.token}` };
     const scores = await fetch(`${BASE}/api/scores/me`, { headers: stuHeaders }).then((r) => r.json());
@@ -161,8 +176,8 @@ async function main(): Promise<void> {
   const reviewExam = Array.isArray(exams) ? exams.find((e: { name: string }) => e.name === "演示-网阅测试") : undefined;
   ok(Boolean(reviewExam), "网阅考试 演示-网阅测试 存在");
   if (reviewExam) {
-    const teacherLogin = await login("demo-teacher", "teacher123");
-    ok(Boolean(teacherLogin.token), `网阅教师登录 (demo-teacher)`);
+    const teacherLogin = await login("demo-teacher", DEMO_TEACHER_PASSWORD);
+    ok(Boolean(teacherLogin.token), `网阅教师登录 (demo-teacher)${teacherLogin.token ? "" : " " + FIXED_CREDENTIAL_HINT}`);
     if (teacherLogin.token) {
       const tHeaders = { Authorization: `Bearer ${teacherLogin.token}` };
       // 教师视角：列自己待阅考试（响应为 { ok, data: [...] }）

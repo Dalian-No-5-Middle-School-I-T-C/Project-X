@@ -1,10 +1,12 @@
 /**
  * 考试参与者快照：显式名单优先，否则按班级/年级冻结名册。
- * 名单用于核对录入学生身份和展示缺考/未出分学生。
- * 公布允许部分学生先出分，不要求名单齐全或已设置名单。
+ * 名单用于核对录入学生身份、展示缺考/未出分学生，并作为发布完整性校验的应考集合。
+ * 公布口径（#248 P1-1/P1-2）：应考集合 ⊆ 已评分集合，缺任何一名应考学生不得公布；
+ * 缺考学生由教师从显式应考名单中剔除后再公布。
  */
 import type { DbAdapter } from "../db";
 import { ROLE_IDS } from "../auth/permissions";
+import { captureExamClasses } from "./examClassMemberships";
 
 export type ParticipantSource = "roster" | "explicit";
 
@@ -52,6 +54,81 @@ export async function searchStudentsForExam(
     ROLE_IDS.STUDENT, `${escaped}%`, `%${escaped}%`, ...(scoped ? classIds! : [])
   ) as Array<{ id: number; name: string; student_number: string | null }>;
   return rows.map((r) => ({ id: r.id, name: r.name, student_number: r.student_number }));
+}
+
+/**
+ * 显式应考名单写入前的范围校验（安全 R29）。
+ *
+ * 显式名单是**权威应考名单**：写入即决定谁能参加这场考试并出成绩。此前 PUT 只确认目标 ID
+ * 是学生账号，教师可把任意年级/班级的学生塞进自己的考试（既越权建立名单，也借名单读到
+ * 范围外学生的姓名与考号）。现在要求同时满足两条：
+ * 1. 学生属于考试的应考范围——班级考试看该班名册，年级考试看该年级任一名册；
+ *    无范围的历史考试不做考试侧收敛；
+ * 2. 学生在调用者可访问的班级内——`accessibleClassIds` 为 null（管理员 / 学年主任 /
+ *    未配置 teacher_role 的旧部署教师）时不叠加此约束，`[]` 时一律视为越权。
+ *
+ * PR #312 CR10：两条判定都建立在**当前** `class_students` 关系上，而调班/升级会把这层关系
+ * 改掉。已冻结进 `exam_participants` 的学生是这场曾经的历史事实，若仍按现班级判定就会被判越权，
+ * 于是「把缺考者从应考名单里剔除」这条唯一正当出路被拦死（公布完整性又要求先剔除，见
+ * examPublication），正常流程反而走不通。现在**冻结名单内的已有成员一律放行**，
+ * 收敛只作用于本次新加入的 ID——R29 拦的是「把人塞进名单」，不是「保留名单里已有的人」，
+ * 因此越权面没有放宽。
+ *
+ * 返回越权（含名册缺失、无法判定归属）的学生 ID 列表。
+ */
+export async function findStudentsOutsideParticipantScope(
+  db: DbAdapter,
+  examId: number,
+  exam: { class_id: number | null; grade_id: number | null },
+  studentIds: number[],
+  accessibleClassIds: number[] | null
+): Promise<number[]> {
+  if (studentIds.length === 0) return [];
+  const placeholders = studentIds.map(() => "?").join(",");
+  // 本场已冻结/已显式写入的应考成员（历史事实，不随调班改变）
+  let frozen = new Set<number>();
+  try {
+    const frozenRows = await db.all<{ student_id: number }>(
+      "SELECT student_id FROM exam_participants WHERE exam_id = ?",
+      examId
+    ) as Array<{ student_id: number }>;
+    frozen = new Set(frozenRows.map((r) => Number(r.student_id)));
+  } catch {
+    frozen = new Set(); // 判定表缺失（极老存量库）→ 不因此放宽，也不阻断
+  }
+  const inExamScope = new Set<number>(frozen);
+  if (exam.class_id != null) {
+    const rows = await db.all(
+      `SELECT cs.student_id FROM class_students cs
+       WHERE cs.class_id = ? AND cs.student_id IN (${placeholders})`,
+      exam.class_id, ...studentIds
+    ) as Array<{ student_id: number }>;
+    for (const r of rows) inExamScope.add(Number(r.student_id));
+  } else if (exam.grade_id != null) {
+    const rows = await db.all(
+      `SELECT cs.student_id FROM class_students cs
+       JOIN classes c ON c.id = cs.class_id
+       WHERE c.grade_id = ? AND cs.student_id IN (${placeholders})`,
+      exam.grade_id, ...studentIds
+    ) as Array<{ student_id: number }>;
+    for (const r of rows) inExamScope.add(Number(r.student_id));
+  } else {
+    for (const id of studentIds) inExamScope.add(id);
+  }
+  const outside = studentIds.filter((id) => !inExamScope.has(id));
+  if (accessibleClassIds === null) return outside;
+  // 调用者没有任何可访问班级：只剩「本场冻结成员」这一条出路（frozen ⊆ inExamScope，
+  // 所以 outside 里的都不可能是冻结成员，这样筛等价于「非冻结一律拒绝」）
+  if (accessibleClassIds.length === 0) return studentIds.filter((id) => !frozen.has(id));
+  const callerPlaceholders = accessibleClassIds.map(() => "?").join(",");
+  const rows = await db.all(
+    `SELECT cs.student_id FROM class_students cs
+     WHERE cs.student_id IN (${placeholders}) AND cs.class_id IN (${callerPlaceholders})`,
+    ...studentIds, ...accessibleClassIds
+  ) as Array<{ student_id: number }>;
+  const accessible = new Set(rows.map((r) => Number(r.student_id)));
+  const notAccessible = studentIds.filter((id) => !accessible.has(id) && !frozen.has(id));
+  return [...new Set([...outside, ...notAccessible])];
 }
 
 /** 读取考试应考名单（含学生学号/姓名），按 source 优先返回：显式名单 → 名册快照 */
@@ -163,6 +240,7 @@ export async function setExplicitParticipants(
     const insertSQL = "INSERT INTO exam_participants (exam_id, student_id, source) VALUES (?, ?, 'explicit')";
     for (const sid of uniq) {
       await tx.run(insertSQL, examId, sid);
+      await captureExamClasses(tx, examId, sid);
     }
     return uniq.length;
   });
@@ -180,6 +258,29 @@ export async function hasExplicitParticipants(db: DbAdapter, examId: number): Pr
     examId
   ) as { ok: number } | undefined;
   return Boolean(row);
+}
+
+/** Call within the transaction that changes the student's class memberships.
+ * Preserve scoped rosters, including absent students, before they lose a link. */
+export async function preserveStudentExamHistory(db: DbAdapter, studentId: number): Promise<void> {
+  await db.run("UPDATE users SET name = name WHERE id = ?", studentId);
+  const scoped = await db.all<{ id: number }>(`SELECT DISTINCT e.id FROM exams e
+    JOIN class_students cs ON cs.student_id = ? JOIN classes c ON c.id = cs.class_id
+    WHERE (e.class_id = c.id OR (e.class_id IS NULL AND e.grade_id = c.grade_id))
+      AND NOT EXISTS (SELECT 1 FROM exam_participants ep_frozen WHERE ep_frozen.exam_id = e.id)
+      AND (e.status <> 'draft'
+        OR EXISTS (SELECT 1 FROM exam_participants ep WHERE ep.exam_id = e.id)
+        OR EXISTS (SELECT 1 FROM student_scores ss WHERE ss.exam_id = e.id))
+    ORDER BY e.id`, studentId);
+  for (const exam of scoped) await ensureExamParticipants(db, exam.id);
+  const exams = await db.all<{ exam_id: number }>(
+    `SELECT ss.exam_id FROM student_scores ss WHERE ss.student_id = ?
+       AND NOT EXISTS (SELECT 1 FROM exam_class_memberships snap WHERE snap.exam_id = ss.exam_id AND snap.student_id = ss.student_id)
+     UNION SELECT ep.exam_id FROM exam_participants ep WHERE ep.student_id = ?
+       AND NOT EXISTS (SELECT 1 FROM exam_class_memberships snap WHERE snap.exam_id = ep.exam_id AND snap.student_id = ep.student_id)
+     ORDER BY exam_id`,
+    studentId, studentId);
+  for (const exam of exams) await captureExamClasses(db, exam.exam_id, studentId);
 }
 
 export async function isExamParticipant(db: DbAdapter, examId: number, studentId: number): Promise<boolean> {

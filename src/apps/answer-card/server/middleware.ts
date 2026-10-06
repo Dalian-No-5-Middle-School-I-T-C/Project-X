@@ -262,6 +262,47 @@ export function makeViewPermissionGate(flag: ViewPermissionFlag) {
 }
 
 /**
+ * #246 权限矩阵查看标志校验（班级级 · 安全 R21）：花名册没有对应考试，
+ * 因此 `grade_id` 维度从 `classes` 表解析；`subject` 维度以调用者自身任教学科比对
+ * （班级表无学科列，花名册本身也不是按学科切分的数据）。
+ * 矩阵表不存在或教师无任何记录 → 兼容放行。
+ */
+export async function hasClassViewPermission(
+  user: express.Request["user"],
+  classId: number,
+  flag: ViewPermissionFlag
+): Promise<boolean> {
+  if (!user) return false;
+  if (user.role_name === "admin") return true;
+  if (user.role_name === "teacher" && user.teacher_role === "grade_leader") return true;
+  if (user.role_name !== "teacher") return false;
+  const teacherId = (user as { id?: number }).id;
+  if (!teacherId) return false;
+  const db = getMysqlDb();
+  if (!(await hasTable(db, "teacher_permissions"))) return true;
+  const rows = await db.all<{
+    grade_id: number | null;
+    subject: string | null;
+    class_id: number | null;
+    flag: number;
+  }>(
+    `SELECT grade_id, subject, class_id, ${flag} AS flag FROM teacher_permissions
+     WHERE teacher_id = ? AND block_id IS NULL`,
+    teacherId
+  );
+  if (rows.length === 0) return true; // 未配置矩阵 → 兼容放行
+  const cls = await db.get<{ grade_id: number | null }>("SELECT grade_id FROM classes WHERE id = ?", classId);
+  if (!cls) return false;
+  const callerSubject = (user as { subject?: string | null }).subject ?? null;
+  return rows.some((r) =>
+    r.flag === 1 &&
+    (r.grade_id == null || r.grade_id === cls.grade_id) &&
+    (r.subject == null || callerSubject == null || r.subject === callerSubject) &&
+    (r.class_id == null || r.class_id === classId)
+  );
+}
+
+/**
  * #246 权限矩阵查看标志校验（大考组级）：组内全部非软删除成员考试的维度
  * 都被某条 flag=1 的授权行覆盖时才允许（与 canReadGroup 的「全部成员可见」
  * 模型一致）；矩阵表不存在或教师无任何记录 → 兼容放行；组内无有效成员 → 放行
@@ -484,6 +525,239 @@ export async function validateExamIdsAccess(req: express.Request, res: express.R
   if (denied.length === 0) return true;
   res.status(403).json({ message: "权限不足：考试组包含不可访问的考试" });
   return false;
+}
+
+// ── 权限位门（兼容免鉴权模式） ────────────────────────────
+
+/**
+ * 与 `makeGate` 同口径的权限位门（安全 R09）：`requirePermission` 在无用户时一律 401，
+ * 会把「未开启强制鉴权」的旧部署直接挡在门外；这里无用户时按 `authEnforced` 决定放行或 401，
+ * 有用户时按角色权限表判定。
+ */
+export function requirePermissionCompat(permission: string) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction): void => {
+    if (!req.user) {
+      if (authEnforced) {
+        res.status(401).json({ message: "未提供认证令牌" });
+        return;
+      }
+      next();
+      return;
+    }
+    if (!roleHasPermission(req.user.role_id, permission)) {
+      res.status(403).json({ message: `权限不足：缺少 ${permission}` });
+      return;
+    }
+    next();
+  };
+}
+
+/**
+ * 教师与某场考试是否有组织归属关系（安全 R09 的晨测旁路收口）。
+ *
+ * `getVisibleExamIds` 对 `exam_mode='quiz'` 的晨测做**全量可见**放大（#178 双模式设计），
+ * 于是「可见」被 `requireExamAccess` 当成「可写」：任意教师都能改任何一场晨测的整卷成绩与答案。
+ * 写侧不再继承这个放大——要么管理员/学年主任，要么本人创建，要么确实任教/担任该班班主任，
+ * 年级级联考（无班级）则要求教师在该年级有对应学科的任课关系。
+ */
+export async function hasExamOrganizationAffinity(
+  user: express.Request["user"],
+  examId: number
+): Promise<boolean> {
+  if (!user) return false;
+  if (isPrivilegedGrader(user)) return true;
+  const teacherId = (user as { id?: number }).id;
+  if (!teacherId) return false;
+  const db = getMysqlDb();
+  const exam = await db.get<{ created_by: number | null; class_id: number | null; grade_id: number | null; subject: string | null }>(
+    "SELECT created_by, class_id, grade_id, subject FROM exams WHERE id = ?",
+    examId
+  );
+  if (!exam) return false;
+  if (exam.created_by != null && Number(exam.created_by) === Number(teacherId)) return true;
+  if (exam.class_id != null) {
+    const link = await db.get(
+      `SELECT 1 FROM teacher_classes
+       WHERE teacher_id = ? AND class_id = ?
+         AND (is_head_teacher = 1 OR subject IS NULL OR subject = ?)
+       LIMIT 1`,
+      teacherId, exam.class_id, exam.subject
+    );
+    return !!link;
+  }
+  if (exam.grade_id != null) {
+    const link = await db.get(
+      `SELECT 1 FROM teacher_classes tc
+       JOIN classes c ON c.id = tc.class_id
+       WHERE tc.teacher_id = ? AND c.grade_id = ?
+         AND (tc.is_head_teacher = 1 OR tc.subject IS NULL OR tc.subject = ?)
+       LIMIT 1`,
+      teacherId, exam.grade_id, exam.subject
+    );
+    return !!link;
+  }
+  return false;
+}
+
+/**
+ * 教师能否把考试**落到**某个年级/班级/学科（安全 R18）。
+ *
+ * `getVisibleExamIds` 的可见集合包含 `e.created_by = 本人`，因此「能创建/改范围」就等于
+ * 「能拿到那个组织的名单与成绩」：教师只要把考试指到任意 grade_id / class_id，
+ * 那一场考试的年级/班级数据就随创建者身份变成其可见范围。这里把目标组织收敛到
+ * 调用者真正任教的范围；`null` 表示沿用考试当前值。
+ *
+ * 兼容口径与 `getAccessibleClassIds` 一致：管理员/学年主任不限；
+ * 未设置 `teacher_role` 的普通教师（旧部署单师自用）不限——否则存量部署将无法建考。
+ */
+export async function canManageExamOrganization(
+  user: express.Request["user"],
+  target: { gradeId?: number | null; classId?: number | null; subject?: string | null }
+): Promise<boolean> {
+  if (!user) return true; // 免鉴权模式：无身份可判，交由上层网关
+  if (user.role_name === "admin") return true;
+  if (user.role_name !== "teacher") return false;
+  if (user.teacher_role === "grade_leader") return true;
+  if (!user.teacher_role) return true; // 旧部署兼容：未配置精细角色的教师
+  const teacherId = (user as { id?: number }).id;
+  if (!teacherId) return false;
+  const db = getMysqlDb();
+  const classId = target.classId == null ? null : Number(target.classId);
+  const gradeId = target.gradeId == null ? null : Number(target.gradeId);
+  const subject = target.subject == null ? null : String(target.subject);
+  if (classId != null) {
+    const link = await db.get(
+      `SELECT 1 FROM teacher_classes
+       WHERE teacher_id = ? AND class_id = ?
+         AND (is_head_teacher = 1 OR subject IS NULL OR subject = ?)
+       LIMIT 1`,
+      teacherId, classId, subject
+    );
+    return !!link;
+  }
+  if (gradeId != null) {
+    // 年级级考试（联考）：教师需在该年级任教学科，或担任该年级内任一班的班主任
+    const link = await db.get(
+      `SELECT 1 FROM teacher_classes tc
+       JOIN classes c ON c.id = tc.class_id
+       WHERE tc.teacher_id = ? AND c.grade_id = ?
+         AND (tc.is_head_teacher = 1 OR tc.subject IS NULL OR tc.subject = ?)
+       LIMIT 1`,
+      teacherId, gradeId, subject
+    );
+    return !!link;
+  }
+  return false; // 既无班级也无年级：无法判定归属，按拒绝处理（创建端另有 SCOPE_REQUIRED 校验）
+}
+
+/**
+ * 判断某教师当前的整卷写授权是否来自「未配置任何权限矩阵」的兼容回退。
+ * 是 → 调用方需要再验组织归属；否（特权阅卷人 / 已配置矩阵 / 已获整卷分配）→ 由
+ * `isTeacherPermittedForWholeExam` 的显式判定负责，不再追加约束。
+ */
+async function reliesOnLegacyGradingFallback(
+  user: express.Request["user"],
+  examId: number
+): Promise<boolean> {
+  if (!user || isPrivilegedGrader(user)) return false;
+  const teacherId = (user as { id?: number }).id;
+  if (!teacherId) return false;
+  const db = getMysqlDb();
+  if (!(await hasTable(db, "teacher_permissions"))) return true;
+  const anyPermRow = await db.get("SELECT 1 FROM teacher_permissions WHERE teacher_id = ? LIMIT 1", teacherId);
+  if (anyPermRow) return false;
+  const wholeAssignment = await db.get(
+    "SELECT 1 FROM review_assignments WHERE exam_id = ? AND teacher_id = ? AND block_id IS NULL LIMIT 1",
+    examId, teacherId
+  );
+  return !wholeAssignment;
+}
+
+/**
+ * 整卷写权限门（安全 R09）：改分、改答案、重算这类一次性改写整卷数据的入口，
+ * 不再继承「可见即可写」。判定顺序：
+ * 1. 只有管理员/教师可写（学生与其它角色直接拒绝，避免 `isTeacherPermittedForWholeExam`
+ *    在无矩阵时被兼容回退放行）；
+ * 2. 权限矩阵/题块分配决定整卷写授权（`isTeacherPermittedForWholeExam`，仅接受 block_id 为空的授权）；
+ * 3. 授权若来自「完全没配矩阵」的兼容回退，再要求组织归属，堵住晨测全量可见带来的任意教师改写。
+ */
+export async function requireWholeExamGradingAccess(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+): Promise<void> {
+  if (!req.user) {
+    if (authEnforced) {
+      res.status(401).json({ message: "未提供认证令牌" });
+      return;
+    }
+    next();
+    return;
+  }
+  const roleName = req.user.role_name;
+  if (roleName === "student") {
+    // 学生维持 requireExamAccess 的既有语义（仅 GET / 提交本场 AI 分析），
+    // 整卷写操作一律拒绝——不再依赖「学生没有权限矩阵行」这种巧合放行。
+    const isAiAnalysisPost = req.method === "POST" && String(req.originalUrl ?? "").includes("/ai-analysis");
+    if (req.method === "GET" || isAiAnalysisPost) {
+      next();
+      return;
+    }
+    res.status(403).json({ message: "权限不足" });
+    return;
+  }
+  if (roleName !== "teacher" && roleName !== "admin") {
+    res.status(403).json({ message: "权限不足：整卷成绩与答案仅限教师或管理员修改" });
+    return;
+  }
+  const examId = Number(req.params.examId);
+  if (!Number.isFinite(examId) || examId <= 0) {
+    res.status(400).json({ message: "缺少 examId" });
+    return;
+  }
+  // 考试创建者对本场考试保留整卷写权限：`isTeacherPermittedForWholeExam` 一旦看到
+  // 该考试配了题块分配，就只承认「不限题块」的显式授权，创建者若只被分到某个题块
+  // 将无法再修正任何成绩（verify-security-critical 的改分撤回基线即此形态）。
+  // 创建关系由 `exams.created_by` 直接判定，不经可见性放大，因此不会重开 R09 的口子。
+  const examRow = await getMysqlDb().get<{ created_by: number | null }>(
+    "SELECT created_by FROM exams WHERE id = ?",
+    examId
+  );
+  if (examRow?.created_by != null && Number(examRow.created_by) === Number((req.user as { id?: number }).id)) {
+    next();
+    return;
+  }
+  if (!(await isTeacherPermittedForWholeExam(req.user, examId, "can_grade"))) {
+    res.status(403).json({ message: "权限不足：改分/改答案需要本场考试的整卷阅卷授权（单题块授权请走题块网阅）" });
+    return;
+  }
+  if ((await reliesOnLegacyGradingFallback(req.user, examId)) && !(await hasExamOrganizationAffinity(req.user, examId))) {
+    res.status(403).json({ message: "权限不足：你与这场考试没有组织归属关系（未创建、未任教、也非该班班主任），不能修改整卷成绩或答案" });
+    return;
+  }
+  next();
+}
+
+/**
+ * 整卷**读取**授权判定（安全 R08）：仅有题块级阅卷/权限配置的教师不应读到全卷成绩详情、
+ * 总分与班级均分。返回其受限于的题块集合，null 表示不受题块限制。
+ *
+ * PR #312 CR11：`getPermittedBlocks` 的空集意味着「这场**没有任何阅卷授权**」，
+ * 而 R08 要拦的是「有阅卷授权、但只到题块粒度」的账号。把两者混为一谈，
+ * 只读教师（can_view_scores=1 / can_view_students=1 / can_grade=0、无阅卷分配）
+ * 就会因为「没有写权限」被判定成「没有读权限」而 403——读与写是两条独立的授权：
+ * 整卷读取由前面的 `requireExamAccess` + 两个查看门决定（查看门要求 block_id IS NULL
+ * 的整卷权限行），这道门只在「确实被限制在若干题块上」时才生效。
+ */
+export async function isBlockedToOwnGradingBlocks(
+  user: express.Request["user"],
+  examId: number
+): Promise<string[] | null> {
+  if (!user || user.role_name !== "teacher") return null;
+  if (isPrivilegedGrader(user)) return null;
+  const blocks = await getPermittedBlocks(user, examId);
+  if (blocks !== null && blocks.length === 0) return null;
+  return blocks;
 }
 
 // ── Grading scope (题块级正向授权 · 防 IDOR) ──────────────

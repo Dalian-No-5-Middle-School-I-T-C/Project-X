@@ -11,7 +11,8 @@ import { getMysqlDb, buildUpsertSQL } from "../../../../server/db";
 import { AnalysisRepository } from "../../../../server/repositories/AnalysisRepository";
 import { KnowledgePointRepository } from "../../../../server/repositories/KnowledgePointRepository";
 import { analysisCache } from "../../../../server/services/analysisCache";
-import { createAiAnalysisJob, enqueueAiAnalysisJob, getAiAnalysisJobWithCreator, getLatestAiAnalysisJob } from "../../../../server/services/aiAnalysisJobs";
+import { enqueueAiAnalysisJob, getAiAnalysisJobWithCreator, getLatestAiAnalysisJob, reserveAiAnalysisJob } from "../../../../server/services/aiAnalysisJobs";
+// 安全（R11 + PR #312 CR9）：AI 计费与并发配额——判定与占位在同一临界区内完成
 import { suggestForCard } from "../../../../server/services/knowledgeSuggester";
 import { ApiError } from "../../../../server/api-error";
 import { numberArray, optionalPositiveNumber } from "../helpers";
@@ -131,9 +132,18 @@ async function getActiveAiProviders(userId: number) {
   return providerRows.map(mapAiProvider);
 }
 
+/**
+ * 按 ID 取「当前用户可用且已启用」的 AI 服务商（安全 R24）。
+ *
+ * 列表接口一直按 `is_active = 1` 过滤，但执行侧此前只看归属不看启用位，
+ * 于是管理员把某服务商停用后，任何仍持有其 ID 的调用（收藏的旧请求、
+ * 浏览器里没刷新的下拉、直接 POST）都照样能把 api_key 打出去——
+ * 「停用」在最贵的那条链路上完全无效。现在执行侧与列表侧同口径，
+ * 未启用/不存在一律返回 null，由调用方给出 409。
+ */
 async function getAiProviderForUser(providerId: number, userId: number) {
   const db = getMysqlDb();
-  return (await db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND (user_id = ? OR is_system = 1)", providerId, userId)) ?? null;
+  return (await db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND (user_id = ? OR is_system = 1) AND is_active = 1", providerId, userId)) ?? null;
 }
 
 // ── Trends ──────────────────────────────────────────────
@@ -765,18 +775,25 @@ router.post("/exams/:examId/ai-analysis", requireExamAccess, requireViewCharts, 
     let providerOverride: Record<string, unknown> | undefined;
     if (providerId && Number.isFinite(providerId)) {
       const prov = await getAiProviderForUser(providerId, req.user!.id);
-      if (prov) {
-        providerOverride = {
-          provider_type: prov.provider_type,
-          base_url: prov.base_url,
-          // api_key 已加密存储（F-7），透传前解密
-          api_key: decryptField(prov.api_key) ?? ""
-        };
+      if (!prov) {
+        // 安全 R24：显式点了服务商却解析不到（不存在 / 不属于本人 / 已被停用）时直接拒绝，
+        // 不再静默回落到内置默认服务商——那样会把「停用」变成「换个模型继续跑」。
+        res.status(409).json({ code: ApiError.INVALID_VALUE, message: "AI 服务商不可用（不存在或已被停用），请重新选择" });
+        return;
       }
+      providerOverride = {
+        provider_type: prov.provider_type,
+        base_url: prov.base_url,
+        // api_key 已加密存储（F-7），透传前解密
+        api_key: decryptField(prov.api_key) ?? ""
+      };
     }
 
-    // 建议 5：先建任务立即返回 jobId，后台串行队列执行（不再同步阻塞最长 120s）
-    const jobId = await createAiAnalysisJob({
+    // 安全（R11 + PR #312 CR9）：配额判定与任务行写入必须落在同一个临界区里。
+    // 分成「先查配额、再建任务」两步时，一波并发请求读到的是同一份旧账本，
+    // 上限 8 的名额能放进 11 个任务。超限时事务回滚、不落任务行，抛出的 AiQuotaError
+    // 由下面的 catch → next(error) 交给全局错误处理，渲染为 429 + Retry-After。
+    const jobId = await reserveAiAnalysisJob({
       examId,
       classId,
       model: typeof req.body?.model === "string" ? req.body.model : undefined,

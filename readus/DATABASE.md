@@ -439,6 +439,12 @@ data/answer-card/recognition/crops/{cardId}/{sourceType}_{sourceRecordId}/
 | `student_count` | 分配给该教师的份数 |
 | `assigned_student_ids` | JSON 数组，具体分配的学生 ID |
 
+> 这份切片是**读取边界**而不只是排产提示：领取候选、切块清单、阅卷溯源、切块原图四条路径共用
+> 同一个谓词（`ReviewPoolService.getAssignedStudentIdSet` + `buildAssignedSliceClause`），
+> 口径都是「本人切片 ∪ 已离开首评队列（`review_round > 0` 或 `pending`/`disputed`）∪ 本人已领取」。
+> 只收口「领不到」而放开清单/溯源，等于让越权教师换一条路径拿到同一批学生的 ID 与学号
+> （PR #312 评审 B1 修的就是这半）。`assigned_student_ids` 全空的历史部署按旧口径放行，不做兼容期惩罚。
+
 **`review_sessions`** — 断点续批会话。教师退出后下次继续。
 | 字段 | 说明 |
 |---|---|

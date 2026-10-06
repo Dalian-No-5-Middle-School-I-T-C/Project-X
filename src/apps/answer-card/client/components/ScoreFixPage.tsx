@@ -3,6 +3,7 @@ import { ArrowLeft, ImageOff, Pencil, Save, Search } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { cn } from "../lib/utils";
 import { isManuallyModified } from "../util/score";
+import { isMultiSelectMode, objectiveModeLabel } from "../../../../shared/objectiveMode";
 import {
   Button,
   EmptyState,
@@ -482,7 +483,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
                               >
                                 <TableCell className="font-medium tabular-nums">{qs.question_number}</TableCell>
                                 <TableCell className="text-xs text-muted-foreground">
-                                  {isObj ? (qs.mode === "multiple" ? "多选" : qs.mode === "indeterminate" ? "不定" : "单选") : "解答"}
+                                  {isObj ? objectiveModeLabel(qs.mode) : "解答"}
                                 </TableCell>
                                 <TableCell numeric>
                                   <span
@@ -576,7 +577,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
                 <div className="flex flex-col gap-3">
                   {cardAnswers.filter((q) => q.questionType === "objective").map((q) => {
                     const cur = getAnswerEdit(q.questionNumber, q.answerKey ?? []);
-                    const isMulti = q.mode === "multiple" || q.mode === "indeterminate";
+                    const isMulti = isMultiSelectMode(q.mode);
                     const changed = String(q.questionNumber) in answerEdits;
                     return (
                       <div

@@ -12,6 +12,7 @@ import express from "express";
 import type { Request, Response } from "express";
 import { authMiddleware } from "../middleware/auth";
 import { getMysqlDb } from "../db";
+import { examClassJoin, examClassId, examClassJoinedAt } from "../services/examClassMemberships";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
 import { LadderService } from "../services/LadderService";
 import { competitionRank, takeLadder } from "../../shared/ranking";
@@ -49,6 +50,35 @@ export async function checkLadderPublished(req: Request, res: Response, examIds:
   if (published.length === examIds.length) return true;
   res.status(403).json({ message: "所选考试中存在尚未公布成绩的考试" });
   return false;
+}
+
+/**
+ * 安全 R13 + PR #312 CR7：学生只能读**本人参与**的跨考/大考天梯。
+ *
+ * `getVisibleExamIds` 对学生返回 null（不受限，学生端靠 `requireExamAccess` 逐场判定），
+ * 于是组天梯与跨考天梯这两条不走 `requireExamAccess` 的聚合入口只被「全部已公布」挡住：
+ * 学生可枚举 `groupId` / 拼 `examIds`，读到其它班级、其它年级考场的整张榜单
+ * （姓名、学号、班级、逐科分数），并把自己的名次算进不属于他的群体。
+ * 判定口径：显式/名册应考名单内，或在该集合中已有成绩记录（存量库未冻结快照时仍能查分）。
+ *
+ * CR7 补的两处不足：
+ * ① 原判定是「参与过其中**任意一场**就放行」，混合选择里未参加的那些场照样整榜返回——
+ *    现在返回的是**参与子集**，调用方按子集聚合，一场都没参加才 403；
+ * ② 日期模式（week/month）没有调用者给定的考试集合，原先直接放行——
+ *    由 `getCrossExamTotal` 的 `participatedByStudentId` 在集合解析后收敛，同一口径。
+ * 返回 null 表示已写 403。
+ */
+export async function checkLadderParticipation(req: Request, res: Response, examIds: number[]): Promise<number[] | null> {
+  if (!req.user || req.user.role_name !== "student") return examIds;
+  if (examIds.length === 0) return examIds; // 无明确集合（按日期范围聚合）时由 repo 的参与收敛接管
+  try {
+    const participated = await new AnalysisRepository().filterParticipatedExamIds(examIds, req.user.id);
+    if (participated.length > 0) return participated;
+  } catch {
+    return examIds; // 判定表缺失（极老的存量库）→ 不因新门而中断查分
+  }
+  res.status(403).json({ message: "权限不足：你未参加该范围内的任何考试" });
+  return null;
 }
 
 // ── GET /api/ladder/config ──
@@ -176,6 +206,10 @@ router.get("/exam-groups/:groupId", async (req: Request, res: Response) => {
     if (!(await validateExamIdsAccess(req, res, memberIds))) return;
     // PR #256：组内任一成员考试未公布，学生不可经组天梯取分（教师端不受限）
     if (!(await checkLadderPublished(req, res, memberIds))) return;
+    // 安全 R13 + PR #312 CR7：学生不仅须「参与过组内某场」，还只按本人参与的那几场聚合，
+    // 否则混合选择（组里 5 场他只考了 3 场）会把未参加那 2 场的整榜姓名/学号/分数一起读到。
+    const memberScopeIds = await checkLadderParticipation(req, res, memberIds);
+    if (!memberScopeIds) return;
 
     const allScores = await db.all<{
       student_id: number;
@@ -194,12 +228,14 @@ router.get("/exam-groups/:groupId", async (req: Request, res: Response) => {
                 g.name as grade_name
          FROM student_scores ss
          JOIN users u ON u.id = ss.student_id
-         LEFT JOIN class_students cs ON cs.student_id = ss.student_id
-         LEFT JOIN classes c ON c.id = cs.class_id
+         ${examClassJoin("ss.student_id", "ss.exam_id")}
+         LEFT JOIN classes c ON c.id = ${examClassId()}
          LEFT JOIN grades g ON g.id = c.grade_id
-         WHERE ss.exam_id IN (${memberIds.map(() => "?").join(",")})`,
-      ...memberIds,
+         WHERE ss.exam_id IN (${memberScopeIds.map(() => "?").join(",")}) ORDER BY (c.id IS NOT NULL AND c.archived_at IS NULL AND g.archived_at IS NULL) DESC, ${examClassJoinedAt()} DESC, c.id DESC`,
+      ...memberScopeIds,
     );
+
+    allScores.sort((a, b) => memberIds.indexOf(a.exam_id) - memberIds.indexOf(b.exam_id));
 
     const studentMap = new Map<
       number,
@@ -241,6 +277,7 @@ router.get("/exam-groups/:groupId", async (req: Request, res: Response) => {
         studentMap.set(s.student_id, entry);
       }
       const member = members.find((m) => m.exam_id === s.exam_id);
+      if (entry.subjects.some(subject => subject.examId === s.exam_id)) continue;
       const subjectName = member?.subject || `科目${s.exam_id}`;
       entry.totalRaw += s.total_score;
       entry.totalAssigned += s.assigned_score ?? s.total_score;
@@ -349,11 +386,18 @@ router.get("/cross-exam", async (req: Request, res: Response) => {
       requestedExamIds = group.examIds;
     }
     if (requestedExamIds.length > 0 && !(await validateExamIdsAccess(req, res, requestedExamIds))) return;
+    // 安全 R13 + PR #312 CR7：`selected` / `group` 两种模式带明确考试集合，学生一场都没参加过才 403；
+    // 参加了一部分时，未参加的那些场不得进榜单（聚合集合在下面的 repo 里按同口径收敛）。
+    if (requestedExamIds.length > 0 && !(await checkLadderParticipation(req, res, requestedExamIds))) return;
 
     // PR #256：学生端跨考天梯仅聚合已公布考试（教师/管理员不受限）
+    const isStudentCaller = req.user?.role_name === "student";
     const crossExamData = await analysisRepo.getCrossExamTotal(request, {
       visibleExamIds: await getVisibleExamIds(req.user),
       onlyPublished: !(req.user && (req.user.role_name === "teacher" || req.user.role_name === "admin")),
+      // CR7：`week`/`month` 等日期模式的考试集合在 repo 内解析，路由拿不到，
+      // 原先「直接放行」使他能读到范围内任意考试的姓名、学号与分数——在此按参与子集聚合。
+      participatedByStudentId: isStudentCaller ? req.user?.id : undefined,
     });
 
     if (!crossExamData || crossExamData.rows.length === 0) {

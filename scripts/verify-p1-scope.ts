@@ -1,14 +1,14 @@
 /**
  * P1-2 应考范围/显式名单回归验证（临时 SQLite 库 + HTTP）：
  *  T1  创建考试缺范围 → 400 SCOPE_REQUIRED（强制应考范围）
- *  T2  无范围考试 + 1 条成绩 → publish 200
+ *  T2  无范围考试 + 1 条成绩 → publish 409【完整性校验】（无「仅校验非空」退路）
  *  T3  无范围考试 + 显式名单 2 人 + 2 条成绩 → publish 200
- *  T4  显式名单缺人 → publish 200
- *  T5  空班级考试 → publish 200（已有成绩）
- *  T6  批量公布含无范围考试 → 200
+ *  T4  显式名单缺人 → publish 409；剔除缺考者后 → 200
+ *  T5  空班级考试 + 成绩 → publish 409【名单为空】；该生入班后 → 200
+ *  T6  批量公布含无范围考试 → 409 整体拒绝，完整场次不被部分公布
  *  T7  PATCH 补设范围（无显式名单）→ 成功；此后按班级名册校验
  *  T8  PATCH 补设范围（已有显式名单）→ 409 EXPLICIT_LIST_CONFLICT
- *  T9  DELETE participants 清除显式名单 → 回落班级/年级校验
+ *  T9  DELETE participants 清除显式名单 → 回落班级名册：缺 20002 → 409；补齐 → 200
  *  T10 创建带范围 → 201 正常
  *
  * 用法: npx tsx scripts/verify-p1-scope.ts（须用 Node 24 运行 tsx）
@@ -125,13 +125,13 @@ async function main() {
     ok(r.status === 400 && (await r.json().catch(() => ({}))).code === "SCOPE_REQUIRED", `缺范围创建 → 400 SCOPE_REQUIRED (实际 ${r.status})`);
   }
 
-  // ── T2: 无范围考试 + 1 条成绩 → publish 200 ──
+  // ── T2: 无范围考试 + 1 条成绩 → 409（不再有「仅校验非空」退路）──
   {
-    console.log("\n[T2] 无范围已有成绩允许公布");
+    console.log("\n[T2] 无范围已有成绩拒绝公布");
     const examId = createExamDirect("T2-无范围", {});
     insertScore(examId, sids["20001"]);
     const r = await publish(base, headers, examId);
-    ok(r.status === 200, `无范围 + 1 条成绩 → 200 (实际 ${r.status})`);
+    ok(r.status === 409 && /完整性校验/.test(String(r.body?.message ?? "")), `无范围 + 1 条成绩 → 409 完整性校验 (实际 ${r.status})`);
   }
 
   // ── T3: 无范围考试 + 显式名单 2 人 + 2 条成绩 → publish 200 ──
@@ -149,9 +149,9 @@ async function main() {
     ok(r.status === 200, `显式名单全录 → publish 200 (实际 ${r.status})`);
   }
 
-  // ── T4: 显式名单缺人 → 200 ──
+  // ── T4: 显式名单缺人 → 409；剔除缺考者 → 200 ──
   {
-    console.log("\n[T4] 显式名单缺人允许公布");
+    console.log("\n[T4] 显式名单缺人拒绝公布");
     const examId = createExamDirect("T4-缺人", {});
     await fetch(`${base}/api/exams/${examId}/participants`, {
       method: "PUT", headers: { ...headers, "Content-Type": "application/json" },
@@ -160,21 +160,31 @@ async function main() {
     insertScore(examId, sids["20001"]);
     insertScore(examId, sids["20002"]);
     const r = await publish(base, headers, examId);
-    ok(r.status === 200, `显式名单缺 1 人 → 200 (实际 ${r.status})`);
+    ok(r.status === 409 && /不完整|缺/.test(String(r.body?.message ?? "")), `显式名单缺 1 人 → 409 (实际 ${r.status})`);
+    // 缺考学生按发布说明 §3.2 从应考名单剔除后可公布
+    await fetch(`${base}/api/exams/${examId}/participants`, {
+      method: "PUT", headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ studentNumbers: ["20001", "20002"] }),
+    });
+    const r2 = await publish(base, headers, examId);
+    ok(r2.status === 200, `剔除缺考者后 → 200 (实际 ${r2.status})`);
   }
 
-  // ── T5: 空班级已有成绩 → 200 ──
+  // ── T5: 空班级 → 409 名单为空；学生入班后 → 200 ──
   {
-    console.log("\n[T5] 空班级已有成绩允许公布");
+    console.log("\n[T5] 空班级拒绝公布");
     const examId = createExamDirect("T5-空班级", { classId: emptyClass });
     insertScore(examId, sids["20005"]);
     const r = await publish(base, headers, examId);
-    ok(r.status === 200, `空班级有成绩 → 200 (实际 ${r.status})`);
+    ok(r.status === 409 && /名单为空/.test(String(r.body?.message ?? "")), `空班级有成绩 → 409 (实际 ${r.status})`);
+    db.prepare("INSERT INTO class_students (class_id, student_id) VALUES (?, ?)").run(emptyClass, sids["20005"]);
+    const r2 = await publish(base, headers, examId);
+    ok(r2.status === 200, `学生入班后名册非空 → 200 (实际 ${r2.status})`);
   }
 
-  // ── T6: 批量公布含无范围考试 → 200 ──
+  // ── T6: 批量公布含无范围考试 → 整体 409，完整场次不被部分公布 ──
   {
-    console.log("\n[T6] 批量公布含无范围考试允许");
+    console.log("\n[T6] 批量公布含无范围考试拒绝");
     const goodId = createExamDirect("T6-正常", { classId: classA });
     insertScore(goodId, sids["20001"]);
     insertScore(goodId, sids["20002"]);
@@ -184,7 +194,9 @@ async function main() {
       method: "POST", headers: { ...headers, "Content-Type": "application/json" },
       body: JSON.stringify({ examIds: [goodId, badId] }),
     });
-    ok(r.status === 200, `批量含无范围 → 200 (实际 ${r.status})`);
+    ok(r.status === 409, `批量含无范围 → 409 (实际 ${r.status})`);
+    const good = db.prepare("SELECT score_published FROM exams WHERE id = ?").get(goodId) as { score_published: number };
+    ok(Number(good.score_published) !== 1, "批量整体拒绝：完整场次未被部分公布");
   }
 
   // ── T7: PATCH 补设范围（无显式名单）→ 成功 ──
@@ -236,9 +248,12 @@ async function main() {
     });
     await fetch(`${base}/api/exams/${examId}/participants`, { method: "DELETE", headers });
     insertScore(examId, sids["20001"]);
-    // 回落后仍核对班级 A 身份，但缺 20002 不阻塞公布。
+    // 回落后按班级 A 名册做集合校验：缺 20002 即拒绝公布。
     const r = await publish(base, headers, examId);
-    ok(r.status === 200, `清除显式名单后允许班级部分成绩公布 → 200 (实际 ${r.status})`);
+    ok(r.status === 409 && /不完整|缺/.test(String(r.body?.message ?? "")), `清除显式名单后回落名册，缺 20002 → 409 (实际 ${r.status})`);
+    insertScore(examId, sids["20002"]);
+    const r2 = await publish(base, headers, examId);
+    ok(r2.status === 200, `补齐名册后公布 → 200 (实际 ${r2.status})`);
   }
 
   // ── T10: 创建带范围 → 201 ──

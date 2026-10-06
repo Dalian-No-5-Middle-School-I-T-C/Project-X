@@ -111,8 +111,10 @@ async function main(): Promise<void> {
       "INSERT INTO users (username, password_hash, name, role_id, is_demo) VALUES (?, ?, ?, ?, 0)"
     ).run("real-teacher", "hash", "真实教师", realTeacherRoleId)
   ).lastInsertRowid;
-  // 2.6 真实答题卡（与演示 ID 88000001~88000009 重叠？—— 与演示 id 重叠会主键冲突，无法构造。
-  // 改为构造一张 is_demo=0 的卡片，验证清理 is_demo=1 的语句不波及它）
+  // 2.6 真实答题卡（is_demo=0）。真实卡号由 generateCardId() 产出，落在 10000000~99999999，
+  // 与固定演示卡号 88000001~88000009 同区间 —— 重叠不是主键冲突，而是 seed 的 INSERT IGNORE
+  // 会静默复用真实卡并写入演示题块（安全 R48）。演示导入现在会在动手前整体拒绝，
+  // 断言见 verify-demo-credentials.ts；这里用不重叠的卡号验证清理不波及真实卡。
   db.prepare(
     "INSERT INTO answer_cards (id, title, is_demo) VALUES (?, ?, 0)"
   ).run("99000001", "真实答题卡");
@@ -211,7 +213,9 @@ async function main(): Promise<void> {
     ).run("conflict-student", "hash", "真实学生乙", realRoleId, conflictNumber)
   ).lastInsertRowid;
 
-  const seedStats2 = await seedDemoData();
+  // 此脚本刻意插入了真实用户与真实卡，属于"库中已有真实数据"，
+  // 生产导入闸门会拒绝 —— 用二次确认令牌放行（该令牌本身在 verify-demo-credentials.ts 中断言）。
+  const seedStats2 = await seedDemoData({ confirmedProductionImport: true });
   ok(seedStats2.studentsSkipped === 1, `冲突学号被跳过（skipped=${seedStats2.studentsSkipped}）`);
   ok(seedStats2.studentsCreated === 15, `其余 15 名演示学生正常创建（实际 ${seedStats2.studentsCreated}）`);
 

@@ -251,8 +251,21 @@ export async function runOcrOnSession(
       await getMysqlDb().run("UPDATE twain_scan_records SET identity_json = ? WHERE id = ?", JSON.stringify(recognition.identity), record.id);
       const recognizedStudentId = retry?.studentId ?? (recognition.studentId?.status === "ok" ? recognition.studentId.value : null);
       if (retry?.studentId) applyScanStudentId(recognition, retry.studentId);
-      if (recognizedStudentId) {
+      // 安全 R34：兼容模式（无二维码）没有可校验页序的身份信息，分组完全依赖物理页序，
+      // 而学号填涂区只在布局第 1 页生成（layout.ts 只对 page 1 调 layoutStudentArea）。
+      // 若允许任意页把学号写进分组表，缺页/乱序/ADF 双进纸造成的错位就会让后一份答卷
+      // 静默继承前一名学生的学号。因此兼容模式下只有第 1 页能为本组定学号；
+      // 其它页即使读到了学号也只记在自己名下（进而在汇总时暴露为「学号不一致」），
+      // 人工订正（retry.studentId）不受此限。
+      const legacyIdentity = (session?.identity_mode ?? "strict") === "legacy";
+      const maySeedGroupStudentId = !legacyIdentity || layoutPage === 1 || Boolean(retry?.studentId);
+      if (recognizedStudentId && maySeedGroupStudentId) {
         studentIdsByGroup.set(groupIndex, recognizedStudentId);
+      } else if (recognizedStudentId && legacyIdentity) {
+        console.warn(
+          `[checkpoint] ocr session=${sessionId} record=${record.id} page=${record.page_num} side=${record.side} ` +
+            `第 ${layoutPage} 页读到学号 ${recognizedStudentId}，但兼容模式只认第 1 页的学号，未写入分组（疑似缺页/乱序/双进纸）`,
+        );
       }
       const inheritedStudentId = studentIdsByGroup.get(groupIndex) ?? null;
       const studentId = recognizedStudentId ?? inheritedStudentId;

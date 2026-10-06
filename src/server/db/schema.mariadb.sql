@@ -161,6 +161,7 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     knowledge_points_text TEXT,
     created_by       INT,
     is_demo          TINYINT NOT NULL DEFAULT 0,
+    revision         INT NOT NULL DEFAULT 0,   -- v59: 保存计数器，导出 PDF 用它绑定快照（安全 R45）
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (created_by) REFERENCES users(id)
@@ -758,6 +759,18 @@ CREATE TABLE IF NOT EXISTS exam_participants (
     FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX IF NOT EXISTS idx_ep_student ON exam_participants(student_id);
+
+-- class_id=0 records unknown membership; classes are archived, never cascaded here.
+CREATE TABLE IF NOT EXISTS exam_class_memberships (
+  exam_id INT NOT NULL,
+  student_id INT NOT NULL,
+  class_id INT NOT NULL,
+  joined_at DATETIME,
+  PRIMARY KEY (exam_id, student_id, class_id),
+  INDEX idx_ecm_student (student_id, exam_id),
+  FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+  FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ============================================================
 -- 索引

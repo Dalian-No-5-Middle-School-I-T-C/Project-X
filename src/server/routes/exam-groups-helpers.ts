@@ -53,9 +53,10 @@ export function memberMatchesTrack(trackType: string | null | undefined, track: 
   return track === "all" || tt === "common" || tt === track;
 }
 
+/** 按 ID 取「该用户可用且已启用」的服务商（安全 R24：停用即不可执行，与列表口径一致） */
 export async function getAiProviderForUser(providerId: number, userId: number): Promise<AiProviderRow | null> {
   const db = getMysqlDb();
-  return (await db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND (user_id = ? OR is_system = 1)", providerId, userId)) ?? null;
+  return (await db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND (user_id = ? OR is_system = 1) AND is_active = 1", providerId, userId)) ?? null;
 }
 
 export function requireGroupManager(req: Request, res: Response, next: NextFunction): void {
