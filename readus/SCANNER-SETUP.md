@@ -91,6 +91,7 @@
 
 ## 附：维护者打包备忘（开发者向）
 
+- macOS / Linux 使用 MinGW 交叉构建 Windows 10 32 位便携版：`npm run package:scanner:win32:cross`，依赖与验收范围见 [Windows32位扫描端交叉打包](Windows32位扫描端交叉打包.md)。
 - 打包命令：`npm run electron:msi:ia32`（MSI）/ `electron:pack:ia32`（目录）/ `electron:dist:ia32`（便携版）。脚本已自动串联：构建 → better-sqlite3 ia32 重编译 → sharp ia32 二进制补齐 → **VC++ 运行库落位** → electron-builder。
 - VC++ 运行库由 `scripts/stage-vc-runtime.cjs`（`npm run native:runtime[:ia32]`）从本机 VS 安装中提取，落地到 `resources/native/<arch>/`，随后由 `extraResources` 整目录带入安装包（app-local 部署，免管理员权限）。因此 `resources/native/win-ia32`、`resources/native/win-x64` 下的 `msvcp140*.dll` / `vcruntime140*.dll` / `concrt140.dll` **属于随包资产，必须提交到仓库**。
 - 打包机建议设置镜像变量加速下载：`ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`、`ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/`。

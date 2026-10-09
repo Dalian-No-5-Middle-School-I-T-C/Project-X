@@ -400,7 +400,7 @@ json build_questions(const std::vector<std::pair<ObjectiveOption, json>>& option
     json questions = json::array();
     for (auto& [question_number, options] : by_question) {
         std::sort(options.begin(), options.end(), [](const auto& left, const auto& right) {
-            return left.at("label").get<std::string>() < right.at("label").get<std::string>();
+            return left.at("label").template get<std::string>() < right.at("label").template get<std::string>();
         });
         const auto [selected, confidence, option_scores] = selected_options(options);
         questions.push_back({
