@@ -24,6 +24,7 @@
     "native:build:ia32": "scripts\\build-answer-card-recognizer.bat ia32 && scripts\\build-scanner-bridge.bat ia32",
     "native:build:mingw:ia32": "bash scripts/build-native-mingw.sh",
     "package:scanner:win32:cross": "node scripts/package-scanner-win32.cjs",
+    "package:scanner:win32:portable:cross": "node scripts/package-scanner-win32.cjs --portable",
     "native:runtime": "node scripts/stage-vc-runtime.cjs",
     "native:runtime:ia32": "node scripts/stage-vc-runtime.cjs ia32",
     "electron:dev": "npm run build:scanner:full && npm run native:rebuild:electron && electron .",
@@ -225,7 +226,7 @@
       "signAndEditExecutable": false,
       "target": [
         {
-          "target": "portable",
+          "target": "msi",
           "arch": [
             "x64"
           ]

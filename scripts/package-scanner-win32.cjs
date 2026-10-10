@@ -10,6 +10,7 @@ const { createRuntimePackageJson } = require("./package-server-ubuntu.cjs");
 const root = path.resolve(__dirname, "..");
 const appDir = path.join(root, "ignored", "scanner-package");
 const nativeDir = path.join(root, "ignored", "native-mingw", "stage", "win-ia32");
+const nativeComponents = ["answer-card-recognizer.exe", "scanner-bridge.exe", "TWAINDSM.dll"];
 const downloads = path.join(root, "ignored", "native-mingw", "downloads");
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const lock = JSON.parse(fs.readFileSync(path.join(root, "package-lock.json"), "utf8"));
@@ -19,7 +20,10 @@ const sqliteVersion = versionOf("better-sqlite3");
 const sharpVersion = versionOf("sharp");
 const abi = require("node-abi").getAbi(electronVersion, "electron");
 const prepared = process.argv.includes("--prepared");
-if (process.argv.slice(2).some((a) => a !== "--prepared")) throw new Error("Usage: node scripts/package-scanner-win32.cjs [--prepared]");
+const target = process.argv.includes("--portable") ? "portable" : "msi";
+const verifyMsi = process.argv.includes("--verify-msi");
+const prepareMsi = process.argv.includes("--prepare-msi");
+if (process.argv.slice(2).some((a) => !["--prepared", "--portable", "--verify-msi", "--prepare-msi"].includes(a)) || (verifyMsi && (prepared || prepareMsi || target === "portable")) || (prepareMsi && target === "portable")) throw new Error("Usage: node scripts/package-scanner-win32.cjs [--prepared] [--portable | --prepare-msi] | --verify-msi");
 process.env.ELECTRON_CACHE = path.join(root, ".electron-cache");
 process.env.ELECTRON_BUILDER_CACHE = path.join(root, ".electron-builder-cache");
 const env = { ...process.env, npm_config_cache: path.join(root, ".npm-cache") };
@@ -40,6 +44,38 @@ function walk(dir) {
     const f = path.join(dir, e.name);
     return e.isDirectory() ? walk(f) : e.isFile() ? [f] : [];
   });
+}
+async function verifyInstaller(artifact) {
+  const { getPath7za } = require("app-builder-lib/out/toolsets/7zip");
+  const sevenZip = await getPath7za();
+  const checkDir = fs.mkdtempSync(path.join(root, "ignored", "scanner-installer-check-"));
+  const extract = (file, dest) => execFileSync(sevenZip, ["x", "-y", "-bd", `-o${dest}`, file], { env, stdio: "pipe" });
+  try {
+    extract(artifact, checkDir);
+    const payload = path.join(checkDir, "payload");
+    if (target === "portable") {
+      const archive = walk(checkDir).find((file) => path.basename(file) === "app-32.7z");
+      if (!archive) throw new Error("Portable installer is missing app-32.7z");
+      extract(archive, payload);
+      for (const component of nativeComponents) {
+        const file = path.join(payload, "resources", "native", "win-ia32", component);
+        if (!fs.readFileSync(file).equals(fs.readFileSync(path.join(nativeDir, component)))) throw new Error(`Installer native component mismatch: ${component}`);
+      }
+    } else {
+      const cabinets = walk(checkDir).filter((file) => /\.cab$/i.test(file));
+      if (cabinets.length === 0) throw new Error("MSI is missing embedded cabinets");
+      for (const [index, cabinet] of cabinets.entries()) extract(cabinet, path.join(payload, String(index)));
+      const files = walk(payload);
+      for (const component of nativeComponents) {
+        const expected = fs.readFileSync(path.join(nativeDir, component));
+        // MSI cabinets use generated file IDs rather than installation paths.
+        if (!files.some((file) => fs.statSync(file).size === expected.length && fs.readFileSync(file).equals(expected))) throw new Error(`MSI is missing native component: ${component}`);
+      }
+    }
+    console.log(`Installer payload verified: ${nativeComponents.join(", ")}`);
+  } finally {
+    fs.rmSync(checkDir, { recursive: true, force: true });
+  }
 }
 function stripForeignPlatformPackages() {
   const modules = path.join(appDir, "node_modules");
@@ -73,6 +109,12 @@ function stageSqlitePrebuild() {
   run("tar", ["-xzf", archive, "-C", path.join(appDir, "node_modules", "better-sqlite3")]);
 }
 async function main() {
+  if (verifyMsi) {
+    await verifyInstaller(path.join(root, "release", `答题卡扫描端-${pkg.version}-ia32.msi`));
+    run(process.execPath, ["scripts/hash-release-artifacts.cjs"]);
+    run(process.execPath, ["scripts/hash-release-artifacts.cjs", "--check"]);
+    return;
+  }
   // Downloaded builder tools contain CommonJS .js scripts; isolate them from the repo's ESM scope.
   fs.mkdirSync(process.env.ELECTRON_BUILDER_CACHE, { recursive: true });
   fs.writeFileSync(path.join(process.env.ELECTRON_BUILDER_CACHE, "package.json"), JSON.stringify({ private: true, type: "commonjs" }) + "\n");
@@ -90,7 +132,7 @@ async function main() {
   }
   stageSqlitePrebuild();
   stripForeignPlatformPackages();
-  for (const component of ["answer-card-recognizer.exe", "scanner-bridge.exe", "TWAINDSM.dll"]) pe32(path.join(nativeDir, component));
+  for (const component of nativeComponents) pe32(path.join(nativeDir, component));
   const imgDir = path.join(appDir, "node_modules", "@img");
   for (const name of ["sharp", "better-sqlite3"]) {
     if (JSON.parse(fs.readFileSync(path.join(appDir, "node_modules", name, "package.json"), "utf8")).version !== versionOf(name)) throw new Error(`Staged ${name} version mismatch`);
@@ -104,6 +146,9 @@ async function main() {
   }
   fs.rmSync(path.join(appDir, "electron"), { recursive: true, force: true });
   fs.cpSync(path.join(root, "electron"), path.join(appDir, "electron"), { recursive: true });
+  const manifestPath = path.join(appDir, "msi-project.wxs");
+  const hookPath = path.join(appDir, "msi-project-hook.cjs");
+  fs.writeFileSync(hookPath, `module.exports = (project) => { require("node:fs").copyFileSync(project, ${JSON.stringify(manifestPath)}); ${prepareMsi ? 'throw new Error("PROJECTX_MSI_PROJECT_PREPARED");' : ""} };\n`);
   const output = path.join(root, "release");
   const config = {
     appId: pkg.build.appId, productName: pkg.build.productName, electronVersion,
@@ -114,14 +159,25 @@ async function main() {
       { from: nativeDir, to: "native/win-ia32", filter: ["**/*"] },
       pkg.build.extraResources.find((resource) => resource.from === "llmclient")
     ],
-    win: { ...pkg.build.win, icon: path.join(root, "resources", "icon.png"), target: [{ target: "portable", arch: ["ia32"] }] }
+    win: { ...pkg.build.win, icon: path.join(root, "resources", "icon.png"), target: [{ target, arch: ["ia32"] }] },
+    msi: pkg.build.msi,
+    msiProjectCreated: hookPath
   };
   // A config object is merged into package.json's build arrays, which would also include x64 resources.
   // An explicit config file selects only the resources prepared by this cross-build.
   const configPath = path.join(appDir, "builder-config.json");
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
-  await build({ projectDir: root, targets: Platform.WINDOWS.createTarget(["portable"], Arch.ia32), config: configPath, publish: "never" });
+  try {
+    await build({ projectDir: root, targets: Platform.WINDOWS.createTarget([target], Arch.ia32), config: configPath, publish: "never" });
+  } catch (error) {
+    if (!prepareMsi || error.message !== "PROJECTX_MSI_PROJECT_PREPARED" || !fs.existsSync(manifestPath)) throw error;
+  }
   const unpacked = path.join(output, "win-ia32-unpacked");
+  for (const component of nativeComponents) {
+    const packaged = path.join(unpacked, "resources", "native", "win-ia32", component);
+    pe32(packaged);
+    if (!fs.readFileSync(packaged).equals(fs.readFileSync(path.join(nativeDir, component)))) throw new Error(`Packaged native component mismatch: ${component}`);
+  }
   for (const f of walk(unpacked)) if (/\.(exe|dll|node)$/i.test(f)) pe32(f);
   const asar = require("@electron/asar");
   const archive = path.join(unpacked, "resources", "app.asar");
@@ -131,11 +187,20 @@ async function main() {
     if (!asar.statFile(archive, relative).unpacked) throw new Error(`Native dependency must be unpacked: ${entry}`);
     pe32(path.join(`${archive}.unpacked`, relative));
   }
-  const executable = path.join(output, `答题卡扫描端-${pkg.version}-ia32.exe`);
-  pe32(executable);
-  const fingerprint = crypto.createHash("sha256").update(fs.readFileSync(executable)).digest("hex");
-  console.log(`Windows ia32 portable artifact: ${executable}\nSHA256: ${fingerprint}`);
+  if (prepareMsi) {
+    const { getBinFromUrl } = require("app-builder-lib/out/binDownload");
+    await getBinFromUrl("wix-4.0.0.5512.2", "wix-4.0.0.5512.2.7z", "fe677fcd837b18c9b912985d91636bbd8a1e800c3b3a6a841b6f96e89624e839");
+    console.log(`Windows ia32 application and MSI project prepared: ${manifestPath}\nCompile on Windows with scripts/build-scanner-msi.ps1, then run this script with --verify-msi.`);
+    return;
+  }
+  const artifact = path.join(output, `答题卡扫描端-${pkg.version}-ia32.${target === "msi" ? "msi" : "exe"}`);
+  const artifactBytes = fs.readFileSync(artifact);
+  if (target === "portable") pe32(artifact);
+  else if (!artifactBytes.subarray(0, 8).equals(Buffer.from("d0cf11e0a1b11ae1", "hex"))) throw new Error(`Not an MSI compound file: ${artifact}`);
+  await verifyInstaller(artifact);
+  const fingerprint = crypto.createHash("sha256").update(artifactBytes).digest("hex");
+  console.log(`Windows ia32 ${target} artifact: ${artifact}\nSHA256: ${fingerprint}`);
   run(process.execPath, ["scripts/hash-release-artifacts.cjs"]);
   run(process.execPath, ["scripts/hash-release-artifacts.cjs", "--check"]);
 }
-main().catch((error) => { console.error(error); process.exitCode = 1; });
+main().catch((error) => { console.error(error); process.exit(1); });
