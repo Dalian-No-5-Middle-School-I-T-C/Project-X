@@ -159,6 +159,11 @@ export function cancelScan(sessionId: string): boolean {
   return true;
 }
 
+/** 该会话是否处于已请求取消状态（scan() 重试前判断用，避免取消被当成设备失败重试） */
+export function isCancelRequested(sessionId: string): boolean {
+  return cancelRequested.has(sessionId);
+}
+
 
 function processResourcesPath(): string | undefined {
   return (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
@@ -203,7 +208,7 @@ function bridgeFailure(message: string, fields: Omit<BridgeFailure, keyof Error>
   return Object.assign(new Error(message), fields);
 }
 
-function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Promise<{ stdout: string; stderr: string; code: number | null }> {
+function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string, env?: NodeJS.ProcessEnv): Promise<{ stdout: string; stderr: string; code: number | null }> {
   const exePath = resolveScannerBridgeExe();
 
   // 取消检查：用户已请求取消（可能早于本函数执行），直接拒绝启动扫描
@@ -214,7 +219,8 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Pro
   return new Promise((resolve, reject) => {
     const child = spawn(exePath, args, {
       windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      env: env ?? process.env
     });
 
     if (sessionId) {
@@ -498,6 +504,26 @@ export async function scan(config: {
     args.push("--show-ui");
   }
 
-  const { stdout } = await runBridge(args, scanTimeoutMs(config.maxPages), sessionId);
-  return parseBridgeJson(stdout) as unknown as BridgeScanResult;
+  const timeoutMs = scanTimeoutMs(config.maxPages);
+  try {
+    const { stdout } = await runBridge(args, timeoutMs, sessionId);
+    return parseBridgeJson(stdout) as unknown as BridgeScanResult;
+  } catch (firstError) {
+    // 主动取消不重试；用户显式指定过 TWAIN_DSM_DLL 时尊重其配置，不自动切换
+    if ((sessionId && isCancelRequested(sessionId)) || process.env.TWAIN_DSM_DLL) throw firstError;
+    const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
+    console.warn(`[scanner] 首次扫描尝试失败（${firstMessage}），改用系统 twain_32.dll 重试一次`);
+    try {
+      const { stdout } = await runBridge(args, timeoutMs, sessionId,
+        { ...process.env, TWAIN_DSM_DLL: "C:\\Windows\\twain_32.dll" });
+      return parseBridgeJson(stdout) as unknown as BridgeScanResult;
+    } catch (secondError) {
+      const secondMessage = secondError instanceof Error ? secondError.message : String(secondError);
+      throw new Error(
+        "扫描仪无响应（指示灯未转绿）。已先后尝试 TWAIN 2.x（TWAINDSM.dll）与系统兼容模式（twain_32.dll）均失败。\n" +
+          `模式一：${firstMessage}\n模式二：${secondMessage}\n` +
+          "建议：1) 关闭其它扫描软件（如柯达采集软件）后重试；2) 重启扫描仪；3) 重装/更新柯达 TWAIN 驱动。"
+      );
+    }
+  }
 }
