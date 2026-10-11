@@ -40,9 +40,9 @@ async function terminal(id: string): Promise<UploadJobSnapshot> {
   }
   throw new Error(`Upload queue stalled: ${id}`);
 }
-function enqueue(kind: string, image = () => kind) {
+function enqueue(kind: string) {
   return manager.startUpload({ kind: "import", cardId: fixture.cardId, cardVersion: fixture.version, name: kind,
-    pages: [{ groupId: "0", layoutPage: 1, pageNum: 1, side: "front", getBlob: async () => new Blob([Buffer.from(fixture.images[image()], "base64")], { type: "image/png" }) }] });
+    pages: [{ groupId: "0", layoutPage: 1, pageNum: 1, side: "front", getBlob: async () => new Blob([Buffer.from(fixture.images[kind], "base64")], { type: "image/png" }) }] });
 }
 async function state() {
   return await (await request("/test/state")).json() as {
@@ -65,8 +65,7 @@ try {
 
   const duplicate = enqueue("different");
   const blank = enqueue("blank");
-  let replacement = "unreadable";
-  const unreadable = enqueue("unreadable", () => replacement);
+  const unreadable = enqueue("unreadable");
   const unknown = enqueue("unknown");
   const normal = enqueue("normal");
   for (const id of [duplicate, blank, unreadable, unknown]) assert.equal((await terminal(id)).status, "error");
@@ -79,9 +78,8 @@ try {
   assert.equal((await terminal(blank)).status, "done", "blank student number recovers after explicit correction");
   manager.correctStudentId(unreadable, "91004");
   assert.equal((await terminal(unreadable)).status, "error", "manual number cannot bypass broken image recognition");
-  replacement = "replacement";
-  manager.retryFailed(unreadable);
-  assert.equal((await terminal(unreadable)).status, "done", "rescanned readable paper uploads on retained task");
+  assert.equal((await terminal(enqueue("replacement"))).status, "done", "readable rescan uploads through a new task");
+  assert.equal((await terminal(unreadable)).status, "error", "unreadable original remains available without blocking its rescan");
 
   const unknownCard = manager.getState().jobs.find(j => j.id === unknown)!.reviewCards![0];
   assert((await manager.requestJob(unknown, `/api/scanner/upload/sessions/${unknownCard.sessionId}/correct`,
