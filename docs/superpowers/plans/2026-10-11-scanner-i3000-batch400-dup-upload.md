@@ -730,6 +730,76 @@ git commit -m "feat(scanner): 远端模式成绩汇总完成即自动后台上�
 
 ---
 
+## Task 9: 上传队列故障隔离——一张故障卡不得阻塞其他卡
+
+**Files:**
+- Modify: `src/apps/answer-card/client/lib/scannerUploadManager.ts`（`completeSession` :408-421；`JobRecord` :86-111 与 `UploadJobSnapshot` :40-65 加 `notice`；notify 快照映射 :226-243）
+- Modify: `src/apps/answer-card/client/components/UploadProgressCard.tsx`（渲染 notice）
+- Test: `scripts/scanner-upload-manager-smoke.ts` 扩展
+
+**根因**（已核实）：`completeSession` 收到 409 重复学号时，把 `failures[].conflicts` 里出现的**所有兄弟任务** `remoteSessionId` 对应的任务强制 `status = "error"`（:412-417）。串行泵只跑 `status === "queued"` 的任务（:555），被误伤的兄弟任务永远失去上传机会——线上同一名学生的多张副本占满队列时表现为「一个 failed 全军覆没」。兄弟任务自己的 complete 本来就会独立得到同样的 409 结论，这个强制置错既多余又有害。
+
+- [ ] **Step 1: 复现（先红）**
+
+扩展 `scripts/scanner-upload-manager-smoke.ts`（先读现有 harness，沿用其 fetch mock 注入方式）：构造两个 job，job1 的 complete 响应为 409 且 `failures[].conflicts` 包含 job2 的 remoteSessionId。断言：**job2 仍应跑完并到达 done**（现状：被置 error，红）。
+
+Run: `npx tsx scripts/scanner-upload-manager-smoke.ts`
+Expected: 新增断言 FAIL。
+
+- [ ] **Step 2: 强制置错改为非终态 notice**
+
+`scannerUploadManager.ts`：
+
+`JobRecord`（:110 `failures?: ScanBatchFailure[];` 之后）与 `UploadJobSnapshot`（:64 `failures?: ScanBatchFailure[];` 之后）各加：
+
+```ts
+  /** 非终态提示：相关联的冲突（如重复学号撤出），不影响任务继续上传 */
+  notice?: string;
+```
+
+`notify()` 快照映射区（:226-243，jobs.map 内）加一行 `notice: j.notice,`。
+
+`completeSession`（:408-421）整段改为：
+
+```ts
+    if (!res.ok) {
+      const body = await res.clone().json().catch(() => ({}));
+      if (Array.isArray(body.failures)) {
+        j.failures = body.failures;
+        // 只提示、不终止：兄弟任务各自的 complete 会独立得到同样的冲突结论，
+        // 强制把兄弟任务置 error 会让正常卡永远排不上队（线上「一卡失败全军覆没」）。
+        const affected = new Set<string>(body.failures.flatMap((f: ScanBatchFailure) => f.conflicts?.map(c => c.sessionId) ?? []));
+        for (const other of jobs) if (other !== j && other.remoteBase === j.remoteBase && other.remoteSessionId && affected.has(other.remoteSessionId)) {
+          other.notice = "相关联的重复学号冲突：本卷成绩可能已被撤出，请核对新旧卷（不阻断上传）";
+        }
+        notify();
+      }
+      throw await httpError(res);
+    }
+```
+
+`UploadProgressCard.tsx`：在渲染 `job.message` 的行（:119、:138、:170、:178 各处按现有结构）之后追加 notice 展示（任选与现有样式一致的实现，例如 :178-179 的消息行后）：
+
+```tsx
+          {job.notice && <span className="min-w-0 flex-1 break-words text-warning-fg">{job.notice}</span>}
+```
+
+（颜色类名若 `text-warning-fg` 不存在，查 `src/apps/answer-card/client/theme/app.css` 的 `--px-*` 令牌，用现有警告色类，禁止硬编码色值。）
+
+- [ ] **Step 3: 转绿 + 回归**
+
+Run: `npx tsx scripts/scanner-upload-manager-smoke.ts && npm run typecheck`
+Expected: 冒烟全过（含新隔离断言）、typecheck 0 错误。
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/apps/answer-card/client/lib/scannerUploadManager.ts src/apps/answer-card/client/components/UploadProgressCard.tsx scripts/scanner-upload-manager-smoke.ts
+git commit -m "fix(scanner): 上传队列故障隔离——重复学号冲突不再把兄弟任务强制置错，改为非阻断提示"
+```
+
+---
+
 ## Task 8: 文档同步与总验证
 
 **Files:**
