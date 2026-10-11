@@ -3,7 +3,7 @@ import { getMysqlDb, buildUpsertSQL, type DbAdapter } from "../db";
 import type { AnswerCard } from "../../shared/types";
 import type { CombinedStudentResult } from "../../shared/grading";
 import type { ScanBatchResponse, ScanConflictCard, ScanBatchPage } from "../../shared/scanPages";
-import { collectSessionResults, groupSessionPages } from "../../apps/answer-card/server/scanner/session-results";
+import { validateSessionGroupStructure, collectSessionResults, gradeSessionGroup, groupSessionPages, legacySessionBlockReason } from "../../apps/answer-card/server/scanner/session-results";
 import { listScanRecordsGroupedByStudent, type StudentGradingResultRow } from "../../apps/answer-card/server/database/scan-store";
 import { persistScannerResultToMainDb } from "./scannerResultPersistence";
 import { recomputeExamRankings } from "./rankingUpdate";
@@ -273,7 +273,23 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
   return enqueueScannerSubmission(async () => {
     const db = getMysqlDb();
     const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
-    const { groups } = groupSessionPages(card, records);
+    const { groups, pageCount } = groupSessionPages(card, records);
+    const invalidGroups = new Set<string>();
+    const repeatedGroups = new Set<string>();
+    for (const [groupId, rows] of groups) {
+      try {
+        validateSessionGroupStructure(card, rows, pageCount);
+        gradeSessionGroup(card, rows, rows.find(row => row.record.student_id)?.record.student_id ?? "");
+      }
+      catch (error) {
+        invalidGroups.add(groupId);
+        // A corrupted already-saved original must still be withdrawn through
+        // its own receipt; a new invalid paper cannot claim someone else's grade.
+        if (error instanceof Error && error.message.includes("缺页或重复页")
+          && new Set(rows.map(row => row.page.layoutPage)).size < rows.length) repeatedGroups.add(groupId);
+      }
+    }
+    const legacyBlock = legacySessionBlockReason({ pageCount, sided: card.sided, records, groups });
     // Keep every raw page for stable group IDs. Discarded retries stay archived,
     // and cannot recreate an active receipt when an old upload queue retries.
     const discarded = new Set((await db.all<{ group_id: string }>(
@@ -284,7 +300,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
       response.failures = response.failures.filter(r => !discarded.has(r.groupId));
       return response;
     };
-    const candidates = [...groups].filter(([groupId]) => !discarded.has(groupId)).flatMap(([groupId, rows]) => {
+    const candidates = [...groups].filter(([groupId]) => !discarded.has(groupId) && !invalidGroups.has(groupId) && !legacyBlock).flatMap(([groupId, rows]) => {
       const ids = [...new Set(rows.map(r => r.record.student_id).filter((id): id is string => Boolean(id)))];
       return ids.length === 1 ? [{ groupId, studentNumber: ids[0], pages: rows.map(r => r.page) }] : [];
     });
@@ -294,12 +310,22 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
         throw new Error(exams.length === 0 ? "答题卡未关联可阅卷的考试，成绩未入库" : "答题卡关联多个考试，无法确定成绩归属");
       } : undefined));
     }
-    if (mode !== "preview") {
+    let receiptMutated = false;
+    if (mode !== "preview" && (candidates.length > 0 || repeatedGroups.size > 0)) {
       await db.transaction(async tx => {
         await lockExam(tx, exam.id);
         const old = await receipts(tx, exam.id);
+        for (const groupId of repeatedGroups) {
+          if (discarded.has(groupId)) continue;
+          const owner = old.find(row => row.session_id === sessionId && row.group_id === groupId && row.state === "saved");
+          if (owner) {
+            await withdraw(tx, exam.id, owner.student_number, "scanner_retry");
+            receiptMutated = true;
+          }
+        }
         const affectedStudents = new Set(candidates.map(c => c.studentNumber));
         for (const candidate of candidates) {
+          receiptMutated = true;
           const prior = old.find(r => r.session_id === sessionId && r.group_id === candidate.groupId);
           if (prior && prior.student_number !== candidate.studentNumber) {
             affectedStudents.add(prior.student_number);
@@ -313,9 +339,6 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
             exam.id, sessionId, candidate.groupId, candidate.studentNumber, JSON.stringify(candidate.pages));
           if (prior && prior.student_number !== candidate.studentNumber && prior.previously_saved) {
             await tx.run("UPDATE scanner_submissions SET previously_saved = 1 WHERE exam_id = ? AND session_id = ? AND group_id = ?", exam.id, sessionId, candidate.groupId);
-          }
-          if (new Set(candidate.pages.map(p => p.layoutPage)).size !== candidate.pages.length) {
-            await withdraw(tx, exam.id, candidate.studentNumber);
           }
         }
         // Legacy scores have no reliable receipt. Keep their full score snapshot and any
@@ -386,12 +409,15 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
           else await tx.run("UPDATE scanner_submissions SET state = 'pending' WHERE exam_id = ? AND student_number = ? AND state = 'conflict'", exam.id, studentNumber);
         }
       });
-      analysisCache.invalidateExam(exam.id);
-      await recomputeExamRankings(db, exam.id);
+      if (receiptMutated) {
+        analysisCache.invalidateExam(exam.id);
+        await recomputeExamRankings(db, exam.id);
+      }
     }
     let all = await receipts(db, exam.id);
     const cached: StudentGradingResultRow[] = [];
-    for (const row of all.filter(r => r.session_id === sessionId && r.state === "saved" && r.result_json)) {
+    for (const row of all.filter(r => r.session_id === sessionId && r.state === "saved" && r.result_json
+      && candidates.some(candidate => candidate.groupId === r.group_id))) {
       const exists = await db.get("SELECT ss.id FROM student_scores ss JOIN users u ON u.id = ss.student_id WHERE ss.exam_id = ? AND u.student_number = ?", exam.id, row.student_number);
       if (!exists) continue;
       // Historical partial saves can have grades and receipts but unbound crops.
@@ -445,7 +471,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
       response.failures.push({ groupId: candidate.groupId, studentId: candidate.studentNumber, stage: "recognition", pages: candidate.pages,
         message: "重复学号：新旧答题卡均需核对订正，已保存成绩撤出后才可重新保存", conflicts: related });
     }
-    if (mode === "save") {
+    if (mode === "save" && receiptMutated) {
       analysisCache.invalidateExam(exam.id);
       await recomputeExamRankings(db, exam.id);
     }
