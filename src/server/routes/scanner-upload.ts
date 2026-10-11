@@ -567,8 +567,12 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     }
 
     // 安全 R35：扫描到入库之间可能隔了几十分钟，服务器上的卡在这期间被改过就不能再入库。
-    // Only persisted or caller-held original fingerprints can establish compatibility.
-    // Unknown historical versions require re-recognition or an original version receipt.
+    // Only a fingerprint recorded before recognition establishes provenance.
+    // A request cannot retroactively certify an unknown historical session.
+    if (!session.card_version || session.version_source === "legacy_verified") {
+      res.status(409).json({ code: "SESSION_CARD_VERSION_UNKNOWN", message: "原扫描会话缺少可验证的答题卡版本，请同步答题卡后重新识别并创建上传会话" });
+      return;
+    }
     const version = req.body?.cardVersion === undefined ? session.card_version : req.body.cardVersion;
     const versionProblem = await cardVersionProblem(session.card_id, version);
     if (versionProblem) {
@@ -582,11 +586,6 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
 
     if (session.card_version && parseCardVersion(version) !== session.card_version) {
       res.status(409).json({ code: "SESSION_CARD_VERSION_MISMATCH", message: "提交版本与原扫描会话不一致，请核对原会话答题卡版本" }); return;
-    }
-
-    if (!session.card_version && parseCardVersion(version)) {
-      await db.run("UPDATE twain_scan_sessions SET card_version = ?, version_source = ? WHERE id = ? AND card_version IS NULL",
-        parseCardVersion(version), session.version_source === "legacy" ? "legacy_verified" : session.version_source, sessionId);
     }
 
     const uploaded = await db.get<{ cnt: number }>(

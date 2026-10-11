@@ -105,6 +105,8 @@
   客户端按卡内容算 96bit 指纹（`src/shared/cardVersion.ts`，不含 `updatedAt`、不用 Web Crypto），
   建会话与提交完成两处都上报，缺指纹按不可重试错误立即失败；服务端核验不通过返回
   400 `CARD_VERSION_REQUIRED` / 404 `CARD_NOT_FOUND` / 409 `CARD_VERSION_MISMATCH`，被拒时不建会话、不改状态、不入库。
+  上传会话在创建时保存版本；历史会话缺少可信原始记录（含此前请求补写的 `legacy_verified`）时，
+  完成接口返回 409 `SESSION_CARD_VERSION_UNKNOWN`，需同步答题卡后重新识别并创建上传会话。
   选卡改走同步拉取，命中离线缓存时先让老师确认，工作台常驻版本提示
 - **TWAIN DSM 加载路径**（安全 R40）：DSM 只从**规范化后的受信绝对路径**加载，顺序为
   「`TWAIN_DSM_DLL` 环境覆盖 > 安装包自带（exe 同目录）> Windows 目录」，不再退回裸名搜索

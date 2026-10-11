@@ -323,6 +323,46 @@ async function main() {
     const failed = await waitTerminal(mgr, mgr.startUpload(orphan));
     assert(failed.status === "error", "孤立背面不得继承上个任务的学号");
   }
+  // Correcting a failed back must first update the released, uploaded front.
+  // A rejected correction keeps the failed blob and can retry with another ID.
+  {
+    let backFails = true;
+    let correctionFails = true;
+    let frontReads = 0;
+    const events: string[] = [];
+    const input = baseInput(2);
+    input.pages[0].getBlob = async () => { frontReads++; return blob(); };
+    input.pages[1].pageNum = 1; input.pages[1].side = "back";
+    const mgr = createScannerUploadManager(deps({ remoteFetch: async (url, init) => {
+      if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "correction-pair", uploadTokens: ["front", "back"] });
+      if (url.endsWith(PAGES)) {
+        const form = init!.body as FormData;
+        if (form.get("token") === "back" && backFails) throw new Error("back network failure");
+        events.push(`upload:${form.get("token")}:${JSON.parse(String(form.get("recognition"))).studentId.value}`);
+      }
+      if (url.endsWith("/results")) return jsonRes({ results: [], failures: [{ groupId: "server-group", pages: [{ recordId: "front" }] }], reviewCards: [] });
+      if (url.endsWith("/correct")) {
+        const body = JSON.parse(String(init!.body));
+        assert(body.groupId === "server-group", "订正必须使用服务器原卷分组");
+        events.push(`correct:${body.studentId}`);
+        if (correctionFails) return jsonRes({ message: "student outside roster" }, 409);
+      }
+      if (url.endsWith(COMPLETE)) events.push("complete");
+      return jsonRes({ ok: true });
+    } }));
+    const id = mgr.startUpload(input);
+    assert((await waitTerminal(mgr, id)).status === "error", "背面上传失败应保留任务");
+    backFails = false;
+    mgr.correctStudentId(id, "91002");
+    assert((await waitTerminal(mgr, id)).status === "error", "远端订正被拒应保持可重试");
+    assert(events.join(",") === "upload:front:82048,correct:91002", "订正失败不得续传背面或保存成绩");
+    assert((await mgr.getFailedPageBlobs(id)).length === 1, "订正失败后背面原图必须保留");
+    correctionFails = false;
+    mgr.correctStudentId(id, "91003");
+    assert((await waitTerminal(mgr, id)).status === "done", "同步成功后应续传背面并完成");
+    assert(events.join(",") === "upload:front:82048,correct:91002,correct:91003,upload:back:91003,complete", "服务器订正必须先于背面续传");
+    assert(frontReads === 1, "已上传正面释放的原图无需重新读取");
+  }
   // Slow front upload exceeds the old 1s+3s retry window. A second pump request
   // must not start its back or another job; no dependency retry budget is spent.
   {

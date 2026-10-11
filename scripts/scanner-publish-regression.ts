@@ -11,6 +11,8 @@ try {
  const exam=(await db.get('SELECT id FROM exams WHERE card_id=?',card.id))!;
  async function makeSession(name:string,student='91001'){
   const session=await store.createSession(card.id,name);
+  // Model metadata persisted by POST /upload/sessions before recognition.
+  await db.run("UPDATE twain_scan_sessions SET card_version=?,version_source='upload' WHERE id=?",info.version,session.id);
   const record=await store.createScanRecord({sessionId:session.id,cardId:card.id,pageNum:1,imagePath:`${name}.png`});
   await db.run('UPDATE twain_scan_records SET identity_json=? WHERE id=?',JSON.stringify({status:'verified',code:'QR_VERIFIED',cardId:card.id,pageNumber:1}),record.id);
   await store.updateScanOcrResult(record.id,student,1,'uploaded');
@@ -35,6 +37,7 @@ try {
  await setExplicitParticipants(db,exam.id,[normalUser.id,originalUser.id]);
  const before=await db.get('SELECT score_published FROM exams WHERE id=?',exam.id);
  const response=await fetch(`${fixture.baseUrl}/api/scanner/upload/sessions/${original.id}/complete`,{method:'POST',headers:{'X-Api-Key':info.key,'Content-Type':'application/json'},body:JSON.stringify({cardVersion:info.version})});
+ assert.equal(response.status,200,JSON.stringify(await response.clone().json()));
  const {ScoreRepository}=await import('../src/server/repositories/ScoreRepository.ts');
  assert.equal((await db.get('SELECT score_published FROM exams WHERE id=?',exam.id)).score_published,0);
  assert.equal((await new ScoreRepository().getStudentScores(originalUser.id)).length,0);

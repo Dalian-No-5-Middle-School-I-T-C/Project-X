@@ -4,7 +4,7 @@ import { mkdtemp, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 
-export async function startScannerFlowFixture(port = 0, host = "127.0.0.1") {
+export async function startScannerFlowFixture(port = 0, host = "127.0.0.1", options: { duplex?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "projectx-scanner-flow-"));
   process.env.PROJECTX_DB_PATH = path.join(root, "scanner.db");
   process.env.ANSWER_CARD_DATA_DIR = path.join(root, "cards");
@@ -31,6 +31,12 @@ export async function startScannerFlowFixture(port = 0, host = "127.0.0.1") {
   const card = createDefaultCard("91514001");
   card.bodyBlocks = [{ id: "flow_q", type: "objective", title: "选择题", questionStart: 1, questionCount: 1,
     optionCount: 4, mode: "single", scorePerQuestion: 5, answerKey: { "1": ["A"] }, density: "normal" }];
+  if (options.duplex) {
+    card.sided = "double";
+    const { buildLayout } = await import("../src/shared/layout");
+    for (let count = 10; count <= 400 && buildLayout(card).pages.length < 2; count += 10) card.bodyBlocks[0].questionCount = count;
+    assert.equal(buildLayout(card).pages.length, 2, "Duplex fixture must have two layout pages");
+  }
   await new CardRepository().createCard(card);
   await new CardRepository().updateCard(card);
   const version = cardFingerprint((await new CardRepository().findById(card.id))!);

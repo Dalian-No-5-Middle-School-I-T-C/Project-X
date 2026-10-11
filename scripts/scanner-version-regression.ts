@@ -22,7 +22,22 @@ try {
   if(block.type==='objective'){block.answerKey={'1':['B']}; for(const q of block.questions??[])q.answerKey=['B'];}
   await repo.updateCard(card);
   const newVersion=cardFingerprint((await repo.findById(card.id))!);
-  const response=await fetch(`${fixture.baseUrl}/api/scanner/upload/sessions/${session.id}/complete`,{method:'POST',headers:{'X-Api-Key':info.key,'Content-Type':'application/json'},body:'{}'});
-  assert.equal(response.status,400); assert.equal((await db.all('SELECT * FROM student_scores')).length,0);
-  console.log(JSON.stringify({oldVersion,newVersion,status:response.status,body:await response.json(),session:await db.get('SELECT card_version,version_source FROM twain_scan_sessions WHERE id=?',session.id),scores:await db.all('SELECT total_score FROM student_scores')},null,2));
+  assert.notEqual(oldVersion,newVersion);
+  const snapshot=async()=>JSON.stringify(await Promise.all(['student_scores','question_scores','scanner_submissions','twain_scan_sessions','twain_scan_records','exams'].map(table=>db.all(`SELECT * FROM ${table}`))));
+  const before=await snapshot();
+  for(const body of [{},{cardVersion:oldVersion},{cardVersion:newVersion},{cardVersion:'invalid'}]) {
+    const response=await fetch(`${fixture.baseUrl}/api/scanner/upload/sessions/${session.id}/complete`,{method:'POST',headers:{'X-Api-Key':info.key,'Content-Type':'application/json'},body:JSON.stringify(body)});
+    assert.equal(response.status,409);
+    assert.equal((await response.json()).code,'SESSION_CARD_VERSION_UNKNOWN');
+    assert.equal(await snapshot(),before,'A caller cannot certify unknown history or write scores/receipts');
+  }
+  // Previous releases could promote a caller value to legacy_verified. That
+  // marker is not independent provenance, even though it is now non-null.
+  await db.run("UPDATE twain_scan_sessions SET card_version=?,version_source='legacy_verified' WHERE id=?",newVersion,session.id);
+  const promoted=await snapshot();
+  const rejected=await fetch(`${fixture.baseUrl}/api/scanner/upload/sessions/${session.id}/complete`,{method:'POST',headers:{'X-Api-Key':info.key,'Content-Type':'application/json'},body:JSON.stringify({cardVersion:newVersion})});
+  assert.equal(rejected.status,409);
+  assert.equal((await rejected.json()).code,'SESSION_CARD_VERSION_UNKNOWN');
+  assert.equal(await snapshot(),promoted);
+  console.log('PASS unknown historical version: empty, old, current, malformed and previously promoted fingerprints reject without mutations');
 } finally {await fixture.close();}

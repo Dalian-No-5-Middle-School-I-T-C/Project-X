@@ -62,6 +62,7 @@ for (const studentNumber of ["91001", "91002", "91003"]) {
 const exam = await db.run("INSERT INTO exams (name,card_id,status) VALUES (?,?,'draft')", "扫描验证", card.id);
 for (const id of users) await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, id);
 const session = await store.createSession(card.id, "batch");
+await db.run("UPDATE twain_scan_sessions SET card_version=?,version_source='upload' WHERE id=?", cardVersion, session.id);
 const records = [];
 for (let i = 0; i < users.length; i++) {
   const record = await createVerifiedRecord({ sessionId: session.id, cardId: card.id, pageNum: i + 1, imagePath: path.join(root, `page_${i}.png`) });
@@ -271,6 +272,8 @@ try {
   const { processScannerSession } = await import("../src/server/services/scannerSubmissions");
   async function makeSession(numbers: string[]) {
     const s = await store.createSession(card.id, "duplicate-test");
+    // Model the upload API's fingerprint recorded at session creation.
+    await db.run("UPDATE twain_scan_sessions SET card_version=?,version_source='upload' WHERE id=?", cardVersion, s.id);
     for (const [index, number] of numbers.entries()) {
       const record = await createVerifiedRecord({ sessionId: s.id, cardId: card.id, pageNum: index + 1, imagePath: path.join(root, `retained-${s.id}-${index}.png`) });
       await store.updateScanOcrResult(record.id, number, 1, "uploaded");
@@ -357,7 +360,7 @@ try {
     const staleVersion = cardVersion.replace(/^./, cardVersion[0] === "f" ? "0" : "f");
     const stale = await remote(session.id, "complete", { cardVersion: staleVersion });
     assert.equal(stale.status, 409, "Stale card fingerprint must be rejected at completion");
-    assert.equal((await remote(session.id, "complete", {})).status, 400, "Missing card fingerprint must be rejected at completion");
+    assert.equal((await remote(session.id, "complete", { cardVersion: "" })).status, 400, "Explicit invalid card fingerprint must be rejected at completion");
     assert.equal(JSON.stringify(await db.get("SELECT status FROM twain_scan_sessions WHERE id=?", session.id)), statusBefore,
       "Rejected completions leave the session untouched");
   }
@@ -375,6 +378,8 @@ try {
     runMigrations(getDatabase()); runMigrations(getDatabase());
   }
   assert.equal((await db.get<{ version_source: string }>("SELECT version_source FROM twain_scan_sessions WHERE id = ?", session.id))?.version_source, "legacy");
+  // This fixture retained the upload-time fingerprint before simulating v60.
+  await db.run("UPDATE twain_scan_sessions SET card_version=?,version_source='upload' WHERE id=?", cardVersion, session.id);
   const historicalUser = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)",
     "history-recovery", "test", "旧会话恢复", role.id, "92801");
   await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, historicalUser.lastInsertRowid);
@@ -393,10 +398,13 @@ try {
   await db.run("UPDATE scanner_submissions SET state='discarded' WHERE session_id=?", redundant.id);
   await db.run("UPDATE scanner_submissions SET state='pending' WHERE session_id=?", historical.id);
   await db.run("UPDATE twain_scan_sessions SET card_version=NULL,version_source='legacy' WHERE id=?", historical.id);
-  assert.equal((await remote(historical.id, "complete", {})).status, 400, "Unknown historical versions cannot be inferred from the current card");
-  assert.equal((await remote(historical.id, "complete", { cardVersion })).status, 200, "Original version receipt restores historical sessions");
+  assert.equal((await remote(historical.id, "complete", {})).status, 409, "Unknown historical versions cannot be inferred from the current card");
+  assert.equal((await remote(historical.id, "complete", { cardVersion })).status, 409, "A caller fingerprint cannot establish historical provenance");
   assert.deepEqual(await db.get("SELECT card_version,version_source FROM twain_scan_sessions WHERE id=?", historical.id),
-    { card_version: cardVersion, version_source: "legacy_verified" });
+    { card_version: null, version_source: "legacy" });
+  // Restore the independently recorded creation metadata removed by this fixture.
+  await db.run("UPDATE twain_scan_sessions SET card_version=?,version_source='upload' WHERE id=?", cardVersion, historical.id);
+  assert.equal((await remote(historical.id, "complete", {})).status, 200, "Server-recorded original version permits snapshot restoration");
   const restored = await db.get<{ total_score: number; assigned_score: number; manually_modified: number }>("SELECT total_score,assigned_score,manually_modified FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid);
   assert.equal(Number(restored?.total_score), 4); assert.equal(Number(restored?.manually_modified), 1);
   assert.equal(Number(restored?.assigned_score), 82, "Recovery preserves custom assigned scores even when recalculation skips the formula");

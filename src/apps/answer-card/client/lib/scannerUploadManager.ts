@@ -87,6 +87,8 @@ interface PageRecord {
 }
 
 interface JobRecord {
+  /** Synchronize released, already-uploaded sides before retrying this card. */
+  pendingStudentId?: string;
   reviewCards?: ScanConflictCard[];
   id: string;
   kind: UploadJobKind;
@@ -541,6 +543,49 @@ if (j.cancelled) throw cancelledError(j);
       }
     }
 
+    // Successful sides have already released their blobs. Correct their stored
+    // metadata through the existing group endpoint before sending failed sides.
+    if (j.pendingStudentId) {
+      j.resumePhase = "uploading";
+      setStatus(j, "uploading", "正在同步已上传面的订正学号…");
+      try {
+        await runWithRetry(j, "订正学号", async () => {
+          const fetcher = jobFetch(j);
+          const response = await fetcher(`/api/scanner/upload/sessions/${j.remoteSessionId}/results`, {
+            signal: timeoutSignal(pageTimeoutMs),
+          });
+          if (!response.ok) throw await httpError(response);
+          const batch = await response.json() as ScanBatchResponse;
+          const completed = j.pages.filter(page => page.done);
+          const groups = [...batch.results.map(result => ({ ...result, saved: result.saved })),
+            ...batch.failures.map(failure => ({ ...failure, saved: false })),
+            ...(batch.reviewCards ?? []).filter(card => card.sessionId === j.remoteSessionId)
+              .map(card => ({ ...card, saved: !!card.previouslySaved }))];
+          const matched = groups.filter(group => group.pages.some(page => completed.some(p => p.token === page.recordId)));
+          const targets = new Map(matched.map(group => [group.groupId, group]));
+          if (completed.some(page => ![...targets.values()].some(group => group.pages.some(p => p.recordId === page.token)))
+            || matched.some(group => group.saved)) {
+            throw Object.assign(new Error("已上传面缺少可订正的原卷记录，请刷新服务器结果后核对"), { noRetry: true });
+          }
+          for (const groupId of targets.keys()) {
+            const corrected = await fetcher(`/api/scanner/upload/sessions/${j.remoteSessionId}/correct`, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ groupId, studentId: j.pendingStudentId }), signal: timeoutSignal(pageTimeoutMs),
+            });
+            if (!corrected.ok) throw await httpError(corrected);
+          }
+          for (const page of completed) page.studentId = { status: "ok", value: j.pendingStudentId! };
+        });
+        j.pendingStudentId = undefined;
+      } catch (error) {
+        if ((error as { isJobCancelled?: boolean }).isJobCancelled) return;
+        // Keep a failed-page marker so correction can be retried with another ID.
+        for (const page of j.pages) if (!page.done) page.failed = true;
+        setStatus(j, "error", `订正已上传面失败：${friendlyErr(error)}`);
+        return;
+      }
+    }
+
     // Phase 2: 逐页串行上传（失败页记录后继续，不打断批次）
     j.resumePhase = "uploading";
     let lastErrMsg = "";
@@ -803,6 +848,7 @@ if (j.cancelled) throw cancelledError(j);
       if (!/^[0-9A-Za-z_-]{1,64}$/.test(studentId)) throw new Error("请输入有效学号");
       if (new Set(job.pages.map(p => p.input.groupId ?? `sheet:${p.input.pageNum}`)).size !== 1) throw new Error("请逐份答题卡订正学号");
       for (const page of job.pages) page.input.studentId = studentId;
+      if (job.pages.some(page => page.done)) job.pendingStudentId = studentId;
       retryFailed(id);
     },
     refreshResults,
