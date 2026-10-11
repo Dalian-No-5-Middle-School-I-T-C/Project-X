@@ -51,6 +51,18 @@ export function ScannerConflictCards({ cards, remote = false, request = authFetc
     } catch (error) { setMessage(error instanceof Error ? error.message : "处理失败"); }
     finally { setBusy(false); }
   }
+  async function discard(card: ScanConflictCard) {
+    setBusy(true); setMessage("");
+    try {
+      const base = remote ? `/api/scanner/upload/sessions/${encodeURIComponent(card.sessionId)}` : `/api/scanner/session/${encodeURIComponent(card.sessionId)}`;
+      const response = await request(`${base}/groups/${encodeURIComponent(card.groupId)}/discard`, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || "作废失败");
+      setMessage("该重复卷已作废，剩余卷可重新保存");
+      onChanged();
+    } catch (error) { setMessage(error instanceof Error ? error.message : "作废失败"); }
+    finally { setBusy(false); }
+  }
   return <div className="flex flex-col gap-2 rounded-md border border-warning-border bg-warning-soft p-2">
     <strong className="text-sm">相关新旧卷（均待核对）</strong>
     {cards.map(card => {
@@ -63,6 +75,7 @@ export function ScannerConflictCards({ cards, remote = false, request = authFetc
           <>
             <Input aria-label={`原卷 ${key} 订正学号`} placeholder="订正后的学号" value={ids[key] ?? ""} onChange={e => setIds(old => ({ ...old, [key]: e.target.value }))} disabled={busy} />
             <Button size="sm" variant="outline" disabled={busy || !ids[key]?.trim()} onClick={() => void act(card, false)}>订正此卷</Button>
+            {!legacy && <Button size="sm" variant="outline" disabled={busy} onClick={() => void discard(card)}>作废此卷</Button>}
             <Button size="sm" variant="outline" disabled={busy} onClick={() => void act(card, true)}>{legacy ? "恢复核对后的历史成绩" : "重新保存此会话"}</Button>
           </>
         </div>
