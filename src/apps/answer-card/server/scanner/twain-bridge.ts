@@ -489,7 +489,10 @@ export async function scan(config: {
     "--size", config.paperSize,
     "--output", config.outputDir,
     "--prefix", config.filePrefix,
-    "--max-pages", String(config.maxPages)   // 0 = 不限（native 侧 maxPages>0 才限制）
+    // native 的 --max-pages 按物理张计数（pageNum 每张 +1，双面时背面复用同一号），
+    // 而 config.maxPages 是「页」语义（双面=张×2）。直接透传会让双面一次扫到 2 倍张数，
+    // 故折算回张数再交给 native；超时与上传页容量仍按页（config.maxPages）估算。
+    "--max-pages", String(config.duplex ? Math.ceil(config.maxPages / 2) : config.maxPages)
   ];
 
   if (config.pageTimeoutMs && config.pageTimeoutMs > 0) {
@@ -505,18 +508,27 @@ export async function scan(config: {
   }
 
   const timeoutMs = scanTimeoutMs(config.maxPages);
+  // 单次尝试：设备无响应/零页失败在 native 侧以「结构化 JSON + 非零退出码」返回，
+  // runBridge 只要 stdout 有内容就 resolve（不抛错），因此这类目标场景必须在这里
+  // 把零页设备失败转成抛错，才能进入下面的双 DSM 重试。
+  // 已有部分页（page_count>0）属中途失败，重试会重复扫描同一批纸，不重试。
+  const attempt = async (env?: NodeJS.ProcessEnv): Promise<BridgeScanResult> => {
+    const { stdout } = await runBridge(args, timeoutMs, sessionId, env);
+    const result = parseBridgeJson(stdout) as unknown as BridgeScanResult;
+    if (result.status === "error" && result.page_count === 0) {
+      throw new Error(result.message || "扫描未产生任何页面");
+    }
+    return result;
+  };
   try {
-    const { stdout } = await runBridge(args, timeoutMs, sessionId);
-    return parseBridgeJson(stdout) as unknown as BridgeScanResult;
+    return await attempt();
   } catch (firstError) {
     // 主动取消不重试；用户显式指定过 TWAIN_DSM_DLL 时尊重其配置，不自动切换
     if ((sessionId && isCancelRequested(sessionId)) || process.env.TWAIN_DSM_DLL) throw firstError;
     const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
     console.warn(`[scanner] 首次扫描尝试失败（${firstMessage}），改用系统 twain_32.dll 重试一次`);
     try {
-      const { stdout } = await runBridge(args, timeoutMs, sessionId,
-        { ...process.env, TWAIN_DSM_DLL: "C:\\Windows\\twain_32.dll" });
-      return parseBridgeJson(stdout) as unknown as BridgeScanResult;
+      return await attempt({ ...process.env, TWAIN_DSM_DLL: "C:\\Windows\\twain_32.dll" });
     } catch (secondError) {
       const secondMessage = secondError instanceof Error ? secondError.message : String(secondError);
       throw new Error(
