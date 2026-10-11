@@ -82,6 +82,12 @@ const { default: uploadRouter } = await import("../src/server/routes/scanner-upl
 const { hashSecret } = await import("../src/server/lib/field-crypto");
 await db.run("INSERT INTO api_keys (name, api_key, scope, is_active) VALUES (?,?,?,1)", "isolated-test", hashSecret("scanner-test-only"), "scanner");
 app.use("/api/scanner/upload", uploadRouter);
+const { default: scoreEditingRouter } = await import("../src/server/routes/score-editing");
+// The disposable fixture supplies an admin identity to exercise the actual detail consumer.
+app.use("/test/exams", (req, _res, next) => {
+  Reflect.set(req, "user", { id: 1, role_id: 1, role_name: "admin" });
+  next();
+}, scoreEditingRouter);
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => res.status(500).json({ message: err.message }));
 const server = app.listen(0, "127.0.0.1");
 await new Promise<void>(resolve => server.once("listening", resolve));
@@ -280,6 +286,70 @@ try {
       ...(payload ? { body: JSON.stringify(payload) } : {}),
     });
     return { status: response.status, data: await response.json() as ScanBatchResponse };
+  }
+  // A mixed batch returns 409 while successful grades and their images commit together.
+  {
+    const { listAnswerBlockCropsForStudent } = await import("../src/server/services/AnswerBlockCropService");
+    const testUsers: number[] = [];
+    for (const num of ["92901", "92902", "92903"]) {
+      const user = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)",
+        num, "test", num, role.id, num);
+      testUsers.push(Number(user.lastInsertRowid));
+      await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, user.lastInsertRowid);
+    }
+    const mixed = await makeSession(["92901", "92902", "92902"]);
+    const mixedRecords = await store.listScanRecords(mixed.id);
+    async function addCrop(id: string, recordId: string) {
+      await db.run(`INSERT INTO answer_block_crops
+        (id,card_id,source_type,source_record_id,block_id,block_type,page_number,segment_index,question_numbers,rect_json,image_path,width_px,height_px,dpi)
+        VALUES (?,?,'twain_scan_record',?,'batch_q','objective',1,0,'[1]','{}','test.png',1,1,300)`, id, card.id, recordId);
+    }
+    for (const [i, record] of mixedRecords.entries()) await addCrop(`mixed-crop-${i}`, record.id);
+    const complete = await remote(mixed.id);
+    assert.equal(complete.status, 409);
+    assert.equal(complete.data.failures.length, 2);
+    const images = await listAnswerBlockCropsForStudent(Number(exam.lastInsertRowid), testUsers[0], db);
+    assert.equal(images.length, 1, "Successful card has an image even when completion returns 409");
+    assert.equal(images[0].sourceRecordId, mixedRecords[0].id);
+    const detailResponse = await fetch(`http://127.0.0.1:${address.port}/test/exams/${exam.lastInsertRowid}/student/${testUsers[0]}/scores`);
+    assert.equal(detailResponse.status, 200, await detailResponse.clone().text());
+    const detail = await detailResponse.json() as { answerBlocks: Array<{ sourceRecordId: string }> };
+    assert.deepEqual(detail.answerBlocks.map(c => c.sourceRecordId), [mixedRecords[0].id], "Detail API returns the successful paper while the batch still has conflicts");
+    assert.equal((await listAnswerBlockCropsForStudent(Number(exam.lastInsertRowid), testUsers[1], db)).length, 0,
+      "Conflicting papers must not be attached to a student's grade");
+    // Replay the historical unbound-crop state with manually edited scores and publication.
+    await db.run("UPDATE answer_block_crops SET exam_id=NULL,student_id=NULL WHERE id='mixed-crop-0'");
+    await db.run("UPDATE student_scores SET total_score=4,manually_modified=1 WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, testUsers[0]);
+    await db.run("UPDATE question_scores SET score=4,manually_modified=1 WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, testUsers[0]);
+    await db.run("UPDATE exams SET score_published=1 WHERE id=?", exam.lastInsertRowid);
+    const { recomputeExamRankings } = await import("../src/server/services/rankingUpdate");
+    await recomputeExamRankings(db, Number(exam.lastInsertRowid));
+    const beforeReplay = await snapshot();
+    assert.equal((await remote(mixed.id)).status, 409);
+    assert.equal((await listAnswerBlockCropsForStudent(Number(exam.lastInsertRowid), testUsers[0], db)).length, 1);
+    assert.equal(await snapshot(), beforeReplay, "Image-only replay preserves every score, receipt, exam and recognition field");
+    assert.equal((await remote(mixed.id)).status, 409, "Image association replay is idempotent");
+    assert.equal(await snapshot(), beforeReplay);
+    // A crop already owned by another student must roll back the new grade and receipt.
+    const wrongOwner = await makeSession(["92903"]);
+    const wrongRecord = (await store.listScanRecords(wrongOwner.id))[0];
+    await addCrop("wrong-owner-crop", wrongRecord.id);
+    await db.run("UPDATE answer_block_crops SET exam_id=?,student_id=? WHERE id='wrong-owner-crop'", exam.lastInsertRowid, testUsers[0]);
+    assert.equal((await remote(wrongOwner.id)).status, 409);
+    assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, testUsers[2]), null);
+    assert.equal(await db.get("SELECT id FROM question_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, testUsers[2]), null);
+    assert.equal((await db.get<{ state: string }>("SELECT state FROM scanner_submissions WHERE session_id=?", wrongOwner.id))?.state, "pending");
+    assert.equal((await db.get<{ student_id: number }>("SELECT student_id FROM answer_block_crops WHERE id='wrong-owner-crop'"))?.student_id, testUsers[0]);
+    assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id=?", exam.lastInsertRowid))?.score_published, 1);
+    // Keep subsequent pre-existing fixture expectations independent of this scenario.
+    await db.run("DELETE FROM answer_block_crops WHERE id LIKE 'mixed-crop-%' OR id='wrong-owner-crop'");
+    for (const s of [mixed, wrongOwner]) await db.run("DELETE FROM scanner_submissions WHERE session_id=?", s.id);
+    for (const uid of testUsers) {
+      await db.run("DELETE FROM question_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, uid);
+      await db.run("DELETE FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, uid);
+      await db.run("DELETE FROM exam_participants WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, uid);
+    }
+    await db.run("UPDATE exams SET score_published=0 WHERE id=?", exam.lastInsertRowid);
   }
   // R35：服务器上的卡改过之后，扫描端仍报旧指纹就不能入库（缺指纹/错指纹都要挡住且不落库）
   {

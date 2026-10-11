@@ -41,7 +41,7 @@ import { CardRepository } from "../repositories/CardRepository";
 import { ExamRepository } from "../repositories/ExamRepository";
 import { ensureExamParticipants, listMissingParticipants } from "../services/examParticipants";
 import { recomputeExamRankings } from "../services/rankingUpdate";
-import { processScannerSession, enqueueScannerSubmission, findSavedScannerOwners, invalidateScanRecognition, savedReceiptOwnerOfPage, discardScannerGroup } from "../services/scannerSubmissions";
+import { processScannerSession, enqueueScannerSubmission, invalidateScanRecognition, savedReceiptOwnerOfPage, discardScannerGroup } from "../services/scannerSubmissions";
 import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
 import { groupSessionPages } from "../../apps/answer-card/server/scanner/session-results";
 import { scannerLegacyRecoveryRouter } from "./scanner-legacy-recovery";
@@ -620,16 +620,6 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
       if (batch.failures.length) {
         res.status(409).json({ ok: false, message: "部分答题卡未入库，请处理以下问题后重试", ...batch });
         return;
-      }
-      for (const result of batch.results) {
-        // The saved receipt owns this attempt, including retries after closure.
-        // Reusing the card for another exam must never move the original crops.
-        const owners = await findSavedScannerOwners(db, String(sessionId), result.groupId, result.studentId, fullSession!.card_id);
-        if (owners.length !== 1) throw new Error("扫描成绩回执归属缺失或不唯一，切图关联未完成");
-        const owner = owners[0];
-        for (const record of result.pages) {
-          await db.run("UPDATE answer_block_crops SET exam_id = ?, student_id = ? WHERE source_type = 'twain_scan_record' AND source_record_id = ?", owner.exam_id, owner.student_id, record.recordId);
-        }
       }
       const { exam: savedExam } = await resolveScannerExam(fullSession!.card_id, String(sessionId));
       const linkedExams = savedExam?.status === "grading" ? [savedExam] : [];

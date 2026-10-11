@@ -36,6 +36,34 @@ interface Receipt {
   state: string; previously_saved: number; pages_json: string;
   result_json: string | null; score_snapshot: string | null;
 }
+
+/** Bind only the pages owned by a saved receipt, in the caller's save transaction. */
+export async function linkSavedScannerCrops(db: DbAdapter, cardId: string, receipt: Receipt): Promise<void> {
+  const owners = await findSavedScannerOwners(db, receipt.session_id, receipt.group_id, receipt.student_number, cardId);
+  if (owners.length !== 1 || Number(owners[0].exam_id) !== Number(receipt.exam_id)) {
+    throw new Error("扫描成绩回执归属缺失或不唯一，切图关联未完成");
+  }
+  const owner = owners[0];
+  for (const page of JSON.parse(receipt.pages_json) as ScanBatchPage[]) {
+    const record = await db.get<{ card_id: string; session_id: string; student_id: string | null }>(
+      "SELECT card_id, session_id, student_id FROM twain_scan_records WHERE id = ?", page.recordId);
+    if (!record || record.card_id !== cardId || record.session_id !== receipt.session_id || record.student_id !== receipt.student_number) {
+      throw new Error("原卷与保存回执不匹配，切图关联未完成");
+    }
+    const crops = await db.all<{ card_id: string; exam_id: number | null; student_id: number | null }>(
+      "SELECT card_id, exam_id, student_id FROM answer_block_crops WHERE source_type = 'twain_scan_record' AND source_record_id = ?"
+        + (db.dialect === "mariadb" ? " FOR UPDATE" : ""), page.recordId);
+    if (crops.some(crop => crop.card_id !== cardId
+      || (crop.exam_id !== null && Number(crop.exam_id) !== Number(owner.exam_id))
+      || (crop.student_id !== null && Number(crop.student_id) !== Number(owner.student_id)))) {
+      throw new Error("原卷切图已属于其他成绩，无法关联");
+    }
+    await db.run(
+      `UPDATE answer_block_crops SET exam_id = ?, student_id = ?
+       WHERE source_type = 'twain_scan_record' AND source_record_id = ? AND card_id = ?`,
+      owner.exam_id, owner.student_id, page.recordId, cardId);
+  }
+}
 /**
  * 该扫描页是否已被一张 `state='saved'` 的回执认领（PR #312 复核 CR2）。
  *
@@ -366,6 +394,12 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
     for (const row of all.filter(r => r.session_id === sessionId && r.state === "saved" && r.result_json)) {
       const exists = await db.get("SELECT ss.id FROM student_scores ss JOIN users u ON u.id = ss.student_id WHERE ss.exam_id = ? AND u.student_number = ?", exam.id, row.student_number);
       if (!exists) continue;
+      // Historical partial saves can have grades and receipts but unbound crops.
+      // Replay repairs their ownership without rewriting scores or publication.
+      if (mode === "save") await db.transaction(async tx => {
+        await lockExam(tx, exam.id);
+        await linkSavedScannerCrops(tx, card.id, row);
+      });
       const result = JSON.parse(row.result_json!) as CombinedStudentResult;
       cached.push({ student_id: row.student_number, objective_json: JSON.stringify(result.objectiveQuestions),
         subjective_json: JSON.stringify(result.subjectiveQuestions), total_score: result.totalScore,
@@ -380,6 +414,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
         const current = await receipts(tx, exam.id);
         if (current.filter(r => r.student_number === result.studentId).length > 1) throw new Error("重复学号：所有相关答题卡需订正后重新保存");
         const receipt = current.find(r => r.session_id === sessionId && r.group_id === candidate.groupId);
+        if (!receipt) throw new Error("扫描成绩回执缺失，无法保存");
         if (receipt?.score_snapshot && receipt.previously_saved && receipt.state !== "saved") {
           await restoreScoreSnapshot(tx, receipt);
         } else {
@@ -387,6 +422,9 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
         }
         await tx.run("UPDATE scanner_submissions SET state = 'saved', previously_saved = 1, result_json = ? WHERE exam_id = ? AND session_id = ? AND group_id = ?",
           JSON.stringify(result), exam.id, sessionId, candidate.groupId);
+        await linkSavedScannerCrops(tx, card.id, {
+          ...receipt, state: "saved", pages_json: JSON.stringify(candidate.pages)
+        });
         await tx.run(buildUpsertSQL(tx.dialect, "twain_student_grading_results",
           ["session_id", "student_id", "objective_json", "subjective_json", "total_score", "max_score", "page_count"], ["session_id", "student_id"]),
           sessionId, result.studentId, JSON.stringify(result.objectiveQuestions), JSON.stringify(result.subjectiveQuestions), result.totalScore, result.totalMaxScore, result.pageCount);
