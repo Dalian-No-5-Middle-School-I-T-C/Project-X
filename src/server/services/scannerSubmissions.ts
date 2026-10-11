@@ -4,7 +4,7 @@ import type { AnswerCard } from "../../shared/types";
 import type { CombinedStudentResult } from "../../shared/grading";
 import type { ScanBatchResponse, ScanConflictCard, ScanBatchPage } from "../../shared/scanPages";
 import { collectSessionResults, groupSessionPages } from "../../apps/answer-card/server/scanner/session-results";
-import { listScanRecordsGroupedByStudent, type StudentGradingResultRow } from "../../apps/answer-card/server/database/scan-store";
+import { listScanRecordsGroupedByStudent, DISCARDED_OCR_ERROR, type StudentGradingResultRow } from "../../apps/answer-card/server/database/scan-store";
 import { persistScannerResultToMainDb } from "./scannerResultPersistence";
 import { recomputeExamRankings } from "./rankingUpdate";
 import { analysisCache } from "./analysisCache";
@@ -184,7 +184,7 @@ export async function discardScannerGroup(card: AnswerCard, sessionId: string, g
       await tx.run("UPDATE scanner_submissions SET state = 'superseded', group_id = ? WHERE session_id = ? AND group_id = ? AND state != 'superseded'",
         `${groupId}:discarded:${Date.now()}`, sessionId, groupId);
       for (const { record } of group) {
-        await tx.run("UPDATE twain_scan_records SET student_id = NULL, ocr_status = 'failed', ocr_error = '重复卷已由教师作废' WHERE id = ? AND session_id = ?", record.id, sessionId);
+        await tx.run("UPDATE twain_scan_records SET student_id = NULL, ocr_status = 'failed', ocr_error = ? WHERE id = ? AND session_id = ?", DISCARDED_OCR_ERROR, record.id, sessionId);
         await tx.run("DELETE FROM twain_recognition_results WHERE scan_record_id = ?", record.id);
         await tx.run("DELETE FROM answer_block_crops WHERE source_type = 'twain_scan_record' AND source_record_id = ?", record.id);
       }
@@ -373,7 +373,14 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
         subjective_json: JSON.stringify(result.subjectiveQuestions), total_score: result.totalScore,
         max_score: result.totalMaxScore, page_count: result.pageCount } as StudentGradingResultRow);
     }
-    const response = await collectSessionResults(card, records, cached, mode === "save" ? async result => {
+    // 重扫副本的回执已置 superseded（group_id 已改名）：不能再把它交给 collectSessionResults
+    // 的保存回调——回调按原 groupId 更新回执已无匹配行，persist 会重写成绩，且远端 /complete
+    // 的 findSavedScannerOwners 因当前会话无 saved 回执而抛错（精确重扫场景返回 500）。
+    // 从结果与保存路径中剔除，成绩以原已保存回执为准。
+    const rescanRecordIds = new Set(
+      candidates.filter(c => rescannedGroups.has(c.groupId)).flatMap(c => c.pages.map(p => p.recordId)));
+    const resultRecords = records.filter(r => !rescanRecordIds.has(r.id));
+    const response = await collectSessionResults(card, resultRecords, cached, mode === "save" ? async result => {
       const candidate = candidates.find(c => c.pages.some(p => p.recordId === result.pages[0]?.recordId))!;
       await db.transaction(async tx => {
         await lockExam(tx, exam.id);

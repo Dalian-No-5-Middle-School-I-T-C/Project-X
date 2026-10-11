@@ -92,6 +92,7 @@ try {
   r = await postResults(s2.id);
   assert.equal(r.status, 200, `重扫副本应自动消化，实际 ${r.status}: ${JSON.stringify(r.body.failures)}`);
   assert.equal(r.body.failures.length, 0, "重扫副本不应产生失败项");
+  assert.equal(r.body.results.length, 0, "重扫副本已消化，不应再作为结果返回（否则远端 /complete 会因回执归属缺失 500）");
   assert.equal(await scoreOf(), 1, "重扫绝不能撤回已保存成绩");
 
   // —— 场景 B：真重复（同学号不同内容）→ 409 + 作废多余副本 → 成绩恢复且仅一份 ——
@@ -105,6 +106,12 @@ try {
   const d = await fetch(`http://127.0.0.1:${address.port}/api/scanner/upload/sessions/${s3.id}/groups/0/discard`,
     { method: "POST", headers: { "X-Api-Key": "scanner-test-only" } });
   assert.equal(d.status, 200, await d.clone().text());
+
+  // 作废后的卷必须从会话结果中消失：否则每次刷新都报识别失败，且 /retry 能重新识别复活回执
+  const v = await fetch(`http://127.0.0.1:${address.port}/api/scanner/session/${s3.id}/results`);
+  const vbody = (await v.json()) as ScanBatchResponse;
+  assert.equal(vbody.failures.length, 0, "作废后的卷不应在刷新时继续报识别失败");
+  assert.equal(vbody.results.length, 0, "作废后的卷不应再出现在会话结果中");
 
   r = await postResults(s1.id);
   assert.equal(r.status, 200, JSON.stringify(r.body));
