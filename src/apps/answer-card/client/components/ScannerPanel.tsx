@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { uniqueScanConflictCards } from "../../../../shared/scanPages";
 import { ScannerConflictCards } from "./ScannerConflictCards";
 import {
   AlertTriangle,
@@ -858,7 +859,9 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           </div>
           {resultMessage && <p role="status" className="text-sm text-muted-foreground">{resultMessage}</p>}
           {errorMessage && <p role="alert" className="text-sm text-destructive-fg">{errorMessage}</p>}
-          {reviewCards.length > 0 && <ScannerConflictCards cards={reviewCards} onChanged={() => void fetchCombinedResults(sessionId)} />}
+          {(reviewCards.length > 0 || failures.some(f => f.conflicts?.length)) && <ScannerConflictCards
+            cards={uniqueScanConflictCards([...reviewCards, ...failures.flatMap(f => f.conflicts ?? [])])}
+            onChanged={() => fetchCombinedResults(sessionId)} />}
           {failures.length > 0 && (
             <div className="flex flex-col gap-3 rounded-md border border-warning-border bg-warning-soft p-3">
               <strong>以下答题卡未保存</strong>
@@ -866,12 +869,11 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
               {failures.map(failure => (
                 <div key={failure.groupId} className="flex flex-col gap-2 border-t border-border-subtle pt-2">
                   <span className="text-sm">{failure.studentId || "未识别学号"} · {failure.pages.map(p => `第 ${p.pageNum} 张${p.side === "front" ? "正面" : "背面"}`).join("、")}：{failure.message}</span>
-                  {failure.conflicts && <ScannerConflictCards cards={failure.conflicts} onChanged={() => void fetchCombinedResults(sessionId)} />}
-                  <div className="flex flex-wrap items-center gap-2">
+                  {!failure.conflicts?.length && <div className="flex flex-wrap items-center gap-2">
                     <Button variant="outline" size="sm" onClick={() => setActiveFailure(failure)}>查看失败卡</Button>
                     {failure.stage !== "saving" && <Input aria-label={`第 ${Number(failure.groupId) + 1} 份答题卡订正学号`} placeholder="订正学号（可选）" value={corrections[failure.groupId] ?? ""} onChange={e => setCorrections(current => ({ ...current, [failure.groupId]: e.target.value }))} disabled={resultsBusy} />}
                     <Button variant="outline" size="sm" disabled={resultsBusy} onClick={() => void retryCard(failure)}>{failure.stage === "saving" ? "重新汇总" : "重新识别此卡"}</Button>
-                  </div>
+                  </div>}
                 </div>
               ))}
             </div>

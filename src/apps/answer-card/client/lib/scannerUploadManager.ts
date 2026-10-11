@@ -7,8 +7,8 @@ import { authFetch, getStoredApiKey, remoteScannerFetch } from "../auth/api";
 import { SERVER_URL_KEY, readServerUrl } from "./scannerMode";
 import { assertCredentialTransportAllowed } from "./remoteCredentialTransport";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
-import { applyScanStudentId } from "../../../../shared/scanPages";
-import type { ScanBatchFailure, ScanConflictCard } from "../../../../shared/scanPages";
+import { applyScanStudentId, uniqueScanConflictCards } from "../../../../shared/scanPages";
+import type { ScanBatchFailure, ScanConflictCard, ScanBatchResponse } from "../../../../shared/scanPages";
 
 export type UploadJobKind = "scan" | "import";
 export type UploadJobStatus =
@@ -108,6 +108,16 @@ interface JobRecord {
   /** 用户取消标志：暂停/队列中任务被取消后置真，使挂起的 runWithRetry 原地退出 */
   cancelled: boolean;
   failures?: ScanBatchFailure[];
+}
+
+function pendingReviewCards(sessionId: string, batch: ScanBatchResponse): ScanConflictCard[] {
+  return uniqueScanConflictCards([
+    ...(batch.results ?? []).filter(r => !r.saved).map(r => ({ sessionId, groupId: r.groupId,
+      studentId: r.studentId, pages: r.pages, previouslySaved: false })),
+    ...(batch.failures ?? []).filter(f => !f.conflicts?.length).map(f => ({ sessionId, groupId: f.groupId,
+      studentId: f.studentId ?? "", pages: f.pages, previouslySaved: false })),
+    ...(batch.reviewCards ?? []),
+  ]);
 }
 
 export interface UploadManagerDeps {
@@ -217,6 +227,24 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
   }
 
   const jobs: JobRecord[] = [];
+  // Keep small version receipts after a completed task releases its image data.
+  const sessionVersions = new Map<string, string>();
+  const versionKey = (job: JobRecord, sessionId: string) => JSON.stringify([job.remoteBase, job.cardId, sessionId]);
+  function rememberSessionVersion(job: JobRecord, sessionId: string): void {
+    const key = versionKey(job, sessionId);
+    sessionVersions.set(key, job.cardVersion);
+    try { localStorage.setItem(`projectx_scanner_session_version/${key}`, job.cardVersion); }
+    catch { /* In-memory receipts still work when browser storage is unavailable. */ }
+  }
+  function rememberedSessionVersion(job: JobRecord, sessionId: string): string | undefined {
+    const key = versionKey(job, sessionId);
+    const cached = sessionVersions.get(key);
+    if (cached) return cached;
+    try {
+      const saved = localStorage.getItem(`projectx_scanner_session_version/${key}`);
+      return saved && /^[0-9a-f]{24}$/i.test(saved) ? saved : undefined;
+    } catch { return undefined; }
+  }
   const listeners = new Set<() => void>();
   let snapshot: UploadManagerSnapshot = { jobs: [], activeJobId: null, queuedCount: 0 };
   let running = false;
@@ -409,11 +437,16 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       const body = await res.clone().json().catch(() => ({}));
       if (Array.isArray(body.failures)) {
         j.failures = body.failures;
+        j.reviewCards = pendingReviewCards(j.remoteSessionId!, body);
         const affected = new Set<string>(body.failures.flatMap((f: ScanBatchFailure) => f.conflicts?.map(c => c.sessionId) ?? []));
         for (const other of jobs) if (other !== j && other.remoteBase === j.remoteBase && other.remoteSessionId && affected.has(other.remoteSessionId)) {
           other.status = "error";
           other.message = "重复学号：原已保存成绩已撤出，请核对新旧卷";
-          other.failures = body.failures;
+          // Describe only attempts belonging to this task, keeping all evidence.
+          const localFailures: ScanBatchFailure[] = body.failures.flatMap((failure: ScanBatchFailure) =>
+            (failure.conflicts ?? []).filter(card => card.sessionId === other.remoteSessionId)
+              .map(card => ({ ...failure, groupId: card.groupId, studentId: card.studentId, pages: card.pages })));
+          other.failures = [...new Map([...(other.failures ?? []), ...localFailures].map(f => [f.groupId, f])).values()];
         }
         notify();
       }
@@ -484,6 +517,7 @@ if (j.cancelled) throw cancelledError(j);
       try {
         const { sessionId, tokens } = await runWithRetry(j, "创建会话", () => createSession(j));
         j.remoteSessionId = sessionId;
+        rememberSessionVersion(j, sessionId);
         j.pages.forEach((p, i) => {
           p.token = tokens[i];
         });
@@ -709,16 +743,42 @@ if (j.cancelled) throw cancelledError(j);
     return snapshot;
   }
 
-  return {
-    refreshResults: async (id: string) => {
-      const job = jobs.find(j => j.id === id);
-      if (!job?.remoteSessionId) return;
-      const response = await jobFetch(job)(`/api/scanner/upload/sessions/${job.remoteSessionId}/results`);
-      if (!response.ok) return;
-      const body = await response.json();
-      job.reviewCards = body.reviewCards;
+  async function refreshResults(id: string): Promise<void> {
+    const source = jobs.find(j => j.id === id);
+    if (!source) return;
+    for (const job of jobs.filter(j => j.remoteBase === source.remoteBase && j.apiKey === source.apiKey && j.cardId === source.cardId
+      && j.remoteSessionId && (j.status === "done" || j.status === "error"))) {
+      const response = await jobFetch(job)(`/api/scanner/upload/sessions/${job.remoteSessionId}/results`, {
+        signal: timeoutSignal(pageTimeoutMs),
+      });
+      if (!response.ok) throw await httpError(response);
+      const body = await response.json() as ScanBatchResponse;
+      // Corrected new attempts are pending too; keep their view/save actions even
+      // after another session has been saved and the duplicate failures disappear.
+      job.reviewCards = pendingReviewCards(job.remoteSessionId!, body);
       job.failures = body.failures;
+      const allSaved = body.results?.length > 0 && body.results.every((r: { saved: boolean }) => r.saved);
+      if (!job.pages.some(p => p.failed)) {
+        job.status = body.failures?.length || !allSaved ? "error" : "done";
+        job.message = job.status === "done" ? `上传完成，${job.pages.length} 页已提交到服务器`
+          : "仍有答题卡未保存，请核对后重新保存会话";
+      }
       notify();
+    }
+  }
+
+  return {
+    refreshResults,
+    saveSession: async (id: string, sessionId: string) => {
+      const source = jobs.find(j => j.id === id);
+      const owner = source && jobs.find(j => j.remoteSessionId === sessionId && j.remoteBase === source.remoteBase
+        && j.apiKey === source.apiKey && j.cardId === source.cardId);
+      const version = owner?.cardVersion ?? (source && rememberedSessionVersion(source, sessionId));
+      if (!source || !version) throw new Error("无法确定原会话答题卡版本，请从原上传任务重试");
+      return jobFetch(owner ?? source)(`/api/scanner/upload/sessions/${encodeURIComponent(sessionId)}/complete`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cardVersion: version }), signal: timeoutSignal(pageTimeoutMs),
+      });
     },
     requestJob: (id: string, url: string, init?: RequestInit) => {
       const job = jobs.find(j => j.id === id);

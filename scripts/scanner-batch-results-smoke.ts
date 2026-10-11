@@ -8,7 +8,7 @@ import express from "express";
 import { createDefaultCard } from "../src/shared/defaultCard";
 import { buildLayout } from "../src/shared/layout";
 import { collectSessionResults } from "../src/apps/answer-card/server/scanner/session-results";
-import { applyScanStudentId, type ScanBatchResponse } from "../src/shared/scanPages";
+import { applyScanStudentId, uniqueScanConflictCards, type ScanBatchResponse } from "../src/shared/scanPages";
 import type { CombinedRecognitionResult } from "../src/shared/types";
 
 await mkdir("data", { recursive: true });
@@ -381,11 +381,28 @@ try {
     await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, student.lastInsertRowid);
     assert.equal((await remote(duplicateSession.id, "correct", { groupId: String(groupId), studentId: number })).status, 200);
   }
+  // A typo after resolving the duplicate must remain correctable, including
+  // after another group in the same session has already been saved.
+  assert.equal((await remote(duplicateSession.id, "correct", { groupId: "0", studentId: "939393" })).status, 200);
+  const typoSave = await remote(duplicateSession.id);
+  assert.equal(typoSave.status, 409);
+  assert(typoSave.data.failures.some(f => f.groupId === "0" && f.stage === "saving"));
+  assert(typoSave.data.results.some(r => r.groupId === "1" && r.saved), "Valid sibling is saved once");
+  assert.equal((await remote(duplicateSession.id, "correct", { groupId: "0", studentId: "91991" })).status, 200,
+    "A saving failure can be corrected again without creating a session");
   const corrected = await remote(duplicateSession.id);
   assert.equal(corrected.status, 200);
+  assert.equal((await remote(duplicateSession.id, "correct", { groupId: "1", studentId: "939393" })).status, 409,
+    "Manual correction cannot alter a saved sibling");
   const oldPreview = await request();
   assert(oldPreview.results.some(r => r.studentId === "91001" && !r.saved), "Resolved old attempt needs explicit saving");
   assert(oldPreview.reviewCards?.some(c => c.sessionId === session.id && c.previouslySaved), "Do not lose withdrawn old cards when new IDs are corrected");
+  assert.equal(uniqueScanConflictCards(rejected.data.failures.flatMap(f => f.conflicts ?? [])).length, 3,
+    "Two failure groups must display three unique physical cards");
+  // Use the same remote completion entry point as the conflict-card save button.
+  assert.equal((await remote(session.id)).status, 200, "Remote old-card recovery includes the original card version");
+  assert.equal((await remote(session.id)).status, 200, "Repeated manual saving does not create another receipt");
+  assert.equal(Number((await db.get<{ n: number }>("SELECT COUNT(*) AS n FROM scanner_submissions WHERE session_id = ? AND group_id = ? AND state != 'superseded'", session.id, "0"))!.n), 1);
   assert.equal((await request("POST")).failures.length, 0);
   assert.equal((await remote(duplicateSession.id)).status, 200, "Reposting same submission is idempotent, not a duplicate");
 

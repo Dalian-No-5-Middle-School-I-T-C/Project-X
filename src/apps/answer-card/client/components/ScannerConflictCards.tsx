@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
-import type { ScanConflictCard } from "../../../../shared/scanPages";
+import { uniqueScanConflictCards, type ScanConflictCard } from "../../../../shared/scanPages";
 import { authFetch } from "../auth/api";
 import { Button, Input } from "./ui/v2";
 import { ScanPreviewModal, type ScanPage } from "./ScanPreviewModal";
 
-export function ScannerConflictCards({ cards, remote = false, request = authFetch, onChanged }: {
+export function ScannerConflictCards({ cards, remote = false, request = authFetch, saveSession, onChanged }: {
   cards: ScanConflictCard[]; remote?: boolean;
   request?: (url: string, init?: RequestInit) => Promise<Response>;
-  onChanged: () => void;
+  saveSession?: (sessionId: string) => Promise<Response>;
+  onChanged: () => void | Promise<void>;
 }) {
   const [ids, setIds] = useState<Record<string, string>>({});
   const [corrected, setCorrected] = useState<Record<string, string>>({});
@@ -38,22 +39,23 @@ export function ScannerConflictCards({ cards, remote = false, request = authFetc
       const legacy = card.sessionId.startsWith("legacy:");
       const url = legacy ? `/api/scanner/${remote ? "upload/" : ""}legacy/${card.sessionId.slice(7)}/${encodeURIComponent(card.groupId)}/${save ? "save" : "correct"}`
         : `${base}/${save ? (remote ? "complete" : "results") : (remote ? "correct" : "retry")}`;
-      const response = await request(url, {
+      if (save && remote && !legacy && !saveSession) throw new Error("无法确定原会话答题卡版本，请从原上传任务重试");
+      const response = save && remote && !legacy ? await saveSession!(card.sessionId) : await request(url, {
         method: "POST", headers: { "Content-Type": "application/json" },
         ...(!save ? { body: JSON.stringify({ groupId: card.groupId, studentId: ids[key]?.trim() }) } : {}),
       });
       const data = await response.json();
+      if (save) await onChanged();
       if (!response.ok) throw new Error(data.failures?.map((f: { message: string }) => f.message).join("；") || data.message || "处理失败");
       if (!save) setCorrected(old => ({ ...old, [key]: ids[key].trim() }));
       setMessage(save ? (data.failures?.length ? "仍有问题卷未保存，请继续核对" : "保存完成") : "学号已订正，请核对后重新保存相关卷");
       // Keep both originals accessible until the teacher has saved each corrected attempt.
-      if (save) onChanged();
     } catch (error) { setMessage(error instanceof Error ? error.message : "处理失败"); }
     finally { setBusy(false); }
   }
   return <div className="flex flex-col gap-2 rounded-md border border-warning-border bg-warning-soft p-2">
     <strong className="text-sm">相关新旧卷（均待核对）</strong>
-    {cards.map(card => {
+    {uniqueScanConflictCards(cards).map(card => {
       const key = `${card.sessionId}/${card.groupId}`;
       const legacy = card.sessionId.startsWith("legacy:");
       return <div key={key} className="flex flex-col gap-2 border-t border-border-subtle pt-2">

@@ -524,9 +524,10 @@ router.post("/sessions/:sessionId/correct", dualAuth, async (req, res, next) => 
     if (!card) { res.status(404).json({ message: "扫描会话或答题卡不存在" }); return; }
     const preview = await processScannerSession(card, sessionId);
     const groupId = String(req.body?.groupId ?? "");
-    if (!preview.failures.some(f => f.groupId === groupId && f.conflicts?.length)
+    if (!preview.failures.some(f => f.groupId === groupId)
+      && !preview.results.some(r => r.groupId === groupId && !r.saved)
       && !preview.reviewCards?.some(c => c.sessionId === sessionId && c.groupId === groupId)) {
-      res.status(409).json({ message: "此卷没有重复学号冲突，请刷新结果" }); return;
+      res.status(409).json({ message: "此卷已保存或无需订正，请刷新结果" }); return;
     }
     await enqueueScannerSubmission(async () => {
       const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);

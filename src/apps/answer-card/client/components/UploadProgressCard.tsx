@@ -6,6 +6,7 @@ import { Button, Progress, Spinner } from "./ui/v2";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
 import type { UploadJobSnapshot } from "../lib/scannerUploadManager";
 import { ServerStatusIndicator } from "./ServerStatusIndicator";
+import { uniqueScanConflictCards, type ScanConflictCard } from "../../../../shared/scanPages";
 import { ScannerConflictCards } from "./ScannerConflictCards";
 
 const DONE_AUTO_HIDE_MS = 3_000;
@@ -48,8 +49,18 @@ export function UploadProgressCard() {
     return () => timers.forEach((t) => window.clearTimeout(t));
   }, [snap.jobs]);
 
-  const visible = snap.jobs.filter((j) => !dismissed.has(j.id) || j.status === "error");
+  const visible = snap.jobs.filter((j) => !dismissed.has(j.id) || j.status === "error" || Boolean(j.reviewCards?.length));
   if (visible.length === 0) return null;
+
+  const seen = new Set<string>();
+  const conflictCards = new Map(visible.map(job => [job.id, uniqueScanConflictCards([
+    ...(job.reviewCards ?? []), ...(job.failures ?? []).flatMap(f => f.conflicts ?? []),
+  ]).filter(card => {
+    const key = JSON.stringify([card.sessionId, card.groupId]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  })]));
 
   return (
     <div
@@ -64,6 +75,7 @@ export function UploadProgressCard() {
         <UploadJobCard
           key={job.id}
           job={job}
+          conflictCards={conflictCards.get(job.id) ?? []}
           queuedCount={snap.queuedCount}
           onDismiss={(id) => {
             // 审查 P2:关闭需真正移除任务并释放页面资源,不能只从视图收起
@@ -82,10 +94,12 @@ export function UploadProgressCard() {
 
 function UploadJobCard({
   job,
+  conflictCards,
   queuedCount,
   onDismiss,
 }: {
   job: UploadJobSnapshot;
+  conflictCards: ScanConflictCard[];
   queuedCount: number;
   onDismiss: (id: string) => void;
 }) {
@@ -107,9 +121,10 @@ function UploadJobCard({
         )}
       </div>
 
-      {!!job.reviewCards?.length && <ScannerConflictCards cards={job.reviewCards} remote
+      {conflictCards.length > 0 && <ScannerConflictCards cards={conflictCards} remote
         request={(url, init) => scannerUploadManager.requestJob(job.id, url, init)}
-        onChanged={() => void scannerUploadManager.refreshResults(job.id)} />}
+        saveSession={sessionId => scannerUploadManager.saveSession(job.id, sessionId)}
+        onChanged={() => scannerUploadManager.refreshResults(job.id)} />}
 
       {busy && (
         <>
@@ -179,9 +194,6 @@ function UploadJobCard({
           </p>
           {job.failures?.map(failure => <div key={failure.groupId} className="mt-2">
             <p>{failure.studentId}：{failure.message}</p>
-            {failure.conflicts && <ScannerConflictCards cards={failure.conflicts} remote
-              request={(url, init) => scannerUploadManager.requestJob(job.id, url, init)}
-              onChanged={() => scannerUploadManager.retryFailed(job.id)} />}
           </div>)}
           <div className="mt-1.5">
             <Button
@@ -190,7 +202,7 @@ function UploadJobCard({
               icon={<RefreshCw size={12} />}
               onClick={() => scannerUploadManager.retryFailed(job.id)}
             >
-              重试失败页
+              {job.failedPages.length ? "重试失败页" : "重试保存"}
             </Button>
           </div>
         </div>
