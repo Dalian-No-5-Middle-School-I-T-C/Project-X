@@ -757,7 +757,8 @@ if (j.cancelled) throw cancelledError(j);
       // after another session has been saved and the duplicate failures disappear.
       job.reviewCards = pendingReviewCards(job.remoteSessionId!, body);
       job.failures = body.failures;
-      const allSaved = body.results?.length > 0 && body.results.every((r: { saved: boolean }) => r.saved);
+      const allSaved = (body.results?.length > 0 || (body.discardedGroups ?? 0) > 0)
+        && body.results.every((r: { saved: boolean }) => r.saved);
       if (!job.pages.some(p => p.failed)) {
         job.status = body.failures?.length || !allSaved ? "error" : "done";
         job.message = job.status === "done" ? `上传完成，${job.pages.length} 页已提交到服务器`
@@ -774,10 +775,10 @@ if (j.cancelled) throw cancelledError(j);
       const owner = source && jobs.find(j => j.remoteSessionId === sessionId && j.remoteBase === source.remoteBase
         && j.apiKey === source.apiKey && j.cardId === source.cardId);
       const version = owner?.cardVersion ?? (source && rememberedSessionVersion(source, sessionId));
-      if (!source || !version) throw new Error("无法确定原会话答题卡版本，请从原上传任务重试");
+      if (!source) throw new Error("上传任务已关闭");
       return jobFetch(owner ?? source)(`/api/scanner/upload/sessions/${encodeURIComponent(sessionId)}/complete`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cardVersion: version }), signal: timeoutSignal(pageTimeoutMs),
+        body: JSON.stringify(version ? { cardVersion: version } : {}), signal: timeoutSignal(pageTimeoutMs),
       });
     },
     requestJob: (id: string, url: string, init?: RequestInit) => {

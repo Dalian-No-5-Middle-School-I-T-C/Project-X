@@ -498,6 +498,8 @@ CREATE TABLE IF NOT EXISTS answer_block_crops (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS twain_scan_sessions (
+    card_version VARCHAR(24),
+    version_source VARCHAR(24) NOT NULL DEFAULT 'upload',
     identity_mode VARCHAR(16) NOT NULL DEFAULT 'strict',
     id          VARCHAR(36) PRIMARY KEY,
     card_id     VARCHAR(20) NOT NULL,

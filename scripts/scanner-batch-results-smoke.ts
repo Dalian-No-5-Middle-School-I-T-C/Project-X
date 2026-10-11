@@ -289,6 +289,66 @@ try {
     assert.equal(JSON.stringify(await db.get("SELECT status FROM twain_scan_sessions WHERE id=?", session.id)), statusBefore,
       "Rejected completions leave the session untouched");
   }
+  // Exercise an existing v60 database, rather than only a fresh v61 schema.
+  await db.run("ALTER TABLE twain_scan_sessions DROP COLUMN card_version");
+  await db.run("ALTER TABLE twain_scan_sessions DROP COLUMN version_source");
+  await db.run("DELETE FROM schema_migrations WHERE version = 61");
+  if (db.dialect === "mariadb") {
+    const { initMariadbSchema } = await import("../src/server/db/mysql");
+    await initMariadbSchema();
+    await initMariadbSchema();
+  } else {
+    const { getDatabase } = await import("../src/server/db");
+    const { runMigrations } = await import("../src/server/db/migrations");
+    runMigrations(getDatabase()); runMigrations(getDatabase());
+  }
+  assert.equal((await db.get<{ version_source: string }>("SELECT version_source FROM twain_scan_sessions WHERE id = ?", session.id))?.version_source, "legacy");
+  const historicalUser = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)",
+    "history-recovery", "test", "旧会话恢复", role.id, "92801");
+  await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, historicalUser.lastInsertRowid);
+  const historical = await makeSession(["92801"]);
+  assert.equal((await remote(historical.id)).status, 200);
+  await db.run("UPDATE student_scores SET objective_score=4,total_score=4,manually_modified=1 WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid);
+  await db.run("UPDATE question_scores SET score=4,manually_modified=1 WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid);
+  const historyRecord = (await store.listScanRecords(historical.id))[0];
+  await db.run(`INSERT INTO answer_block_crops (id,card_id,exam_id,student_id,source_type,source_record_id,block_id,block_type,page_number,segment_index,question_numbers,image_path,width_px,height_px,dpi,rect_json)
+    VALUES ('history-crop',?,?,?,'twain_scan_record',?,'objective','objective',1,0,'[1]','history-crop.png',1,1,300,'{}')`, card.id,exam.lastInsertRowid,historicalUser.lastInsertRowid,historyRecord.id);
+  const redundant = await makeSession(["92801"]);
+  assert.equal((await remote(redundant.id)).status, 409);
+  assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid), null);
+  await db.run("UPDATE scanner_submissions SET state='discarded' WHERE session_id=?", redundant.id);
+  await db.run("UPDATE scanner_submissions SET state='pending' WHERE session_id=?", historical.id);
+  await db.run("UPDATE twain_scan_sessions SET card_version=NULL,version_source='legacy' WHERE id=?", historical.id);
+  assert.equal((await remote(historical.id, "complete", {})).status, 200, "Pre-upgrade versionless buttons restore historical sessions");
+  assert.deepEqual(await db.get("SELECT card_version,version_source FROM twain_scan_sessions WHERE id=?", historical.id),
+    { card_version: cardVersion, version_source: "legacy_recovered" });
+  const restored = await db.get<{ total_score: number; manually_modified: number }>("SELECT total_score,manually_modified FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid);
+  assert.equal(Number(restored?.total_score), 4); assert.equal(Number(restored?.manually_modified), 1);
+  assert.equal(Number((await db.get<{ score: number }>("SELECT score FROM question_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid))?.score), 4);
+  const historyCrop = await db.get<{ exam_id: number; student_id: number }>("SELECT exam_id,student_id FROM answer_block_crops WHERE id='history-crop'");
+  assert.equal(Number(historyCrop?.exam_id), Number(exam.lastInsertRowid));
+  assert.equal(Number(historyCrop?.student_id), Number(historicalUser.lastInsertRowid));
+  assert.equal((await remote(historical.id, "complete", {})).status, 200, "Historical restoration is idempotent");
+  const ignoredRetry = await remote(redundant.id);
+  assert.equal(ignoredRetry.status, 200); assert.equal(ignoredRetry.data.failures?.length ?? 0, 0);
+  assert.equal((await db.get<{ state: string }>("SELECT state FROM scanner_submissions WHERE session_id=?", redundant.id))?.state, "discarded", "Retry cannot recreate archived duplicate receipts");
+  assert.equal((await remote(redundant.id, "correct", { groupId: "0", studentId: "91001" })).status, 409);
+  const persisted = await fetch(`http://127.0.0.1:${address.port}/api/scanner/upload/sessions`, {
+    method: "POST", headers: { "X-Api-Key": "scanner-test-only", "Content-Type": "application/json" },
+    body: JSON.stringify({ cardId: card.id, cardVersion, pageCount: 1 }),
+  });
+  assert.equal(persisted.status, 201);
+  const persistedId = (await persisted.json() as { sessionId: string }).sessionId;
+  assert.deepEqual(await db.get("SELECT card_version,version_source FROM twain_scan_sessions WHERE id=?", persistedId),
+    { card_version: cardVersion, version_source: "upload" });
+  const currentCard = (await new CardRepository().findById(card.id))!;
+  const changed = structuredClone(currentCard); changed.title += " edited";
+  await db.run("UPDATE answer_cards SET title=? WHERE id=?", changed.title, card.id);
+  assert.equal((await remote(historical.id, "complete", {})).status, 409, "Recovered versions remain pinned after card edits");
+  assert.equal((await remote(persistedId, "complete", { cardVersion: cardFingerprint((await new CardRepository().findById(card.id))!) })).status, 409,
+    "Current version cannot replace a session's original version");
+  await db.run("UPDATE answer_cards SET title=? WHERE id=?", currentCard.title, card.id);
+
   // A scanner key can save a new student's result after partial publication,
   // but cannot expose that score without a fresh teacher publication.
   const laterStudent = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)",

@@ -241,8 +241,8 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
     // 客户端后续 complete 会因页数为 0 而卡死。
     await db.transaction(async (tx) => {
       await tx.run(
-        `INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, page_count, identity_mode, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading')`,
+        `INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, page_count, identity_mode, card_version, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading')`,
         sessionId,
         String(cardId),
         name || `扫描_${new Date().toISOString().slice(0, 10)}`,
@@ -253,6 +253,7 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
         paperSize || "A4",
         requestedPages,
         parseIdentityMode(req.body?.identityMode),
+        parseCardVersion(req.body?.cardVersion),
       );
       for (let i = 0; i < requestedPages; i++) {
         await tx.run(
@@ -325,11 +326,11 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
     }
     // 安全（PR #312 复核 CR2）：/complete 部分失败时已保存的分组既没有 completed 会话也没有
     // completed 页面，只看状态会漏掉它们——那一页的成绩其实已经入库。改看回执归属。
-    const savedOwner = await savedReceiptOwnerOfPage(String(sessionId), token);
+    const savedOwner = await savedReceiptOwnerOfPage(String(sessionId), token, true);
     if (savedOwner) {
       res.status(409).json({
-        message: "该扫描页的成绩已入库，不能由上传直接改写；请在阅卷端撤回或订正后重新扫描",
-        code: "SCAN_PAGE_SAVED", examId: savedOwner.exam_id,
+        message: "该扫描页的成绩已入库或原卷已撤销，不能由上传直接改写",
+        code: savedOwner.state === "discarded" ? "SCAN_PAGE_DISCARDED" : "SCAN_PAGE_SAVED", examId: savedOwner.exam_id,
       });
       return;
     }
@@ -546,8 +547,8 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     const { sessionId } = req.params;
     const db = await getMysqlDb();
 
-    const session = await db.get<{ id: string; card_id: string; page_count: number; status: string }>(
-      "SELECT id, card_id, page_count, status FROM twain_scan_sessions WHERE id = ?",
+    const session = await db.get<{ id: string; card_id: string; page_count: number; status: string; card_version: string | null; version_source: string }>(
+      "SELECT id, card_id, page_count, status, card_version, version_source FROM twain_scan_sessions WHERE id = ?",
       sessionId
     );
     if (!session) {
@@ -556,7 +557,22 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     }
 
     // 安全 R35：扫描到入库之间可能隔了几十分钟，服务器上的卡在这期间被改过就不能再入库。
-    const versionProblem = await cardVersionProblem(session.card_id, req.body?.cardVersion);
+    // Versionless historic buttons can use the server's original fingerprint.
+    // Pre-v61 records have no original version: pin the current grading definition
+    // once, retain that provenance, and keep all identity/roster/duplicate gates.
+    // An explicitly supplied invalid/stale version must never fall back.
+    let version = req.body?.cardVersion;
+    if (version === undefined) {
+      version = session.card_version;
+      if (!version && session.version_source === "legacy") {
+        const card = await new CardRepository().findById(session.card_id);
+        if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+        await db.run("UPDATE twain_scan_sessions SET card_version = ?, version_source = 'legacy_recovered' WHERE id = ? AND card_version IS NULL AND version_source = 'legacy'",
+          cardFingerprint(card), sessionId);
+        version = (await db.get<{ card_version: string }>("SELECT card_version FROM twain_scan_sessions WHERE id = ?", sessionId))?.card_version;
+      }
+    }
+    const versionProblem = await cardVersionProblem(session.card_id, version);
     if (versionProblem) {
       console.warn(
         `[scanner-upload] 会话完成被拒（${versionProblem.code}）session=${sessionId} cardId=${session.card_id} ` +
@@ -564,6 +580,15 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
       );
       res.status(versionProblem.status).json({ code: versionProblem.code, message: versionProblem.message });
       return;
+    }
+
+    if (session.card_version && parseCardVersion(version) !== session.card_version) {
+      res.status(409).json({ code: "SESSION_CARD_VERSION_MISMATCH", message: "提交版本与原扫描会话不一致，请核对原会话答题卡版本" }); return;
+    }
+
+    if (!session.card_version && parseCardVersion(version)) {
+      await db.run("UPDATE twain_scan_sessions SET card_version = ?, version_source = ? WHERE id = ? AND card_version IS NULL",
+        parseCardVersion(version), session.version_source === "legacy" ? "legacy_verified" : session.version_source, sessionId);
     }
 
     const uploaded = await db.get<{ cnt: number }>(

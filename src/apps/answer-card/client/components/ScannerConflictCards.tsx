@@ -39,8 +39,7 @@ export function ScannerConflictCards({ cards, remote = false, request = authFetc
       const legacy = card.sessionId.startsWith("legacy:");
       const url = legacy ? `/api/scanner/${remote ? "upload/" : ""}legacy/${card.sessionId.slice(7)}/${encodeURIComponent(card.groupId)}/${save ? "save" : "correct"}`
         : `${base}/${save ? (remote ? "complete" : "results") : (remote ? "correct" : "retry")}`;
-      if (save && remote && !legacy && !saveSession) throw new Error("无法确定原会话答题卡版本，请从原上传任务重试");
-      const response = save && remote && !legacy ? await saveSession!(card.sessionId) : await request(url, {
+      const response = save && remote && !legacy && saveSession ? await saveSession(card.sessionId) : await request(url, {
         method: "POST", headers: { "Content-Type": "application/json" },
         ...(!save ? { body: JSON.stringify({ groupId: card.groupId, studentId: ids[key]?.trim() }) } : {}),
       });

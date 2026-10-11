@@ -535,16 +535,14 @@ async function main() {
       await waitTerminal(restarted, source);
       assert((await restarted.saveSession(source, "persist-1")).ok, "重建队列后仍可恢复有版本记录的原会话");
       assert(submitted.at(-1)?.version === TEST_CARD_VERSION, "重建队列仍使用持久化的原版本");
-      let rejected = false;
-      try { await restarted.saveSession(source, "unknown-history"); } catch { rejected = true; }
-      assert(rejected, "版本未知的历史卷明确报错，不以新任务版本代替");
+      assert((await restarted.saveSession(source, "unknown-history")).ok, "版本未知的历史卷由服务端恢复");
+      assert(submitted.at(-1)?.version === undefined, "历史卷不套用新任务的版本");
       values.set("projectx_server_url", "https://different-server.example");
       const otherServer = createScannerUploadManager(deps({ remoteFetch }));
       const other = otherServer.startUpload(baseInput(1));
       await waitTerminal(otherServer, other);
-      rejected = false;
-      try { await otherServer.saveSession(other, "persist-1"); } catch { rejected = true; }
-      assert(rejected, "版本回执按服务器与答题卡隔离");
+      assert((await otherServer.saveSession(other, "persist-1")).ok, "另一服务器由自身校验会话");
+      assert(submitted.at(-1)?.version === undefined, "版本回执按服务器与答题卡隔离");
     } finally {
       if (previous) Object.defineProperty(globalThis, "localStorage", previous);
       else delete (globalThis as { localStorage?: unknown }).localStorage;

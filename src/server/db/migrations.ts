@@ -1325,6 +1325,19 @@ MIGRATIONS.push({ version: 60, name: "answer-card-revision", up(db) {
   ensureExamClassMemberships(db);
 } });
 
+// Preserve the distinction between pre-upgrade sessions and new uploads. A current
+// fingerprint recovered later is never represented as the original scanner version.
+MIGRATIONS.push({ version: 61, name: "scanner-session-card-version", up(db) {
+  db.transaction(() => {
+    addColumnIfMissing(db, "twain_scan_sessions", "card_version", "VARCHAR(24)");
+    const historical = !hasColumn(db, "twain_scan_sessions", "version_source");
+    addColumnIfMissing(db, "twain_scan_sessions", "version_source", "VARCHAR(24) NOT NULL DEFAULT 'upload'");
+    if (historical && hasTable(db, "twain_scan_sessions")) {
+      db.exec("UPDATE twain_scan_sessions SET version_source = 'legacy'");
+    }
+  })();
+} });
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

@@ -131,6 +131,7 @@ export interface ScanBatchResult {
 }
 
 export interface ScanBatchResponse {
+  discardedGroups?: number;
   results: ScanBatchResult[];
   failures: ScanBatchFailure[];
   reviewCards?: ScanConflictCard[];

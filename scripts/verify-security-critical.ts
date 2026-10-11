@@ -522,8 +522,11 @@ async function main(): Promise<void> {
     const versionedSession = await createVersionedSession(remoteCardVersion);
     check(versionedSession.status === 201 && versionedSession.sessionId !== "", "版本一致的会话正常创建（201）");
     const completeNoVersion = await completeWithVersion(versionedSession.sessionId, undefined);
-    check(completeNoVersion.status === 400 && completeNoVersion.code === "CARD_VERSION_REQUIRED",
-      "完成阶段缺少 cardVersion 同样被 400 拒绝");
+    check(completeNoVersion.status === 400 && completeNoVersion.code !== "CARD_VERSION_REQUIRED"
+      && (db.prepare("SELECT card_version FROM twain_scan_sessions WHERE id=?").get(versionedSession.sessionId) as { card_version: string }).card_version === remoteCardVersion,
+      "完成阶段缺少客户端指纹时复用服务端原版本，未上传页面仍被完整性校验拒绝");
+    const completeInvalid = await completeWithVersion(versionedSession.sessionId, "");
+    check(completeInvalid.status === 400 && completeInvalid.code === "CARD_VERSION_REQUIRED", "显式非法指纹不能回退到服务端原版本");
     const completeMismatch = await completeWithVersion(versionedSession.sessionId, flipped);
     check(completeMismatch.status === 409 && completeMismatch.code === "CARD_VERSION_MISMATCH",
       "完成阶段版本不一致返回 409，不会触发识别入库");
