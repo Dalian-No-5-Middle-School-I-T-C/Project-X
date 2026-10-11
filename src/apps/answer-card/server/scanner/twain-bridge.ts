@@ -516,7 +516,10 @@ export async function scan(config: {
     const { stdout } = await runBridge(args, timeoutMs, sessionId, env);
     const result = parseBridgeJson(stdout) as unknown as BridgeScanResult;
     if (result.status === "error" && result.page_count === 0) {
-      throw new Error(result.message || "扫描未产生任何页面");
+      const message = result.message || "扫描未产生任何页面";
+      // Configuration and empty-feeder results cannot improve by changing DSM.
+      if (!/DSM|未找到可用扫描仪|无法打开扫描仪|MSG_ENABLEDS/.test(message)) return result;
+      throw Object.assign(new Error(message), { retryDsm: true });
     }
     return result;
   };
@@ -524,7 +527,8 @@ export async function scan(config: {
     return await attempt();
   } catch (firstError) {
     // 主动取消不重试；用户显式指定过 TWAIN_DSM_DLL 时尊重其配置，不自动切换
-    if ((sessionId && isCancelRequested(sessionId)) || process.env.TWAIN_DSM_DLL) throw firstError;
+    if ((sessionId && isCancelRequested(sessionId)) || process.env.TWAIN_DSM_DLL
+      || !(firstError as { retryDsm?: boolean }).retryDsm) throw firstError;
     const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
     console.warn(`[scanner] 首次扫描尝试失败（${firstMessage}），改用系统 twain_32.dll 重试一次`);
     try {

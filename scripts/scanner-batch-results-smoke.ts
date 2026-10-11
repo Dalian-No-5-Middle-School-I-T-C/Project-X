@@ -323,9 +323,10 @@ try {
   await db.run("UPDATE scanner_submissions SET state='discarded' WHERE session_id=?", redundant.id);
   await db.run("UPDATE scanner_submissions SET state='pending' WHERE session_id=?", historical.id);
   await db.run("UPDATE twain_scan_sessions SET card_version=NULL,version_source='legacy' WHERE id=?", historical.id);
-  assert.equal((await remote(historical.id, "complete", {})).status, 200, "Pre-upgrade versionless buttons restore historical sessions");
+  assert.equal((await remote(historical.id, "complete", {})).status, 400, "Unknown historical versions cannot be inferred from the current card");
+  assert.equal((await remote(historical.id, "complete", { cardVersion })).status, 200, "Original version receipt restores historical sessions");
   assert.deepEqual(await db.get("SELECT card_version,version_source FROM twain_scan_sessions WHERE id=?", historical.id),
-    { card_version: cardVersion, version_source: "legacy_recovered" });
+    { card_version: cardVersion, version_source: "legacy_verified" });
   const restored = await db.get<{ total_score: number; assigned_score: number; manually_modified: number }>("SELECT total_score,assigned_score,manually_modified FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid);
   assert.equal(Number(restored?.total_score), 4); assert.equal(Number(restored?.manually_modified), 1);
   assert.equal(Number(restored?.assigned_score), 82, "Recovery preserves custom assigned scores even when recalculation skips the formula");

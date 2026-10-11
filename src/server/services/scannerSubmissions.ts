@@ -183,6 +183,7 @@ async function restoreScoreSnapshot(tx: DbAdapter, row: Receipt): Promise<void> 
     }
   }
   const scoreColumns = ["exam_id", "student_id", "objective_score", "subjective_score", "total_score", "assigned_score", "graded_at", "manually_modified", "modified_by", "modified_at"];
+  await markScoreMutated(tx, examId, null, "scanner_save");
   await captureExamClasses(tx, examId, user.id);
   await tx.run(buildUpsertSQL(tx.dialect, "student_scores", scoreColumns, ["exam_id", "student_id"]),
     examId, user.id, ...scoreColumns.slice(2).map(c => value(snapshot.score, c)));
@@ -370,7 +371,8 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
         subjective_json: JSON.stringify(result.subjectiveQuestions), total_score: result.totalScore,
         max_score: result.totalMaxScore, page_count: result.pageCount } as StudentGradingResultRow);
     }
-    const response = await collectSessionResults(card, records, cached, mode === "save" ? async result => {
+    const activeRecords = [...groups].filter(([groupId]) => !discarded.has(groupId)).flatMap(([, rows]) => rows.map(row => row.record));
+    const response = await collectSessionResults(card, activeRecords, cached, mode === "save" ? async result => {
       const candidate = candidates.find(c => c.pages.some(p => p.recordId === result.pages[0]?.recordId));
       if (!candidate || discarded.has(candidate.groupId)) return;
       await db.transaction(async tx => {

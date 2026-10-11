@@ -567,21 +567,9 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     }
 
     // 安全 R35：扫描到入库之间可能隔了几十分钟，服务器上的卡在这期间被改过就不能再入库。
-    // Versionless historic buttons can use the server's original fingerprint.
-    // Pre-v61 records have no original version: pin the current grading definition
-    // once, retain that provenance, and keep all identity/roster/duplicate gates.
-    // An explicitly supplied invalid/stale version must never fall back.
-    let version = req.body?.cardVersion;
-    if (version === undefined) {
-      version = session.card_version;
-      if (!version && session.version_source === "legacy") {
-        const card = await new CardRepository().findById(session.card_id);
-        if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
-        await db.run("UPDATE twain_scan_sessions SET card_version = ?, version_source = 'legacy_recovered' WHERE id = ? AND card_version IS NULL AND version_source = 'legacy'",
-          cardFingerprint(card), sessionId);
-        version = (await db.get<{ card_version: string }>("SELECT card_version FROM twain_scan_sessions WHERE id = ?", sessionId))?.card_version;
-      }
-    }
+    // Only persisted or caller-held original fingerprints can establish compatibility.
+    // Unknown historical versions require re-recognition or an original version receipt.
+    const version = req.body?.cardVersion === undefined ? session.card_version : req.body.cardVersion;
     const versionProblem = await cardVersionProblem(session.card_id, version);
     if (versionProblem) {
       console.warn(

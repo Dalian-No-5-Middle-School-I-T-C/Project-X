@@ -93,6 +93,8 @@ jobs:
         run: npm run verify:scanner-review-regressions
       - name: Scanner abnormal upload and manual recovery
         run: npm run verify:scanner-upload-flow
+      - name: Scanner review fixes
+        run: npm run verify:scanner-review-fixes
       - name: Scanner batch timeout
         run: npm run verify:scanner-scan-timeout
 
