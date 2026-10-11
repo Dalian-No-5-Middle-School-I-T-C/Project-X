@@ -39,6 +39,7 @@ const MANIFEST_NAME = "SHA256SUMS.txt";
 const REPORT_NAME = "BUILD-INTEGRITY.txt";
 /** 构建中间物与本次输出，不进清单。 */
 const SKIP_NAMES = new Set([
+  ".DS_Store",
   MANIFEST_NAME,
   REPORT_NAME,
   "builder-debug.yml",
