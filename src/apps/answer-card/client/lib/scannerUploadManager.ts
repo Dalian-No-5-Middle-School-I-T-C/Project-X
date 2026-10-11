@@ -756,11 +756,16 @@ if (j.cancelled) throw cancelledError(j);
     return snapshot;
   }
 
-  async function refreshResults(id: string): Promise<void> {
+  async function refreshResults(id: string, actionSessionIds: string[] = []): Promise<void> {
     const source = jobs.find(j => j.id === id);
     if (!source) return;
-    for (const job of jobs.filter(j => j.remoteBase === source.remoteBase && j.apiKey === source.apiKey && j.cardId === source.cardId
-      && j.remoteSessionId && (j.status === "done" || j.status === "error"))) {
+    // Capture the links before refreshing: a corrected response may no longer
+    // contain the old conflicts, but their withdrawn jobs still need updating.
+    const sessions = new Set([source.remoteSessionId, ...actionSessionIds,
+      ...(source.reviewCards ?? []).map(card => card.sessionId),
+      ...(source.failures ?? []).flatMap(failure => failure.conflicts?.map(card => card.sessionId) ?? [])]);
+    const outcomes = await Promise.allSettled(jobs.filter(j => j.remoteBase === source.remoteBase && j.apiKey === source.apiKey && j.cardId === source.cardId
+      && j.remoteSessionId && sessions.has(j.remoteSessionId) && (j.status === "done" || j.status === "error")).map(async job => {
       const response = await jobFetch(job)(`/api/scanner/upload/sessions/${job.remoteSessionId}/results`, {
         signal: timeoutSignal(pageTimeoutMs),
       });
@@ -779,7 +784,9 @@ if (j.cancelled) throw cancelledError(j);
           : "仍有答题卡未保存，请核对后重新保存会话";
       }
       notify();
-    }
+    }));
+    const failed = outcomes.find(outcome => outcome.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
   }
 
   return {

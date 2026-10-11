@@ -182,7 +182,7 @@ async function restoreScoreSnapshot(tx: DbAdapter, row: Receipt): Promise<void> 
         examId, user.id, page.recordId);
     }
   }
-  const scoreColumns = ["exam_id", "student_id", "objective_score", "subjective_score", "total_score", "graded_at", "manually_modified", "modified_by", "modified_at"];
+  const scoreColumns = ["exam_id", "student_id", "objective_score", "subjective_score", "total_score", "assigned_score", "graded_at", "manually_modified", "modified_by", "modified_at"];
   await captureExamClasses(tx, examId, user.id);
   await tx.run(buildUpsertSQL(tx.dialect, "student_scores", scoreColumns, ["exam_id", "student_id"]),
     examId, user.id, ...scoreColumns.slice(2).map(c => value(snapshot.score, c)));
@@ -269,9 +269,11 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
       await db.transaction(async tx => {
         await lockExam(tx, exam.id);
         const old = await receipts(tx, exam.id);
+        const affectedStudents = new Set(candidates.map(c => c.studentNumber));
         for (const candidate of candidates) {
           const prior = old.find(r => r.session_id === sessionId && r.group_id === candidate.groupId);
           if (prior && prior.student_number !== candidate.studentNumber) {
+            affectedStudents.add(prior.student_number);
             // Corrections invalidate a previous receipt, never silently move a saved grade.
             await withdraw(tx, exam.id, prior.student_number);
             await tx.run("UPDATE scanner_submissions SET state = 'superseded', group_id = ? WHERE exam_id = ? AND session_id = ? AND group_id = ?",
@@ -329,8 +331,9 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
           exam.id, `legacy:${exam.id}`, String(score.student_id), studentNumber, "saved", 1, JSON.stringify(legacyPages), JSON.stringify({ score, questions }));
         }
         const all = await receipts(tx, exam.id);
-        for (const studentNumber of new Set(all.map(r => r.student_number))) {
+        for (const studentNumber of affectedStudents) {
           const related = all.filter(r => r.student_number === studentNumber);
+          let remaining = related;
           const local = candidates.filter(c => c.studentNumber === studentNumber);
           // Re-upload proof requires the original image and recognition evidence.
           // Multiple papers in one batch and legacy snapshots still need a teacher.
@@ -345,10 +348,10 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
               if (oldEvidence && newEvidence && JSON.stringify(oldEvidence) === JSON.stringify(newEvidence)) {
                 await tx.run("UPDATE scanner_submissions SET state = 'discarded' WHERE exam_id = ? AND session_id = ? AND group_id = ?", exam.id, sessionId, candidate.groupId);
                 discarded.add(candidate.groupId);
+                remaining = related.filter(r => r !== copy);
               }
             }
           }
-          const remaining = (await receipts(tx, exam.id)).filter(r => r.student_number === studentNumber);
           if (remaining.length > 1) await withdraw(tx, exam.id, studentNumber);
           // Resolved attempts remain pending until the teacher explicitly saves them.
           else await tx.run("UPDATE scanner_submissions SET state = 'pending' WHERE exam_id = ? AND student_number = ? AND state = 'conflict'", exam.id, studentNumber);

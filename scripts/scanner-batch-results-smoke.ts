@@ -310,7 +310,9 @@ try {
   await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, historicalUser.lastInsertRowid);
   const historical = await makeSession(["92801"]);
   assert.equal((await remote(historical.id)).status, 200);
-  await db.run("UPDATE student_scores SET objective_score=4,total_score=4,manually_modified=1 WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid);
+  const customFormula = JSON.stringify({ type: "custom", enabled: true, params: {}, expression: "raw * 2" });
+  await db.run("UPDATE exams SET assigned_formula=? WHERE id=?", customFormula, exam.lastInsertRowid);
+  await db.run("UPDATE student_scores SET objective_score=4,total_score=4,assigned_score=82,manually_modified=1 WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid);
   await db.run("UPDATE question_scores SET score=4,manually_modified=1 WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid);
   const historyRecord = (await store.listScanRecords(historical.id))[0];
   await db.run(`INSERT INTO answer_block_crops (id,card_id,exam_id,student_id,source_type,source_record_id,block_id,block_type,page_number,segment_index,question_numbers,image_path,width_px,height_px,dpi,rect_json)
@@ -324,8 +326,10 @@ try {
   assert.equal((await remote(historical.id, "complete", {})).status, 200, "Pre-upgrade versionless buttons restore historical sessions");
   assert.deepEqual(await db.get("SELECT card_version,version_source FROM twain_scan_sessions WHERE id=?", historical.id),
     { card_version: cardVersion, version_source: "legacy_recovered" });
-  const restored = await db.get<{ total_score: number; manually_modified: number }>("SELECT total_score,manually_modified FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid);
+  const restored = await db.get<{ total_score: number; assigned_score: number; manually_modified: number }>("SELECT total_score,assigned_score,manually_modified FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid);
   assert.equal(Number(restored?.total_score), 4); assert.equal(Number(restored?.manually_modified), 1);
+  assert.equal(Number(restored?.assigned_score), 82, "Recovery preserves custom assigned scores even when recalculation skips the formula");
+  await db.run("UPDATE exams SET assigned_formula=NULL WHERE id=?", exam.lastInsertRowid);
   assert.equal(Number((await db.get<{ score: number }>("SELECT score FROM question_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid))?.score), 4);
   const historyCrop = await db.get<{ exam_id: number; student_id: number }>("SELECT exam_id,student_id FROM answer_block_crops WHERE id='history-crop'");
   assert.equal(Number(historyCrop?.exam_id), Number(exam.lastInsertRowid));
@@ -480,7 +484,8 @@ try {
   const legacyUser = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)", "legacy", "test", "legacy", role.id, "91994");
   const legacyCorrected = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)", "legacy-fixed", "test", "legacy-fixed", role.id, "91995");
   for (const id of [legacyUser.lastInsertRowid, legacyCorrected.lastInsertRowid]) await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, id);
-  await db.run("INSERT INTO student_scores (exam_id,student_id,objective_score,subjective_score,total_score) VALUES (?,?,3,0,3)", exam.lastInsertRowid, legacyUser.lastInsertRowid);
+  await db.run("UPDATE exams SET assigned_formula=? WHERE id=?", customFormula, exam.lastInsertRowid);
+  await db.run("INSERT INTO student_scores (exam_id,student_id,objective_score,subjective_score,total_score,assigned_score) VALUES (?,?,3,0,3,73)", exam.lastInsertRowid, legacyUser.lastInsertRowid);
   await db.run("INSERT INTO question_scores (exam_id,student_id,question_number,score,max_score,score_type) VALUES (?,?,1,3,5,'objective')", exam.lastInsertRowid, legacyUser.lastInsertRowid);
   const legacyNew = await makeSession(["91994"]);
   const legacyConflict = await remote(legacyNew.id);
@@ -490,6 +495,8 @@ try {
   await recoverLegacyScannerSubmission(Number(exam.lastInsertRowid), String(legacyUser.lastInsertRowid), "91995");
   await recoverLegacyScannerSubmission(Number(exam.lastInsertRowid), String(legacyUser.lastInsertRowid));
   assert.equal((await db.get<{ total_score: number }>("SELECT total_score FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, legacyCorrected.lastInsertRowid))!.total_score, 3, "Restore exactly the teacher-reviewed legacy snapshot");
+  assert.equal(Number((await db.get<{ assigned_score: number }>("SELECT assigned_score FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, legacyCorrected.lastInsertRowid))?.assigned_score), 73, "Legacy correction preserves its custom assigned score too");
+  await db.run("UPDATE exams SET assigned_formula=NULL WHERE id=?", exam.lastInsertRowid);
   assert.equal((await remote(legacyNew.id)).status, 200);
   const repeatedPage = await createVerifiedRecord({ sessionId: session.id, cardId: card.id, pageNum: 1, imagePath: "duplicate-page.png" });
   await store.updateScanOcrResult(repeatedPage.id, "91001", 1, "done");

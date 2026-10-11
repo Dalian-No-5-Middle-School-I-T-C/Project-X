@@ -513,6 +513,43 @@ async function main() {
     assert(mgr.getState().jobs[0].status === "done", "普通问题卷订正后清理失败状态");
   }
   {
+    // Completed cards stay in the manager after their UI disappears. Reviewing
+    // a duplicate must not query 397 unrelated cards or stop at a stale owner.
+    let sessions = 0;
+    const refreshed: string[] = [];
+    const conflicts = ["batch-1", "batch-2", "batch-400"].map(sessionId => ({
+      sessionId, groupId: "0", studentId: "91001", pages: [], previouslySaved: sessionId !== "batch-400",
+    }));
+    const mgr = createScannerUploadManager(deps({ remoteFetch: async (url) => {
+      if (url.endsWith("/sessions")) return jsonRes({ sessionId: `batch-${++sessions}`, uploadTokens: ["token"] });
+      if (url.endsWith("batch-400/complete")) return jsonRes({ failures: [{ groupId: "0", studentId: "91001",
+        stage: "recognition", pages: [], message: "duplicate", conflicts }] }, 409);
+      if (url.endsWith("/results")) {
+        const session = url.split("/").at(-2)!;
+        refreshed.push(session);
+        if (session === "batch-1") return jsonRes({ message: "stale session" }, 404);
+        return jsonRes({ results: [{ groupId: "0", studentId: "91001", pages: [], saved: true }], failures: [] });
+      }
+      return jsonRes({ ok: true });
+    } }));
+    const ids: string[] = [];
+    for (let index = 0; index < 400; index++) {
+      const id = mgr.startUpload(baseInput(1)); ids.push(id);
+      await waitTerminal(mgr, id);
+    }
+    let rejected = false;
+    try { await mgr.refreshResults(ids[399]); } catch { rejected = true; }
+    assert(rejected, "失效的关联会话仍明确报告错误");
+    assert(refreshed.sort().join(",") === ["batch-1", "batch-2", "batch-400"].sort().join(","),
+      "400 份保留任务仅刷新三个冲突相关会话");
+    assert(mgr.getState().jobs.find(j => j.id === ids[1])?.status === "done", "失效会话不能阻止其它关联任务刷新");
+    assert(mgr.getState().jobs.find(j => j.id === ids[399])?.status === "done", "源任务也刷新成功");
+    refreshed.length = 0;
+    await mgr.refreshResults(ids[399], ["batch-2"]);
+    assert(refreshed.sort().join(",") === ["batch-2", "batch-400"].sort().join(","),
+      "冲突清单消失后仍刷新本次人工处理的目标会话");
+  }
+  {
     const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
     const values = new Map<string, string>();
     Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {

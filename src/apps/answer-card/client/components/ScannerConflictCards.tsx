@@ -8,7 +8,7 @@ export function ScannerConflictCards({ cards, remote = false, request = authFetc
   cards: ScanConflictCard[]; remote?: boolean;
   request?: (url: string, init?: RequestInit) => Promise<Response>;
   saveSession?: (sessionId: string) => Promise<Response>;
-  onChanged: () => void | Promise<void>;
+  onChanged: (sessionId: string) => void | Promise<void>;
 }) {
   const [ids, setIds] = useState<Record<string, string>>({});
   const [corrected, setCorrected] = useState<Record<string, string>>({});
@@ -44,7 +44,7 @@ export function ScannerConflictCards({ cards, remote = false, request = authFetc
         ...(!save ? { body: JSON.stringify({ groupId: card.groupId, studentId: ids[key]?.trim() }) } : {}),
       });
       const data = await response.json();
-      if (save) await onChanged();
+      if (save) await onChanged(card.sessionId);
       if (!response.ok) throw new Error(data.failures?.map((f: { message: string }) => f.message).join("；") || data.message || "处理失败");
       if (!save) setCorrected(old => ({ ...old, [key]: ids[key].trim() }));
       setMessage(save ? (data.failures?.length ? "仍有问题卷未保存，请继续核对" : "保存完成") : "学号已订正，请核对后重新保存相关卷");
@@ -60,7 +60,7 @@ export function ScannerConflictCards({ cards, remote = false, request = authFetc
       const data = await response.json();
       if (!response.ok) throw new Error(data.message || "作废失败");
       setMessage("该重复卷已作废，剩余卷可重新保存");
-      await onChanged();
+      await onChanged(card.sessionId);
     } catch (error) { setMessage(error instanceof Error ? error.message : "作废失败"); }
     finally { setBusy(false); }
   }

@@ -106,7 +106,9 @@
     "verify:scanner-batch-results": "tsx scripts/scanner-batch-results-smoke.ts",
     "verify:scanner-duplicate-rescan": "tsx scripts/duplicate-rescan-smoke.ts",
     "verify:scanner-upload-flow": "tsx scripts/scanner-upload-flow-smoke.ts",
-    "verify:scanner-scan-timeout": "tsx scripts/verify-scanner-scan-timeout.ts"
+    "verify:scanner-scan-timeout": "tsx scripts/verify-scanner-scan-timeout.ts",
+    "verify:scanner-panel-session": "tsx scripts/scanner-panel-session-smoke.ts",
+    "verify:scanner-review-regressions": "tsx scripts/scanner-review-regressions.ts"
   },
   "browserslist": [
     "iOS >= 15",
@@ -160,6 +162,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.3",
     "@types/fontkit": "^2.0.9",
+    "@types/jsdom": "^21.1.7",
     "@types/multer": "^2.0.0",
     "@types/node": "^24.3.0",
     "@types/pdfkit": "^0.17.3",
@@ -174,6 +177,7 @@
     "electron": "^39.8.10",
     "electron-builder": "^26.0.12",
     "esbuild": "^0.27.7",
+    "jsdom": "^26.1.0",
     "lucide-react": "^0.468.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",

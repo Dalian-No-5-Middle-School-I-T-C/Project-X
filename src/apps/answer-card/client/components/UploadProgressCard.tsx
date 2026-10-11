@@ -129,7 +129,7 @@ function UploadJobCard({
       {conflictCards.length > 0 && <ScannerConflictCards cards={conflictCards} remote
         request={(url, init) => scannerUploadManager.requestJob(job.id, url, init)}
         saveSession={sessionId => scannerUploadManager.saveSession(job.id, sessionId)}
-        onChanged={() => scannerUploadManager.refreshResults(job.id)} />}
+        onChanged={sessionId => scannerUploadManager.refreshResults(job.id, [sessionId])} />}
 
       {job.notice && (
         <p className="mt-2 break-words rounded-md bg-warning-soft px-2 py-1.5 text-xs text-warning-foreground">{job.notice}</p>

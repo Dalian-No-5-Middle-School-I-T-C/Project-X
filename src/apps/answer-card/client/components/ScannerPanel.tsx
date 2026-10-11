@@ -110,8 +110,9 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const [resultMessage, setResultMessage] = useState("");
   const [uploadJobs, setUploadJobs] = useState<Record<string, string>>({});
   const uploadJobsRef = useRef<Record<string, string>>({});
-  /** 安全 R35：本机这份答题卡的版本指纹，随上传交给服务器核验（空 = 还没读到卡） */
-  const [cardVersion, setCardVersion] = useState<string>("");
+  const sessionUploadRef = useRef<{ sessionId: string; cardId: string;
+    identityMode: "strict" | "legacy"; cardVersion: string; dpi: number; paperSize: string } | null>(null);
+  const scanAttemptRef = useRef(0);
   const uploadState = useSyncExternalStore(scannerUploadManager.subscribe, scannerUploadManager.getState);
   const [activeStudent, setActiveStudent] = useState<StudentResult | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -150,8 +151,6 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         if (active) {
           setPaperSize(card.paper?.size === "A3" ? "A3" : "A4");
           setDuplex(card.sided === "double");
-          // 安全 R35：上传时带上「本机正在用哪一版卡」，由服务器比对，避免用旧布局/旧答案判分后静默入库。
-          setCardVersion(cardFingerprint(card));
         }
       })
       .catch(() => undefined);
@@ -349,7 +348,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
             setState("done");
             // 通过 ref 读取最新页数，避免闭包捕获扫描开始时的空数组
             onScansComplete?.(sid, pagesRef.current.length);
-            // Wait for teacher review before saving or uploading successful cards.
+            // Summarize and queue successful cards using this session's snapshot.
             void fetchCombinedResults(sid);
             break;
         }
@@ -403,7 +402,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       applyResults(data);
       // 远端模式：成绩汇总一完成即自动后台上传（先出分、图片续传，进度见右上角进度条）
       if (getScannerMode() === "remote" && isRemoteServerConfigured()) {
-        queueSuccessfulUploads(data);
+        queueSuccessfulUploads(data, sid);
       }
     }
     catch (err) { setErrorMessage(err instanceof Error ? err.message : "汇总失败，请重试"); }
@@ -411,16 +410,18 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   }
 
   /** 把成功答题卡加入后台上传队列（自动与手动共用；已入队的组自动跳过） */
-  function queueSuccessfulUploads(data: ScanBatchResponse) {
+  function queueSuccessfulUploads(data: ScanBatchResponse, sid: string) {
+    const metadata = sessionUploadRef.current;
+    if (!metadata || metadata.sessionId !== sid) return;
     const nextJobs = { ...uploadJobsRef.current };
     let queued = 0;
     for (const result of data.results) {
       if (nextJobs[result.groupId]) continue;
       // Independent cards can finish even when another card fails remotely.
       nextJobs[result.groupId] = scannerUploadManager.startUpload({
-        identityMode: sessionLegacyIdentity ? "legacy" : "strict",
-        kind: "scan", cardId, name: `扫描_${result.studentId}`, dpi, paperSize,
-        cardVersion,
+        identityMode: metadata.identityMode,
+        kind: "scan", cardId: metadata.cardId, name: `扫描_${result.studentId}`,
+        dpi: metadata.dpi, paperSize: metadata.paperSize, cardVersion: metadata.cardVersion,
         pages: result.pages.map(page => ({
           pageNum: page.pageNum, side: page.side, groupId: result.groupId,
           layoutPage: page.layoutPage, studentId: result.studentId,
@@ -449,7 +450,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       const data = await readResults(sessionId, !remote);
       applyResults(data);
       if (remote) {
-        queueSuccessfulUploads(data);
+        queueSuccessfulUploads(data, sessionId);
       } else {
         setResultMessage(`已保存 ${data.results.filter(r => r.saved).length} 份；${data.failures.length} 份失败，可继续处理。`);
       }
@@ -480,6 +481,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   }
 
   async function startScan() {
+    const attempt = ++scanAttemptRef.current;
     // v2.5.6：不再因「没选到数据源」静默 return——那会把老师直接挡在门外且毫无反馈。
     // 留空是合法输入：服务端 sourceName 缺省为 ""，桥接在枚举为空或名称无匹配时
     // 回退 MSG_GETDEFAULT（系统默认数据源）；真失败时由 bridge 返回可诊断的错误。
@@ -492,12 +494,20 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     setCorrections({});
     setUploadJobs({});
     uploadJobsRef.current = {};
+    sessionUploadRef.current = null;
     setResultMessage("");
     reconnectAttemptsRef.current = 0;
     completedRef.current = false;
     setDisconnected(false);
 
     try {
+      // Fetch before starting OMR so even an early click has a nonempty, pinned
+      // version. SSE callbacks read the resulting session snapshot through a ref.
+      const cardResponse = await authFetch(`/api/cards/${encodeURIComponent(cardId)}`);
+      if (!cardResponse.ok) throw new Error("读取答题卡版本失败，请重试");
+      const version = cardFingerprint(await cardResponse.json() as AnswerCard);
+      if (attempt !== scanAttemptRef.current) return;
+      const identityMode = legacyIdentity ? "legacy" : "strict";
       const res = await authFetch("/api/scanner/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -507,7 +517,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           sessionName: `扫描_${cardId}_${new Date().toLocaleString("zh-CN")}`,
           dpi,
           duplex,
-          identityMode: legacyIdentity ? "legacy" : "strict",
+          identityMode,
           colorMode,
           paperSize,
           maxPages: maxSheets > 0 ? maxSheets * (duplex ? 2 : 1) : 0,
@@ -523,18 +533,27 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       }
 
       const data = await res.json();
+      if (attempt !== scanAttemptRef.current) {
+        void authFetch(`/api/scanner/scan/${data.sessionId}/cancel`, { method: "POST" }).catch(() => undefined);
+        return;
+      }
+      sessionUploadRef.current = { sessionId: data.sessionId, cardId, identityMode,
+        cardVersion: version, dpi, paperSize };
       sessionIdRef.current = data.sessionId;
       setSessionId(data.sessionId);
-      setSessionLegacyIdentity(legacyIdentity);
+      setSessionLegacyIdentity(identityMode === "legacy");
       setLegacyIdentity(false);
       listenProgress(data.sessionId);
     } catch (err) {
+      if (attempt !== scanAttemptRef.current) return;
       setErrorMessage(err instanceof Error ? err.message : "扫描失败");
       setState("error");
     }
   }
 
   function cancelScan() {
+    scanAttemptRef.current++;
+    sessionUploadRef.current = null;
     eventSourceRef.current?.close();
     if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     setDisconnected(false);
@@ -551,6 +570,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   }
 
   function reset() {
+    scanAttemptRef.current++;
     eventSourceRef.current?.close();
     if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     setDisconnected(false);
@@ -566,6 +586,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     setCorrections({});
     setUploadJobs({});
     uploadJobsRef.current = {};
+    sessionUploadRef.current = null;
     setResultMessage("");
     setActiveStudent(null);
     setProgressMessage("");
