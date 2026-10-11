@@ -166,10 +166,20 @@ export async function discardScannerGroup(card: AnswerCard, sessionId: string, g
       const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
       const group = groupSessionPages(card, records).groups.get(groupId);
       if (!group) throw new Error("答题卡分组不存在");
-      const receipt = await tx.get<{ state: string; result_json: string | null }>(
-        "SELECT state, result_json FROM scanner_submissions WHERE session_id = ? AND group_id = ? AND state != 'superseded'", sessionId, groupId);
-      if (receipt?.state === "saved" && receipt.result_json) {
+      const receipt = await tx.get<{ state: string; result_json: string | null; student_number: string; exam_id: number }>(
+        "SELECT state, result_json, student_number, exam_id FROM scanner_submissions WHERE session_id = ? AND group_id = ? AND state != 'superseded'", sessionId, groupId);
+      // 作废是破坏性动作（删除识别结果与切图），必须确属「重复学号冲突」才允许：
+      // 没有回执（未提交/已作废）或该学号只有一份回执时拒绝，避免任意或过期请求
+      // 把一张有效答题卡作废掉（与订正路由不同，这里此前缺少冲突前置校验）。
+      if (!receipt) throw new Error("该分组没有可作废的回执（未提交或已作废），不能作废");
+      if (receipt.state === "saved" && receipt.result_json) {
         throw new Error("该卷成绩已入库，不能作废；请作废其它重复副本");
+      }
+      const dup = await tx.get<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM scanner_submissions WHERE exam_id = ? AND student_number = ? AND state != 'superseded'",
+        receipt.exam_id, receipt.student_number);
+      if (Number(dup?.n ?? 0) < 2) {
+        throw new Error("该学号当前只有一份回执，不构成重复学号冲突，不能作废");
       }
       await tx.run("UPDATE scanner_submissions SET state = 'superseded', group_id = ? WHERE session_id = ? AND group_id = ? AND state != 'superseded'",
         `${groupId}:discarded:${Date.now()}`, sessionId, groupId);
