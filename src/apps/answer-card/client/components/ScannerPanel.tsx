@@ -505,7 +505,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       // version. SSE callbacks read the resulting session snapshot through a ref.
       const cardResponse = await authFetch(`/api/cards/${encodeURIComponent(cardId)}`);
       if (!cardResponse.ok) throw new Error("读取答题卡版本失败，请重试");
-      const version = cardFingerprint(await cardResponse.json() as AnswerCard);
+      const card = await cardResponse.json() as AnswerCard;
+      const version = cardFingerprint(card);
       if (attempt !== scanAttemptRef.current) return;
       const identityMode = legacyIdentity ? "legacy" : "strict";
       const res = await authFetch("/api/scanner/scan", {
