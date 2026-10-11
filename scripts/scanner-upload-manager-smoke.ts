@@ -458,8 +458,13 @@ async function main() {
     assert((await waitTerminal(mgr, old)).status === "done", "旧卷先正常完成");
     const duplicate = mgr.startUpload(baseInput(1));
     assert((await waitTerminal(mgr, duplicate)).status === "error", "新卷重复时应显示失败");
-    assert(mgr.getState().jobs.find(j => j.id === old)?.status === "error", "旧卷不能继续显示正常完成");
-    assert(mgr.getState().jobs.every(j => j.failures?.[0].conflicts?.length === 2), "新旧任务均保留所有冲突原卷");
+    // 故障隔离：409 只给兄弟卷挂非阻断提示，绝不把已完成的正常卷强制置错——
+    // 否则串行泵只跑 queued 任务，被误伤的正常卡永远排不上队（线上「一卡失败全军覆没」）。
+    const oldJob = mgr.getState().jobs.find(j => j.id === old);
+    assert(oldJob?.status === "done", `重复学号冲突不得把已完成的兄弟卷置错，实际 ${oldJob?.status}`);
+    assert(!!oldJob?.notice, "兄弟卷应收到非阻断的冲突提示 notice");
+    const dupJob = mgr.getState().jobs.find(j => j.id === duplicate);
+    assert(dupJob?.failures?.[0].conflicts?.length === 2, "重复卷自身应保留全部冲突原卷");
   }
   console.log("scanner-upload-manager-smoke: 全部通过");
 }

@@ -62,6 +62,8 @@ export interface UploadJobSnapshot {
   message: string;
   createdAt: number;
   failures?: ScanBatchFailure[];
+  /** 非终态提示：相关联的冲突（如重复学号撤出），不影响任务继续上传 */
+  notice?: string;
 }
 
 export interface UploadManagerSnapshot {
@@ -108,6 +110,8 @@ interface JobRecord {
   /** 用户取消标志：暂停/队列中任务被取消后置真，使挂起的 runWithRetry 原地退出 */
   cancelled: boolean;
   failures?: ScanBatchFailure[];
+  /** 非终态提示：相关联的冲突（如重复学号撤出），不影响任务继续上传 */
+  notice?: string;
 }
 
 export interface UploadManagerDeps {
@@ -239,6 +243,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         message: j.message,
         createdAt: j.createdAt,
         failures: j.failures,
+        notice: j.notice,
         reviewCards: j.reviewCards,
       })),
       activeJobId:
@@ -409,11 +414,11 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       const body = await res.clone().json().catch(() => ({}));
       if (Array.isArray(body.failures)) {
         j.failures = body.failures;
+        // 只提示、不终止：兄弟任务各自的 complete 会独立得到同样的冲突结论，
+        // 强制把兄弟任务置 error 会让正常卡永远排不上队（线上「一卡失败全军覆没」）。
         const affected = new Set<string>(body.failures.flatMap((f: ScanBatchFailure) => f.conflicts?.map(c => c.sessionId) ?? []));
         for (const other of jobs) if (other !== j && other.remoteBase === j.remoteBase && other.remoteSessionId && affected.has(other.remoteSessionId)) {
-          other.status = "error";
-          other.message = "重复学号：原已保存成绩已撤出，请核对新旧卷";
-          other.failures = body.failures;
+          other.notice = "相关联的重复学号冲突：本卷成绩可能已被撤出，请核对新旧卷（不阻断上传）";
         }
         notify();
       }

@@ -111,6 +111,10 @@ function UploadJobCard({
         request={(url, init) => scannerUploadManager.requestJob(job.id, url, init)}
         onChanged={() => void scannerUploadManager.refreshResults(job.id)} />}
 
+      {job.notice && (
+        <p className="mt-2 break-words rounded-md bg-warning-soft px-2 py-1.5 text-xs text-warning-foreground">{job.notice}</p>
+      )}
+
       {busy && (
         <>
           <Progress value={pct} size="sm" className="mt-2" />
