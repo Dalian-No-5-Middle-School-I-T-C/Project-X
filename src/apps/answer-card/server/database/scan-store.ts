@@ -275,14 +275,19 @@ export async function listStudentGradingResults(sessionId: string): Promise<Stud
 }
 
 /** Get scan records for a session grouped by student_id (for combined grading) */
+/** 教师作废重复卷时写入 twain_scan_records.ocr_error 的标记：
+ *  分组 / 会话结果 / 重试路径据此排除已作废记录，避免作废的卷每次刷新都报识别失败、
+ *  或被 /retry 重新识别后复活刚作废的回执。 */
+export const DISCARDED_OCR_ERROR = "重复卷已由教师作废";
+
 export async function listScanRecordsGroupedByStudent(sessionId: string): Promise<Array<{
   studentId: string;
   records: ScanRecordWithResult[];
 }>> {
   const d = db();
   const records = await d.all(
-    "SELECT r.*, s.identity_mode FROM twain_scan_records r JOIN twain_scan_sessions s ON s.id = r.session_id WHERE r.session_id = ? ORDER BY r.student_id, r.page_num, r.side",
-    sessionId
+    "SELECT r.*, s.identity_mode FROM twain_scan_records r JOIN twain_scan_sessions s ON s.id = r.session_id WHERE r.session_id = ? AND COALESCE(r.ocr_error, '') <> ? ORDER BY r.student_id, r.page_num, r.side",
+    sessionId, DISCARDED_OCR_ERROR
   ) as ScanRecord[];
 
   const grouped = new Map<string, ScanRecordWithResult[]>();
