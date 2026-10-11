@@ -108,6 +108,9 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const resultsBusyRef = useRef(false);
   const [resultMessage, setResultMessage] = useState("");
   const [uploadJobs, setUploadJobs] = useState<Record<string, string>>({});
+  const uploadJobsRef = useRef<Record<string, string>>({});
+  // 每个会话只自动入队一次（done 后 SSE 重连可能再次进入 done 分支）
+  const autoQueuedRef = useRef<string>("");
   /** 安全 R35：本机这份答题卡的版本指纹，随上传交给服务器核验（空 = 还没读到卡） */
   const [cardVersion, setCardVersion] = useState<string>("");
   const uploadState = useSyncExternalStore(scannerUploadManager.subscribe, scannerUploadManager.getState);
@@ -135,6 +138,9 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+  useEffect(() => {
+    uploadJobsRef.current = uploadJobs;
+  }, [uploadJobs]);
 
   useEffect(() => {
     let active = true;
@@ -392,9 +398,45 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     resultsBusyRef.current = true;
     setResultsBusy(true);
     setErrorMessage("");
-    try { applyResults(await readResults(sid)); }
+    try {
+      const data = await readResults(sid);
+      applyResults(data);
+      // 远端模式：成绩汇总一完成即自动后台上传（先出分、图片续传，进度见右上角进度条）
+      if (getScannerMode() === "remote" && isRemoteServerConfigured() && autoQueuedRef.current !== sid) {
+        autoQueuedRef.current = sid;
+        queueSuccessfulUploads(data);
+      }
+    }
     catch (err) { setErrorMessage(err instanceof Error ? err.message : "汇总失败，请重试"); }
     finally { resultsBusyRef.current = false; setResultsBusy(false); }
+  }
+
+  /** 把成功答题卡加入后台上传队列（自动与手动共用；已入队的组自动跳过） */
+  function queueSuccessfulUploads(data: ScanBatchResponse) {
+    const nextJobs = { ...uploadJobsRef.current };
+    let queued = 0;
+    for (const result of data.results) {
+      if (nextJobs[result.groupId]) continue;
+      // Independent cards can finish even when another card fails remotely.
+      nextJobs[result.groupId] = scannerUploadManager.startUpload({
+        identityMode: sessionLegacyIdentity ? "legacy" : "strict",
+        kind: "scan", cardId, name: `扫描_${result.studentId}`, dpi, paperSize,
+        cardVersion,
+        pages: result.pages.map(page => ({
+          pageNum: page.pageNum, side: page.side, groupId: result.groupId,
+          layoutPage: page.layoutPage, studentId: result.studentId,
+          getBlob: async () => {
+            const res = await authFetch(`/api/scanner/scan-image/${page.recordId}`);
+            if (!res.ok) throw new Error(`读取本机扫描图失败（HTTP ${res.status}）`);
+            return res.blob();
+          },
+        })),
+      });
+      queued++;
+    }
+    uploadJobsRef.current = nextJobs;
+    setUploadJobs(nextJobs);
+    if (queued > 0) setResultMessage("成功答题卡已自动加入上传队列，图片将在后台续传；失败答题卡保留在本机，可继续订正。");
   }
 
   async function saveSuccessful() {
@@ -408,27 +450,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       const data = await readResults(sessionId, !remote);
       applyResults(data);
       if (remote) {
-        const nextJobs = { ...uploadJobs };
-        for (const result of data.results) {
-          if (nextJobs[result.groupId]) continue;
-          // Independent cards can finish even when another card fails remotely.
-          nextJobs[result.groupId] = scannerUploadManager.startUpload({
-            identityMode: sessionLegacyIdentity ? "legacy" : "strict",
-            kind: "scan", cardId, name: `扫描_${result.studentId}`, dpi, paperSize,
-            cardVersion,
-            pages: result.pages.map(page => ({
-              pageNum: page.pageNum, side: page.side, groupId: result.groupId,
-              layoutPage: page.layoutPage, studentId: result.studentId,
-              getBlob: async () => {
-                const res = await authFetch(`/api/scanner/scan-image/${page.recordId}`);
-                if (!res.ok) throw new Error(`读取本机扫描图失败（HTTP ${res.status}）`);
-                return res.blob();
-              },
-            })),
-          });
-        }
-        setUploadJobs(nextJobs);
-        setResultMessage("成功答题卡已加入上传队列；失败答题卡保留在本机，可继续订正。");
+        queueSuccessfulUploads(data);
       } else {
         setResultMessage(`已保存 ${data.results.filter(r => r.saved).length} 份；${data.failures.length} 份失败，可继续处理。`);
       }
