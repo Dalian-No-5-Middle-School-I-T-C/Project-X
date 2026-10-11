@@ -455,6 +455,13 @@ export async function listSources(): Promise<ScannerSourcesResult> {
   };
 }
 
+/** 扫描子进程超时：按预期页数估算（5s/页 + 5 分钟缓冲，不低于旧默认 10 分钟）。
+ *  不限张数时给 1 小时兜底——native 侧 ADF 无纸 60s 空闲自退，长超时只是防驱动死锁的保险。 */
+export function scanTimeoutMs(maxPages: number): number {
+  if (maxPages > 0) return Math.max(600_000, maxPages * 5_000 + 300_000);
+  return 3_600_000;
+}
+
 export async function scan(config: {
   sourceName: string;
   dpi: number;
@@ -491,6 +498,6 @@ export async function scan(config: {
     args.push("--show-ui");
   }
 
-  const { stdout } = await runBridge(args, 600_000, sessionId); // 10 min timeout for scanning
+  const { stdout } = await runBridge(args, scanTimeoutMs(config.maxPages), sessionId);
   return parseBridgeJson(stdout) as unknown as BridgeScanResult;
 }

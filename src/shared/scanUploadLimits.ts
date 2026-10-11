@@ -37,8 +37,8 @@ const LIMIT_DEFS: Array<{
   // 单张原卷：默认 50 MiB；天花板 512 MiB 只是给超高分辨率整页留余地，再大属于误配。
   { key: "maxScanImageBytes", env: "PROJECTX_UPLOAD_MAX_SCAN_IMAGE_MIB", unit: "MiB", default: 50, ceiling: 512 },
   // 单个会话页数：pageCount 由扫描端上报，直接决定会话创建时写入的记录与令牌数量（R22）。
-  // 200 页 = A4 双面连扫 100 张卡；天花板 2000 页已远超任何单机扫描场景。
-  { key: "maxScanSessionPages", env: "PROJECTX_UPLOAD_MAX_SESSION_PAGES", unit: "count", default: 200, ceiling: 2000 },
+  // 800 页 = 400 张卡双面连扫（与扫描端单次批扫上限一致）；天花板 2000 页已远超单机场景。
+  { key: "maxScanSessionPages", env: "PROJECTX_UPLOAD_MAX_SESSION_PAGES", unit: "count", default: 800, ceiling: 2000 },
   // 单次切块数量：扫描端单页题块数远小于 50。
   { key: "maxCropsPerRequest", env: "PROJECTX_UPLOAD_MAX_CROPS_PER_REQUEST", unit: "count", default: 50, ceiling: 500 },
   // 单张切块是题块裁图，12 MiB 足够容纳 300dpi 整栏主观题大块。

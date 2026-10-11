@@ -88,7 +88,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const [showUi, setShowUi] = useState(false);
   const [colorMode, setColorMode] = useState<"gray" | "color" | "bw">("gray");
   const [paperSize, setPaperSize] = useState<"A4" | "Letter" | "A3">("A4");
-  const [maxPages, setMaxPages] = useState(0);
+  // 单次批扫上限按「张」输入（0=不限，最高 400 张）；发给服务端时按单双面折算成页数
+  const [maxSheets, setMaxSheets] = useState(0);
   // 等纸空闲超时（秒）：0=用 native 默认 60s。厚纸/慢速 ADF 进纸间隔大时需要调高，
   // 否则会出现「扫到一半提前收尾」。历史默认 15s 对 300/600dpi ADF 偏短。
   const [pageTimeoutSec, setPageTimeoutSec] = useState(0);
@@ -487,7 +488,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           identityMode: legacyIdentity ? "legacy" : "strict",
           colorMode,
           paperSize,
-          maxPages,
+          maxPages: maxSheets > 0 ? maxSheets * (duplex ? 2 : 1) : 0,
           showUi,
           // 0 表示沿用 native 默认（60000ms）
           pageTimeoutMs: pageTimeoutSec > 0 ? Math.round(pageTimeoutSec * 1000) : undefined,
@@ -717,13 +718,14 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                   </SelectContent>
                 </Select>
               </Field>
-              <Field label="最大页数">
+              <Field label="单次最多张数">
                 <Input
                   type="number"
                   min={0}
-                  value={maxPages}
-                  onChange={(e) => setMaxPages(Number(e.target.value))}
-                  placeholder="0=不限"
+                  max={400}
+                  value={maxSheets}
+                  onChange={(e) => setMaxSheets(Math.max(0, Math.min(400, Math.trunc(Number(e.target.value)) || 0)))}
+                  placeholder="0=不限（最高400）"
                 />
               </Field>
             </div>

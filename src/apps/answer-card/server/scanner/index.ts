@@ -131,7 +131,8 @@ export function createScannerRouter(twainEnabled = true): Router {
           duplex: body.duplex === true,
           colorMode: body.colorMode || "gray",
           paperSize: body.paperSize || "A4",
-          maxPages: body.maxPages || 0,
+          // 400 张双面 = 800 页；超出夹紧，防止异常入参把扫描子进程挂到超时
+          maxPages: Math.min(800, Math.max(0, Math.floor(Number(body.maxPages) || 0))),
           showUi: body.showUi === true,
           pageTimeoutMs: normalizePageTimeoutMs(body.pageTimeoutMs)
         };
