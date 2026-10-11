@@ -881,6 +881,9 @@ bool TwainController::setCapability(TW_UINT16 cap, TW_UINT16 type, void* value) 
         case TWTY_UINT16:
             *(TW_UINT16*)&pVal->Item = *(TW_UINT16*)value;
             break;
+        case TWTY_INT16:
+            *(TW_INT16*)&pVal->Item = *(TW_INT16*)value;
+            break;
         case TWTY_INT32:
             *(TW_INT32*)&pVal->Item = *(TW_INT32*)value;
             break;
@@ -1022,8 +1025,10 @@ bool TwainController::setXferCount() {
     // TWAIN 规范中 CAP_XFERCOUNT 默认值为 1：不显式设置时 DS 只向应用交付 1 页
     // 就结束会话（柯达 i3000 实测：ADF 照常走纸但只收到 1 张）。
     // -1 表示不限张数，是 ADF 批量扫描的标准做法，必须在 ENABLEDS 前设置。
-    TW_INT32 unlimited = -1;
-    bool ok = setCapability(CAP_XFERCOUNT, TWTY_INT32, &unlimited);
+    // 规范规定 CAP_XFERCOUNT 为 TWON_ONEVALUE/TWTY_INT16：用 INT32 协商会被严格
+    // 数据源拒绝，而调用方忽略返回值 → 修复静默失效，故必须按 INT16 收发。
+    TW_INT16 unlimited = -1;
+    bool ok = setCapability(CAP_XFERCOUNT, TWTY_INT16, &unlimited);
     // 回读确认实际生效值（同 setPaperSize 的做法）：驱动拒绝时至少留下诊断日志
     TW_CAPABILITY current;
     memset(&current, 0, sizeof(current));
@@ -1031,10 +1036,10 @@ bool TwainController::setXferCount() {
     TW_UINT16 rc = DSM_Entry(&m_appId, &m_sourceId,
         DG_CONTROL, DAT_CAPABILITY, MSG_GETCURRENT,
         (TW_MEMREF)&current);
-    TW_INT32 effective = -1;
+    TW_INT16 effective = -1;
     if (rc == TWRC_SUCCESS && current.hContainer) {
         pTW_ONEVALUE value = static_cast<pTW_ONEVALUE>(GlobalLock(current.hContainer));
-        if (value && value->ItemType == TWTY_INT32) effective = static_cast<TW_INT32>(value->Item);
+        if (value && value->ItemType == TWTY_INT16) effective = static_cast<TW_INT16>(value->Item);
         if (value) GlobalUnlock(current.hContainer);
         GlobalFree(current.hContainer);
     }
