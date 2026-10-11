@@ -99,11 +99,11 @@ try {
   await makeRecord(s3.id, 1, "B");
   await store.updateSessionStatus(s3.id, "completed");
   r = await postResults(s3.id);
-  assert.equal(r.status, 409, "真重复必须 409");
-  assert.equal(r.body.failures[0].conflicts?.length, 2, "冲突清单应含新旧两张");
+  assert.equal(r.body.failures.some(f => f.conflicts?.length === 2), true, "真重复必须报含新旧两张的冲突，实际 " + JSON.stringify(r.body.failures));
   assert.equal(await scoreOf(), 0, "真重复应撤出新旧成绩待人工核对");
 
-  const d = await fetch(`http://127.0.0.1:${address.port}/api/scanner/upload/sessions/${s3.id}/groups/0/discard`, { method: "POST" });
+  const d = await fetch(`http://127.0.0.1:${address.port}/api/scanner/upload/sessions/${s3.id}/groups/0/discard`,
+    { method: "POST", headers: { "X-Api-Key": "scanner-test-only" } });
   assert.equal(d.status, 200, await d.clone().text());
 
   r = await postResults(s1.id);

@@ -77,6 +77,27 @@ function conflictCard(row: Receipt): ScanConflictCard {
     previouslySaved: Boolean(row.previously_saved), totalScore: snapshot?.score?.total_score ?? result?.totalScore,
     pages: JSON.parse(row.pages_json) as ScanBatchPage[] };
 }
+
+/** 候选组的识别内容与已保存回执是否逐题一致（重扫判重依据）。
+ *  只比较识别内容本身（客观题题号+选项、主观题题号+自报分），
+ *  不含打分衍生的对错/得分字段——两侧 JSON 形状不同，直接比字符串永远不会相等。 */
+async function candidateMatchesSavedResult(tx: DbAdapter, candidate: { pages: ScanBatchPage[] }, saved: CombinedStudentResult): Promise<boolean> {
+  if (saved.pageCount !== candidate.pages.length) return false;
+  const marks = candidate.pages.map(() => "?").join(",");
+  const rows = await tx.all<{ objective_json: string | null; subjective_json: string | null }>(
+    `SELECT objective_json, subjective_json FROM twain_recognition_results WHERE scan_record_id IN (${marks})`,
+    ...candidate.pages.map(p => p.recordId));
+  if (rows.length !== candidate.pages.length || rows.some(r => !r.objective_json || !r.subjective_json)) return false;
+  type Item = Record<string, unknown>;
+  const canonical = (items: Item[], pick: (item: Item) => Item) =>
+    JSON.stringify(items.map(pick).sort((a, b) => String(a.questionNumber).localeCompare(String(b.questionNumber))));
+  const objectiveOf = (q: Item) => ({ questionNumber: q.questionNumber, selectedOptions: q.selectedOptions });
+  const subjectiveOf = (q: Item) => ({ questionId: q.questionId, questionNumber: q.questionNumber, score: q.score, maxScore: q.maxScore });
+  return canonical(rows.flatMap(r => JSON.parse(r.objective_json!) as Item[]), objectiveOf)
+      === canonical(saved.objectiveQuestions as unknown as Item[], objectiveOf)
+    && canonical(rows.flatMap(r => JSON.parse(r.subjective_json!) as Item[]), subjectiveOf)
+      === canonical(saved.subjectiveQuestions as unknown as Item[], subjectiveOf);
+}
 async function withdraw(db: DbAdapter, examId: number, studentNumber: string, reason: "scanner_duplicate" | "scanner_retry" = "scanner_duplicate") {
   const user = await db.get<{ id: number }>("SELECT id FROM users WHERE student_number = ?", studentNumber);
   if (!user) return;
@@ -134,6 +155,31 @@ export async function invalidateScanRecognition(sessionId: string, recordId: str
       analysisCache.invalidateExam(examId);
       await recomputeExamRankings(db, examId);
     }
+  });
+}
+
+/** 教师作废一张重复卷：回执置 superseded、页面标记作废。已入库（saved 且有成绩）的卷拒绝作废。 */
+export async function discardScannerGroup(card: AnswerCard, sessionId: string, groupId: string): Promise<void> {
+  return enqueueScannerSubmission(async () => {
+    const db = getMysqlDb();
+    await db.transaction(async tx => {
+      const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
+      const group = groupSessionPages(card, records).groups.get(groupId);
+      if (!group) throw new Error("答题卡分组不存在");
+      const receipt = await tx.get<{ state: string; result_json: string | null }>(
+        "SELECT state, result_json FROM scanner_submissions WHERE session_id = ? AND group_id = ? AND state != 'superseded'", sessionId, groupId);
+      if (receipt?.state === "saved" && receipt.result_json) {
+        throw new Error("该卷成绩已入库，不能作废；请作废其它重复副本");
+      }
+      await tx.run("UPDATE scanner_submissions SET state = 'superseded', group_id = ? WHERE session_id = ? AND group_id = ? AND state != 'superseded'",
+        `${groupId}:discarded:${Date.now()}`, sessionId, groupId);
+      for (const { record } of group) {
+        await tx.run("UPDATE twain_scan_records SET student_id = NULL, ocr_status = 'failed', ocr_error = '重复卷已由教师作废' WHERE id = ? AND session_id = ?", record.id, sessionId);
+        await tx.run("DELETE FROM twain_recognition_results WHERE scan_record_id = ?", record.id);
+        await tx.run("DELETE FROM answer_block_crops WHERE source_type = 'twain_scan_record' AND source_record_id = ?", record.id);
+      }
+      await tx.run("DELETE FROM twain_student_grading_results WHERE session_id = ?", sessionId);
+    });
   });
 }
 
@@ -206,6 +252,9 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
       return ids.length === 1 ? [{ groupId, studentNumber: ids[0], pages: rows.map(r => r.page) }] : [];
     });
     const { exams, exam } = await resolveScannerExam(card.id, sessionId);
+    // P1 重扫判重：与已保存回执内容一致的本次会话分组，tx 内置 superseded 后置此集合，
+    // 函数级声明是因为冲突后置循环在 tx 块外（rescannedGroups 在两处都要用）。
+    const rescannedGroups = new Set<string>();
     if (!exam) {
       return collectSessionResults(card, records, [], mode === "save" ? async () => {
         throw new Error(exams.length === 0 ? "答题卡未关联可阅卷的考试，成绩未入库" : "答题卡关联多个考试，无法确定成绩归属");
@@ -276,7 +325,27 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
         }
         const all = await receipts(tx, exam.id);
         for (const studentNumber of new Set(all.map(r => r.student_number))) {
-          if (all.filter(r => r.student_number === studentNumber).length > 1) await withdraw(tx, exam.id, studentNumber);
+          const withNumber = all.filter(r => r.student_number === studentNumber);
+          if (withNumber.length > 1) {
+            // P1 重扫判重：同学生、识别内容逐题一致 ⇒ 同一物理卡的重扫副本。
+            // 作废多余副本并保留成绩——绝不能按「新 vs 旧」撤回（线上一张卡反复重传，
+            // 每次都把上一次已保存的成绩撤掉，成绩永远存不住、冲突卡越滚越多）。
+            const saved = withNumber.find(r => r.state === "saved" && r.result_json);
+            const localCandidates = candidates.filter(c => c.studentNumber === studentNumber);
+            // 仅当本次会话对该学号只有一份候选（=同一物理卡重扫重传）才做内容级判重；
+            // 一次会话内同学号出现多份是本地重复（真冲突），必须保留人工核对，不能自动消化。
+            if (saved && localCandidates.length === 1) {
+              const candidate = localCandidates[0];
+              const savedResult = JSON.parse(saved.result_json!) as CombinedStudentResult;
+              if (await candidateMatchesSavedResult(tx, candidate, savedResult)) {
+                await tx.run("UPDATE scanner_submissions SET state = 'superseded', group_id = ? WHERE exam_id = ? AND session_id = ? AND group_id = ?",
+                  `${candidate.groupId}:rescan:${Date.now()}`, exam.id, sessionId, candidate.groupId);
+                rescannedGroups.add(candidate.groupId);
+              }
+            }
+          }
+          const remaining = (await receipts(tx, exam.id)).filter(r => r.student_number === studentNumber);
+          if (remaining.length > 1) await withdraw(tx, exam.id, studentNumber);
           // Resolved attempts remain pending until the teacher explicitly saves them.
           else await tx.run("UPDATE scanner_submissions SET state = 'pending' WHERE exam_id = ? AND student_number = ? AND state = 'conflict'", exam.id, studentNumber);
         }
@@ -310,6 +379,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
     } : undefined);
     all = await receipts(db, exam.id);
     for (const candidate of candidates) {
+      if (rescannedGroups.has(candidate.groupId)) continue;   // 重扫副本已自动消化，不再报冲突
       const others = all.filter(r => r.student_number === candidate.studentNumber && !(r.session_id === sessionId && r.group_id === candidate.groupId));
       const localDuplicates = candidates.filter(c => c.studentNumber === candidate.studentNumber);
       if (others.length === 0 && localDuplicates.length < 2) continue;

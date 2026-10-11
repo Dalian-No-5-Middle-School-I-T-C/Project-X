@@ -1,4 +1,4 @@
-import { processScannerSession } from "../../../../server/services/scannerSubmissions";
+import { processScannerSession, discardScannerGroup } from "../../../../server/services/scannerSubmissions";
 import { scannerLegacyRecoveryRouter } from "../../../../server/routes/scanner-legacy-recovery";
 import {
   filterRecognitionJson,
@@ -546,6 +546,19 @@ export function createScannerRouter(twainEnabled = true): Router {
         });
         await sessionResults(sessionId, false, res, true);
       });
+    } catch (error) { next(error); }
+  });
+
+  // 作废不调用本机识别器，不用 twainEnabled 闸门；discard 与后续 validate 都走提交队列保证顺序
+  router.post("/session/:sessionId/groups/:groupId/discard", async (req, res, next) => {
+    try {
+      const sessionId = safeId(req.params.sessionId);
+      const session = await getSession(sessionId);
+      if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
+      const card = await findCardForLayout(session.card_id);
+      if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+      await discardScannerGroup(card, sessionId, String(req.params.groupId));
+      res.json(await processScannerSession(card, sessionId, "validate"));
     } catch (error) { next(error); }
   });
 
