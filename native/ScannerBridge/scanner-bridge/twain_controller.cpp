@@ -598,6 +598,7 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         return result;
     }
     enableADF();
+    setXferCount();   // 必须在 ENABLEDS 之前；不设时驱动默认只交付 1 页
     
     // 5. Enable source (shows scanner UI or goes to ready state)
     if (!enableSource(m_config.showUi)) {
@@ -1015,6 +1016,31 @@ bool TwainController::enableADF() {
     setCapability(CAP_AUTOFEED, TWTY_BOOL, &autoFeed);
     
     return true;  // Best effort
+}
+
+bool TwainController::setXferCount() {
+    // TWAIN 规范中 CAP_XFERCOUNT 默认值为 1：不显式设置时 DS 只向应用交付 1 页
+    // 就结束会话（柯达 i3000 实测：ADF 照常走纸但只收到 1 张）。
+    // -1 表示不限张数，是 ADF 批量扫描的标准做法，必须在 ENABLEDS 前设置。
+    TW_INT32 unlimited = -1;
+    bool ok = setCapability(CAP_XFERCOUNT, TWTY_INT32, &unlimited);
+    // 回读确认实际生效值（同 setPaperSize 的做法）：驱动拒绝时至少留下诊断日志
+    TW_CAPABILITY current;
+    memset(&current, 0, sizeof(current));
+    current.Cap = CAP_XFERCOUNT;
+    TW_UINT16 rc = DSM_Entry(&m_appId, &m_sourceId,
+        DG_CONTROL, DAT_CAPABILITY, MSG_GETCURRENT,
+        (TW_MEMREF)&current);
+    TW_INT32 effective = -1;
+    if (rc == TWRC_SUCCESS && current.hContainer) {
+        pTW_ONEVALUE value = static_cast<pTW_ONEVALUE>(GlobalLock(current.hContainer));
+        if (value && value->ItemType == TWTY_INT32) effective = static_cast<TW_INT32>(value->Item);
+        if (value) GlobalUnlock(current.hContainer);
+        GlobalFree(current.hContainer);
+    }
+    fprintf(stderr, "[ScannerBridge] CAP_XFERCOUNT set=%s effective=%d\n",
+        ok ? "ok" : "rejected", static_cast<int>(effective));
+    return ok;
 }
 
 // ── Image Capture ─────────────────────────────────────
