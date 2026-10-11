@@ -103,7 +103,10 @@
     "verify:stage-vc-runtime": "tsx scripts/verify-stage-vc-runtime.ts",
     "verify:grading-published-exam": "tsx scripts/verify-grading-published-exam.ts",
     "verify:scanner-upload-manager": "tsx scripts/scanner-upload-manager-smoke.ts",
-    "verify:scanner-batch-results": "tsx scripts/scanner-batch-results-smoke.ts"
+    "verify:scanner-batch-results": "tsx scripts/scanner-batch-results-smoke.ts",
+    "verify:scanner-duplicate-rescan": "tsx scripts/duplicate-rescan-smoke.ts",
+    "verify:scanner-upload-flow": "tsx scripts/scanner-upload-flow-smoke.ts",
+    "verify:scanner-scan-timeout": "tsx scripts/verify-scanner-scan-timeout.ts"
   },
   "browserslist": [
     "iOS >= 15",

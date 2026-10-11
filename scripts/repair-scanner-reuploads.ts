@@ -3,11 +3,11 @@
  * --apply. The audit directory must be private and outside version control.
  */
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getMysqlDb, resetAdapter } from "../src/server/db/mysql";
 import { recoverScannerSubmissionSnapshot } from "../src/server/services/scannerSubmissions";
+import { scannerDuplicateEvidence } from "../src/server/services/scannerDuplicateEvidence";
 
 interface Receipt {
   exam_id: number; session_id: string; group_id: string; student_number: string;
@@ -28,22 +28,8 @@ try {
   const evidence: Array<{ receipt: Receipt; hashes: string[] }> = [];
   for (const row of rows.filter(r => r.state === "conflict")) {
     const pages = JSON.parse(row.pages_json) as Array<{ recordId: string; layoutPage: number }>;
-    if (!pages.length) continue;
-    const hashes: string[] = [];
-    for (const page of [...pages].sort((a, b) => a.layoutPage - b.layoutPage)) {
-      const record = await db.get<{ image_path: string; student_id: string; identity_json: string | null;
-        objective_json: string | null; subjective_json: string | null; grade_status: string }>(
-        `SELECT r.image_path,r.student_id,r.identity_json,g.objective_json,g.subjective_json,g.grade_status
-         FROM twain_scan_records r JOIN twain_recognition_results g ON g.scan_record_id=r.id
-         WHERE r.id=? AND r.session_id=?`, page.recordId, row.session_id);
-      if (!record || record.student_id !== row.student_number) break;
-      try {
-        const imageHash = createHash("sha256").update(await readFile(record.image_path)).digest("hex");
-        hashes.push(createHash("sha256").update(JSON.stringify([page.layoutPage, imageHash,
-          record.student_id, record.identity_json, record.objective_json, record.subjective_json, record.grade_status])).digest("hex"));
-      } catch { break; }
-    }
-    if (hashes.length !== pages.length) continue;
+    const hashes = await scannerDuplicateEvidence(db, row.session_id, row.student_number, pages);
+    if (!hashes) continue;
     evidence.push({ receipt: row, hashes });
     const key = JSON.stringify([row.exam_id, row.student_number, hashes]);
     groups.set(key, [...(groups.get(key) ?? []), row]);

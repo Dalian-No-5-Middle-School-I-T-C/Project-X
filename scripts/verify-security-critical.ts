@@ -778,7 +778,7 @@ async function main(): Promise<void> {
     const asString = (limits: Record<string, number>) => JSON.stringify(limits);
     const untouched = resolveScanUploadLimits({});
     check(asString(untouched.limits) === asString(DEFAULT_SCAN_UPLOAD_LIMITS) && untouched.notices.length === 0,
-      "全部未配置时按默认上限生效且无告警（原卷 50MiB / 会话 200 页 / 切块 50 张·12MiB·160MiB / 批量 300 张·1GiB）");
+      "全部未配置时按默认上限生效且无告警（原卷 50MiB / 会话 800 页 / 切块 50 张·12MiB·160MiB / 批量 300 张·1GiB）");
     const overridden = resolveScanUploadLimits({
       PROJECTX_UPLOAD_MAX_SESSION_PAGES: "500",
       PROJECTX_UPLOAD_MAX_CROPS_TOTAL_MIB: "512",
@@ -807,7 +807,7 @@ async function main(): Promise<void> {
       && clamped.notices.length === 2 && clamped.notices.every((n) => n.includes("天花板")),
       "超过安全天花板的配置被夹紧而不是照单全收（放宽有上界）");
     const describeText = describeScanUploadLimits();
-    check(describeText.includes("50MiB") && describeText.includes("≤200")
+    check(describeText.includes("50MiB") && describeText.includes("≤800")
       && describeText.includes("≤300") && describeText.includes("1024MiB"),
       "启动摘要按当前生效值输出，运维无需读代码即可确认闸门档位");
 

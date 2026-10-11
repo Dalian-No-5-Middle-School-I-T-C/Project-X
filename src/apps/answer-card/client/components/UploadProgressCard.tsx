@@ -2,7 +2,8 @@
 // 数据源 scannerUploadManager 单例；成功 3 秒自动收起，失败保留并可重试。
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { CheckCircle2, CloudUpload, PauseCircle, RefreshCw, X, XCircle } from "lucide-react";
-import { Button, Progress, Spinner } from "./ui/v2";
+import { Button, Input, Progress, Spinner } from "./ui/v2";
+import { ScanPreviewModal, type ScanPage } from "./ScanPreviewModal";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
 import type { UploadJobSnapshot } from "../lib/scannerUploadManager";
 import { ServerStatusIndicator } from "./ServerStatusIndicator";
@@ -103,6 +104,10 @@ function UploadJobCard({
   queuedCount: number;
   onDismiss: (id: string) => void;
 }) {
+  const [studentId, setStudentId] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [preview, setPreview] = useState<ScanPage[]>([]);
+  useEffect(() => () => { for (const page of preview) URL.revokeObjectURL(page.imageUrl); }, [preview]);
   const kindLabel = job.kind === "scan" ? "直扫上传" : "导入上传";
   const pct = job.total === 0 ? 0 : Math.round((job.uploaded / job.total) * 100);
   const busy = job.status === "creating" || job.status === "uploading" || job.status === "completing";
@@ -125,6 +130,10 @@ function UploadJobCard({
         request={(url, init) => scannerUploadManager.requestJob(job.id, url, init)}
         saveSession={sessionId => scannerUploadManager.saveSession(job.id, sessionId)}
         onChanged={() => scannerUploadManager.refreshResults(job.id)} />}
+
+      {job.notice && (
+        <p className="mt-2 break-words rounded-md bg-warning-soft px-2 py-1.5 text-xs text-warning-foreground">{job.notice}</p>
+      )}
 
       {busy && (
         <>
@@ -196,6 +205,21 @@ function UploadJobCard({
             <p>{failure.studentId}：{failure.message}</p>
           </div>)}
           <div className="mt-1.5">
+            {job.failedPages.length > 0 && <div className="mb-2 flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={() => {
+                void scannerUploadManager.getFailedPageBlobs(job.id).then(pages => {
+                  setPreview(pages.map(page => ({ recordId: page.recordId, pageNum: page.pageNum, side: page.side, imageUrl: URL.createObjectURL(page.blob) })));
+                }).catch(error => setActionError(String(error.message)));
+              }}>查看失败原卷</Button>
+              {job.canCorrectStudentId && <>
+                <Input aria-label="订正上传卷学号" placeholder="核对原卷后输入学号" value={studentId} onChange={event => setStudentId(event.target.value)} />
+                <Button variant="outline" size="sm" disabled={!studentId.trim()} onClick={() => {
+                  try { scannerUploadManager.correctStudentId(job.id, studentId.trim()); setActionError(""); }
+                  catch (error) { setActionError(error instanceof Error ? error.message : "订正失败"); }
+                }}>订正学号并重试</Button>
+              </>}
+            </div>}
+            {actionError && <p role="alert">{actionError}</p>}
             <Button
               variant="outline"
               size="sm"
@@ -207,6 +231,7 @@ function UploadJobCard({
           </div>
         </div>
       )}
+      {preview.length > 0 && <ScanPreviewModal title="上传失败原卷" pages={preview} onClose={() => setPreview([])} />}
     </div>
   );
 }

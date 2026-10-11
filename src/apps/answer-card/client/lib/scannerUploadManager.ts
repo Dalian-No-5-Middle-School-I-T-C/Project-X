@@ -62,6 +62,9 @@ export interface UploadJobSnapshot {
   message: string;
   createdAt: number;
   failures?: ScanBatchFailure[];
+  /** 非终态提示：相关联的冲突（如重复学号撤出），不影响任务继续上传 */
+  notice?: string;
+  canCorrectStudentId: boolean;
 }
 
 export interface UploadManagerSnapshot {
@@ -108,6 +111,8 @@ interface JobRecord {
   /** 用户取消标志：暂停/队列中任务被取消后置真，使挂起的 runWithRetry 原地退出 */
   cancelled: boolean;
   failures?: ScanBatchFailure[];
+  /** 非终态提示：相关联的冲突（如重复学号撤出），不影响任务继续上传 */
+  notice?: string;
 }
 
 function pendingReviewCards(sessionId: string, batch: ScanBatchResponse): ScanConflictCard[] {
@@ -267,6 +272,8 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         message: j.message,
         createdAt: j.createdAt,
         failures: j.failures,
+        notice: j.notice,
+        canCorrectStudentId: new Set(j.pages.map(p => p.input.groupId ?? `sheet:${p.input.pageNum}`)).size === 1,
         reviewCards: j.reviewCards,
       })),
       activeJobId:
@@ -440,8 +447,13 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         j.reviewCards = pendingReviewCards(j.remoteSessionId!, body);
         const affected = new Set<string>(body.failures.flatMap((f: ScanBatchFailure) => f.conflicts?.map(c => c.sessionId) ?? []));
         for (const other of jobs) if (other !== j && other.remoteBase === j.remoteBase && other.remoteSessionId && affected.has(other.remoteSessionId)) {
-          other.status = "error";
-          other.message = "重复学号：原已保存成绩已撤出，请核对新旧卷";
+          other.notice = "相关重复学号卷需核对；扫描和上传继续进行";
+          // An in-flight or queued task must finish its own upload. A withdrawn
+          // saved grade must stop displaying success, while retaining recovery.
+          if (other.status === "done" || other.status === "error") {
+            other.status = "error";
+            other.message = "重复学号：原已保存成绩已撤出，请核对新旧卷";
+          }
           // Describe only attempts belonging to this task, keeping all evidence.
           const localFailures: ScanBatchFailure[] = body.failures.flatMap((failure: ScanBatchFailure) =>
             (failure.conflicts ?? []).filter(card => card.sessionId === other.remoteSessionId)
@@ -453,6 +465,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       throw await httpError(res);
     }
     j.failures = undefined;
+    j.notice = undefined;
     const body = await res.json().catch(() => ({}));
     j.reviewCards = body.reviewCards;
   }
@@ -757,6 +770,7 @@ if (j.cancelled) throw cancelledError(j);
       // after another session has been saved and the duplicate failures disappear.
       job.reviewCards = pendingReviewCards(job.remoteSessionId!, body);
       job.failures = body.failures;
+      if (!body.failures?.length) job.notice = undefined;
       const allSaved = (body.results?.length > 0 || (body.discardedGroups ?? 0) > 0)
         && body.results.every((r: { saved: boolean }) => r.saved);
       if (!job.pages.some(p => p.failed)) {
@@ -769,6 +783,21 @@ if (j.cancelled) throw cancelledError(j);
   }
 
   return {
+    getFailedPageBlobs: async (id: string) => {
+      const job = jobs.find(j => j.id === id);
+      if (!job) throw new Error("上传任务已关闭");
+      return Promise.all(job.pages.filter(p => p.failed).map(async page => ({
+        recordId: page.token, pageNum: page.input.pageNum, side: page.input.side, blob: await page.input.getBlob(),
+      })));
+    },
+    correctStudentId: (id: string, studentId: string) => {
+      const job = jobs.find(j => j.id === id);
+      if (!job || job.status !== "error" || !job.pages.some(p => p.failed)) throw new Error("此任务没有可订正的失败页");
+      if (!/^[0-9A-Za-z_-]{1,64}$/.test(studentId)) throw new Error("请输入有效学号");
+      if (new Set(job.pages.map(p => p.input.groupId ?? `sheet:${p.input.pageNum}`)).size !== 1) throw new Error("请逐份答题卡订正学号");
+      for (const page of job.pages) page.input.studentId = studentId;
+      retryFailed(id);
+    },
     refreshResults,
     saveSession: async (id: string, sessionId: string) => {
       const source = jobs.find(j => j.id === id);

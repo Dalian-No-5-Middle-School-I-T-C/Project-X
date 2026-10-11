@@ -12,6 +12,7 @@ import { ensureExamParticipants, isExamParticipant } from "./examParticipants";
 import { databaseTimestamp } from "../db/timestamp";
 import { markScoreMutated } from "./examPublishEvents";
 import { captureExamClasses } from "./examClassMemberships";
+import { scannerDuplicateEvidence } from "./scannerDuplicateEvidence";
 
 /** Resolve persisted receipt ownership, including retries after exam closure. */
 export async function findSavedScannerOwners(db: DbAdapter, sessionId: string, groupId: string,
@@ -134,6 +135,29 @@ export async function invalidateScanRecognition(sessionId: string, recordId: str
       analysisCache.invalidateExam(examId);
       await recomputeExamRankings(db, examId);
     }
+  });
+}
+
+/** Archive only a verified conflict copy; retain all source evidence for review. */
+export async function discardScannerGroup(card: AnswerCard, sessionId: string, groupId: string): Promise<void> {
+  return enqueueScannerSubmission(async () => {
+    const db = getMysqlDb();
+    await db.transaction(async tx => {
+      const receipt = await tx.get<Receipt>(
+        "SELECT * FROM scanner_submissions WHERE session_id = ? AND group_id = ? AND state NOT IN ('superseded','discarded')", sessionId, groupId);
+      if (!receipt) throw new Error("该分组没有可作废的回执，请刷新结果");
+      await lockExam(tx, receipt.exam_id);
+      if (!await tx.get("SELECT id FROM exams WHERE id = ? AND card_id = ?", receipt.exam_id, card.id)) throw new Error("答题卡与考试不匹配");
+      const current = (await receipts(tx, receipt.exam_id)).find(r => r.session_id === sessionId && r.group_id === groupId);
+      if (!current) throw new Error("此卷不构成重复学号冲突，不能作废");
+      if (current.previously_saved || current.score_snapshot || current.state === "saved") throw new Error("原已入库卷及成绩快照不能作废，请核对其它副本");
+      if (current.state !== "conflict") throw new Error("此卷不构成重复学号冲突，不能作废");
+      if ((await receipts(tx, receipt.exam_id)).filter(r => r.student_number === current.student_number).length < 2) throw new Error("该学号只有一份有效回执，不能作废");
+      await tx.run("UPDATE scanner_submissions SET state = 'discarded' WHERE exam_id = ? AND session_id = ? AND group_id = ?", receipt.exam_id, sessionId, groupId);
+      if ((await receipts(tx, receipt.exam_id)).filter(r => r.student_number === current.student_number).length === 1) {
+        await tx.run("UPDATE scanner_submissions SET state = 'pending' WHERE exam_id = ? AND student_number = ? AND state = 'conflict'", receipt.exam_id, current.student_number);
+      }
+    });
   });
 }
 
@@ -306,7 +330,26 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
         }
         const all = await receipts(tx, exam.id);
         for (const studentNumber of new Set(all.map(r => r.student_number))) {
-          if (all.filter(r => r.student_number === studentNumber).length > 1) await withdraw(tx, exam.id, studentNumber);
+          const related = all.filter(r => r.student_number === studentNumber);
+          const local = candidates.filter(c => c.studentNumber === studentNumber);
+          // Re-upload proof requires the original image and recognition evidence.
+          // Multiple papers in one batch and legacy snapshots still need a teacher.
+          if (related.length > 1 && local.length === 1) {
+            const candidate = local[0];
+            const copy = related.find(r => r.session_id === sessionId && r.group_id === candidate.groupId);
+            const original = related.find(r => r.state === "saved" && r.result_json
+              && !(r.session_id === sessionId && r.group_id === candidate.groupId));
+            if (original && copy && !copy.previously_saved && !copy.score_snapshot && copy.state !== "saved") {
+              const oldEvidence = await scannerDuplicateEvidence(tx, original.session_id, studentNumber, JSON.parse(original.pages_json));
+              const newEvidence = await scannerDuplicateEvidence(tx, sessionId, studentNumber, candidate.pages);
+              if (oldEvidence && newEvidence && JSON.stringify(oldEvidence) === JSON.stringify(newEvidence)) {
+                await tx.run("UPDATE scanner_submissions SET state = 'discarded' WHERE exam_id = ? AND session_id = ? AND group_id = ?", exam.id, sessionId, candidate.groupId);
+                discarded.add(candidate.groupId);
+              }
+            }
+          }
+          const remaining = (await receipts(tx, exam.id)).filter(r => r.student_number === studentNumber);
+          if (remaining.length > 1) await withdraw(tx, exam.id, studentNumber);
           // Resolved attempts remain pending until the teacher explicitly saves them.
           else await tx.run("UPDATE scanner_submissions SET state = 'pending' WHERE exam_id = ? AND student_number = ? AND state = 'conflict'", exam.id, studentNumber);
         }
@@ -326,7 +369,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
     }
     const response = await collectSessionResults(card, records, cached, mode === "save" ? async result => {
       const candidate = candidates.find(c => c.pages.some(p => p.recordId === result.pages[0]?.recordId));
-      if (!candidate) return;
+      if (!candidate || discarded.has(candidate.groupId)) return;
       await db.transaction(async tx => {
         await lockExam(tx, exam.id);
         const current = await receipts(tx, exam.id);
@@ -346,6 +389,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
     } : undefined);
     all = await receipts(db, exam.id);
     for (const candidate of candidates) {
+      if (discarded.has(candidate.groupId)) continue;
       const others = all.filter(r => r.student_number === candidate.studentNumber && !(r.session_id === sessionId && r.group_id === candidate.groupId));
       const localDuplicates = candidates.filter(c => c.studentNumber === candidate.studentNumber);
       if (others.length === 0 && localDuplicates.length < 2) continue;

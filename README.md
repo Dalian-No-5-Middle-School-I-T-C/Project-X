@@ -791,7 +791,7 @@ Project-X/
 
 > **扫描/判分上传限制**（安全 R22/R28，单一来源 `src/shared/scanUploadLimits.ts`）
 >
-> 默认档位：单张原卷 50 MiB；单个会话 1–200 页；切块单次 50 张 / 单张 12 MiB / 累计 160 MiB；
+> 默认档位：单张原卷 50 MiB；单个会话 1–800 页；切块单次 50 张 / 单张 12 MiB / 累计 160 MiB；
 > 单页上传请求累计 64 MiB；批量判分与识别上传单次 300 张 / 累计 1 GiB。
 > 超限分别返回 400（数量、页码）或 413（单张体积、累计字节，累计字节超限的 `code` 为 `UPLOAD_BUDGET_EXCEEDED`）。
 >
@@ -801,7 +801,7 @@ Project-X/
 > | 环境变量 | 默认 | 天花板 |
 > |----------|------|--------|
 > | `PROJECTX_UPLOAD_MAX_SCAN_IMAGE_MIB` | 50 | 512 |
-> | `PROJECTX_UPLOAD_MAX_SESSION_PAGES` | 200 | 2000 |
+> | `PROJECTX_UPLOAD_MAX_SESSION_PAGES` | 800 | 2000 |
 > | `PROJECTX_UPLOAD_MAX_CROPS_PER_REQUEST` | 50 | 500 |
 > | `PROJECTX_UPLOAD_MAX_CROP_IMAGE_MIB` | 12 | 128 |
 > | `PROJECTX_UPLOAD_MAX_CROPS_TOTAL_MIB` | 160 | 2048 |

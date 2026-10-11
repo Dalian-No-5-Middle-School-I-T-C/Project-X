@@ -41,7 +41,7 @@ import { CardRepository } from "../repositories/CardRepository";
 import { ExamRepository } from "../repositories/ExamRepository";
 import { ensureExamParticipants, listMissingParticipants } from "../services/examParticipants";
 import { recomputeExamRankings } from "../services/rankingUpdate";
-import { processScannerSession, enqueueScannerSubmission, findSavedScannerOwners, invalidateScanRecognition, savedReceiptOwnerOfPage } from "../services/scannerSubmissions";
+import { processScannerSession, enqueueScannerSubmission, findSavedScannerOwners, invalidateScanRecognition, savedReceiptOwnerOfPage, discardScannerGroup } from "../services/scannerSubmissions";
 import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
 import { groupSessionPages } from "../../apps/answer-card/server/scanner/session-results";
 import { scannerLegacyRecoveryRouter } from "./scanner-legacy-recovery";
@@ -415,7 +415,7 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, cropUploadBu
       return;
     }
     // 安全（PR #312 复核 CR2）：切块是阅卷人实际看到的图，同样不能覆盖已入库回执的页面。
-    if (await savedReceiptOwnerOfPage(sessionId, recordId)) {
+    if (await savedReceiptOwnerOfPage(sessionId, recordId, true)) {
       res.status(409).json({ message: "该扫描页的成绩已入库，切块不可再由上传改写", code: "SCAN_PAGE_SAVED" });
       return;
     }
@@ -538,6 +538,16 @@ router.post("/sessions/:sessionId/correct", dualAuth, async (req, res, next) => 
         for (const { record } of group) await tx.run("UPDATE twain_scan_records SET student_id = ? WHERE id = ? AND session_id = ?", studentId, record.id, sessionId);
       });
     });
+    res.json(await processScannerSession(card, sessionId, "validate"));
+  } catch (error) { next(error); }
+});
+router.post("/sessions/:sessionId/groups/:groupId/discard", dualAuth, async (req, res, next) => {
+  try {
+    const sessionId = String(req.params.sessionId);
+    const session = await getMysqlDb().get<{ card_id: string }>("SELECT card_id FROM twain_scan_sessions WHERE id = ?", sessionId);
+    const card = session && await new CardRepository().findById(session.card_id);
+    if (!card) { res.status(404).json({ message: "扫描会话或答题卡不存在" }); return; }
+    await discardScannerGroup(card, sessionId, String(req.params.groupId));
     res.json(await processScannerSession(card, sessionId, "validate"));
   } catch (error) { next(error); }
 });

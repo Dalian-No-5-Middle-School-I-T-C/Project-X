@@ -548,6 +548,36 @@ async function main() {
       else delete (globalThis as { localStorage?: unknown }).localStorage;
     }
   }
+  // A manual retry already in the queue must survive another task's duplicate response.
+  {
+    let sessions = 0;
+    let oldCompletions = 0;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let duplicateCompleting = false;
+    const mgr = createScannerUploadManager(deps({ remoteFetch: async url => {
+      if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: `isolation-${++sessions}`, uploadTokens: ["token"] });
+      if (url.endsWith("isolation-1/complete")) return ++oldCompletions === 1
+        ? jsonRes({ message: "待人工处理", failures: [] }, 409) : jsonRes({ ok: true });
+      if (url.endsWith("isolation-2/complete")) {
+        duplicateCompleting = true; await gate;
+        return jsonRes({ failures: [{ groupId: "0", studentId: "91001", pages: [], message: "重复学号", conflicts: [
+          { sessionId: "isolation-1", groupId: "0", studentId: "91001", pages: [], previouslySaved: false },
+          { sessionId: "isolation-2", groupId: "0", studentId: "91001", pages: [], previouslySaved: false },
+        ] }] }, 409);
+      }
+      return jsonRes({ ok: true });
+    } }));
+    const old = mgr.startUpload(baseInput(1)); await waitTerminal(mgr, old);
+    const duplicate = mgr.startUpload(baseInput(1));
+    while (!duplicateCompleting) await sleepReal(5);
+    mgr.retryFailed(old);
+    const normal = mgr.startUpload(baseInput(1));
+    release();
+    assert((await waitTerminal(mgr, duplicate)).status === "error", "重复卷单独待处理");
+    assert((await waitTerminal(mgr, old)).status === "done" && oldCompletions === 2, "关联的排队重试不会被置错跳过");
+    assert((await waitTerminal(mgr, normal)).status === "done", "后续正常卷继续上传");
+  }
   console.log("scanner-upload-manager-smoke: 全部通过");
 }
 
