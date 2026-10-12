@@ -1,6 +1,6 @@
 {
   "name": "answer-card-designer",
-  "version": "2.6.0",
+  "version": "2.6.1",
   "description": "Project-X answer card scanning desktop app; Web version deployed separately via dist/web/.",
   "author": "Project-X",
   "private": true,
@@ -102,7 +102,16 @@
     "verify:scanner-page-timeout": "tsx scripts/verify-scanner-page-timeout.ts",
     "verify:stage-vc-runtime": "tsx scripts/verify-stage-vc-runtime.ts",
     "verify:grading-published-exam": "tsx scripts/verify-grading-published-exam.ts",
-    "verify:scanner-batch-results": "tsx scripts/scanner-batch-results-smoke.ts"
+    "verify:scanner-upload-manager": "tsx scripts/scanner-upload-manager-smoke.ts",
+    "verify:scanner-batch-results": "tsx scripts/scanner-batch-results-smoke.ts",
+    "verify:scanner-duplicate-rescan": "tsx scripts/duplicate-rescan-smoke.ts",
+    "verify:scanner-upload-flow": "tsx scripts/scanner-upload-flow-smoke.ts",
+    "verify:scanner-duplex-correction": "tsx scripts/scanner-duplex-correction-smoke.ts",
+    "verify:scanner-correction-safety": "tsx scripts/scanner-correction-safety-smoke.ts",
+    "verify:scanner-scan-timeout": "tsx scripts/verify-scanner-scan-timeout.ts",
+    "verify:scanner-panel-session": "tsx scripts/scanner-panel-session-smoke.ts",
+    "verify:scanner-review-regressions": "tsx scripts/scanner-review-regressions.ts",
+    "verify:scanner-review-fixes": "tsx scripts/scanner-discard-regression.ts && tsx scripts/scanner-version-regression.ts && tsx scripts/scanner-publish-regression.ts && tsx scripts/scanner-dsm-regression.ts"
   },
   "browserslist": [
     "iOS >= 15",
@@ -156,6 +165,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.3",
     "@types/fontkit": "^2.0.9",
+    "@types/jsdom": "^21.1.7",
     "@types/multer": "^2.0.0",
     "@types/node": "^24.3.0",
     "@types/pdfkit": "^0.17.3",
@@ -170,6 +180,7 @@
     "electron": "^39.8.10",
     "electron-builder": "^26.0.12",
     "esbuild": "^0.27.7",
+    "jsdom": "^26.1.0",
     "lucide-react": "^0.468.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",

@@ -7,8 +7,8 @@ import { authFetch, getStoredApiKey, remoteScannerFetch } from "../auth/api";
 import { SERVER_URL_KEY, readServerUrl } from "./scannerMode";
 import { assertCredentialTransportAllowed } from "./remoteCredentialTransport";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
-import { applyScanStudentId } from "../../../../shared/scanPages";
-import type { ScanBatchFailure, ScanConflictCard } from "../../../../shared/scanPages";
+import { applyScanStudentId, uniqueScanConflictCards } from "../../../../shared/scanPages";
+import type { ScanBatchFailure, ScanConflictCard, ScanBatchResponse } from "../../../../shared/scanPages";
 
 export type UploadJobKind = "scan" | "import";
 export type UploadJobStatus =
@@ -62,6 +62,9 @@ export interface UploadJobSnapshot {
   message: string;
   createdAt: number;
   failures?: ScanBatchFailure[];
+  /** 非终态提示：相关联的冲突（如重复学号撤出），不影响任务继续上传 */
+  notice?: string;
+  canCorrectStudentId: boolean;
 }
 
 export interface UploadManagerSnapshot {
@@ -84,6 +87,8 @@ interface PageRecord {
 }
 
 interface JobRecord {
+  /** Synchronize released, already-uploaded sides before retrying this card. */
+  pendingStudentId?: string;
   reviewCards?: ScanConflictCard[];
   id: string;
   kind: UploadJobKind;
@@ -108,6 +113,18 @@ interface JobRecord {
   /** 用户取消标志：暂停/队列中任务被取消后置真，使挂起的 runWithRetry 原地退出 */
   cancelled: boolean;
   failures?: ScanBatchFailure[];
+  /** 非终态提示：相关联的冲突（如重复学号撤出），不影响任务继续上传 */
+  notice?: string;
+}
+
+function pendingReviewCards(sessionId: string, batch: ScanBatchResponse): ScanConflictCard[] {
+  return uniqueScanConflictCards([
+    ...(batch.results ?? []).filter(r => !r.saved).map(r => ({ sessionId, groupId: r.groupId,
+      studentId: r.studentId, pages: r.pages, previouslySaved: false })),
+    ...(batch.failures ?? []).filter(f => !f.conflicts?.length).map(f => ({ sessionId, groupId: f.groupId,
+      studentId: f.studentId ?? "", pages: f.pages, previouslySaved: false })),
+    ...(batch.reviewCards ?? []),
+  ]);
 }
 
 export interface UploadManagerDeps {
@@ -217,6 +234,24 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
   }
 
   const jobs: JobRecord[] = [];
+  // Keep small version receipts after a completed task releases its image data.
+  const sessionVersions = new Map<string, string>();
+  const versionKey = (job: JobRecord, sessionId: string) => JSON.stringify([job.remoteBase, job.cardId, sessionId]);
+  function rememberSessionVersion(job: JobRecord, sessionId: string): void {
+    const key = versionKey(job, sessionId);
+    sessionVersions.set(key, job.cardVersion);
+    try { localStorage.setItem(`projectx_scanner_session_version/${key}`, job.cardVersion); }
+    catch { /* In-memory receipts still work when browser storage is unavailable. */ }
+  }
+  function rememberedSessionVersion(job: JobRecord, sessionId: string): string | undefined {
+    const key = versionKey(job, sessionId);
+    const cached = sessionVersions.get(key);
+    if (cached) return cached;
+    try {
+      const saved = localStorage.getItem(`projectx_scanner_session_version/${key}`);
+      return saved && /^[0-9a-f]{24}$/i.test(saved) ? saved : undefined;
+    } catch { return undefined; }
+  }
   const listeners = new Set<() => void>();
   let snapshot: UploadManagerSnapshot = { jobs: [], activeJobId: null, queuedCount: 0 };
   let running = false;
@@ -239,6 +274,8 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         message: j.message,
         createdAt: j.createdAt,
         failures: j.failures,
+        notice: j.notice,
+        canCorrectStudentId: new Set(j.pages.map(p => p.input.groupId ?? `sheet:${p.input.pageNum}`)).size === 1,
         reviewCards: j.reviewCards,
       })),
       activeJobId:
@@ -409,17 +446,28 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       const body = await res.clone().json().catch(() => ({}));
       if (Array.isArray(body.failures)) {
         j.failures = body.failures;
+        j.reviewCards = pendingReviewCards(j.remoteSessionId!, body);
         const affected = new Set<string>(body.failures.flatMap((f: ScanBatchFailure) => f.conflicts?.map(c => c.sessionId) ?? []));
         for (const other of jobs) if (other !== j && other.remoteBase === j.remoteBase && other.remoteSessionId && affected.has(other.remoteSessionId)) {
-          other.status = "error";
-          other.message = "重复学号：原已保存成绩已撤出，请核对新旧卷";
-          other.failures = body.failures;
+          other.notice = "相关重复学号卷需核对；扫描和上传继续进行";
+          // An in-flight or queued task must finish its own upload. A withdrawn
+          // saved grade must stop displaying success, while retaining recovery.
+          if (other.status === "done" || other.status === "error") {
+            other.status = "error";
+            other.message = "重复学号：原已保存成绩已撤出，请核对新旧卷";
+          }
+          // Describe only attempts belonging to this task, keeping all evidence.
+          const localFailures: ScanBatchFailure[] = body.failures.flatMap((failure: ScanBatchFailure) =>
+            (failure.conflicts ?? []).filter(card => card.sessionId === other.remoteSessionId)
+              .map(card => ({ ...failure, groupId: card.groupId, studentId: card.studentId, pages: card.pages })));
+          other.failures = [...new Map([...(other.failures ?? []), ...localFailures].map(f => [f.groupId, f])).values()];
         }
         notify();
       }
       throw await httpError(res);
     }
     j.failures = undefined;
+    j.notice = undefined;
     const body = await res.json().catch(() => ({}));
     j.reviewCards = body.reviewCards;
   }
@@ -484,12 +532,56 @@ if (j.cancelled) throw cancelledError(j);
       try {
         const { sessionId, tokens } = await runWithRetry(j, "创建会话", () => createSession(j));
         j.remoteSessionId = sessionId;
+        rememberSessionVersion(j, sessionId);
         j.pages.forEach((p, i) => {
           p.token = tokens[i];
         });
       } catch (err) {
         if ((err as { isJobCancelled?: boolean }).isJobCancelled) return;
         setStatus(j, "error", `创建会话失败：${friendlyErr(err)}`);
+        return;
+      }
+    }
+
+    // Successful sides have already released their blobs. Correct their stored
+    // metadata through the existing group endpoint before sending failed sides.
+    if (j.pendingStudentId) {
+      j.resumePhase = "uploading";
+      setStatus(j, "uploading", "正在同步已上传面的订正学号…");
+      try {
+        await runWithRetry(j, "订正学号", async () => {
+          const fetcher = jobFetch(j);
+          const response = await fetcher(`/api/scanner/upload/sessions/${j.remoteSessionId}/results`, {
+            signal: timeoutSignal(pageTimeoutMs),
+          });
+          if (!response.ok) throw await httpError(response);
+          const batch = await response.json() as ScanBatchResponse;
+          const completed = j.pages.filter(page => page.done);
+          const groups = [...batch.results.map(result => ({ ...result, saved: result.saved })),
+            ...batch.failures.map(failure => ({ ...failure, saved: false })),
+            ...(batch.reviewCards ?? []).filter(card => card.sessionId === j.remoteSessionId)
+              .map(card => ({ ...card, saved: !!card.previouslySaved }))];
+          const matched = groups.filter(group => group.pages.some(page => completed.some(p => p.token === page.recordId)));
+          const targets = new Map(matched.map(group => [group.groupId, group]));
+          if (completed.some(page => ![...targets.values()].some(group => group.pages.some(p => p.recordId === page.token)))
+            || matched.some(group => group.saved)) {
+            throw Object.assign(new Error("已上传面缺少可订正的原卷记录，请刷新服务器结果后核对"), { noRetry: true });
+          }
+          for (const groupId of targets.keys()) {
+            const corrected = await fetcher(`/api/scanner/upload/sessions/${j.remoteSessionId}/correct`, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ groupId, studentId: j.pendingStudentId }), signal: timeoutSignal(pageTimeoutMs),
+            });
+            if (!corrected.ok) throw await httpError(corrected);
+          }
+          for (const page of completed) page.studentId = { status: "ok", value: j.pendingStudentId! };
+        });
+        j.pendingStudentId = undefined;
+      } catch (error) {
+        if ((error as { isJobCancelled?: boolean }).isJobCancelled) return;
+        // Keep a failed-page marker so correction can be retried with another ID.
+        for (const page of j.pages) if (!page.done) page.failed = true;
+        setStatus(j, "error", `订正已上传面失败：${friendlyErr(error)}`);
         return;
       }
     }
@@ -709,16 +801,67 @@ if (j.cancelled) throw cancelledError(j);
     return snapshot;
   }
 
-  return {
-    refreshResults: async (id: string) => {
-      const job = jobs.find(j => j.id === id);
-      if (!job?.remoteSessionId) return;
-      const response = await jobFetch(job)(`/api/scanner/upload/sessions/${job.remoteSessionId}/results`);
-      if (!response.ok) return;
-      const body = await response.json();
-      job.reviewCards = body.reviewCards;
+  async function refreshResults(id: string, actionSessionIds: string[] = []): Promise<void> {
+    const source = jobs.find(j => j.id === id);
+    if (!source) return;
+    // Capture the links before refreshing: a corrected response may no longer
+    // contain the old conflicts, but their withdrawn jobs still need updating.
+    const sessions = new Set([source.remoteSessionId, ...actionSessionIds,
+      ...(source.reviewCards ?? []).map(card => card.sessionId),
+      ...(source.failures ?? []).flatMap(failure => failure.conflicts?.map(card => card.sessionId) ?? [])]);
+    const outcomes = await Promise.allSettled(jobs.filter(j => j.remoteBase === source.remoteBase && j.apiKey === source.apiKey && j.cardId === source.cardId
+      && j.remoteSessionId && sessions.has(j.remoteSessionId) && (j.status === "done" || j.status === "error")).map(async job => {
+      const response = await jobFetch(job)(`/api/scanner/upload/sessions/${job.remoteSessionId}/results`, {
+        signal: timeoutSignal(pageTimeoutMs),
+      });
+      if (!response.ok) throw await httpError(response);
+      const body = await response.json() as ScanBatchResponse;
+      // Corrected new attempts are pending too; keep their view/save actions even
+      // after another session has been saved and the duplicate failures disappear.
+      job.reviewCards = pendingReviewCards(job.remoteSessionId!, body);
       job.failures = body.failures;
+      if (!body.failures?.length) job.notice = undefined;
+      const allSaved = (body.results?.length > 0 || (body.discardedGroups ?? 0) > 0)
+        && body.results.every((r: { saved: boolean }) => r.saved);
+      if (!job.pages.some(p => p.failed)) {
+        job.status = body.failures?.length || !allSaved ? "error" : "done";
+        job.message = job.status === "done" ? `上传完成，${job.pages.length} 页已提交到服务器`
+          : "仍有答题卡未保存，请核对后重新保存会话";
+      }
       notify();
+    }));
+    const failed = outcomes.find(outcome => outcome.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
+  }
+
+  return {
+    getFailedPageBlobs: async (id: string) => {
+      const job = jobs.find(j => j.id === id);
+      if (!job) throw new Error("上传任务已关闭");
+      return Promise.all(job.pages.filter(p => p.failed).map(async page => ({
+        recordId: page.token, pageNum: page.input.pageNum, side: page.input.side, blob: await page.input.getBlob(),
+      })));
+    },
+    correctStudentId: (id: string, studentId: string) => {
+      const job = jobs.find(j => j.id === id);
+      if (!job || job.status !== "error" || !job.pages.some(p => p.failed)) throw new Error("此任务没有可订正的失败页");
+      if (!/^[0-9A-Za-z_-]{1,64}$/.test(studentId)) throw new Error("请输入有效学号");
+      if (new Set(job.pages.map(p => p.input.groupId ?? `sheet:${p.input.pageNum}`)).size !== 1) throw new Error("请逐份答题卡订正学号");
+      for (const page of job.pages) page.input.studentId = studentId;
+      if (job.pages.some(page => page.done)) job.pendingStudentId = studentId;
+      retryFailed(id);
+    },
+    refreshResults,
+    saveSession: async (id: string, sessionId: string) => {
+      const source = jobs.find(j => j.id === id);
+      const owner = source && jobs.find(j => j.remoteSessionId === sessionId && j.remoteBase === source.remoteBase
+        && j.apiKey === source.apiKey && j.cardId === source.cardId);
+      const version = owner?.cardVersion ?? (source && rememberedSessionVersion(source, sessionId));
+      if (!source) throw new Error("上传任务已关闭");
+      return jobFetch(owner ?? source)(`/api/scanner/upload/sessions/${encodeURIComponent(sessionId)}/complete`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(version ? { cardVersion: version } : {}), signal: timeoutSignal(pageTimeoutMs),
+      });
     },
     requestJob: (id: string, url: string, init?: RequestInit) => {
       const job = jobs.find(j => j.id === id);

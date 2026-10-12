@@ -522,8 +522,11 @@ async function main(): Promise<void> {
     const versionedSession = await createVersionedSession(remoteCardVersion);
     check(versionedSession.status === 201 && versionedSession.sessionId !== "", "版本一致的会话正常创建（201）");
     const completeNoVersion = await completeWithVersion(versionedSession.sessionId, undefined);
-    check(completeNoVersion.status === 400 && completeNoVersion.code === "CARD_VERSION_REQUIRED",
-      "完成阶段缺少 cardVersion 同样被 400 拒绝");
+    check(completeNoVersion.status === 400 && completeNoVersion.code !== "CARD_VERSION_REQUIRED"
+      && (db.prepare("SELECT card_version FROM twain_scan_sessions WHERE id=?").get(versionedSession.sessionId) as { card_version: string }).card_version === remoteCardVersion,
+      "完成阶段缺少客户端指纹时复用服务端原版本，未上传页面仍被完整性校验拒绝");
+    const completeInvalid = await completeWithVersion(versionedSession.sessionId, "");
+    check(completeInvalid.status === 400 && completeInvalid.code === "CARD_VERSION_REQUIRED", "显式非法指纹不能回退到服务端原版本");
     const completeMismatch = await completeWithVersion(versionedSession.sessionId, flipped);
     check(completeMismatch.status === 409 && completeMismatch.code === "CARD_VERSION_MISMATCH",
       "完成阶段版本不一致返回 409，不会触发识别入库");
@@ -775,7 +778,7 @@ async function main(): Promise<void> {
     const asString = (limits: Record<string, number>) => JSON.stringify(limits);
     const untouched = resolveScanUploadLimits({});
     check(asString(untouched.limits) === asString(DEFAULT_SCAN_UPLOAD_LIMITS) && untouched.notices.length === 0,
-      "全部未配置时按默认上限生效且无告警（原卷 50MiB / 会话 200 页 / 切块 50 张·12MiB·160MiB / 批量 300 张·1GiB）");
+      "全部未配置时按默认上限生效且无告警（原卷 50MiB / 会话 800 页 / 切块 50 张·12MiB·160MiB / 批量 300 张·1GiB）");
     const overridden = resolveScanUploadLimits({
       PROJECTX_UPLOAD_MAX_SESSION_PAGES: "500",
       PROJECTX_UPLOAD_MAX_CROPS_TOTAL_MIB: "512",
@@ -804,7 +807,7 @@ async function main(): Promise<void> {
       && clamped.notices.length === 2 && clamped.notices.every((n) => n.includes("天花板")),
       "超过安全天花板的配置被夹紧而不是照单全收（放宽有上界）");
     const describeText = describeScanUploadLimits();
-    check(describeText.includes("50MiB") && describeText.includes("≤200")
+    check(describeText.includes("50MiB") && describeText.includes("≤800")
       && describeText.includes("≤300") && describeText.includes("1024MiB"),
       "启动摘要按当前生效值输出，运维无需读代码即可确认闸门档位");
 

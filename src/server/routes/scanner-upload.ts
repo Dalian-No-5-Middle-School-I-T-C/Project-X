@@ -41,7 +41,7 @@ import { CardRepository } from "../repositories/CardRepository";
 import { ExamRepository } from "../repositories/ExamRepository";
 import { ensureExamParticipants, listMissingParticipants } from "../services/examParticipants";
 import { recomputeExamRankings } from "../services/rankingUpdate";
-import { processScannerSession, enqueueScannerSubmission, findSavedScannerOwners, invalidateScanRecognition, savedReceiptOwnerOfPage } from "../services/scannerSubmissions";
+import { processScannerSession, enqueueScannerSubmission, invalidateScanRecognition, savedReceiptOwnerOfPage, discardScannerGroup } from "../services/scannerSubmissions";
 import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
 import { groupSessionPages } from "../../apps/answer-card/server/scanner/session-results";
 import { scannerLegacyRecoveryRouter } from "./scanner-legacy-recovery";
@@ -241,8 +241,8 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
     // 客户端后续 complete 会因页数为 0 而卡死。
     await db.transaction(async (tx) => {
       await tx.run(
-        `INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, page_count, identity_mode, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading')`,
+        `INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, page_count, identity_mode, card_version, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading')`,
         sessionId,
         String(cardId),
         name || `扫描_${new Date().toISOString().slice(0, 10)}`,
@@ -253,6 +253,7 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
         paperSize || "A4",
         requestedPages,
         parseIdentityMode(req.body?.identityMode),
+        parseCardVersion(req.body?.cardVersion),
       );
       for (let i = 0; i < requestedPages; i++) {
         await tx.run(
@@ -325,11 +326,11 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
     }
     // 安全（PR #312 复核 CR2）：/complete 部分失败时已保存的分组既没有 completed 会话也没有
     // completed 页面，只看状态会漏掉它们——那一页的成绩其实已经入库。改看回执归属。
-    const savedOwner = await savedReceiptOwnerOfPage(String(sessionId), token);
+    const savedOwner = await savedReceiptOwnerOfPage(String(sessionId), token, true);
     if (savedOwner) {
       res.status(409).json({
-        message: "该扫描页的成绩已入库，不能由上传直接改写；请在阅卷端撤回或订正后重新扫描",
-        code: "SCAN_PAGE_SAVED", examId: savedOwner.exam_id,
+        message: "该扫描页的成绩已入库或原卷已撤销，不能由上传直接改写",
+        code: savedOwner.state === "discarded" ? "SCAN_PAGE_DISCARDED" : "SCAN_PAGE_SAVED", examId: savedOwner.exam_id,
       });
       return;
     }
@@ -414,7 +415,7 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, cropUploadBu
       return;
     }
     // 安全（PR #312 复核 CR2）：切块是阅卷人实际看到的图，同样不能覆盖已入库回执的页面。
-    if (await savedReceiptOwnerOfPage(sessionId, recordId)) {
+    if (await savedReceiptOwnerOfPage(sessionId, recordId, true)) {
       res.status(409).json({ message: "该扫描页的成绩已入库，切块不可再由上传改写", code: "SCAN_PAGE_SAVED" });
       return;
     }
@@ -524,9 +525,10 @@ router.post("/sessions/:sessionId/correct", dualAuth, async (req, res, next) => 
     if (!card) { res.status(404).json({ message: "扫描会话或答题卡不存在" }); return; }
     const preview = await processScannerSession(card, sessionId);
     const groupId = String(req.body?.groupId ?? "");
-    if (!preview.failures.some(f => f.groupId === groupId && f.conflicts?.length)
+    if (!preview.failures.some(f => f.groupId === groupId)
+      && !preview.results.some(r => r.groupId === groupId && !r.saved)
       && !preview.reviewCards?.some(c => c.sessionId === sessionId && c.groupId === groupId)) {
-      res.status(409).json({ message: "此卷没有重复学号冲突，请刷新结果" }); return;
+      res.status(409).json({ message: "此卷已保存或无需订正，请刷新结果" }); return;
     }
     await enqueueScannerSubmission(async () => {
       const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
@@ -539,14 +541,24 @@ router.post("/sessions/:sessionId/correct", dualAuth, async (req, res, next) => 
     res.json(await processScannerSession(card, sessionId, "validate"));
   } catch (error) { next(error); }
 });
+router.post("/sessions/:sessionId/groups/:groupId/discard", dualAuth, async (req, res, next) => {
+  try {
+    const sessionId = String(req.params.sessionId);
+    const session = await getMysqlDb().get<{ card_id: string }>("SELECT card_id FROM twain_scan_sessions WHERE id = ?", sessionId);
+    const card = session && await new CardRepository().findById(session.card_id);
+    if (!card) { res.status(404).json({ message: "扫描会话或答题卡不存在" }); return; }
+    await discardScannerGroup(card, sessionId, String(req.params.groupId));
+    res.json(await processScannerSession(card, sessionId, "validate"));
+  } catch (error) { next(error); }
+});
 
 router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
     const db = await getMysqlDb();
 
-    const session = await db.get<{ id: string; card_id: string; page_count: number; status: string }>(
-      "SELECT id, card_id, page_count, status FROM twain_scan_sessions WHERE id = ?",
+    const session = await db.get<{ id: string; card_id: string; page_count: number; status: string; card_version: string | null; version_source: string }>(
+      "SELECT id, card_id, page_count, status, card_version, version_source FROM twain_scan_sessions WHERE id = ?",
       sessionId
     );
     if (!session) {
@@ -555,7 +567,14 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     }
 
     // 安全 R35：扫描到入库之间可能隔了几十分钟，服务器上的卡在这期间被改过就不能再入库。
-    const versionProblem = await cardVersionProblem(session.card_id, req.body?.cardVersion);
+    // Only a fingerprint recorded before recognition establishes provenance.
+    // A request cannot retroactively certify an unknown historical session.
+    if (!session.card_version || session.version_source === "legacy_verified") {
+      res.status(409).json({ code: "SESSION_CARD_VERSION_UNKNOWN", message: "原扫描会话缺少可验证的答题卡版本，请同步答题卡后重新识别并创建上传会话" });
+      return;
+    }
+    const version = req.body?.cardVersion === undefined ? session.card_version : req.body.cardVersion;
+    const versionProblem = await cardVersionProblem(session.card_id, version);
     if (versionProblem) {
       console.warn(
         `[scanner-upload] 会话完成被拒（${versionProblem.code}）session=${sessionId} cardId=${session.card_id} ` +
@@ -563,6 +582,10 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
       );
       res.status(versionProblem.status).json({ code: versionProblem.code, message: versionProblem.message });
       return;
+    }
+
+    if (session.card_version && parseCardVersion(version) !== session.card_version) {
+      res.status(409).json({ code: "SESSION_CARD_VERSION_MISMATCH", message: "提交版本与原扫描会话不一致，请核对原会话答题卡版本" }); return;
     }
 
     const uploaded = await db.get<{ cnt: number }>(
@@ -596,16 +619,6 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
       if (batch.failures.length) {
         res.status(409).json({ ok: false, message: "部分答题卡未入库，请处理以下问题后重试", ...batch });
         return;
-      }
-      for (const result of batch.results) {
-        // The saved receipt owns this attempt, including retries after closure.
-        // Reusing the card for another exam must never move the original crops.
-        const owners = await findSavedScannerOwners(db, String(sessionId), result.groupId, result.studentId, fullSession!.card_id);
-        if (owners.length !== 1) throw new Error("扫描成绩回执归属缺失或不唯一，切图关联未完成");
-        const owner = owners[0];
-        for (const record of result.pages) {
-          await db.run("UPDATE answer_block_crops SET exam_id = ?, student_id = ? WHERE source_type = 'twain_scan_record' AND source_record_id = ?", owner.exam_id, owner.student_id, record.recordId);
-        }
       }
       const { exam: savedExam } = await resolveScannerExam(fullSession!.card_id, String(sessionId));
       const linkedExams = savedExam?.status === "grading" ? [savedExam] : [];

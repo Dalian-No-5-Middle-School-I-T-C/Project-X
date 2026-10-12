@@ -471,6 +471,8 @@ CREATE TABLE IF NOT EXISTS answer_block_crops (
 );
 
 CREATE TABLE IF NOT EXISTS twain_scan_sessions (
+    card_version VARCHAR(24),
+    version_source VARCHAR(24) NOT NULL DEFAULT 'upload',
     identity_mode VARCHAR(16) NOT NULL DEFAULT 'strict',
     id          TEXT PRIMARY KEY,
     card_id     TEXT NOT NULL,

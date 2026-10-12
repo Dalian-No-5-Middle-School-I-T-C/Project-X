@@ -103,6 +103,13 @@ export interface ScanConflictCard {
   pages: ScanBatchPage[];
 }
 
+/** One physical attempt can occur in several failure lists. */
+export function uniqueScanConflictCards(cards: readonly ScanConflictCard[]): ScanConflictCard[] {
+  const unique = new Map<string, ScanConflictCard>();
+  for (const card of cards) unique.set(JSON.stringify([card.sessionId, card.groupId]), card);
+  return [...unique.values()];
+}
+
 export interface ScanBatchResult {
   groupId: string;
   studentId: string;
@@ -124,6 +131,7 @@ export interface ScanBatchResult {
 }
 
 export interface ScanBatchResponse {
+  discardedGroups?: number;
   results: ScanBatchResult[];
   failures: ScanBatchFailure[];
   reviewCards?: ScanConflictCard[];

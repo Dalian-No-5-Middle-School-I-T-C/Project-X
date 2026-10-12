@@ -1143,6 +1143,14 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     examClassMembershipsSQL,
   ] });
 
+  mariadbMigrations.push({ version: 61, name: "scanner-session-card-version", sqls: [
+    "ALTER TABLE twain_scan_sessions ADD COLUMN card_version VARCHAR(24)",
+    // A legacy default also makes an interrupted migration safe to rerun. Existing
+    // rows retain it; only sessions created after the migration default to upload.
+    "ALTER TABLE twain_scan_sessions ADD COLUMN version_source VARCHAR(24) NOT NULL DEFAULT 'legacy'",
+    "ALTER TABLE twain_scan_sessions ALTER COLUMN version_source SET DEFAULT 'upload'",
+  ] });
+
   for (const m of mariadbMigrations) {
     if (applied.has(m.version)) continue;
     for (const sql of m.sqls) {

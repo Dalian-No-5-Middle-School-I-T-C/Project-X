@@ -105,6 +105,8 @@
   客户端按卡内容算 96bit 指纹（`src/shared/cardVersion.ts`，不含 `updatedAt`、不用 Web Crypto），
   建会话与提交完成两处都上报，缺指纹按不可重试错误立即失败；服务端核验不通过返回
   400 `CARD_VERSION_REQUIRED` / 404 `CARD_NOT_FOUND` / 409 `CARD_VERSION_MISMATCH`，被拒时不建会话、不改状态、不入库。
+  上传会话在创建时保存版本；历史会话缺少可信原始记录（含此前请求补写的 `legacy_verified`）时，
+  完成接口返回 409 `SESSION_CARD_VERSION_UNKNOWN`，需同步答题卡后重新识别并创建上传会话。
   选卡改走同步拉取，命中离线缓存时先让老师确认，工作台常驻版本提示
 - **TWAIN DSM 加载路径**（安全 R40）：DSM 只从**规范化后的受信绝对路径**加载，顺序为
   「`TWAIN_DSM_DLL` 环境覆盖 > 安装包自带（exe 同目录）> Windows 目录」，不再退回裸名搜索
@@ -791,7 +793,7 @@ Project-X/
 
 > **扫描/判分上传限制**（安全 R22/R28，单一来源 `src/shared/scanUploadLimits.ts`）
 >
-> 默认档位：单张原卷 50 MiB；单个会话 1–200 页；切块单次 50 张 / 单张 12 MiB / 累计 160 MiB；
+> 默认档位：单张原卷 50 MiB；单个会话 1–800 页；切块单次 50 张 / 单张 12 MiB / 累计 160 MiB；
 > 单页上传请求累计 64 MiB；批量判分与识别上传单次 300 张 / 累计 1 GiB。
 > 超限分别返回 400（数量、页码）或 413（单张体积、累计字节，累计字节超限的 `code` 为 `UPLOAD_BUDGET_EXCEEDED`）。
 >
@@ -801,7 +803,7 @@ Project-X/
 > | 环境变量 | 默认 | 天花板 |
 > |----------|------|--------|
 > | `PROJECTX_UPLOAD_MAX_SCAN_IMAGE_MIB` | 50 | 512 |
-> | `PROJECTX_UPLOAD_MAX_SESSION_PAGES` | 200 | 2000 |
+> | `PROJECTX_UPLOAD_MAX_SESSION_PAGES` | 800 | 2000 |
 > | `PROJECTX_UPLOAD_MAX_CROPS_PER_REQUEST` | 50 | 500 |
 > | `PROJECTX_UPLOAD_MAX_CROP_IMAGE_MIB` | 12 | 128 |
 > | `PROJECTX_UPLOAD_MAX_CROPS_TOTAL_MIB` | 160 | 2048 |

@@ -251,8 +251,15 @@ async function main(): Promise<void> {
     await db.run("UPDATE scanner_submissions SET pages_json = ? WHERE session_id = 'session_ci' AND group_id = 'group_ci'",
       JSON.stringify([{ recordId: "page_ci", pageNum: 1, side: "front", layoutPage: 1 }]));
     assert.deepEqual(await savedReceiptOwnerOfPage("session_ci", "page_ci"),
-      { exam_id: Number(exam.lastInsertRowid), group_id: "group_ci", student_number: "09210001" });
+      { exam_id: Number(exam.lastInsertRowid), group_id: "group_ci", student_number: "09210001", state: "saved" });
     assert.equal(await savedReceiptOwnerOfPage("session_ci", "other_page"), null);
+    // 已归档的相同重传不再作为已入库卷，但上传入口仍须保护其页面，避免重试把它重新激活。
+    await db.run("UPDATE scanner_submissions SET state = 'discarded' WHERE session_id = 'session_ci' AND group_id = 'group_ci'");
+    assert.equal(await savedReceiptOwnerOfPage("session_ci", "page_ci"), null);
+    assert.deepEqual(await savedReceiptOwnerOfPage("session_ci", "page_ci", true),
+      { exam_id: Number(exam.lastInsertRowid), group_id: "group_ci", student_number: "09210001", state: "discarded" });
+    assert.equal(await savedReceiptOwnerOfPage("session_ci", "other_page", true), null);
+    await db.run("UPDATE scanner_submissions SET state = 'saved' WHERE session_id = 'session_ci' AND group_id = 'group_ci'");
     const { resolveScannerExam } = await import("../src/server/services/scannerExam");
     const unarchived = await resolveScannerExam("receipt_ci", "session_ci");
     assert.deepEqual(unarchived.exams.map(row => Number(row.id)), [Number(exam.lastInsertRowid)]);

@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
-import type { ScanConflictCard } from "../../../../shared/scanPages";
+import { uniqueScanConflictCards, type ScanConflictCard } from "../../../../shared/scanPages";
 import { authFetch } from "../auth/api";
 import { Button, Input } from "./ui/v2";
 import { ScanPreviewModal, type ScanPage } from "./ScanPreviewModal";
 
-export function ScannerConflictCards({ cards, remote = false, request = authFetch, onChanged }: {
+export function ScannerConflictCards({ cards, remote = false, request = authFetch, saveSession, onChanged }: {
   cards: ScanConflictCard[]; remote?: boolean;
   request?: (url: string, init?: RequestInit) => Promise<Response>;
-  onChanged: () => void;
+  saveSession?: (sessionId: string) => Promise<Response>;
+  onChanged: (sessionId: string) => void | Promise<void>;
 }) {
   const [ids, setIds] = useState<Record<string, string>>({});
   const [corrected, setCorrected] = useState<Record<string, string>>({});
@@ -38,22 +39,34 @@ export function ScannerConflictCards({ cards, remote = false, request = authFetc
       const legacy = card.sessionId.startsWith("legacy:");
       const url = legacy ? `/api/scanner/${remote ? "upload/" : ""}legacy/${card.sessionId.slice(7)}/${encodeURIComponent(card.groupId)}/${save ? "save" : "correct"}`
         : `${base}/${save ? (remote ? "complete" : "results") : (remote ? "correct" : "retry")}`;
-      const response = await request(url, {
+      const response = save && remote && !legacy && saveSession ? await saveSession(card.sessionId) : await request(url, {
         method: "POST", headers: { "Content-Type": "application/json" },
         ...(!save ? { body: JSON.stringify({ groupId: card.groupId, studentId: ids[key]?.trim() }) } : {}),
       });
       const data = await response.json();
+      if (save) await onChanged(card.sessionId);
       if (!response.ok) throw new Error(data.failures?.map((f: { message: string }) => f.message).join("；") || data.message || "处理失败");
       if (!save) setCorrected(old => ({ ...old, [key]: ids[key].trim() }));
       setMessage(save ? (data.failures?.length ? "仍有问题卷未保存，请继续核对" : "保存完成") : "学号已订正，请核对后重新保存相关卷");
       // Keep both originals accessible until the teacher has saved each corrected attempt.
-      if (save) onChanged();
     } catch (error) { setMessage(error instanceof Error ? error.message : "处理失败"); }
+    finally { setBusy(false); }
+  }
+  async function discard(card: ScanConflictCard) {
+    setBusy(true); setMessage("");
+    try {
+      const base = remote ? `/api/scanner/upload/sessions/${encodeURIComponent(card.sessionId)}` : `/api/scanner/session/${encodeURIComponent(card.sessionId)}`;
+      const response = await request(`${base}/groups/${encodeURIComponent(card.groupId)}/discard`, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message || "作废失败");
+      setMessage("该重复卷已作废，剩余卷可重新保存");
+      await onChanged(card.sessionId);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "作废失败"); }
     finally { setBusy(false); }
   }
   return <div className="flex flex-col gap-2 rounded-md border border-warning-border bg-warning-soft p-2">
     <strong className="text-sm">相关新旧卷（均待核对）</strong>
-    {cards.map(card => {
+    {uniqueScanConflictCards(cards).map(card => {
       const key = `${card.sessionId}/${card.groupId}`;
       const legacy = card.sessionId.startsWith("legacy:");
       return <div key={key} className="flex flex-col gap-2 border-t border-border-subtle pt-2">
@@ -63,6 +76,7 @@ export function ScannerConflictCards({ cards, remote = false, request = authFetc
           <>
             <Input aria-label={`原卷 ${key} 订正学号`} placeholder="订正后的学号" value={ids[key] ?? ""} onChange={e => setIds(old => ({ ...old, [key]: e.target.value }))} disabled={busy} />
             <Button size="sm" variant="outline" disabled={busy || !ids[key]?.trim()} onClick={() => void act(card, false)}>订正此卷</Button>
+            {!legacy && <Button size="sm" variant="outline" disabled={busy || card.previouslySaved} onClick={() => void discard(card)}>作废此卷</Button>}
             <Button size="sm" variant="outline" disabled={busy} onClick={() => void act(card, true)}>{legacy ? "恢复核对后的历史成绩" : "重新保存此会话"}</Button>
           </>
         </div>

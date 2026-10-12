@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { uniqueScanConflictCards } from "../../../../shared/scanPages";
 import { ScannerConflictCards } from "./ScannerConflictCards";
 import {
   AlertTriangle,
@@ -88,7 +89,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const [showUi, setShowUi] = useState(false);
   const [colorMode, setColorMode] = useState<"gray" | "color" | "bw">("gray");
   const [paperSize, setPaperSize] = useState<"A4" | "Letter" | "A3">("A4");
-  const [maxPages, setMaxPages] = useState(0);
+  // 单次批扫上限按「张」输入（0=不限，最高 400 张）；发给服务端时按单双面折算成页数
+  const [maxSheets, setMaxSheets] = useState(0);
   // 等纸空闲超时（秒）：0=用 native 默认 60s。厚纸/慢速 ADF 进纸间隔大时需要调高，
   // 否则会出现「扫到一半提前收尾」。历史默认 15s 对 300/600dpi ADF 偏短。
   const [pageTimeoutSec, setPageTimeoutSec] = useState(0);
@@ -107,8 +109,10 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const resultsBusyRef = useRef(false);
   const [resultMessage, setResultMessage] = useState("");
   const [uploadJobs, setUploadJobs] = useState<Record<string, string>>({});
-  /** 安全 R35：本机这份答题卡的版本指纹，随上传交给服务器核验（空 = 还没读到卡） */
-  const [cardVersion, setCardVersion] = useState<string>("");
+  const uploadJobsRef = useRef<Record<string, string>>({});
+  const sessionUploadRef = useRef<{ sessionId: string; cardId: string;
+    identityMode: "strict" | "legacy"; cardVersion: string; dpi: number; paperSize: string } | null>(null);
+  const scanAttemptRef = useRef(0);
   const uploadState = useSyncExternalStore(scannerUploadManager.subscribe, scannerUploadManager.getState);
   const [activeStudent, setActiveStudent] = useState<StudentResult | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -134,6 +138,9 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+  useEffect(() => {
+    uploadJobsRef.current = uploadJobs;
+  }, [uploadJobs]);
 
   useEffect(() => {
     let active = true;
@@ -144,8 +151,6 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         if (active) {
           setPaperSize(card.paper?.size === "A3" ? "A3" : "A4");
           setDuplex(card.sided === "double");
-          // 安全 R35：上传时带上「本机正在用哪一版卡」，由服务器比对，避免用旧布局/旧答案判分后静默入库。
-          setCardVersion(cardFingerprint(card));
         }
       })
       .catch(() => undefined);
@@ -343,7 +348,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
             setState("done");
             // 通过 ref 读取最新页数，避免闭包捕获扫描开始时的空数组
             onScansComplete?.(sid, pagesRef.current.length);
-            // Wait for teacher review before saving or uploading successful cards.
+            // Summarize and queue successful cards using this session's snapshot.
             void fetchCombinedResults(sid);
             break;
         }
@@ -391,9 +396,47 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     resultsBusyRef.current = true;
     setResultsBusy(true);
     setErrorMessage("");
-    try { applyResults(await readResults(sid)); }
+    try {
+      const data = await readResults(sid);
+      if (sid !== sessionIdRef.current) return;
+      applyResults(data);
+      // 远端模式：成绩汇总一完成即自动后台上传（先出分、图片续传，进度见右上角进度条）
+      if (getScannerMode() === "remote" && isRemoteServerConfigured()) {
+        queueSuccessfulUploads(data, sid);
+      }
+    }
     catch (err) { setErrorMessage(err instanceof Error ? err.message : "汇总失败，请重试"); }
     finally { resultsBusyRef.current = false; setResultsBusy(false); }
+  }
+
+  /** 把成功答题卡加入后台上传队列（自动与手动共用；已入队的组自动跳过） */
+  function queueSuccessfulUploads(data: ScanBatchResponse, sid: string) {
+    const metadata = sessionUploadRef.current;
+    if (!metadata || metadata.sessionId !== sid) return;
+    const nextJobs = { ...uploadJobsRef.current };
+    let queued = 0;
+    for (const result of data.results) {
+      if (nextJobs[result.groupId]) continue;
+      // Independent cards can finish even when another card fails remotely.
+      nextJobs[result.groupId] = scannerUploadManager.startUpload({
+        identityMode: metadata.identityMode,
+        kind: "scan", cardId: metadata.cardId, name: `扫描_${result.studentId}`,
+        dpi: metadata.dpi, paperSize: metadata.paperSize, cardVersion: metadata.cardVersion,
+        pages: result.pages.map(page => ({
+          pageNum: page.pageNum, side: page.side, groupId: result.groupId,
+          layoutPage: page.layoutPage, studentId: result.studentId,
+          getBlob: async () => {
+            const res = await authFetch(`/api/scanner/scan-image/${page.recordId}`);
+            if (!res.ok) throw new Error(`读取本机扫描图失败（HTTP ${res.status}）`);
+            return res.blob();
+          },
+        })),
+      });
+      queued++;
+    }
+    uploadJobsRef.current = nextJobs;
+    setUploadJobs(nextJobs);
+    if (queued > 0) setResultMessage("成功答题卡已自动加入上传队列，图片将在后台续传；失败答题卡保留在本机，可继续订正。");
   }
 
   async function saveSuccessful() {
@@ -407,27 +450,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       const data = await readResults(sessionId, !remote);
       applyResults(data);
       if (remote) {
-        const nextJobs = { ...uploadJobs };
-        for (const result of data.results) {
-          if (nextJobs[result.groupId]) continue;
-          // Independent cards can finish even when another card fails remotely.
-          nextJobs[result.groupId] = scannerUploadManager.startUpload({
-            identityMode: sessionLegacyIdentity ? "legacy" : "strict",
-            kind: "scan", cardId, name: `扫描_${result.studentId}`, dpi, paperSize,
-            cardVersion,
-            pages: result.pages.map(page => ({
-              pageNum: page.pageNum, side: page.side, groupId: result.groupId,
-              layoutPage: page.layoutPage, studentId: result.studentId,
-              getBlob: async () => {
-                const res = await authFetch(`/api/scanner/scan-image/${page.recordId}`);
-                if (!res.ok) throw new Error(`读取本机扫描图失败（HTTP ${res.status}）`);
-                return res.blob();
-              },
-            })),
-          });
-        }
-        setUploadJobs(nextJobs);
-        setResultMessage("成功答题卡已加入上传队列；失败答题卡保留在本机，可继续订正。");
+        queueSuccessfulUploads(data, sessionId);
       } else {
         setResultMessage(`已保存 ${data.results.filter(r => r.saved).length} 份；${data.failures.length} 份失败，可继续处理。`);
       }
@@ -458,6 +481,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   }
 
   async function startScan() {
+    const attempt = ++scanAttemptRef.current;
     // v2.5.6：不再因「没选到数据源」静默 return——那会把老师直接挡在门外且毫无反馈。
     // 留空是合法输入：服务端 sourceName 缺省为 ""，桥接在枚举为空或名称无匹配时
     // 回退 MSG_GETDEFAULT（系统默认数据源）；真失败时由 bridge 返回可诊断的错误。
@@ -469,12 +493,22 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     setFailures([]);
     setCorrections({});
     setUploadJobs({});
+    uploadJobsRef.current = {};
+    sessionUploadRef.current = null;
     setResultMessage("");
     reconnectAttemptsRef.current = 0;
     completedRef.current = false;
     setDisconnected(false);
 
     try {
+      // Fetch before starting OMR so even an early click has a nonempty, pinned
+      // version. SSE callbacks read the resulting session snapshot through a ref.
+      const cardResponse = await authFetch(`/api/cards/${encodeURIComponent(cardId)}`);
+      if (!cardResponse.ok) throw new Error("读取答题卡版本失败，请重试");
+      const card = await cardResponse.json() as AnswerCard;
+      const version = cardFingerprint(card);
+      if (attempt !== scanAttemptRef.current) return;
+      const identityMode = legacyIdentity ? "legacy" : "strict";
       const res = await authFetch("/api/scanner/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -484,10 +518,10 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           sessionName: `扫描_${cardId}_${new Date().toLocaleString("zh-CN")}`,
           dpi,
           duplex,
-          identityMode: legacyIdentity ? "legacy" : "strict",
+          identityMode,
           colorMode,
           paperSize,
-          maxPages,
+          maxPages: maxSheets > 0 ? maxSheets * (duplex ? 2 : 1) : 0,
           showUi,
           // 0 表示沿用 native 默认（60000ms）
           pageTimeoutMs: pageTimeoutSec > 0 ? Math.round(pageTimeoutSec * 1000) : undefined,
@@ -500,18 +534,27 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       }
 
       const data = await res.json();
+      if (attempt !== scanAttemptRef.current) {
+        void authFetch(`/api/scanner/scan/${data.sessionId}/cancel`, { method: "POST" }).catch(() => undefined);
+        return;
+      }
+      sessionUploadRef.current = { sessionId: data.sessionId, cardId, identityMode,
+        cardVersion: version, dpi, paperSize };
       sessionIdRef.current = data.sessionId;
       setSessionId(data.sessionId);
-      setSessionLegacyIdentity(legacyIdentity);
+      setSessionLegacyIdentity(identityMode === "legacy");
       setLegacyIdentity(false);
       listenProgress(data.sessionId);
     } catch (err) {
+      if (attempt !== scanAttemptRef.current) return;
       setErrorMessage(err instanceof Error ? err.message : "扫描失败");
       setState("error");
     }
   }
 
   function cancelScan() {
+    scanAttemptRef.current++;
+    sessionUploadRef.current = null;
     eventSourceRef.current?.close();
     if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     setDisconnected(false);
@@ -528,6 +571,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   }
 
   function reset() {
+    scanAttemptRef.current++;
     eventSourceRef.current?.close();
     if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     setDisconnected(false);
@@ -542,6 +586,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     setFailures([]);
     setCorrections({});
     setUploadJobs({});
+    uploadJobsRef.current = {};
+    sessionUploadRef.current = null;
     setResultMessage("");
     setActiveStudent(null);
     setProgressMessage("");
@@ -717,13 +763,14 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                   </SelectContent>
                 </Select>
               </Field>
-              <Field label="最大页数">
+              <Field label="单次最多张数">
                 <Input
                   type="number"
                   min={0}
-                  value={maxPages}
-                  onChange={(e) => setMaxPages(Number(e.target.value))}
-                  placeholder="0=不限"
+                  max={400}
+                  value={maxSheets}
+                  onChange={(e) => setMaxSheets(Math.max(0, Math.min(400, Math.trunc(Number(e.target.value)) || 0)))}
+                  placeholder="0=不限（最高400）"
                 />
               </Field>
             </div>
@@ -858,7 +905,9 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           </div>
           {resultMessage && <p role="status" className="text-sm text-muted-foreground">{resultMessage}</p>}
           {errorMessage && <p role="alert" className="text-sm text-destructive-fg">{errorMessage}</p>}
-          {reviewCards.length > 0 && <ScannerConflictCards cards={reviewCards} onChanged={() => void fetchCombinedResults(sessionId)} />}
+          {(reviewCards.length > 0 || failures.some(f => f.conflicts?.length)) && <ScannerConflictCards
+            cards={uniqueScanConflictCards([...reviewCards, ...failures.flatMap(f => f.conflicts ?? [])])}
+            onChanged={() => fetchCombinedResults(sessionId)} />}
           {failures.length > 0 && (
             <div className="flex flex-col gap-3 rounded-md border border-warning-border bg-warning-soft p-3">
               <strong>以下答题卡未保存</strong>
@@ -866,12 +915,11 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
               {failures.map(failure => (
                 <div key={failure.groupId} className="flex flex-col gap-2 border-t border-border-subtle pt-2">
                   <span className="text-sm">{failure.studentId || "未识别学号"} · {failure.pages.map(p => `第 ${p.pageNum} 张${p.side === "front" ? "正面" : "背面"}`).join("、")}：{failure.message}</span>
-                  {failure.conflicts && <ScannerConflictCards cards={failure.conflicts} onChanged={() => void fetchCombinedResults(sessionId)} />}
-                  <div className="flex flex-wrap items-center gap-2">
+                  {!failure.conflicts?.length && <div className="flex flex-wrap items-center gap-2">
                     <Button variant="outline" size="sm" onClick={() => setActiveFailure(failure)}>查看失败卡</Button>
                     {failure.stage !== "saving" && <Input aria-label={`第 ${Number(failure.groupId) + 1} 份答题卡订正学号`} placeholder="订正学号（可选）" value={corrections[failure.groupId] ?? ""} onChange={e => setCorrections(current => ({ ...current, [failure.groupId]: e.target.value }))} disabled={resultsBusy} />}
                     <Button variant="outline" size="sm" disabled={resultsBusy} onClick={() => void retryCard(failure)}>{failure.stage === "saving" ? "重新汇总" : "重新识别此卡"}</Button>
-                  </div>
+                  </div>}
                 </div>
               ))}
             </div>

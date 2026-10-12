@@ -8,7 +8,7 @@ import express from "express";
 import { createDefaultCard } from "../src/shared/defaultCard";
 import { buildLayout } from "../src/shared/layout";
 import { collectSessionResults } from "../src/apps/answer-card/server/scanner/session-results";
-import { applyScanStudentId, type ScanBatchResponse } from "../src/shared/scanPages";
+import { applyScanStudentId, uniqueScanConflictCards, type ScanBatchResponse } from "../src/shared/scanPages";
 import type { CombinedRecognitionResult } from "../src/shared/types";
 
 await mkdir("data", { recursive: true });
@@ -62,6 +62,7 @@ for (const studentNumber of ["91001", "91002", "91003"]) {
 const exam = await db.run("INSERT INTO exams (name,card_id,status) VALUES (?,?,'draft')", "扫描验证", card.id);
 for (const id of users) await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, id);
 const session = await store.createSession(card.id, "batch");
+await db.run("UPDATE twain_scan_sessions SET card_version=?,version_source='upload' WHERE id=?", cardVersion, session.id);
 const records = [];
 for (let i = 0; i < users.length; i++) {
   const record = await createVerifiedRecord({ sessionId: session.id, cardId: card.id, pageNum: i + 1, imagePath: path.join(root, `page_${i}.png`) });
@@ -82,6 +83,12 @@ const { default: uploadRouter } = await import("../src/server/routes/scanner-upl
 const { hashSecret } = await import("../src/server/lib/field-crypto");
 await db.run("INSERT INTO api_keys (name, api_key, scope, is_active) VALUES (?,?,?,1)", "isolated-test", hashSecret("scanner-test-only"), "scanner");
 app.use("/api/scanner/upload", uploadRouter);
+const { default: scoreEditingRouter } = await import("../src/server/routes/score-editing");
+// The disposable fixture supplies an admin identity to exercise the actual detail consumer.
+app.use("/test/exams", (req, _res, next) => {
+  Reflect.set(req, "user", { id: 1, role_id: 1, role_name: "admin" });
+  next();
+}, scoreEditingRouter);
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => res.status(500).json({ message: err.message }));
 const server = app.listen(0, "127.0.0.1");
 await new Promise<void>(resolve => server.once("listening", resolve));
@@ -139,9 +146,11 @@ try {
     `/secured/scanner/session/${session.id}/results`,
     `/secured/scanner/session/${session.id}/validate`,
     `/secured/scanner/session/${session.id}/retry`,
+    `/secured/scanner/session/${session.id}/groups/0/discard`,
     `/secured/scanner/legacy/${exam.lastInsertRowid}/1/save`,
     `/api/scanner/upload/sessions/${session.id}/complete`,
     `/api/scanner/upload/sessions/${session.id}/correct`,
+    `/api/scanner/upload/sessions/${session.id}/groups/0/discard`,
     `/api/scanner/upload/sessions/${session.id}/pages`,
     `/api/scanner/upload/sessions/${session.id}/pages/${records[0].id}/crops`,
     `/api/scanner/upload/legacy/${exam.lastInsertRowid}/1/save`,
@@ -263,6 +272,8 @@ try {
   const { processScannerSession } = await import("../src/server/services/scannerSubmissions");
   async function makeSession(numbers: string[]) {
     const s = await store.createSession(card.id, "duplicate-test");
+    // Model the upload API's fingerprint recorded at session creation.
+    await db.run("UPDATE twain_scan_sessions SET card_version=?,version_source='upload' WHERE id=?", cardVersion, s.id);
     for (const [index, number] of numbers.entries()) {
       const record = await createVerifiedRecord({ sessionId: s.id, cardId: card.id, pageNum: index + 1, imagePath: path.join(root, `retained-${s.id}-${index}.png`) });
       await store.updateScanOcrResult(record.id, number, 1, "uploaded");
@@ -279,16 +290,150 @@ try {
     });
     return { status: response.status, data: await response.json() as ScanBatchResponse };
   }
+  // A mixed batch returns 409 while successful grades and their images commit together.
+  {
+    const { listAnswerBlockCropsForStudent } = await import("../src/server/services/AnswerBlockCropService");
+    const testUsers: number[] = [];
+    for (const num of ["92901", "92902", "92903"]) {
+      const user = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)",
+        num, "test", num, role.id, num);
+      testUsers.push(Number(user.lastInsertRowid));
+      await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, user.lastInsertRowid);
+    }
+    const mixed = await makeSession(["92901", "92902", "92902"]);
+    const mixedRecords = await store.listScanRecords(mixed.id);
+    async function addCrop(id: string, recordId: string) {
+      await db.run(`INSERT INTO answer_block_crops
+        (id,card_id,source_type,source_record_id,block_id,block_type,page_number,segment_index,question_numbers,rect_json,image_path,width_px,height_px,dpi)
+        VALUES (?,?,'twain_scan_record',?,'batch_q','objective',1,0,'[1]','{}','test.png',1,1,300)`, id, card.id, recordId);
+    }
+    for (const [i, record] of mixedRecords.entries()) await addCrop(`mixed-crop-${i}`, record.id);
+    const complete = await remote(mixed.id);
+    assert.equal(complete.status, 409);
+    assert.equal(complete.data.failures.length, 2);
+    const images = await listAnswerBlockCropsForStudent(Number(exam.lastInsertRowid), testUsers[0], db);
+    assert.equal(images.length, 1, "Successful card has an image even when completion returns 409");
+    assert.equal(images[0].sourceRecordId, mixedRecords[0].id);
+    const detailResponse = await fetch(`http://127.0.0.1:${address.port}/test/exams/${exam.lastInsertRowid}/student/${testUsers[0]}/scores`);
+    assert.equal(detailResponse.status, 200, await detailResponse.clone().text());
+    const detail = await detailResponse.json() as { answerBlocks: Array<{ sourceRecordId: string }> };
+    assert.deepEqual(detail.answerBlocks.map(c => c.sourceRecordId), [mixedRecords[0].id], "Detail API returns the successful paper while the batch still has conflicts");
+    assert.equal((await listAnswerBlockCropsForStudent(Number(exam.lastInsertRowid), testUsers[1], db)).length, 0,
+      "Conflicting papers must not be attached to a student's grade");
+    // Replay the historical unbound-crop state with manually edited scores and publication.
+    await db.run("UPDATE answer_block_crops SET exam_id=NULL,student_id=NULL WHERE id='mixed-crop-0'");
+    await db.run("UPDATE student_scores SET total_score=4,manually_modified=1 WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, testUsers[0]);
+    await db.run("UPDATE question_scores SET score=4,manually_modified=1 WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, testUsers[0]);
+    await db.run("UPDATE exams SET score_published=1 WHERE id=?", exam.lastInsertRowid);
+    const { recomputeExamRankings } = await import("../src/server/services/rankingUpdate");
+    await recomputeExamRankings(db, Number(exam.lastInsertRowid));
+    const beforeReplay = await snapshot();
+    assert.equal((await remote(mixed.id)).status, 409);
+    assert.equal((await listAnswerBlockCropsForStudent(Number(exam.lastInsertRowid), testUsers[0], db)).length, 1);
+    assert.equal(await snapshot(), beforeReplay, "Image-only replay preserves every score, receipt, exam and recognition field");
+    assert.equal((await remote(mixed.id)).status, 409, "Image association replay is idempotent");
+    assert.equal(await snapshot(), beforeReplay);
+    // A crop already owned by another student must roll back the new grade and receipt.
+    const wrongOwner = await makeSession(["92903"]);
+    const wrongRecord = (await store.listScanRecords(wrongOwner.id))[0];
+    await addCrop("wrong-owner-crop", wrongRecord.id);
+    await db.run("UPDATE answer_block_crops SET exam_id=?,student_id=? WHERE id='wrong-owner-crop'", exam.lastInsertRowid, testUsers[0]);
+    assert.equal((await remote(wrongOwner.id)).status, 409);
+    assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, testUsers[2]), null);
+    assert.equal(await db.get("SELECT id FROM question_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, testUsers[2]), null);
+    assert.equal((await db.get<{ state: string }>("SELECT state FROM scanner_submissions WHERE session_id=?", wrongOwner.id))?.state, "pending");
+    assert.equal((await db.get<{ student_id: number }>("SELECT student_id FROM answer_block_crops WHERE id='wrong-owner-crop'"))?.student_id, testUsers[0]);
+    assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id=?", exam.lastInsertRowid))?.score_published, 1);
+    // Keep subsequent pre-existing fixture expectations independent of this scenario.
+    await db.run("DELETE FROM answer_block_crops WHERE id LIKE 'mixed-crop-%' OR id='wrong-owner-crop'");
+    for (const s of [mixed, wrongOwner]) await db.run("DELETE FROM scanner_submissions WHERE session_id=?", s.id);
+    for (const uid of testUsers) {
+      await db.run("DELETE FROM question_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, uid);
+      await db.run("DELETE FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, uid);
+      await db.run("DELETE FROM exam_participants WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, uid);
+    }
+    await db.run("UPDATE exams SET score_published=0 WHERE id=?", exam.lastInsertRowid);
+  }
   // R35：服务器上的卡改过之后，扫描端仍报旧指纹就不能入库（缺指纹/错指纹都要挡住且不落库）
   {
     const statusBefore = JSON.stringify(await db.get("SELECT status FROM twain_scan_sessions WHERE id=?", session.id));
     const staleVersion = cardVersion.replace(/^./, cardVersion[0] === "f" ? "0" : "f");
     const stale = await remote(session.id, "complete", { cardVersion: staleVersion });
     assert.equal(stale.status, 409, "Stale card fingerprint must be rejected at completion");
-    assert.equal((await remote(session.id, "complete", {})).status, 400, "Missing card fingerprint must be rejected at completion");
+    assert.equal((await remote(session.id, "complete", { cardVersion: "" })).status, 400, "Explicit invalid card fingerprint must be rejected at completion");
     assert.equal(JSON.stringify(await db.get("SELECT status FROM twain_scan_sessions WHERE id=?", session.id)), statusBefore,
       "Rejected completions leave the session untouched");
   }
+  // Exercise an existing v60 database, rather than only a fresh v61 schema.
+  await db.run("ALTER TABLE twain_scan_sessions DROP COLUMN card_version");
+  await db.run("ALTER TABLE twain_scan_sessions DROP COLUMN version_source");
+  await db.run("DELETE FROM schema_migrations WHERE version = 61");
+  if (db.dialect === "mariadb") {
+    const { initMariadbSchema } = await import("../src/server/db/mysql");
+    await initMariadbSchema();
+    await initMariadbSchema();
+  } else {
+    const { getDatabase } = await import("../src/server/db");
+    const { runMigrations } = await import("../src/server/db/migrations");
+    runMigrations(getDatabase()); runMigrations(getDatabase());
+  }
+  assert.equal((await db.get<{ version_source: string }>("SELECT version_source FROM twain_scan_sessions WHERE id = ?", session.id))?.version_source, "legacy");
+  // This fixture retained the upload-time fingerprint before simulating v60.
+  await db.run("UPDATE twain_scan_sessions SET card_version=?,version_source='upload' WHERE id=?", cardVersion, session.id);
+  const historicalUser = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)",
+    "history-recovery", "test", "旧会话恢复", role.id, "92801");
+  await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, historicalUser.lastInsertRowid);
+  const historical = await makeSession(["92801"]);
+  assert.equal((await remote(historical.id)).status, 200);
+  const customFormula = JSON.stringify({ type: "custom", enabled: true, params: {}, expression: "raw * 2" });
+  await db.run("UPDATE exams SET assigned_formula=? WHERE id=?", customFormula, exam.lastInsertRowid);
+  await db.run("UPDATE student_scores SET objective_score=4,total_score=4,assigned_score=82,manually_modified=1 WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid);
+  await db.run("UPDATE question_scores SET score=4,manually_modified=1 WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid);
+  const historyRecord = (await store.listScanRecords(historical.id))[0];
+  await db.run(`INSERT INTO answer_block_crops (id,card_id,exam_id,student_id,source_type,source_record_id,block_id,block_type,page_number,segment_index,question_numbers,image_path,width_px,height_px,dpi,rect_json)
+    VALUES ('history-crop',?,?,?,'twain_scan_record',?,'objective','objective',1,0,'[1]','history-crop.png',1,1,300,'{}')`, card.id,exam.lastInsertRowid,historicalUser.lastInsertRowid,historyRecord.id);
+  const redundant = await makeSession(["92801"]);
+  assert.equal((await remote(redundant.id)).status, 409);
+  assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid), null);
+  await db.run("UPDATE scanner_submissions SET state='discarded' WHERE session_id=?", redundant.id);
+  await db.run("UPDATE scanner_submissions SET state='pending' WHERE session_id=?", historical.id);
+  await db.run("UPDATE twain_scan_sessions SET card_version=NULL,version_source='legacy' WHERE id=?", historical.id);
+  assert.equal((await remote(historical.id, "complete", {})).status, 409, "Unknown historical versions cannot be inferred from the current card");
+  assert.equal((await remote(historical.id, "complete", { cardVersion })).status, 409, "A caller fingerprint cannot establish historical provenance");
+  assert.deepEqual(await db.get("SELECT card_version,version_source FROM twain_scan_sessions WHERE id=?", historical.id),
+    { card_version: null, version_source: "legacy" });
+  // Restore the independently recorded creation metadata removed by this fixture.
+  await db.run("UPDATE twain_scan_sessions SET card_version=?,version_source='upload' WHERE id=?", cardVersion, historical.id);
+  assert.equal((await remote(historical.id, "complete", {})).status, 200, "Server-recorded original version permits snapshot restoration");
+  const restored = await db.get<{ total_score: number; assigned_score: number; manually_modified: number }>("SELECT total_score,assigned_score,manually_modified FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid);
+  assert.equal(Number(restored?.total_score), 4); assert.equal(Number(restored?.manually_modified), 1);
+  assert.equal(Number(restored?.assigned_score), 82, "Recovery preserves custom assigned scores even when recalculation skips the formula");
+  await db.run("UPDATE exams SET assigned_formula=NULL WHERE id=?", exam.lastInsertRowid);
+  assert.equal(Number((await db.get<{ score: number }>("SELECT score FROM question_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid))?.score), 4);
+  const historyCrop = await db.get<{ exam_id: number; student_id: number }>("SELECT exam_id,student_id FROM answer_block_crops WHERE id='history-crop'");
+  assert.equal(Number(historyCrop?.exam_id), Number(exam.lastInsertRowid));
+  assert.equal(Number(historyCrop?.student_id), Number(historicalUser.lastInsertRowid));
+  assert.equal((await remote(historical.id, "complete", {})).status, 200, "Historical restoration is idempotent");
+  const ignoredRetry = await remote(redundant.id);
+  assert.equal(ignoredRetry.status, 200); assert.equal(ignoredRetry.data.failures?.length ?? 0, 0);
+  assert.equal((await db.get<{ state: string }>("SELECT state FROM scanner_submissions WHERE session_id=?", redundant.id))?.state, "discarded", "Retry cannot recreate archived duplicate receipts");
+  assert.equal((await remote(redundant.id, "correct", { groupId: "0", studentId: "91001" })).status, 409);
+  const persisted = await fetch(`http://127.0.0.1:${address.port}/api/scanner/upload/sessions`, {
+    method: "POST", headers: { "X-Api-Key": "scanner-test-only", "Content-Type": "application/json" },
+    body: JSON.stringify({ cardId: card.id, cardVersion, pageCount: 1 }),
+  });
+  assert.equal(persisted.status, 201);
+  const persistedId = (await persisted.json() as { sessionId: string }).sessionId;
+  assert.deepEqual(await db.get("SELECT card_version,version_source FROM twain_scan_sessions WHERE id=?", persistedId),
+    { card_version: cardVersion, version_source: "upload" });
+  const currentCard = (await new CardRepository().findById(card.id))!;
+  const changed = structuredClone(currentCard); changed.title += " edited";
+  await db.run("UPDATE answer_cards SET title=? WHERE id=?", changed.title, card.id);
+  assert.equal((await remote(historical.id, "complete", {})).status, 409, "Recovered versions remain pinned after card edits");
+  assert.equal((await remote(persistedId, "complete", { cardVersion: cardFingerprint((await new CardRepository().findById(card.id))!) })).status, 409,
+    "Current version cannot replace a session's original version");
+  await db.run("UPDATE answer_cards SET title=? WHERE id=?", currentCard.title, card.id);
+
   // A scanner key can save a new student's result after partial publication,
   // but cannot expose that score without a fresh teacher publication.
   const laterStudent = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)",
@@ -381,11 +526,28 @@ try {
     await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, student.lastInsertRowid);
     assert.equal((await remote(duplicateSession.id, "correct", { groupId: String(groupId), studentId: number })).status, 200);
   }
+  // A typo after resolving the duplicate must remain correctable, including
+  // after another group in the same session has already been saved.
+  assert.equal((await remote(duplicateSession.id, "correct", { groupId: "0", studentId: "939393" })).status, 200);
+  const typoSave = await remote(duplicateSession.id);
+  assert.equal(typoSave.status, 409);
+  assert(typoSave.data.failures.some(f => f.groupId === "0" && f.stage === "saving"));
+  assert(typoSave.data.results.some(r => r.groupId === "1" && r.saved), "Valid sibling is saved once");
+  assert.equal((await remote(duplicateSession.id, "correct", { groupId: "0", studentId: "91991" })).status, 200,
+    "A saving failure can be corrected again without creating a session");
   const corrected = await remote(duplicateSession.id);
   assert.equal(corrected.status, 200);
+  assert.equal((await remote(duplicateSession.id, "correct", { groupId: "1", studentId: "939393" })).status, 409,
+    "Manual correction cannot alter a saved sibling");
   const oldPreview = await request();
   assert(oldPreview.results.some(r => r.studentId === "91001" && !r.saved), "Resolved old attempt needs explicit saving");
   assert(oldPreview.reviewCards?.some(c => c.sessionId === session.id && c.previouslySaved), "Do not lose withdrawn old cards when new IDs are corrected");
+  assert.equal(uniqueScanConflictCards(rejected.data.failures.flatMap(f => f.conflicts ?? [])).length, 3,
+    "Two failure groups must display three unique physical cards");
+  // Use the same remote completion entry point as the conflict-card save button.
+  assert.equal((await remote(session.id)).status, 200, "Remote old-card recovery includes the original card version");
+  assert.equal((await remote(session.id)).status, 200, "Repeated manual saving does not create another receipt");
+  assert.equal(Number((await db.get<{ n: number }>("SELECT COUNT(*) AS n FROM scanner_submissions WHERE session_id = ? AND group_id = ? AND state != 'superseded'", session.id, "0"))!.n), 1);
   assert.equal((await request("POST")).failures.length, 0);
   assert.equal((await remote(duplicateSession.id)).status, 200, "Reposting same submission is idempotent, not a duplicate");
 
@@ -401,7 +563,8 @@ try {
   const legacyUser = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)", "legacy", "test", "legacy", role.id, "91994");
   const legacyCorrected = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)", "legacy-fixed", "test", "legacy-fixed", role.id, "91995");
   for (const id of [legacyUser.lastInsertRowid, legacyCorrected.lastInsertRowid]) await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, id);
-  await db.run("INSERT INTO student_scores (exam_id,student_id,objective_score,subjective_score,total_score) VALUES (?,?,3,0,3)", exam.lastInsertRowid, legacyUser.lastInsertRowid);
+  await db.run("UPDATE exams SET assigned_formula=? WHERE id=?", customFormula, exam.lastInsertRowid);
+  await db.run("INSERT INTO student_scores (exam_id,student_id,objective_score,subjective_score,total_score,assigned_score) VALUES (?,?,3,0,3,73)", exam.lastInsertRowid, legacyUser.lastInsertRowid);
   await db.run("INSERT INTO question_scores (exam_id,student_id,question_number,score,max_score,score_type) VALUES (?,?,1,3,5,'objective')", exam.lastInsertRowid, legacyUser.lastInsertRowid);
   const legacyNew = await makeSession(["91994"]);
   const legacyConflict = await remote(legacyNew.id);
@@ -411,6 +574,8 @@ try {
   await recoverLegacyScannerSubmission(Number(exam.lastInsertRowid), String(legacyUser.lastInsertRowid), "91995");
   await recoverLegacyScannerSubmission(Number(exam.lastInsertRowid), String(legacyUser.lastInsertRowid));
   assert.equal((await db.get<{ total_score: number }>("SELECT total_score FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, legacyCorrected.lastInsertRowid))!.total_score, 3, "Restore exactly the teacher-reviewed legacy snapshot");
+  assert.equal(Number((await db.get<{ assigned_score: number }>("SELECT assigned_score FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, legacyCorrected.lastInsertRowid))?.assigned_score), 73, "Legacy correction preserves its custom assigned score too");
+  await db.run("UPDATE exams SET assigned_formula=NULL WHERE id=?", exam.lastInsertRowid);
   assert.equal((await remote(legacyNew.id)).status, 200);
   const repeatedPage = await createVerifiedRecord({ sessionId: session.id, cardId: card.id, pageNum: 1, imagePath: "duplicate-page.png" });
   await store.updateScanOcrResult(repeatedPage.id, "91001", 1, "done");

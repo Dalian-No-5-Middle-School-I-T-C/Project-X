@@ -119,6 +119,7 @@ private:
     bool setDuplex(bool duplex);
     bool setPaperSize(const std::string& size);
     bool enableADF();
+    bool setXferCount();
     
     // Image saving
     bool saveDIBToFile(HANDLE hbitmap, const std::string& filePath, PageResult& result);

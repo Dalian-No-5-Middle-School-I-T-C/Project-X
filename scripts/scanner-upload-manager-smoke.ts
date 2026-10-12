@@ -2,7 +2,7 @@
 // ①全成功 ②断线暂停→恢复续传 ③重试耗尽→error→手动 retryFailed 补发 complete
 import { createScannerUploadManager } from "../src/apps/answer-card/client/lib/scannerUploadManager";
 import type { StartUploadInput } from "../src/apps/answer-card/client/lib/scannerUploadManager";
-import { mapImportedScanPages, mapScanPageToLayout } from "../src/shared/scanPages";
+import { mapImportedScanPages, mapScanPageToLayout, uniqueScanConflictCards } from "../src/shared/scanPages";
 
 function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(`断言失败: ${msg}`);
@@ -323,6 +323,46 @@ async function main() {
     const failed = await waitTerminal(mgr, mgr.startUpload(orphan));
     assert(failed.status === "error", "孤立背面不得继承上个任务的学号");
   }
+  // Correcting a failed back must first update the released, uploaded front.
+  // A rejected correction keeps the failed blob and can retry with another ID.
+  {
+    let backFails = true;
+    let correctionFails = true;
+    let frontReads = 0;
+    const events: string[] = [];
+    const input = baseInput(2);
+    input.pages[0].getBlob = async () => { frontReads++; return blob(); };
+    input.pages[1].pageNum = 1; input.pages[1].side = "back";
+    const mgr = createScannerUploadManager(deps({ remoteFetch: async (url, init) => {
+      if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "correction-pair", uploadTokens: ["front", "back"] });
+      if (url.endsWith(PAGES)) {
+        const form = init!.body as FormData;
+        if (form.get("token") === "back" && backFails) throw new Error("back network failure");
+        events.push(`upload:${form.get("token")}:${JSON.parse(String(form.get("recognition"))).studentId.value}`);
+      }
+      if (url.endsWith("/results")) return jsonRes({ results: [], failures: [{ groupId: "server-group", pages: [{ recordId: "front" }] }], reviewCards: [] });
+      if (url.endsWith("/correct")) {
+        const body = JSON.parse(String(init!.body));
+        assert(body.groupId === "server-group", "订正必须使用服务器原卷分组");
+        events.push(`correct:${body.studentId}`);
+        if (correctionFails) return jsonRes({ message: "student outside roster" }, 409);
+      }
+      if (url.endsWith(COMPLETE)) events.push("complete");
+      return jsonRes({ ok: true });
+    } }));
+    const id = mgr.startUpload(input);
+    assert((await waitTerminal(mgr, id)).status === "error", "背面上传失败应保留任务");
+    backFails = false;
+    mgr.correctStudentId(id, "91002");
+    assert((await waitTerminal(mgr, id)).status === "error", "远端订正被拒应保持可重试");
+    assert(events.join(",") === "upload:front:82048,correct:91002", "订正失败不得续传背面或保存成绩");
+    assert((await mgr.getFailedPageBlobs(id)).length === 1, "订正失败后背面原图必须保留");
+    correctionFails = false;
+    mgr.correctStudentId(id, "91003");
+    assert((await waitTerminal(mgr, id)).status === "done", "同步成功后应续传背面并完成");
+    assert(events.join(",") === "upload:front:82048,correct:91002,correct:91003,upload:back:91003,complete", "服务器订正必须先于背面续传");
+    assert(frontReads === 1, "已上传正面释放的原图无需重新读取");
+  }
   // Slow front upload exceeds the old 1s+3s retry window. A second pump request
   // must not start its back or another job; no dependency retry budget is spent.
   {
@@ -446,20 +486,174 @@ async function main() {
   }
   {
     let sessionCount = 0;
-    const failures = [{ groupId: "0", studentId: "91001", stage: "recognition", pages: [], message: "重复学号",
+    let resolved = false;
+    const saves: Array<{ session: string; version: string }> = [];
+    const failures = [0, 1].map(groupId => ({ groupId: String(groupId), studentId: "91001", stage: "recognition", pages: [], message: "重复学号",
       conflicts: [{ sessionId: "s1", groupId: "0", studentId: "91001", previouslySaved: true, pages: [] },
-        { sessionId: "s2", groupId: "0", studentId: "91001", previouslySaved: false, pages: [] }] }];
-    const mgr = createScannerUploadManager(deps({ remoteFetch: async url => {
+        { sessionId: "s2", groupId: "0", studentId: "91001", previouslySaved: false, pages: [] },
+        { sessionId: "s2", groupId: "1", studentId: "91001", previouslySaved: false, pages: [] }] }));
+    const versions = [TEST_CARD_VERSION, "abcdef0123456789abcdef01"];
+    const mgr = createScannerUploadManager(deps({ remoteFetch: async (url, init) => {
       if (url.endsWith("/sessions")) return jsonRes({ sessionId: `s${++sessionCount}`, uploadTokens: ["token"] });
-      if (url.endsWith("s2/complete")) return jsonRes({ message: "重复学号", failures }, 409);
+      if (url.endsWith("/complete")) {
+        const session = url.includes("s1/") ? "s1" : "s2";
+        saves.push({ session, version: JSON.parse(String(init?.body)).cardVersion });
+        if (session === "s2" && !resolved) return jsonRes({ message: "重复学号", failures }, 409);
+        return jsonRes({ ok: true });
+      }
+      if (url.endsWith("/results")) return jsonRes({ results: [{ groupId: "0", studentId: "91001", pages: [], saved: resolved }], failures: resolved ? [] : failures });
       return jsonRes({ ok: true });
     } }));
     const old = mgr.startUpload(baseInput(1));
     assert((await waitTerminal(mgr, old)).status === "done", "旧卷先正常完成");
-    const duplicate = mgr.startUpload(baseInput(1));
+    const duplicate = mgr.startUpload({ ...baseInput(1), cardVersion: versions[1] });
     assert((await waitTerminal(mgr, duplicate)).status === "error", "新卷重复时应显示失败");
-    assert(mgr.getState().jobs.find(j => j.id === old)?.status === "error", "旧卷不能继续显示正常完成");
-    assert(mgr.getState().jobs.every(j => j.failures?.[0].conflicts?.length === 2), "新旧任务均保留所有冲突原卷");
+    const oldJob = mgr.getState().jobs.find(j => j.id === old)!;
+    const newJob = mgr.getState().jobs.find(j => j.id === duplicate)!;
+    assert(oldJob.status === "error", "旧卷不能继续显示正常完成");
+    assert(oldJob.failures?.length === 1 && oldJob.failures[0].groupId === "0", "旧任务只保留自己的失败分组");
+    assert(newJob.failures?.length === 2, "新任务保留两个真实失败分组");
+    const cards = uniqueScanConflictCards(mgr.getState().jobs.flatMap(j => j.failures?.flatMap(f => f.conflicts ?? []) ?? []));
+    assert(cards.length === 3, "多个任务和多个失败分组共同展示三份真实原卷");
+    const before = saves.length;
+    const partial = await mgr.saveSession(duplicate, "s2");
+    assert(partial.status === 409, "仍有重复卷时保存返回冲突");
+    await mgr.refreshResults(duplicate);
+    assert(saves.length === before + 1, "刷新状态不会再次提交保存或创建会话");
+    assert(mgr.getState().jobs.find(j => j.id === duplicate)?.reviewCards?.length === 1,
+      "订正后的新卷未保存时保留原卷查看和保存入口");
+    resolved = true;
+    assert((await mgr.saveSession(duplicate, "s1")).ok, "可从新任务保存旧会话");
+    assert(saves.at(-1)?.version === versions[0], "旧会话使用原扫描版本，不借用新任务版本");
+    assert((await mgr.saveSession(duplicate, "s2")).ok, "订正后新会话可以保存");
+    assert(saves.at(-1)?.version === versions[1], "新会话使用自己的扫描版本");
+    await mgr.refreshResults(duplicate);
+    assert(mgr.getState().jobs.every(j => j.status === "done" && !j.failures?.length), "相关任务刷新为服务器实际保存状态");
+    assert(sessionCount === 2, "整个手动处理过程复用会话");
+    mgr.dismissJob(old);
+    assert((await mgr.saveSession(duplicate, "s1")).ok && saves.at(-1)?.version === versions[0], "关闭旧任务仍保留原版本回执");
+  }
+  {
+    let corrected = false;
+    const mgr = createScannerUploadManager(deps({ remoteFetch: async (url, init) => {
+      if (url.endsWith("/sessions")) return jsonRes({ sessionId: "saving-error", uploadTokens: ["token"] });
+      if (url.endsWith("/correct")) { corrected = true; return jsonRes({ ok: true }); }
+      const batch = { results: corrected ? [{ groupId: "0", studentId: "91002", pages: [], saved: true }] : [],
+        failures: corrected ? [] : [{ groupId: "0", studentId: "typo", stage: "saving", pages: [], message: "学号不在名单" }] };
+      if (url.endsWith("/results")) return jsonRes(batch);
+      if (url.endsWith("/complete")) return jsonRes({ ...batch, ok: corrected }, corrected ? 200 : 409);
+      return jsonRes({ ok: true });
+    } }));
+    const id = mgr.startUpload(baseInput(1));
+    assert((await waitTerminal(mgr, id)).status === "error", "无重复卷的保存失败仍显示问题卷");
+    assert(mgr.getState().jobs[0].reviewCards?.[0].sessionId === "saving-error", "普通保存失败保留订正与保存入口");
+    await mgr.requestJob(id, "/api/scanner/upload/sessions/saving-error/correct", { method: "POST", body: JSON.stringify({ groupId: "0", studentId: "91002" }) });
+    assert((await mgr.saveSession(id, "saving-error")).ok, "普通问题卷订正后复用原会话保存");
+    await mgr.refreshResults(id);
+    assert(mgr.getState().jobs[0].status === "done", "普通问题卷订正后清理失败状态");
+  }
+  {
+    // Completed cards stay in the manager after their UI disappears. Reviewing
+    // a duplicate must not query 397 unrelated cards or stop at a stale owner.
+    let sessions = 0;
+    const refreshed: string[] = [];
+    const conflicts = ["batch-1", "batch-2", "batch-400"].map(sessionId => ({
+      sessionId, groupId: "0", studentId: "91001", pages: [], previouslySaved: sessionId !== "batch-400",
+    }));
+    const mgr = createScannerUploadManager(deps({ remoteFetch: async (url) => {
+      if (url.endsWith("/sessions")) return jsonRes({ sessionId: `batch-${++sessions}`, uploadTokens: ["token"] });
+      if (url.endsWith("batch-400/complete")) return jsonRes({ failures: [{ groupId: "0", studentId: "91001",
+        stage: "recognition", pages: [], message: "duplicate", conflicts }] }, 409);
+      if (url.endsWith("/results")) {
+        const session = url.split("/").at(-2)!;
+        refreshed.push(session);
+        if (session === "batch-1") return jsonRes({ message: "stale session" }, 404);
+        return jsonRes({ results: [{ groupId: "0", studentId: "91001", pages: [], saved: true }], failures: [] });
+      }
+      return jsonRes({ ok: true });
+    } }));
+    const ids: string[] = [];
+    for (let index = 0; index < 400; index++) {
+      const id = mgr.startUpload(baseInput(1)); ids.push(id);
+      await waitTerminal(mgr, id);
+    }
+    let rejected = false;
+    try { await mgr.refreshResults(ids[399]); } catch { rejected = true; }
+    assert(rejected, "失效的关联会话仍明确报告错误");
+    assert(refreshed.sort().join(",") === ["batch-1", "batch-2", "batch-400"].sort().join(","),
+      "400 份保留任务仅刷新三个冲突相关会话");
+    assert(mgr.getState().jobs.find(j => j.id === ids[1])?.status === "done", "失效会话不能阻止其它关联任务刷新");
+    assert(mgr.getState().jobs.find(j => j.id === ids[399])?.status === "done", "源任务也刷新成功");
+    refreshed.length = 0;
+    await mgr.refreshResults(ids[399], ["batch-2"]);
+    assert(refreshed.sort().join(",") === ["batch-2", "batch-400"].sort().join(","),
+      "冲突清单消失后仍刷新本次人工处理的目标会话");
+  }
+  {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    const values = new Map<string, string>();
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    } });
+    try {
+      let sessions = 0;
+      const submitted: Array<{ url: string; version: string }> = [];
+      const remoteFetch = async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/sessions")) return jsonRes({ sessionId: `persist-${++sessions}`, uploadTokens: ["token"] });
+        if (url.endsWith("/complete")) submitted.push({ url, version: JSON.parse(String(init?.body)).cardVersion });
+        return jsonRes({ ok: true });
+      };
+      const original = createScannerUploadManager(deps({ remoteFetch }));
+      await waitTerminal(original, original.startUpload(baseInput(1)));
+      const restarted = createScannerUploadManager(deps({ remoteFetch }));
+      const source = restarted.startUpload({ ...baseInput(1), cardVersion: "abcdef0123456789abcdef01" });
+      await waitTerminal(restarted, source);
+      assert((await restarted.saveSession(source, "persist-1")).ok, "重建队列后仍可恢复有版本记录的原会话");
+      assert(submitted.at(-1)?.version === TEST_CARD_VERSION, "重建队列仍使用持久化的原版本");
+      assert((await restarted.saveSession(source, "unknown-history")).ok, "版本未知的历史卷由服务端恢复");
+      assert(submitted.at(-1)?.version === undefined, "历史卷不套用新任务的版本");
+      values.set("projectx_server_url", "https://different-server.example");
+      const otherServer = createScannerUploadManager(deps({ remoteFetch }));
+      const other = otherServer.startUpload(baseInput(1));
+      await waitTerminal(otherServer, other);
+      assert((await otherServer.saveSession(other, "persist-1")).ok, "另一服务器由自身校验会话");
+      assert(submitted.at(-1)?.version === undefined, "版本回执按服务器与答题卡隔离");
+    } finally {
+      if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+      else delete (globalThis as { localStorage?: unknown }).localStorage;
+    }
+  }
+  // A manual retry already in the queue must survive another task's duplicate response.
+  {
+    let sessions = 0;
+    let oldCompletions = 0;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let duplicateCompleting = false;
+    const mgr = createScannerUploadManager(deps({ remoteFetch: async url => {
+      if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: `isolation-${++sessions}`, uploadTokens: ["token"] });
+      if (url.endsWith("isolation-1/complete")) return ++oldCompletions === 1
+        ? jsonRes({ message: "待人工处理", failures: [] }, 409) : jsonRes({ ok: true });
+      if (url.endsWith("isolation-2/complete")) {
+        duplicateCompleting = true; await gate;
+        return jsonRes({ failures: [{ groupId: "0", studentId: "91001", pages: [], message: "重复学号", conflicts: [
+          { sessionId: "isolation-1", groupId: "0", studentId: "91001", pages: [], previouslySaved: false },
+          { sessionId: "isolation-2", groupId: "0", studentId: "91001", pages: [], previouslySaved: false },
+        ] }] }, 409);
+      }
+      return jsonRes({ ok: true });
+    } }));
+    const old = mgr.startUpload(baseInput(1)); await waitTerminal(mgr, old);
+    const duplicate = mgr.startUpload(baseInput(1));
+    while (!duplicateCompleting) await sleepReal(5);
+    mgr.retryFailed(old);
+    const normal = mgr.startUpload(baseInput(1));
+    release();
+    assert((await waitTerminal(mgr, duplicate)).status === "error", "重复卷单独待处理");
+    assert((await waitTerminal(mgr, old)).status === "done" && oldCompletions === 2, "关联的排队重试不会被置错跳过");
+    assert((await waitTerminal(mgr, normal)).status === "done", "后续正常卷继续上传");
   }
   console.log("scanner-upload-manager-smoke: 全部通过");
 }

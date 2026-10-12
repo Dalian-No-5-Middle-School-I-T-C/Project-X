@@ -112,16 +112,22 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
         if (isRemoteServerConfigured()) {
           const card = await fetchJson<AnswerCard>(`/api/cards/${encodeURIComponent(cardId)}`);
           const pages = mapImportedScanPages(gradingFiles.length, buildLayout(card).pages.length, card.sided);
-          scannerUploadManager.startUpload({
+          const groups = new Map<string, Array<{ file: File; page: typeof pages[number] }>>();
+          gradingFiles.forEach((file, i) => {
+            const group = groups.get(pages[i].groupId) ?? [];
+            group.push({ file, page: pages[i] });
+            groups.set(pages[i].groupId, group);
+          });
+          for (const [groupId, group] of groups) scannerUploadManager.startUpload({
             kind: "import",
             identityMode: legacyIdentity ? "legacy" : "strict",
             cardId,
             // 安全 R35：本机识别用的就是这份卡，上传时把它的版本指纹交给服务器核验
             cardVersion: cardFingerprint(card),
-            name: `导入_${cardTitle}_${new Date().toISOString().slice(0, 10)}`,
+            name: `导入_${cardTitle}_第${Number(groupId) + 1}份`,
             paperSize: card.paper.size,
-            pages: gradingFiles.map((file, i) => ({
-              ...pages[i],
+            pages: group.map(({ file, page }) => ({
+              ...page,
               getBlob: () => Promise.resolve(file),
             })),
           });
