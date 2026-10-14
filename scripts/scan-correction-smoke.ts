@@ -53,6 +53,10 @@ try {
   const selected = toggleCorrectionCell(current,page,page.selected,a.id);
   assert(selected.includes(a.id) && !selected.includes(b.id));
   assert(!correctionState(current,page,selected).invalid.has(a.id));
+  const cleared = toggleCorrectionCell(current,page,selected,a.id);
+  assert.deepEqual(correctionState(current,page,cleared).recognition.questions[0].selectedOptions,[],"single-choice false positive can be cleared");
+  const digit = cells.find(c=>c.type==="student_digit" && selected.includes(c.id))!;
+  assert(toggleCorrectionCell(current,page,selected,digit.id).includes(digit.id),"student digit stays mandatory");
   assert.equal((await db.get<{objective_json:string}>("SELECT objective_json FROM twain_recognition_results WHERE scan_record_id=?",record.id))!.objective_json,JSON.stringify(recognition.questions),"draft does not write");
   const edit = {sourceId:page.sourceId,revision:page.revision,selected};
   const saved = await request("PUT",{pages:[edit]}); assert.equal(saved.status,200,await saved.clone().text());
@@ -82,6 +86,12 @@ try {
   await assert.rejects(saveStudentCorrection(current,exam.id,student.id,[scoreEdit],null),/已更新/);
   const reopened = await studentCorrection(current,exam.id,student.id);
   assert(reopened.pages[0].selected.includes(b.id));
+  const emptyPage = reopened.pages[0];
+  await saveStudentCorrection(current,exam.id,student.id,[{sourceId:emptyPage.sourceId,revision:emptyPage.revision,selected:toggleCorrectionCell(current,emptyPage,emptyPage.selected,b.id)}],null);
+  const emptyDoc = await studentCorrection(current,exam.id,student.id);
+  assert.deepEqual(emptyDoc.pages[0].recognition.questions[0].selectedOptions,[],"blank single-choice persists after reopening");
+  assert.equal(Number((await db.get<{score:number}>("SELECT score FROM question_scores WHERE exam_id=? AND student_id=? AND score_type='objective'",exam.id,student.id))!.score),0);
+  assert.equal(JSON.stringify(await db.all("SELECT * FROM review_sessions")),reviewBefore);
   // Conflicting originals retain human scores in a snapshot; edited marks must
   // update that snapshot, otherwise recovery silently loses the correction.
   const duplicateSession = await store.createSession(card.id,"duplicate");

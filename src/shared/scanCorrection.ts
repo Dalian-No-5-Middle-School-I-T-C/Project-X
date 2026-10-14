@@ -42,6 +42,8 @@ export function recognizedCells(layout: PageLayout, recognition: CombinedRecogni
 export function toggleCorrectionCell(card: AnswerCard, page: CorrectionPage, selected: string[], id: string): string[] {
   const cells = correctionCells(page.layout), cell = cells.find(c => c.id === id);
   if (!cell) return selected;
+  // An unanswered question is valid; a student-number digit must stay selected.
+  if (cell.type === "objective_option" && selected.includes(id)) return selected.filter(key => key !== id);
   const exclusive = cell.type === "student_digit" || (cell.type === "objective_option" && !isMultiSelectMode(findObjectiveQuestion(card, cell.questionNumber)?.definition.mode ?? "single"));
   if (exclusive) return [...selected.filter(key => {
     const c = cells.find(c => c.id === key);
