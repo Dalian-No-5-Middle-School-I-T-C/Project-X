@@ -75,6 +75,17 @@ try {
   const scoreDoc = await studentCorrection(current,exam.id,student.id);
   const scorePage = scoreDoc.pages[0];
   const scoreEdit = {sourceId:scorePage.sourceId,revision:scorePage.revision,selected:toggleCorrectionCell(current,scorePage,scorePage.selected,b.id)};
+  // A broken enabled formula must roll back the entire correction, including its revision.
+  await db.run("UPDATE exams SET assigned_formula=? WHERE id=?",JSON.stringify({enabled:true,type:"linear"}),exam.id);
+  const beforeFailure = JSON.stringify(await db.all("SELECT * FROM student_scores WHERE exam_id=?",exam.id));
+  const questionsBeforeFailure = JSON.stringify(await db.all("SELECT * FROM question_scores WHERE exam_id=?",exam.id));
+  const overridesBeforeFailure = JSON.stringify(await db.all("SELECT * FROM answer_overrides WHERE exam_id=?",exam.id));
+  await assert.rejects(saveStudentCorrection(current,exam.id,student.id,[scoreEdit],null),/赋分重算失败，改分未保存/);
+  assert.equal(JSON.stringify(await db.all("SELECT * FROM student_scores WHERE exam_id=?",exam.id)),beforeFailure);
+  assert.equal(JSON.stringify(await db.all("SELECT * FROM question_scores WHERE exam_id=?",exam.id)),questionsBeforeFailure);
+  assert.equal(JSON.stringify(await db.all("SELECT * FROM answer_overrides WHERE exam_id=?",exam.id)),overridesBeforeFailure);
+  assert.equal((await studentCorrection(current,exam.id,student.id)).pages[0].revision,scorePage.revision);
+  await db.run("UPDATE exams SET assigned_formula=NULL WHERE id=?",exam.id);
   await saveStudentCorrection(current,exam.id,student.id,[scoreEdit],null);
   let total = await db.get<{total_score:number;subjective_score:number}>("SELECT total_score,subjective_score FROM student_scores WHERE exam_id=? AND student_id=?",exam.id,student.id);
   assert.equal(total?.total_score,17); assert.equal(total?.subjective_score,17,"unrelated manual/review score preserved");

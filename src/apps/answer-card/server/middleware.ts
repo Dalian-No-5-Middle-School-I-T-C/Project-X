@@ -686,6 +686,16 @@ export async function requireWholeExamGradingAccess(
   res: express.Response,
   next: express.NextFunction
 ): Promise<void> {
+  return requireWholeExamGradingAccessForExam(req, res, next, Number(req.params.examId));
+}
+
+/** Apply the same whole-exam authority to each member of a batch before any writes. */
+export async function requireWholeExamGradingAccessForExam(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+  examId: number
+): Promise<void> {
   if (!req.user) {
     if (authEnforced) {
       res.status(401).json({ message: "未提供认证令牌" });
@@ -710,7 +720,6 @@ export async function requireWholeExamGradingAccess(
     res.status(403).json({ message: "权限不足：整卷成绩与答案仅限教师或管理员修改" });
     return;
   }
-  const examId = Number(req.params.examId);
   if (!Number.isFinite(examId) || examId <= 0) {
     res.status(400).json({ message: "缺少 examId" });
     return;

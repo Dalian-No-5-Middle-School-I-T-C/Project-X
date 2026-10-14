@@ -72,7 +72,7 @@ jobs:
 
       # 部分成绩可公布；名单身份校验和管理员控制的撤回策略单独覆盖。
       - name: Score publication integrity regression
-        run: npm run verify:p1-integrity && npm run verify:p1-scope && npm run verify:p1-readgate
+        run: npm run verify:p1-integrity && npm run verify:p1-scope && npm run verify:p1-readgate && npm run verify:exam-paper
 
       - name: Exam-time class membership regression
         run: npm run verify:exam-class-memberships

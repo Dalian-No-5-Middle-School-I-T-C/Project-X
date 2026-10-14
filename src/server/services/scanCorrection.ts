@@ -252,7 +252,10 @@ export async function saveStudentCorrection(card: AnswerCard, examId: number, st
         const objective = Number(sums.find(s => s.score_type === "objective")?.total ?? 0), subjective = Number(sums.find(s => s.score_type === "subjective")?.total ?? 0);
         await tx.run("UPDATE student_scores SET objective_score=?,subjective_score=?,total_score=?,manually_modified=1,modified_by=?,modified_at=? WHERE exam_id=? AND student_id=?",objective,subjective,Math.round((objective+subjective)*100)/100,userId,databaseTimestamp(),examId,studentId);
         await markScoreMutated(tx,examId,userId,"score_edit");
-        await recomputeExamRankings(tx,examId);
+        const recalc = await recomputeExamRankings(tx,examId);
+        if (!recalc.assignedScoresRecalculated) {
+          throw new Error(`赋分重算失败，改分未保存：${recalc.assignedScoreError ?? "请检查赋分公式后重试"}`);
+        }
       }
     });
     analysisCache.invalidateExam(examId);

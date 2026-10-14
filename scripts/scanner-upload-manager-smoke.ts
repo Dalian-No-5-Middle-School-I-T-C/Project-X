@@ -441,6 +441,35 @@ async function main() {
     assert(thirdRecognitions === 1, "已成功卡不得重新识别上传");
   }
 
+  // Saved corrections loaded after queueing override the captured student ID,
+  // including retries and dependent pages without their own student area.
+  {
+    const input = baseInput(2);
+    let correctedId = "91001", failUpload = true;
+    input.pages = input.pages.map((page, i) => ({ ...page, pageNum: 1,
+      side: i === 0 ? "front" : "back", groupId: "corrected-card", layoutPage: i + 1,
+      studentId: "91001", getCorrection: async () => ({ status: "ok",
+        studentId: { status: "ok", value: i === 0 ? correctedId : null },
+        questions: [], subjectiveQuestions: [] }) }));
+    const sent: string[] = [];
+    const mgr = createScannerUploadManager(deps({
+      remoteFetch: async (url, init) => {
+        if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "corrected", uploadTokens: ["a", "b"] });
+        if (url.endsWith(PAGES)) {
+          if (failUpload) return jsonRes({ message: "retry later" }, 409);
+          sent.push(JSON.parse(String((init!.body as FormData).get("recognition"))).studentId.value);
+        }
+        return jsonRes({ ok: true });
+      },
+    }));
+    const id = mgr.startUpload(input);
+    assert((await waitTerminal(mgr, id)).status === "error", "queued upload can be retried after correction");
+    correctedId = "91002"; failUpload = false;
+    mgr.retryFailed(id);
+    assert((await waitTerminal(mgr, id)).status === "done", "corrected queued upload succeeds");
+    assert(sent.join(",") === "91002,91002", "saved ID overrides stale captured ID and propagates to back page");
+  }
+
   // A page-number gap is not a pair, even if array elements are adjacent.
   {
     const input = baseInput(2); input.pages[1].pageNum = 9; input.pages[1].side = "back";

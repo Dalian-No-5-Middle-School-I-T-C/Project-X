@@ -151,7 +151,7 @@ import {
 import {
   makeGate, getVisibleExamIds, requireExamAccess,
   validateExamIdsAccess, setAuthEnforced, hasViewPermission, makeViewPermissionGate, isTeacherPermittedForWholeExam,
-  requirePermissionCompat, requireWholeExamGradingAccess, canManageExamOrganization, hasExamOrganizationAffinity,
+  requirePermissionCompat, requireWholeExamGradingAccess, requireWholeExamGradingAccessForExam, canManageExamOrganization, hasExamOrganizationAffinity,
   canGradeBlock, isExamSoftDeleted
 } from "./middleware";
 import { getAssignedStudentIdSet, isClaimableForAssignedSet } from "../../../server/services/ReviewPoolService";
@@ -2601,7 +2601,7 @@ export async function createApp(): Promise<express.Express> {
   });
 
   // v41: 单场成绩公布 —— 教师手动公布后学生方可查看。幂等（已公布直接返回 ok）。
-  app.post("/api/exams/:examId/publish", requireExamAccess, requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
+  app.post("/api/exams/:examId/publish", requireExamAccess, requirePermission(PERMISSIONS.GRADE_WRITE), requireWholeExamGradingAccess, async (req, res, next) => {
     try {
       const examId = Number(req.params.examId);
       if (!Number.isInteger(examId) || examId <= 0) {
@@ -2700,6 +2700,11 @@ export async function createApp(): Promise<express.Express> {
       if (denied.length > 0) {
         res.status(403).json({ message: `以下考试超出你的数据权限范围，无法公布: ${denied.join(", ")}` });
         return;
+      }
+      for (const examId of examIds) {
+        let authorized = false;
+        await requireWholeExamGradingAccessForExam(req, res, () => { authorized = true; }, examId);
+        if (!authorized) return;
       }
       // 存在性与结考状态校验（此时仅剩可见范围内的考试）
       const existing = await db.all(

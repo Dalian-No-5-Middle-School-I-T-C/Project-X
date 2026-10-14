@@ -395,7 +395,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     }
     // Dependencies are fixed when the job is created, independent of array adjacency,
     // retry counts or network latency. Never borrow an ID across physical cards.
-    if (page.input.studentId) {
+    if (!corrected && page.input.studentId) {
       applyScanStudentId(recognition, page.input.studentId);
     } else if (page.anchor) {
       const inherited = page.anchor.studentId;
