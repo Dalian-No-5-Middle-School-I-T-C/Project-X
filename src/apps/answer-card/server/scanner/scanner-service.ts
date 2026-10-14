@@ -1,3 +1,4 @@
+import { storeCorrectionPage } from "../../../../server/services/scanCorrection";
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { dataDir } from "../storage";
@@ -274,6 +275,7 @@ export async function runOcrOnSession(
         applyScanStudentId(recognition, inheritedStudentId!, true);
       }
       const studentConf = recognizedStudentId ? 0.9 : inherited ? 0.9 : 0.0;
+      if (card) await storeCorrectionPage(card, "twain_scan_record", record.id, recognition);
       const ocrStatus = recognition.status === "ok" ? "done" : recognition.status === "failed" ? "failed" : "review";
 
       // 诊断检查点：每页识别结果摘要（考号是否读到/识别状态/失败原因），进 main.log 便于实机取证

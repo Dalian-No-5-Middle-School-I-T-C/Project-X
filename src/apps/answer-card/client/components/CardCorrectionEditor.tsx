@@ -1,0 +1,115 @@
+import { useEffect, useState } from "react";
+import { authFetch } from "../auth/api";
+import { Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter } from "./ui/v2";
+import { correctionCells, correctionState, projectRect, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../shared/scanCorrection";
+
+type Request = (url: string, init?: RequestInit) => Promise<Response>;
+export function CardCorrectionButton({ url, request = authFetch, onSaved, disabled = false }: {
+  url: string; request?: Request; onSaved?: () => void | Promise<void>; disabled?: boolean;
+}) {
+  const [open,setOpen] = useState(false);
+  return <><Button size="sm" variant="outline" disabled={disabled} onClick={() => setOpen(true)}>整卡改分</Button>
+    {open && <CardCorrectionEditor url={url} request={request} onClose={() => setOpen(false)} onSaved={onSaved} />}</>;
+}
+export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved}: {
+  url:string; request?:Request; onClose:()=>void; onSaved?:()=>void|Promise<void>;
+}) {
+  const [send] = useState(() => request);
+  const [document,setDocument] = useState<CorrectionDocument|null>(null);
+  const [edits,setEdits] = useState<CorrectionEdit[]>([]);
+  const [images,setImages] = useState<Record<string,string>>({});
+  const [message,setMessage] = useState("");
+  const [busy,setBusy] = useState(false);
+  const [zoom,setZoom] = useState(1);
+  const [pageIndex,setPageIndex] = useState(0);
+  const dirty = !!document && edits.some(edit => {
+    const original = document.pages.find(p => p.sourceId === edit.sourceId)!;
+    return [...original.selected].sort().join() !== [...edit.selected].sort().join() || !!edit.touched?.length;
+  });
+  useEffect(() => {
+    let alive = true;
+    const urls:string[] = [];
+    setBusy(true);
+    void (async () => {
+      try {
+        const response = await send(url);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || "加载答题卡失败");
+        const doc = data as CorrectionDocument;
+        const loaded:Record<string,string> = {};
+        for (const page of doc.pages) {
+          const image = await send(page.imageUrl);
+          if (!image.ok) throw new Error("完整答题卡图片加载失败");
+          const blob = URL.createObjectURL(await image.blob());
+          if (!alive) { URL.revokeObjectURL(blob); return; }
+          urls.push(blob); loaded[page.sourceId] = blob;
+        }
+        if (alive) { setDocument(doc); setImages(loaded); setEdits(doc.pages.map(p => ({sourceId:p.sourceId,revision:p.revision,selected:[...p.selected],touched:[]}))); }
+      } catch (error) { if (alive) setMessage(error instanceof Error ? error.message : "加载失败"); }
+      finally { if (alive) setBusy(false); }
+    })();
+    return () => { alive = false; urls.forEach(URL.revokeObjectURL); };
+  },[url,send]);
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e:BeforeUnloadEvent) => {e.preventDefault(); e.returnValue = "";};
+    window.addEventListener("beforeunload",warn);
+    return () => window.removeEventListener("beforeunload",warn);
+  },[dirty]);
+  const close = () => { if (!busy && (!dirty || window.confirm("修改尚未保存，确定放弃本次修改？"))) onClose(); };
+  const page = document?.pages[pageIndex], edit = edits[pageIndex];
+  const state = document && page && edit ? correctionState(document.card,page,edit.selected,edit.touched) : null;
+  const errors = document ? document.pages.flatMap((p,i) => correctionState(document.card,p,edits[i]?.selected ?? p.selected,edits[i]?.touched).errors) : [];
+  const geometry = page?.recognition.geometry;
+  async function save() {
+    setBusy(true); setMessage("");
+    try {
+      const response = await send(url,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({pages:edits})});
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "保存失败");
+      setEdits([]); setDocument(null);
+      await onSaved?.(); onClose();
+    } catch (error) {setMessage(error instanceof Error ? error.message : "保存失败");}
+    finally {setBusy(false);}
+  }
+  function toggle(id:string) {
+    if (!document || !page || busy) return;
+    setEdits(current => current.map(e => e.sourceId === page.sourceId ? {...e, selected:toggleCorrectionCell(document.card,page,e.selected,id),touched:page.invalid.includes(id) ? [...new Set([...(e.touched ?? []),id])] : e.touched} : e));
+    setMessage("");
+  }
+  return <Dialog open onOpenChange={open => {if (!open) close();}}>
+    <DialogContent size="lg" className="h-[calc(100vh-48px)] max-w-[1400px]" onInteractOutside={e => e.preventDefault()}>
+      <DialogHeader><DialogTitle>整卡改分{dirty ? " · 未保存" : ""}</DialogTitle>
+        <DialogDescription>点击原卷中的填涂格修改。学号和单选题点击切换；多选题与分数格点击勾选、再次点击取消。点击保存后生效。</DialogDescription>
+      </DialogHeader>
+      <div className="flex flex-wrap items-center gap-3 border-b border-border-subtle px-5 py-2 text-sm">
+        <span className="text-correction-normal">蓝框：默认 / 正确 / 合法</span><span className="text-correction-error">红框：错误 / 异常</span>
+        <Button size="sm" variant="outline" disabled={pageIndex===0 || busy} onClick={() => setPageIndex(i=>i-1)}>上一页</Button>
+        <span>{document ? `${pageIndex+1} / ${document.pages.length}` : "—"}</span>
+        <Button size="sm" variant="outline" disabled={!document || pageIndex===document.pages.length-1 || busy} onClick={() => setPageIndex(i=>i+1)}>下一页</Button>
+        <Button size="sm" variant="outline" disabled={zoom<=1} onClick={() => setZoom(z=>Math.max(1,z-.5))}>缩小</Button>
+        <Button size="sm" variant="outline" disabled={zoom>=4} onClick={() => setZoom(z=>Math.min(4,z+.5))}>放大</Button>
+        <span>{Math.round(zoom*100)}%</span>
+      </div>
+      <DialogBody className="min-h-0 flex-1 overflow-auto bg-muted p-3">
+        {busy && !document && <p role="status">正在加载完整答题卡…</p>}
+        {page && geometry && <svg viewBox={`0 0 ${geometry.imageWidth} ${geometry.imageHeight}`} width={`${zoom*100}%`} className="block max-w-none" aria-label={`第 ${page.layout.pageNumber} 页答题卡`}>
+          <image href={images[page.sourceId]} width={geometry.imageWidth} height={geometry.imageHeight} />
+          {correctionCells(page.layout).map(cell => {
+            const selected = edit.selected.includes(cell.id), invalid = state?.invalid.has(cell.id);
+            const label = cell.type === "student_digit" ? `学号第 ${cell.digitIndex+1} 位 ${cell.digit}` : cell.type === "objective_option" ? `第 ${cell.questionNumber} 题 ${cell.option}` : `第 ${cell.questionNumber} 题 ${cell.score} 分`;
+            return <polygon key={cell.id} points={projectRect(cell.rect,geometry.layoutToImage)} role="button" aria-label={`${label}${selected ? invalid ? "，异常" : "，已选" : ""}`} aria-pressed={selected} tabIndex={busy ? -1 : 0}
+              vectorEffect="non-scaling-stroke" strokeWidth={selected ? 2 : 0}
+              className={`cursor-pointer fill-transparent outline-none ${selected ? invalid ? "stroke-correction-error focus:stroke-3" : "stroke-correction-normal focus:stroke-3" : "stroke-transparent hover:stroke-info hover:stroke-1 focus:stroke-info focus:stroke-1"}`}
+              onClick={() => toggle(cell.id)} onKeyDown={e => {if (e.key === "Enter" || e.key === " ") {e.preventDefault();toggle(cell.id);}}}><title>{label}</title></polygon>;
+          })}
+        </svg>}
+      </DialogBody>
+      <DialogFooter className="flex-wrap">
+        <div className="min-w-0 flex-1 text-sm" role="status">{message || (errors.length ? <span className="text-destructive-fg">{[...new Set(errors)].slice(0,3).join("；")}{errors.length>3 ? "…" : ""}</span> : dirty ? "修改尚未保存" : "点击填涂格开始修改")}</div>
+        <Button variant="outline" disabled={busy} onClick={close}>取消</Button>
+        <Button variant="primary" disabled={!dirty || busy || errors.length>0} loading={busy && !!document} onClick={() => void save()}>保存修改</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
+}

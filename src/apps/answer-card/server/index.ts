@@ -1,3 +1,4 @@
+import { storeCorrectionPage } from "../../../server/services/scanCorrection";
 import { databaseTimestamp } from "../../../server/db/timestamp";
 import express from "express";
 import multer from "multer";
@@ -573,6 +574,8 @@ async function persistGradingResultsLocked(
           student_number: studentId,
           student_id: stu.id
         });
+        const correctionCard = await new CardRepository(tx).findById(String(exam.card_id));
+        if (correctionCard) await storeCorrectionPage(correctionCard, "scan_record", recordId, row.recognition, tx);
         await persistAnswerBlockCrops({
           cardId: row.recognition.cardId ?? String(exam.card_id ?? ""),
           examId,

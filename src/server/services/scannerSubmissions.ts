@@ -146,6 +146,7 @@ export async function invalidateScanRecognition(sessionId: string, recordId: str
       }
       await tx.run("UPDATE twain_scan_records SET identity_json = NULL, student_id = NULL, student_conf = NULL, ocr_status = 'processing', ocr_error = NULL WHERE id = ? AND session_id = ?", recordId, sessionId);
       await tx.run("DELETE FROM twain_recognition_results WHERE scan_record_id = ?", recordId);
+      await tx.run("DELETE FROM scan_correction_pages WHERE source_type = 'twain_scan_record' AND source_id = ?", recordId);
       await tx.run("DELETE FROM answer_block_crops WHERE source_type = ? AND source_record_id = ?", "twain_scan_record", recordId);
       await tx.run("DELETE FROM twain_student_grading_results WHERE session_id = ?", sessionId);
     });
@@ -259,7 +260,7 @@ export async function recoverScannerSubmissionSnapshot(examId: number, sessionId
 
 /** Both paths consume Windows recognition records; this service never runs OMR. */
 export async function processScannerSession(card: AnswerCard, sessionId: string,
-  mode: "preview" | "validate" | "save" = "preview"): Promise<ScanBatchResponse> {
+  mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string): Promise<ScanBatchResponse> {
   return enqueueScannerSubmission(async () => {
     const db = getMysqlDb();
     const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
@@ -424,7 +425,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
     const activeRecords = [...groups].filter(([groupId]) => !discarded.has(groupId)).flatMap(([, rows]) => rows.map(row => row.record));
     const response = await collectSessionResults(card, activeRecords, cached, mode === "save" ? async result => {
       const candidate = candidates.find(c => c.pages.some(p => p.recordId === result.pages[0]?.recordId));
-      if (!candidate || discarded.has(candidate.groupId)) return;
+      if (!candidate || discarded.has(candidate.groupId) || (saveGroupId !== undefined && candidate.groupId !== saveGroupId)) return false;
       await db.transaction(async tx => {
         await lockExam(tx, exam.id);
         const current = await receipts(tx, exam.id);

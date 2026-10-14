@@ -1,3 +1,4 @@
+import { scanCorrectionSchema } from "./scanCorrectionSchema";
 import mariadb from "mysql2/promise";
 import type { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from "mysql2/promise";
 import { existsSync, readFileSync } from "node:fs";
@@ -1043,6 +1044,7 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
 
   mariadbMigrations.push({ version: 49, name: "scanner-submission-receipts", sqls: [
     scannerSubmissionSchema("mariadb"),
+    scanCorrectionSchema("mariadb"),
     "CREATE INDEX IF NOT EXISTS idx_scanner_submission_student ON scanner_submissions(exam_id, student_number)",
   ] });
   mariadbMigrations.push({ version: 50, name: "archive-class-and-grade", sqls: [

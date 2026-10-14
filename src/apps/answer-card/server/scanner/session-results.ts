@@ -158,7 +158,7 @@ export async function collectSessionResults(
   card: AnswerCard,
   records: ScanRecordWithResult[],
   cached: StudentGradingResultRow[],
-  save?: (result: CombinedStudentResult) => Promise<void>,
+  save?: (result: CombinedStudentResult) => Promise<void | boolean>,
 ): Promise<ScanBatchResponse> {
   const { pageCount, groups } = groupSessionPages(card, records);
   const response: ScanBatchResponse = { results: [], failures: [] };
@@ -195,8 +195,7 @@ export async function collectSessionResults(
         && prior.page_count === combined.pageCount);
       if (save && !saved) {
         stage = "saving";
-        await save(combined);
-        saved = true;
+        saved = (await save(combined)) !== false;
       }
       response.results.push({
         groupId, studentId, pages: pages.map((page, index) => ({ ...combined.pages[index], ...page })),

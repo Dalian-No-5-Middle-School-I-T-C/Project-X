@@ -1,3 +1,4 @@
+import { scanCorrectionSchema } from "./scanCorrectionSchema";
 import type Database from "better-sqlite3";
 import { scannerSubmissionSchema } from "./scannerSubmissionSchema";
 
@@ -1337,6 +1338,8 @@ MIGRATIONS.push({ version: 61, name: "scanner-session-card-version", up(db) {
     }
   })();
 } });
+
+MIGRATIONS.push({ version: 62, name: "scan-correction-pages", up(db) { db.exec(scanCorrectionSchema("sqlite")); } });
 
 export function runMigrations(db: Database.Database): void {
   db.exec(`

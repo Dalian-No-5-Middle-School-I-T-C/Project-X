@@ -25,6 +25,7 @@ export interface UploadPageInput {
   pageNum: number;
   side: "front" | "back";
   getBlob: () => Promise<Blob>;
+  getCorrection?: () => Promise<import("../../../../shared/types").CombinedRecognitionResult | undefined>;
   /** Stable card group and layout page from the local session summary. */
   groupId?: string;
   layoutPage?: number;
@@ -49,6 +50,7 @@ export interface StartUploadInput {
 }
 
 export interface UploadJobSnapshot {
+  remoteSessionId?: string | null;
   reviewCards?: ScanConflictCard[];
   id: string;
   kind: UploadJobKind;
@@ -260,6 +262,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     snapshot = {
       jobs: jobs.map((j) => ({
         id: j.id,
+        remoteSessionId: j.remoteSessionId,
         kind: j.kind,
         name: j.name,
         cardId: j.cardId,
@@ -382,6 +385,14 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       throw error;
     }
     const recognition = await recognized.json();
+    // Recognition still produces fresh crops; explicit local edits remain authoritative.
+    const corrected = await page.input.getCorrection?.();
+    if (corrected) {
+      recognition.questions = corrected.questions;
+      recognition.subjectiveQuestions = corrected.subjectiveQuestions;
+      recognition.studentId = corrected.studentId;
+      if (recognition.geometry && recognition.identity?.status !== "rejected") recognition.status = "ok";
+    }
     // Dependencies are fixed when the job is created, independent of array adjacency,
     // retry counts or network latency. Never borrow an ID across physical cards.
     if (page.input.studentId) {
@@ -404,6 +415,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     form.append("side", page.input.side);
     form.append("recognition", JSON.stringify({
       status: recognition.status, studentId: recognition.studentId, identity: recognition.identity,
+      geometry: recognition.geometry, pageNumber: recognition.pageNumber,
       questions: recognition.questions, subjectiveQuestions: recognition.subjectiveQuestions,
     }));
     const fetcher = jobFetch(j);

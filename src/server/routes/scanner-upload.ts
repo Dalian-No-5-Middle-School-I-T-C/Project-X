@@ -1,3 +1,5 @@
+import { scanCorrectionRouter } from "./scan-correction";
+import { storeCorrectionPage } from "../services/scanCorrection";
 /**
  * v1.6.0 — 扫描上传端点
  * 供扫描端 Electron 通过 HTTP 上传扫描结果到服务端
@@ -47,10 +49,16 @@ import { groupSessionPages } from "../../apps/answer-card/server/scanner/session
 import { scannerLegacyRecoveryRouter } from "./scanner-legacy-recovery";
 import { listScanRecordsGroupedByStudent, upsertRecognitionResult } from "../../apps/answer-card/server/database/scan-store";
 
+const geometrySchema = z.object({
+  imageWidth: z.number().int().positive().max(100000), imageHeight: z.number().int().positive().max(100000),
+  imageToLayout: z.array(z.number().finite()).length(9), layoutToImage: z.array(z.number().finite()).length(9),
+});
 const recognitionSchema = z.object({
+  geometry: geometrySchema.optional(),
+  pageNumber: z.number().int().positive().optional(),
   identity: z.object({ status: z.enum(["verified", "unverified"]), code: z.string(), cardId: z.string().optional(), pageNumber: z.number().int().positive().optional() }),
   status: z.enum(["ok", "partial"]),
-  studentId: z.object({ status: z.string(), value: z.string().min(1).max(64) }),
+  studentId: z.object({ status: z.string(), value: z.string().min(1).max(64), digits: z.array(z.object({ digitIndex: z.number().int().nonnegative(), selectedDigit: z.number().int().min(0).max(9).nullable(), selectedDigits: z.array(z.number().int().min(0).max(9)).optional() })).max(64).optional() }),
   questions: z.array(z.object({
     questionNumber: z.number().int().positive(), selectedOptions: z.array(z.string().max(8)),
     confidence: z.number().finite(),
@@ -139,6 +147,7 @@ router.use("/sessions/:sessionId", dualAuth, requireScannerExamScope);
 router.use("/records/:recordId", dualAuth, requireScannerRecordScope({ recordIdParam: "recordId" }));
 router.use("/legacy", dualAuth);
 router.use(scannerLegacyRecoveryRouter());
+router.use(scanCorrectionRouter("sessions", true));
 
 // v1.6.0: 双鉴权 — API Key 优先，无 Key 时强制 JWT（见 scanner-auth.ts）
 
@@ -374,6 +383,7 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
     }
 
     if (recognition) {
+      await storeCorrectionPage(card, "twain_scan_record", token, { ...recognition, pageNumber: mapped.layoutPage });
       await db.run("UPDATE twain_scan_records SET identity_json = ? WHERE id = ?", JSON.stringify(recognition.identity), token);
       await upsertRecognitionResult({ scanRecordId: token,
         objectiveJson: JSON.stringify(recognition.questions),

@@ -450,7 +450,12 @@ json build_student_id(const std::vector<std::pair<StudentDigit, json>>& digit_re
     json failures = json::array();
     for (const auto& [digit_index, samples] : by_index) {
         const auto [selected, reasons, digit_scores] = selected_digit(samples);
+        json selected_digits = json::array();
+        for (const auto& sample : samples) {
+            if (sample.at("fillRatio").get<double>() >= MIN_SELECTED_FILL_RATIO) selected_digits.push_back(sample.at("digit"));
+        }
         json digit_result = {
+            {"selectedDigits", selected_digits},
             {"digitIndex", digit_index},
             {"selectedDigit", selected ? json(*selected) : json(nullptr)},
             {"digitScores", digit_scores},
@@ -863,6 +868,22 @@ json recognize_objective_answers(
             message = "Student ID recognition failed.";
         }
 
+        // Compose original-image rotation and pixel/mm scaling. The UI displays the
+        // original scan, so exporting the rotated-image homography alone is wrong.
+        cv::Mat rotation = cv::Mat::eye(3, 3, CV_64F);
+        const double w = source_image.cols - 1.0, h = source_image.rows - 1.0;
+        if (rotation_degrees == 90) rotation = (cv::Mat_<double>(3,3) << 0,-1,h, 1,0,0, 0,0,1);
+        else if (rotation_degrees == 180) rotation = (cv::Mat_<double>(3,3) << -1,0,w, 0,-1,h, 0,0,1);
+        else if (rotation_degrees == 270) rotation = (cv::Mat_<double>(3,3) << 0,1,0, -1,0,w, 0,0,1);
+        cv::Mat scale = (cv::Mat_<double>(3,3) << 25.4/output_dpi,0,0, 0,25.4/output_dpi,0, 0,0,1);
+        cv::Mat image_to_layout = scale * homography * rotation;
+        cv::Mat layout_to_image = image_to_layout.inv();
+        auto matrix_json = [](const cv::Mat& matrix) {
+            json values = json::array();
+            for (int row = 0; row < 3; ++row) for (int col = 0; col < 3; ++col) values.push_back(matrix.at<double>(row, col));
+            return values;
+        };
+
         json result = {
             {"status", status},
             {"imagePath", path_to_utf8(image_path)},
@@ -870,6 +891,8 @@ json recognize_objective_answers(
             {"cardId", layout_page.card_id},
             {"pageNumber", layout_page.page_number},
             {"output", {{"dpi", output_dpi}, {"widthPx", output_size.first}, {"heightPx", output_size.second}}},
+            {"geometry", {{"imageWidth", source_image.cols}, {"imageHeight", source_image.rows},
+                {"imageToLayout", matrix_json(image_to_layout)}, {"layoutToImage", matrix_json(layout_to_image)}}},
             {"quality", quality},
             {"identity", identity.identity},
             {"studentId", student_id},
