@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { startScannerFlowFixture } from "./scanner-upload-flow-fixture";
 import { buildLayout } from "../src/shared/layout";
 import { cardFingerprint } from "../src/shared/cardVersion";
+import { createDefaultCard } from "../src/shared/defaultCard";
 import { correctionCells, correctionState, evaluateScoreCells, projectRect, recognizedCells, toggleCorrectionCell, type CorrectionPage } from "../src/shared/scanCorrection";
 import type { CombinedRecognitionResult } from "../src/shared/types";
 
@@ -138,7 +139,9 @@ try {
   const missing = await missingResponse.json();
   assert(missing.pages[0].recovery); assert(!missing.pages[0].recognition.geometry);
   let nativeCalls=0;
-  const restoredRecognition = {...recognition,studentId:{status:"ok",value:"91004"}};
+  const restoredRecognition: CombinedRecognitionResult = {...recognition,status:"failed",studentId:{status:"failed",value:null,
+    digits:Array.from({length:5},(_,digitIndex)=>({digitIndex,selectedDigit:digitIndex===0 || digitIndex===4 ? null : Number("91004"[digitIndex]),
+      selectedDigits:digitIndex===0 ? [] : digitIndex===4 ? [3,4] : [Number("91004"[digitIndex])]}))}};
   const draft = await recoverCorrectionDocument(missing,recoveryUrl,async (url,init)=>{
     assert.equal(url,`${recoveryUrl}/recognize`); assert.equal(init?.method,"POST");
     const result = await recognizeSessionCorrection(current,recoverySession.id,"0",JSON.parse(init!.body as string),async request=>{
@@ -148,12 +151,22 @@ try {
     return Response.json(result);
   });
   assert.equal(nativeCalls,1);
+  assert.equal(draft.pages[0].recognition.status,"partial","valid positioning with failed student marks becomes an editable draft");
+  assert.equal(draft.pages[0].recognition.studentId?.status,"failed");
   assert.equal((await fetch(`${recoveryUrl}/recognize`,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})).status,401,"recognition requires existing scanner authorization");
   await recoverCorrectionDocument(draft,recoveryUrl,async()=>{throw new Error("must not recognize existing geometry");});
   assert.equal(await db.get("SELECT source_id FROM scan_correction_pages WHERE source_id=?",recoveryRecord.id),null,"canceling recovery must not store metadata");
   assert.equal((await db.get<{ocr_status:string}>("SELECT ocr_status FROM twain_scan_records WHERE id=?",recoveryRecord.id))!.ocr_status,"failed");
   const rp = draft.pages[0];
   const redit = {sourceId:rp.sourceId,revision:0,selected:toggleCorrectionCell(current,rp,rp.selected,a.id),recovery:{fingerprint:rp.recovery!.fingerprint,signature:rp.recovery!.signature,recognition:rp.recognition}};
+  const incomplete = await recoverRequest("PUT",{pages:[redit]});
+  assert.equal(incomplete.status,409);
+  assert.match((await incomplete.json()).message,/学号第/);
+  assert.equal(await db.get("SELECT source_id FROM scan_correction_pages WHERE source_id=?",recoveryRecord.id),null,"invalid student marks roll back recovery metadata");
+  for (const digitIndex of [0,4]) {
+    const digit = cells.find(c=>c.type==="student_digit" && c.digitIndex===digitIndex && c.digit===Number("91004"[digitIndex]))!;
+    redit.selected = toggleCorrectionCell(current,rp,redit.selected,digit.id);
+  }
   assert.equal((await recoverRequest("PUT",{pages:[{...redit,recovery:{...redit.recovery,signature:undefined}}]})).status,409,"unsigned client recognition is rejected");
   const wrongIdentity = structuredClone(redit); wrongIdentity.recovery.recognition.identity!.cardId="wrong";
   assert.equal((await recoverRequest("PUT",{pages:[wrongIdentity]})).status,409,"recovery identity cannot bypass QR checks");
@@ -165,6 +178,8 @@ try {
   const refreshed = await (await recoverRequest()).json(); redit.recovery.fingerprint=refreshed.pages[0].recovery.fingerprint;
   assert.equal((await recoverRequest("PUT",{pages:[redit]})).status,409,"a known new fingerprint cannot rebind an old signature");
   const recoveryInput = {version:refreshed.version,pages:[{sourceId:rp.sourceId,fingerprint:redit.recovery.fingerprint}]};
+  await assert.rejects(recognizeSessionCorrection(current,recoverySession.id,"0",recoveryInput,async()=>({...restoredRecognition,geometry:undefined})),/geometry/);
+  await assert.rejects(recognizeSessionCorrection(current,recoverySession.id,"0",recoveryInput,async()=>({...restoredRecognition,studentId:{status:"ok",value:"91004"}})),/无法生成订正草稿/);
   await assert.rejects(recognizeSessionCorrection(current,recoverySession.id,"0",recoveryInput,async()=>wrongGeometry.recovery.recognition),/尺寸/);
   await assert.rejects(recognizeSessionCorrection(current,recoverySession.id,"0",recoveryInput,async()=>wrongIdentity.recovery.recognition),/二维码/);
   const freshDraft = await recognizeSessionCorrection(current,recoverySession.id,"0",recoveryInput,async()=>restoredRecognition);
@@ -173,6 +188,7 @@ try {
   assert.equal((await recoverySaved.json()).saved,true);
   assert.equal((await recoverRequest("PUT",{pages:[redit]})).status,409,"recovery cannot overwrite an existing snapshot");
   assert((await db.get("SELECT source_id FROM scan_correction_pages WHERE source_id=?",recoveryRecord.id)));
+  assert.equal((await db.get<{student_id:string}>("SELECT student_id FROM twain_scan_records WHERE id=?",recoveryRecord.id))!.student_id,"91004","corrected student number is persisted");
   assert.equal(JSON.stringify(await db.all("SELECT * FROM review_sessions")),reviewBefore,"recovery leaves online review unchanged");
   const multi = structuredClone(current); (multi.bodyBlocks[0] as any).mode="multiple"; (multi.bodyBlocks[0] as any).answerKey={1:["A","C"]}; (multi.bodyBlocks[0] as any).questions=[{questionNumber:1,mode:"multiple",answerKey:["A","C"],optionCount:4,score:5}];
   const multiSelected = toggleCorrectionCell(multi,page,page.selected,a.id);
@@ -264,5 +280,58 @@ try {
   await deleteExamRows(db,[historicalExam.id]);
   for(const id of historyIds) assert.equal(await db.get("SELECT source_id FROM scan_correction_pages WHERE source_type='scan_record' AND source_id=?",String(id)),null,"exam deletion clears scan snapshots");
   assert(await db.get("SELECT source_id FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?",record.id),"unrelated original remains");
+  // Scanner metadata may report a different subjective number; both formal
+  // edits and withdrawn-score snapshots must use the card's question definition.
+  const numberedCard = createDefaultCard("91514004");
+  numberedCard.studentInfo.studentNumberDigits=5;
+  numberedCard.bodyBlocks=[{...card.bodyBlocks[0],id:"numbered-objective"}, {id:"numbered-manual",type:"subjective",title:"手阅题号验证",questions:[2,3].map(number=>({
+    id:`numbered-q${number}`,number,score:30,style:"manual_score_grid" as const,kind:"plain_box" as const,minHeightMm:30,
+  }))}];
+  await repo.createCard(numberedCard); await repo.updateCard(numberedCard);
+  const numberedCurrent = (await repo.findById(numberedCard.id))!;
+  const numberedCells = correctionCells(buildLayout(numberedCurrent).pages[0]);
+  const numberedExam = await db.run("INSERT INTO exams (name,card_id,status) VALUES (?,?,'grading')","订正题号验证",numberedCard.id);
+  const numberedExamId = Number(numberedExam.lastInsertRowid);
+  await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')",numberedExamId,student.id);
+  const numberedRecognition: CombinedRecognitionResult = {...recognition,identity:{...identity,cardId:numberedCard.id},subjectiveQuestions:[2,3].map(number=>({
+    blockId:"numbered-manual",questionId:`numbered-q${number}`,questionNumber:3,maxScore:300,score:10,status:"ok",confidence:1,
+    validCells:[{score:10,rect:numberedCells.find(c=>c.type==="score_cell" && c.questionId===`numbered-q${number}` && c.score===10)!.rect}],invalidCells:[],
+  }))};
+  async function uploadNumberedCard(image = imageBytes) {
+    const created = await fetch(`${fixture.baseUrl}/api/scanner/upload/sessions`,{method:"POST",headers:{"X-Api-Key":info.key,"Content-Type":"application/json"},
+      body:JSON.stringify({cardId:numberedCard.id,cardVersion:cardFingerprint(numberedCurrent),pageCount:1})});
+    assert.equal(created.status,201,await created.clone().text());
+    const session = await created.json();
+    const form = new FormData();
+    form.set("image",new Blob([image],{type:"image/png"}),"numbered.png");
+    form.set("token",session.uploadTokens[0]); form.set("pageNum","1"); form.set("side","front");
+    form.set("recognition",JSON.stringify(numberedRecognition));
+    const uploaded = await fetch(`${fixture.baseUrl}/api/scanner/upload/sessions/${session.sessionId}/pages`,{method:"POST",headers:{"X-Api-Key":info.key},body:form});
+    assert.equal(uploaded.status,200,await uploaded.clone().text());
+    return session.sessionId as string;
+  }
+  const numberedSessionId = await uploadNumberedCard();
+  assert.equal((await processScannerSession(numberedCurrent,numberedSessionId,"save")).results[0]?.saved,true);
+  const numberedScores = async()=> (await db.all<{question_number:number;score:number}>("SELECT question_number,score FROM question_scores WHERE exam_id=? AND student_id=? AND score_type='subjective' ORDER BY question_number",numberedExamId,student.id))
+    .map(q=>({number:Number(q.question_number),score:Number(q.score)}));
+  assert.deepEqual(await numberedScores(),[{number:2,score:10},{number:3,score:10}],"initial grading canonicalizes uploaded subjective numbers");
+  const numberedDoc = await studentCorrection(numberedCurrent,numberedExamId,student.id), numberedPage = numberedDoc.pages[0];
+  const numberedTen = numberedCells.find(c=>c.type==="score_cell" && c.questionId==="numbered-q2" && c.score===10)!;
+  const numberedTwenty = numberedCells.find(c=>c.type==="score_cell" && c.questionId==="numbered-q2" && c.score===20)!;
+  const numberedEdit = {sourceId:numberedPage.sourceId,revision:numberedPage.revision,
+    selected:toggleCorrectionCell(numberedCurrent,numberedPage,toggleCorrectionCell(numberedCurrent,numberedPage,numberedPage.selected,numberedTen.id),numberedTwenty.id)};
+  await saveStudentCorrection(numberedCurrent,numberedExamId,student.id,[numberedEdit],null);
+  assert.deepEqual(await numberedScores(),[{number:2,score:20},{number:3,score:10}],"editing printed question 2 cannot write question 3");
+  const numberedAudit = await db.get<{question_number:number}>("SELECT question_number FROM answer_overrides WHERE exam_id=? ORDER BY id DESC LIMIT 1",numberedExamId);
+  assert.equal(Number(numberedAudit!.question_number),2,"audit uses the card's subjective number");
+  const numberedCopyId = await uploadNumberedCard(await sharp(imageBytes).negate().png().toBuffer());
+  await processScannerSession(numberedCurrent,numberedCopyId,"validate");
+  const withdrawn = (await sessionCorrection(numberedCurrent,numberedSessionId,"0",false)).pages[0];
+  const snapshotEdit = {sourceId:withdrawn.sourceId,revision:withdrawn.revision,
+    selected:toggleCorrectionCell(numberedCurrent,withdrawn,toggleCorrectionCell(numberedCurrent,withdrawn,withdrawn.selected,numberedTwenty.id),numberedTen.id)};
+  assert.equal((await saveSessionCorrection(numberedCurrent,numberedSessionId,"0",[snapshotEdit],null)).saved,false,"duplicate remains blocked after snapshot correction");
+  const correctedSnapshot = JSON.parse((await db.get<{score_snapshot:string}>("SELECT score_snapshot FROM scanner_submissions WHERE exam_id=? AND session_id=? AND group_id='0'",numberedExamId,numberedSessionId))!.score_snapshot);
+  assert.deepEqual(correctedSnapshot.questions.filter((q:{score_type:string})=>q.score_type==="subjective").map((q:{question_number:number;score:number})=>({number:Number(q.question_number),score:Number(q.score)})).sort((a:{number:number},b:{number:number})=>a.number-b.number),
+    [{number:2,score:10},{number:3,score:10}],"withdrawn snapshot correction also canonicalizes subjective numbers");
   console.log(`PASS scan correction: ${db.dialect}; geometry, colours, toggles, draft isolation, stale-write rejection, persisted answers, rankings/publication, review preservation and scanner replay`);
 } finally { await fixture.close(); }

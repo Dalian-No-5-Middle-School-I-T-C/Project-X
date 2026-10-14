@@ -1,4 +1,5 @@
-import { recoveryRecognitionSchema } from "../src/server/services/scanCorrectionRecovery";
+import { recoveredPage, recoveryRecognitionSchema } from "../src/server/services/scanCorrectionRecovery";
+import { correctionCells, correctionState, toggleCorrectionCell, type CorrectionPage } from "../src/shared/scanCorrection";
 import assert from "node:assert/strict";
 import {mkdtemp,writeFile,rm} from "node:fs/promises";
 import path from "node:path";
@@ -17,13 +18,13 @@ try {
   card.bodyBlocks.push({id:"paper",type:"subjective",title:"手阅",questions:[{id:"q2",number:2,score:30,style:"manual_score_grid",kind:"plain_box",minHeightMm:30}]});
   const layout=buildLayout(card),page=layout.pages[0],dpi=300;
   const box=(r:Rect,fill:string,stroke=0)=>`<rect x="${r.x}" y="${r.y*1.02-2}" width="${r.width}" height="${r.height*1.02}" fill="${fill}" stroke="#111" stroke-width="${stroke}"/>`;
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${page.width} ${page.height}"><rect width="100%" height="100%" fill="white"/>${page.markers.map(m=>box(m.rect,"black")).join("")}${qrDarkRects(page.header.qrCode).map(r=>box(r,"black")).join("")}${page.elements.flatMap(e=>e.type==="student_digit"?[box(e.rect,Number("12345"[e.digitIndex])===e.digit?"black":"white",.15)]:e.type==="objective_option"?[box(e.rect,e.option==="A"?"black":"white",.15)]:e.type==="score_cell"?[box(e.rect,"white",.15),...(e.score===10?[`<line x1="${e.rect.x-.4}" y1="${(e.rect.y+.2)*1.02-2}" x2="${e.rect.x+e.rect.width+.4}" y2="${(e.rect.y+e.rect.height-.2)*1.02-2}" stroke="red" stroke-width=".45"/>`]:[])]:[]).join("")}</svg>`;
+  const svg=(studentCase:"valid"|"missing"|"multiple"="valid")=>`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${page.width} ${page.height}"><rect width="100%" height="100%" fill="white"/>${page.markers.map(m=>box(m.rect,"black")).join("")}${qrDarkRects(page.header.qrCode).map(r=>box(r,"black")).join("")}${page.elements.flatMap(e=>e.type==="student_digit"?[box(e.rect,(Number("12345"[e.digitIndex])===e.digit && !(studentCase==="missing" && e.digitIndex===0)) || (studentCase==="multiple" && e.digitIndex===0 && e.digit===9)?"black":"white",.15)]:e.type==="objective_option"?[box(e.rect,e.option==="A"?"black":"white",.15)]:e.type==="score_cell"?[box(e.rect,"white",.15),...(e.score===10?[`<line x1="${e.rect.x-.4}" y1="${(e.rect.y+.2)*1.02-2}" x2="${e.rect.x+e.rect.width+.4}" y2="${(e.rect.y+e.rect.height-.2)*1.02-2}" stroke="red" stroke-width=".45"/>`]:[])]:[]).join("")}</svg>`;
   const width=Math.round(page.width/25.4*dpi),height=Math.round(page.height/25.4*dpi);
-  const base=await sharp(Buffer.from(svg)).resize(width,height).png().toBuffer();
+  const base=await sharp(Buffer.from(svg())).resize(width,height).png().toBuffer();
   const layoutPath=path.join(dir,"layout.json");await writeFile(layoutPath,JSON.stringify(layout));
+  const run = process.platform==="linux" && process.arch==="x64" ? recognizeCorrectionCard : recognizeAnswerCard;
   for(const angle of [0,90,180,270]) {
     const imagePath=path.join(dir,`rotation-${angle}.png`);await sharp(base).rotate(angle).png().toFile(imagePath);
-    const run = process.platform==="linux" && process.arch==="x64" ? recognizeCorrectionCard : recognizeAnswerCard;
     const result=await run({imagePath,layoutPath,pageNumber:1,dpi}) as CombinedRecognitionResult;
     assert.notEqual(result.status,"failed",result.message);assert.equal(result.studentId?.value,"12345");assert.deepEqual(result.questions[0].selectedOptions,["A"]);
     recoveryRecognitionSchema.parse(result);
@@ -41,5 +42,21 @@ try {
       assert(Math.hypot(inverse[0]-x,inverse[1]-y)<.001,"inverse returns layout millimetres");
     }
     console.log(`PASS native geometry ${angle} degrees: original-image mapping, inverse and recognized marks`);
+  }
+  for (const studentCase of ["missing","multiple"] as const) {
+    const imagePath=path.join(dir,`student-${studentCase}.png`);
+    await sharp(Buffer.from(svg(studentCase))).resize(width,height).png().toFile(imagePath);
+    const result=await run({imagePath,layoutPath,pageNumber:1,dpi}) as CombinedRecognitionResult;
+    assert.equal(result.status,"failed"); assert.equal(result.studentId?.status,"failed");
+    recoveryRecognitionSchema.parse(result);
+    const source:CorrectionPage={sourceType:"twain_scan_record",sourceId:studentCase,revision:0,layout:page,imageUrl:"",recognition:result,selected:[],invalid:[],
+      recovery:{fingerprint:"native-test",identityMode:"strict",dpi}};
+    const draft=recoveredPage(card,source,result);
+    assert.equal(draft.recognition.status,"partial");
+    assert(correctionState(card,draft,draft.selected).errors.some(error=>error.includes("学号第 1 位")),"failed native student marks require correction");
+    const digit=correctionCells(page).find(c=>c.type==="student_digit" && c.digitIndex===0 && c.digit===1)!;
+    const corrected=correctionState(card,draft,toggleCorrectionCell(card,draft,draft.selected,digit.id));
+    assert.deepEqual(corrected.errors,[]); assert.equal(corrected.recognition.studentId?.value,"12345");
+    console.log(`PASS native ${studentCase} student digit: failed recognition reaches a draft and requires valid correction`);
   }
 } finally {await rm(dir,{recursive:true,force:true});}

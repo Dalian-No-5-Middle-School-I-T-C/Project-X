@@ -13,13 +13,16 @@ import type { AnswerCard, CombinedRecognitionResult } from "../../shared/types";
 
 const cell = z.object({ score:z.number().finite(), rect:z.object({x:z.number().finite(),y:z.number().finite(),width:z.number().positive(),height:z.number().positive()}).optional() });
 export const recoveryRecognitionSchema = z.object({
-  status:z.enum(["ok","partial"]), pageNumber:z.number().int().positive(),
+  status:z.enum(["ok","partial","failed"]), pageNumber:z.number().int().positive(),
   geometry:z.object({imageWidth:z.number().int().positive().max(100000),imageHeight:z.number().int().positive().max(100000),
     imageToLayout:z.array(z.number().finite()).length(9),layoutToImage:z.array(z.number().finite()).length(9)}),
   identity:z.object({status:z.enum(["verified","unverified"]),code:z.string(),cardId:z.string().optional(),pageNumber:z.number().int().positive().optional()}),
   studentId:z.object({status:z.string(),value:z.string().max(64).nullable(),digits:z.array(z.object({digitIndex:z.number().int().min(0).max(63),selectedDigit:z.number().int().min(0).max(9).nullable(),selectedDigits:z.array(z.number().int().min(0).max(9)).max(10).optional()})).max(64).optional()}).optional(),
   questions:z.array(z.object({questionNumber:z.number().int().positive(),selectedOptions:z.array(z.string().max(8)).max(26),confidence:z.number().finite()})).max(1000),
   subjectiveQuestions:z.array(z.object({blockId:z.string().optional(),questionId:z.string(),questionNumber:z.union([z.number(),z.string()]),score:z.number().finite(),maxScore:z.number().nonnegative(),status:z.string(),confidence:z.number().finite(),validCells:z.array(cell).max(100),invalidCells:z.array(cell).max(100)})).max(1000),
+}).refine(result => result.status !== "failed" || result.studentId?.status === "failed", {
+  message: "重新识别失败，无法生成订正草稿",
+  path: ["status"],
 });
 
 // Drafts never enter the database. A restart invalidates them and asks for recognition again.
@@ -64,5 +67,8 @@ export function recoveredPage(card: AnswerCard, page: CorrectionPage, raw: unkno
   const a = recognition.geometry!.imageToLayout, b = recognition.geometry!.layoutToImage;
   const product = Array.from({length:9},(_,i)=>[0,1,2].reduce((v,k)=>v+a[Math.floor(i/3)*3+k]*b[k*3+i%3],0));
   if (Math.abs(product[8])<1e-12 || product.some((v,i)=>Math.abs(v/product[8]-(i%4===0?1:0))>1e-5)) throw new Error("重新识别坐标变换无效");
+  // A valid alignment with failed student marks is an editable partial draft.
+  // correctionState still requires every student-number digit before saving.
+  if (recognition.status === "failed") recognition.status = "partial";
   return {...page,recognition,...recognizedCells(page.layout,recognition)};
 }

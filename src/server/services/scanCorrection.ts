@@ -8,7 +8,7 @@ import { databaseTimestamp } from "../db/timestamp";
 import { buildLayout } from "../../shared/layout";
 import { cardFingerprint } from "../../shared/cardVersion";
 import { correctionCells, correctionState, recognizedCells, type CorrectionDocument, type CorrectionEdit, type CorrectionPage } from "../../shared/scanCorrection";
-import { gradeObjectiveQuestion } from "../../shared/grading";
+import { gradeObjectiveQuestion, gradeSubjectiveRecognition } from "../../shared/grading";
 import type { AnswerCard, CombinedRecognitionResult } from "../../shared/types";
 import { listScanRecordsGroupedByStudent } from "../../apps/answer-card/server/database/scan-store";
 import { groupSessionPages, validateSessionGroupStructure } from "../../apps/answer-card/server/scanner/session-results";
@@ -171,7 +171,10 @@ function changedScores(card: AnswerCard, page: CorrectionPage, edit: CorrectionE
   const changedCells = correctionCells(page.layout).filter(c => page.selected.includes(c.id) !== edit.selected.includes(c.id) || (page.invalid.includes(c.id) && edit.selected.includes(c.id) && edit.touched?.includes(c.id)));
   return [
           ...recognition.questions.filter(q => changedCells.some(c => c.type === "objective_option" && c.questionNumber === q.questionNumber)).map(q => ({number:String(q.questionNumber),type:"objective",score:gradeObjectiveQuestion(card,q).score,options:JSON.stringify(q.selectedOptions)})),
-          ...recognition.subjectiveQuestions.filter(q => changedCells.some(c => c.type === "score_cell" && c.questionId === q.questionId && (!q.blockId || c.blockId === q.blockId))).map(q => ({number:String(q.questionNumber),type:"subjective",score:q.score,options:null})),
+          ...recognition.subjectiveQuestions.filter(q => changedCells.some(c => c.type === "score_cell" && c.questionId === q.questionId && (!q.blockId || c.blockId === q.blockId))).flatMap(q => {
+            const grade = gradeSubjectiveRecognition(card, q);
+            return grade ? [{number:String(grade.questionNumber),type:"subjective",score:grade.score,options:null}] : [];
+          }),
   ];
 }
 
