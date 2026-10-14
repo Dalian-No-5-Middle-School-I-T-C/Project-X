@@ -199,7 +199,7 @@ async function main() {
     });
     ok(patch.status === 200, `PATCH classId 成功 (实际 ${patch.status})`);
     const r = await publish(base, headers, examId);
-    ok(r.status === 200, `补设范围后按班级名册校验 → 200 (实际 ${r.status})`);
+    ok(r.status === 200, `补设范围后公布 → 200（范围不再决定能否公布）(实际 ${r.status})`);
   }
 
   // ── T8: PATCH 补设范围（已有显式名单）→ 409 ──

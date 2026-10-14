@@ -277,8 +277,8 @@ router.get(
 });
 
 // ── 逐题修改分数 ──────────────────────────────────
-// 安全（R09）：这里会改写 question_scores、重算 student_scores 总分与全场排名，并按审计撤回
-// 已公布状态——是整卷级写操作，但此前只过 requireExamAccess：
+// 安全（R09）：这里会改写 question_scores、重算 student_scores 总分与全场排名，并可能按管理员
+// 策略撤回已公布状态——是整卷级写操作，但此前只过 requireExamAccess：
 // 晨测经 `withQuizExamIds` 对**全体教师**可见，于是「可见」直接变成「可写」，
 // 任意教师都能改写与自己无关的晨测成绩；can_grade=0 或仅有单题块授权的教师同样能整卷改分。
 // 现叠加 grade:write 与整卷写授权门（矩阵/分配优先，兼容回退时再要求组织归属）。
