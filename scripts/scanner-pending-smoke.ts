@@ -389,6 +389,24 @@ try {
     1,
   );
   await db.run("UPDATE exams SET assigned_formula=NULL WHERE id=?", exam.id);
+  const { analysisCache } = await import("../src/server/services/analysisCache");
+  const cacheKey = `getExamOverview:${exam.id}:all`;
+  const transaction = db.transaction.bind(db);
+  let repopulatedBeforeCommit = false;
+  // MariaDB readers see old committed scores until COMMIT, even if an earlier
+  // invalidate removed their cache. Inject that observable state at the boundary.
+  db.transaction = async fn => transaction(async tx => {
+    const result = await fn(tx);
+    analysisCache.set(cacheKey, { totalScore: "old committed scores" });
+    repopulatedBeforeCommit = true;
+    return result;
+  });
+  try {
+    const persisted = await persistGradingResults(String(exam.id), [row], teacher.id);
+    assert.equal(persisted.persisted, 1);
+    assert(repopulatedBeforeCommit, "simulate a concurrent analysis read immediately before commit");
+    assert.equal(analysisCache.get(cacheKey), undefined, "successful batch commit invalidates any repopulated old analysis");
+  } finally { db.transaction = transaction; }
   console.log(
     `PASS scanner pending (${db.dialect}): auto admission, preserved grades, authority, stale/duplicate approval, roster, configurable withdrawal and atomic batch assignment`,
   );

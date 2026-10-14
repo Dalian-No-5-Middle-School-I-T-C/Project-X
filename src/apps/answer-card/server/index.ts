@@ -660,6 +660,8 @@ async function persistGradingResultsLocked(
   console.log(`[Grading] exam=${examId} batch=${batchId} status=${status} persisted=${persisted} failed=${failedStudents.length}`);
   return { batchId, status, persisted, failedCount: failedStudents.length, failed: failedStudents };
   });
+  // Readers may repopulate the old committed view while the transaction is open.
+  analysisCache.invalidateExam(Number(examIdParam));
   if (backupAfterCommit) void autoBackupOnExamClose(Number(examIdParam)).catch(e => console.error("[AutoBackup] Failed:",e));
   return outcome;
 }
