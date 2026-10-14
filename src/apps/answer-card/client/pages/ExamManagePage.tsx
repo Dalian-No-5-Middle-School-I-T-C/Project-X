@@ -168,6 +168,7 @@ export function ExamManagePage() {
   const [unpublishTarget, setUnpublishTarget] = useState<ExamRecord | null>(null);
   const [unpublishReason, setUnpublishReason] = useState("");
   const [publishing, setPublishing] = useState(false);
+  const [publicationError, setPublicationError] = useState<string | null>(null);
   // v54: 公布表单的「公布后显示原卷」勾选（默认勾选，随公布请求一并提交）+ 原卷/答案配置面板
   const [publishShowPaper, setPublishShowPaper] = useState(true);
   const [batchPublishShowPaper, setBatchPublishShowPaper] = useState(true);
@@ -378,6 +379,7 @@ export function ExamManagePage() {
   async function handlePublishExam(examId: number) {
     if (publishing) return;
     setPublishing(true);
+    setPublicationError(null);
     try {
       // v54: 公布与「显示原卷」一并提交，勾选状态跟随本次公布写入
       await fetchJson(`/api/exams/${examId}/publish`, {
@@ -389,7 +391,9 @@ export function ExamManagePage() {
       setStatus("成绩已公布，学生可查看");
       await loadExams();
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "公布失败");
+      const message = err instanceof Error ? err.message : "公布失败";
+      setPublicationError(message);
+      setStatus(message);
     } finally {
       setPublishing(false);
     }
@@ -400,6 +404,7 @@ export function ExamManagePage() {
     if (publishing || selectedExamIds.size === 0) return;
     const count = selectedExamIds.size;
     setPublishing(true);
+    setPublicationError(null);
     try {
       await fetchJson("/api/exams/publish-batch", {
         method: "POST",
@@ -411,7 +416,9 @@ export function ExamManagePage() {
       setStatus(`已批量公布 ${count} 场考试的成绩`);
       await loadExams();
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "批量公布失败");
+      const message = err instanceof Error ? err.message : "批量公布失败";
+      setPublicationError(message);
+      setStatus(message);
     } finally {
       setPublishing(false);
     }
@@ -420,6 +427,7 @@ export function ExamManagePage() {
   /** v54: 打开公布表单时的「公布后显示原卷」初值 —— 首次公布默认勾选；
    * 已公布/已撤回过的考试沿用教师上一次的选择，避免重新公布时把原卷意外公开 */
   function openPublishDialog(exam: ExamRecord) {
+    setPublicationError(null);
     setPublishShowPaper(exam.score_published ? exam.show_original_paper === 1 : true);
     setPublishTarget(exam);
   }
@@ -428,6 +436,7 @@ export function ExamManagePage() {
   async function handleUnpublishExam(examId: number) {
     if (publishing) return;
     setPublishing(true);
+    setPublicationError(null);
     try {
       await fetchJson(`/api/exams/${examId}/unpublish`, {
         method: "POST",
@@ -439,7 +448,9 @@ export function ExamManagePage() {
       setStatus("成绩已撤回，学生不可再查看");
       await loadExams();
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "撤回失败");
+      const message = err instanceof Error ? err.message : "撤回失败";
+      setPublicationError(message);
+      setStatus(message);
     } finally {
       setPublishing(false);
     }
@@ -548,9 +559,9 @@ export function ExamManagePage() {
                 <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</Button>
                 <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</Button>
                 {exam.score_published === 1 ? (
-                  <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => { setUnpublishReason(""); setUnpublishTarget(exam); }}>撤回公布</Button>
+                  <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => { setPublicationError(null); setUnpublishReason(""); setUnpublishTarget(exam); }}>撤回公布</Button>
                 ) : (
-                  <Button variant="ghost" size="sm" className="text-success-foreground" disabled={exam.status !== "closed" && exam.status !== "grading"} onClick={() => openPublishDialog(exam)}>
+                  <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => openPublishDialog(exam)}>
                     {exam.score_published === 2 ? "重新公布" : "公布分数"}
                   </Button>
                 )}
@@ -619,9 +630,9 @@ export function ExamManagePage() {
                     <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</Button>
                     <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</Button>
                     {exam.score_published === 1 ? (
-                      <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => { setUnpublishReason(""); setUnpublishTarget(exam); }}>撤回公布</Button>
+                      <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => { setPublicationError(null); setUnpublishReason(""); setUnpublishTarget(exam); }}>撤回公布</Button>
                     ) : (
-                      <Button variant="ghost" size="sm" className="text-success-foreground" disabled={exam.status !== "closed" && exam.status !== "grading"} onClick={() => openPublishDialog(exam)}>
+                      <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => openPublishDialog(exam)}>
                         {exam.score_published === 2 ? "重新公布" : "公布分数"}
                       </Button>
                     )}
@@ -658,7 +669,7 @@ export function ExamManagePage() {
                 variant="ghost"
                 icon={<Megaphone />}
                 className="text-success-foreground"
-                onClick={() => { setBatchPublishShowPaper(true); setBatchPublishOpen(true); }}
+                onClick={() => { setPublicationError(null); setBatchPublishShowPaper(true); setBatchPublishOpen(true); }}
               >
                 批量公布 ({selectedExamIds.size})
               </Button>
@@ -939,11 +950,12 @@ export function ExamManagePage() {
           <DialogHeader>
             <DialogTitle>公布分数</DialogTitle>
             <DialogDescription>
-              确认公布「{publishTarget?.name ?? ""}」的成绩？将公布当前已录入的成绩，无需等待所有应考学生出分；后续补录或改分后需重新公布。
+              确认公布「{publishTarget?.name ?? ""}」的成绩？将公布当前已录入的成绩，无需等待所有应考学生出分；后续补录或改分默认保持公布并更新统计；管理员开启自动撤回时需重新公布。
             </DialogDescription>
           </DialogHeader>
           {/* v54: 公布表单的「公布后显示原卷」，勾选状态随本次公布写入 exams.show_original_paper */}
           <DialogBody className="flex flex-col gap-3">
+            {publicationError && <p role="alert" className="m-0 text-sm text-destructive-fg">{publicationError}</p>}
             <ControlRow
               htmlFor="publish-show-paper"
               control={
@@ -970,10 +982,11 @@ export function ExamManagePage() {
           <DialogHeader>
             <DialogTitle>批量公布成绩</DialogTitle>
             <DialogDescription>
-              确认公布选中的 {selectedExamIds.size} 场考试的成绩？将公布当前已录入的成绩，无需等待所有应考学生出分；后续补录或改分后需重新公布。
+              确认公布选中的 {selectedExamIds.size} 场考试的成绩？将公布当前已录入的成绩，无需等待所有应考学生出分；后续补录或改分默认保持公布并更新统计；管理员开启自动撤回时需重新公布。
             </DialogDescription>
           </DialogHeader>
           <DialogBody className="flex flex-col gap-3">
+            {publicationError && <p role="alert" className="m-0 text-sm text-destructive-fg">{publicationError}</p>}
             <ControlRow
               htmlFor="batch-publish-show-paper"
               control={
@@ -1004,6 +1017,7 @@ export function ExamManagePage() {
             </DialogDescription>
           </DialogHeader>
           <DialogBody className="flex flex-col gap-3">
+            {publicationError && <p role="alert" className="m-0 text-sm text-destructive-fg">{publicationError}</p>}
             <Input
               value={unpublishReason}
               onChange={(event) => setUnpublishReason(event.target.value)}

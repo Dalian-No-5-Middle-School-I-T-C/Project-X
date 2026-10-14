@@ -30,6 +30,10 @@ const { resetAdapter } = await import("../src/server/db/mysql");
 initializeDatabase();
 const db = getMysqlDb();
 if (process.env.SCANNER_BATCH_MARIADB === "1") await initMariadbSchema();
+const autoUnpublish = process.env.TEST_AUTO_UNPUBLISH === "1";
+const publicationAfterMutation = autoUnpublish ? 0 : 1;
+if (autoUnpublish) await db.run("INSERT INTO system_settings (`key`, value) VALUES ('auto_unpublish_on_score_change', '1')");
+
 const store = await import("../src/apps/answer-card/server/database/scan-store");
 async function createVerifiedRecord(params: Parameters<typeof store.createScanRecord>[0]) {
   const record = await store.createScanRecord(params);
@@ -434,8 +438,7 @@ try {
     "Current version cannot replace a session's original version");
   await db.run("UPDATE answer_cards SET title=? WHERE id=?", currentCard.title, card.id);
 
-  // A scanner key can save a new student's result after partial publication,
-  // but cannot expose that score without a fresh teacher publication.
+  // Subsequent scanner uploads follow the administrator publication policy.
   const laterStudent = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)",
     "later-scanner-result", "test", "后续扫描", role.id, "91888");
   await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, laterStudent.lastInsertRowid);
@@ -444,10 +447,10 @@ try {
   const laterSaved = await remote(laterSession.id);
   assert.equal(laterSaved.status, 200);
   assert(await db.get("SELECT id FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, laterStudent.lastInsertRowid));
-  assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id=?", exam.lastInsertRowid))!.score_published, 0);
-  assert.equal((await db.all("SELECT id FROM exam_publish_events WHERE exam_id=? AND reason=?", exam.lastInsertRowid, "扫描成绩入库自动撤回")).length, 1);
+  assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id=?", exam.lastInsertRowid))!.score_published, publicationAfterMutation);
+  assert.equal((await db.all("SELECT id FROM exam_publish_events WHERE exam_id=? AND reason=?", exam.lastInsertRowid, "扫描成绩入库自动撤回")).length, autoUnpublish ? 1 : 0);
   const { ScoreRepository } = await import("../src/server/repositories/ScoreRepository");
-  assert.equal((await new ScoreRepository().getStudentScores(Number(laterStudent.lastInsertRowid))).length, 0, "New scanner score stays hidden from students");
+  assert.equal((await new ScoreRepository().getStudentScores(Number(laterStudent.lastInsertRowid))).length, autoUnpublish ? 0 : 1, "Student visibility follows publication policy");
   await db.run("UPDATE exams SET score_published=1 WHERE id=?", exam.lastInsertRowid);
   assert.equal((await remote(laterSession.id)).status, 200);
   assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id=?", exam.lastInsertRowid))!.score_published, 1, "Saved receipt replay does not mutate scores or withdraw publication");
@@ -462,7 +465,7 @@ try {
   }), /forced scanner save rollback/);
   assert.deepEqual(await db.get("SELECT total_score FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, laterStudent.lastInsertRowid), beforeScore);
   assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id=?", exam.lastInsertRowid))!.score_published, 1, "Failed save rolls back publication withdrawal too");
-  assert.equal((await db.all("SELECT id FROM exam_publish_events WHERE exam_id=? AND reason=?", exam.lastInsertRowid, "扫描成绩入库自动撤回")).length, 1, "Failed save leaves no withdrawal audit");
+  assert.equal((await db.all("SELECT id FROM exam_publish_events WHERE exam_id=? AND reason=?", exam.lastInsertRowid, "扫描成绩入库自动撤回")).length, autoUnpublish ? 1 : 0, "Failed save leaves no withdrawal audit");
   await db.run("UPDATE exams SET score_published=0 WHERE id=?", exam.lastInsertRowid);
   // A saved receipt owns its crops even after closure or reuse of the card.
   const cropId = "receipt-bound-crop";
@@ -518,8 +521,8 @@ try {
   assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, users[0]), null);
   assert.equal((await db.all("SELECT id FROM question_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, users[0])).length, 0);
   assert(await store.getScanRecordWithResult(records[0].id), "Keep original recognition for correction");
-  assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id = ?", exam.lastInsertRowid))!.score_published, 0);
-  assert(await db.get("SELECT id FROM exam_publish_events WHERE exam_id = ? AND reason = ?", exam.lastInsertRowid, "扫描重复学号自动撤回"), "Withdrawal must retain publication audit");
+  assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id = ?", exam.lastInsertRowid))!.score_published, publicationAfterMutation);
+  assert.equal(Boolean(await db.get("SELECT id FROM exam_publish_events WHERE exam_id = ? AND reason = ?", exam.lastInsertRowid, "扫描重复学号自动撤回")), autoUnpublish, "Conflict publication audit follows policy");
   assert((await request()).failures.some(f => f.studentId === "91001"), "Old session must show the saved original as a problem too");
   for (const [groupId, number] of ["91991", "91992"].entries()) {
     const student = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)", number, "test", number, role.id, number);
@@ -630,7 +633,7 @@ try {
   await runOcrOnSession(savedRetry.id, card.id, () => {}, { recordIds: new Set([savedRetryRecord.id]), studentId: "91996" });
   assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, savedRetryUser.lastInsertRowid), null, "Failed retry withdraws its previously saved score");
   assert.equal((await store.getScanRecordWithResult(savedRetryRecord.id))?.ocr_status, "failed");
-  assert(await db.get("SELECT id FROM exam_publish_events WHERE exam_id = ? AND reason = ?", exam.lastInsertRowid, "扫描重新识别自动撤回"));
+  assert.equal(Boolean(await db.get("SELECT id FROM exam_publish_events WHERE exam_id = ? AND reason = ?", exam.lastInsertRowid, "扫描重新识别自动撤回")), autoUnpublish);
   assert.equal((await db.get<{ result_json: string | null }>("SELECT result_json FROM scanner_submissions WHERE session_id = ?", savedRetry.id))?.result_json, null);
   const identityRejected: CombinedRecognitionResult = { status: "failed", message: "Student ID recognition failed.", identity: { status: "rejected", code: "CARD_MISMATCH" },
     quality: { matchCount: 6, missingRoles: [] }, questions: [], subjectiveQuestions: [] };

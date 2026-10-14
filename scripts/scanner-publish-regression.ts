@@ -7,7 +7,11 @@ try {
  const {CardRepository}=await import('../src/server/repositories/CardRepository.ts');
  const {processScannerSession,discardScannerGroup}=await import('../src/server/services/scannerSubmissions.ts');
  const store=await import('../src/apps/answer-card/server/database/scan-store.ts');
- const db=getMysqlDb();const card=(await new CardRepository().findById(info.cardId))!;
+ const db=getMysqlDb();
+ const autoUnpublish = process.env.TEST_AUTO_UNPUBLISH === "1";
+ const publicationAfterMutation = autoUnpublish ? 0 : 1;
+ if (autoUnpublish) await db.run("INSERT INTO system_settings (`key`, value) VALUES ('auto_unpublish_on_score_change', '1')");
+ const card=(await new CardRepository().findById(info.cardId))!;
  const exam=(await db.get('SELECT id FROM exams WHERE card_id=?',card.id))!;
  async function makeSession(name:string,student='91001'){
   const session=await store.createSession(card.id,name);
@@ -39,7 +43,7 @@ try {
  const response=await fetch(`${fixture.baseUrl}/api/scanner/upload/sessions/${original.id}/complete`,{method:'POST',headers:{'X-Api-Key':info.key,'Content-Type':'application/json'},body:JSON.stringify({cardVersion:info.version})});
  assert.equal(response.status,200,JSON.stringify(await response.clone().json()));
  const {ScoreRepository}=await import('../src/server/repositories/ScoreRepository.ts');
- assert.equal((await db.get('SELECT score_published FROM exams WHERE id=?',exam.id)).score_published,0);
- assert.equal((await new ScoreRepository().getStudentScores(originalUser.id)).length,0);
+ assert.equal((await db.get('SELECT score_published FROM exams WHERE id=?',exam.id)).score_published,publicationAfterMutation);
+ assert.equal((await new ScoreRepository().getStudentScores(originalUser.id)).length,autoUnpublish ? 0 : 1);
  console.log(JSON.stringify({studentVisible:await new ScoreRepository().getStudentScores(originalUser.id),before,status:response.status,response:await response.json(),after:await db.get('SELECT score_published FROM exams WHERE id=?',exam.id),scores:await db.all('SELECT total_score,manually_modified FROM student_scores'),publishEvents:await db.all('SELECT reason FROM exam_publish_events')},null,2));
 }finally{await fixture.close();}

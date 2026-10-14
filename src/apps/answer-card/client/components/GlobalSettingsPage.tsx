@@ -23,11 +23,13 @@ interface Props {
 }
 
 type Settings = {
+  auto_unpublish_on_score_change?: string;
   require_original_paper?: string;
   highlight_missing_paper?: string;
 };
 
 const FIELDS: Array<{ key: keyof Settings; label: string; desc: string; type: "toggle" | "number" | "select"; options?: Array<{ value: string; label: string }> }> = [
+  { key: "auto_unpublish_on_score_change", label: "成绩变动时自动撤回公布", desc: "默认关闭：补录、改分及异常卷处理后保持公布，学生可查看最新成绩、排名和统计；开启后，成绩变动将撤回整场公布，需教师重新公布。仅影响后续变动。", type: "toggle" },
   { key: "require_original_paper", label: "创建后提示上传原卷", desc: "创建答题卡后打开原卷面板，可关闭并稍后补充；不限制答题卡或 PDF 导出", type: "toggle" },
   { key: "highlight_missing_paper", label: "侧边栏高亮未上传原卷", desc: "左侧列表用颜色标记缺少原卷的考试", type: "toggle" },
 ];

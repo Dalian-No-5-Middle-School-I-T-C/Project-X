@@ -59,11 +59,18 @@ jobs:
       - name: Security-critical regression
         run: npm run verify:security-critical
 
+      - name: Automatic publication withdrawal policy
+        env:
+          TEST_AUTO_UNPUBLISH: "1"
+        run: |
+          npm run verify:security-critical
+          npm run verify:scanner-batch-results
+          npm run verify:scanner-correction-safety
+
       - name: Permission-scope regression
         run: npm run verify:permission-scope
 
-      # 成绩公布完整性（#248 P1-1/P1-2）：公布前必须「应考集合 ⊆ 已评分集合」，
-      # 且不存在「仅校验非空」退路。三条脚本各自使用临时 SQLite 库。
+      # 部分成绩可公布；名单身份校验和管理员控制的撤回策略单独覆盖。
       - name: Score publication integrity regression
         run: npm run verify:p1-integrity && npm run verify:p1-scope && npm run verify:p1-readgate
 

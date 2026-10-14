@@ -208,39 +208,37 @@ async function main(): Promise<void> {
     await db.run("INSERT INTO answer_cards (id, title) VALUES ('receipt_ci', '回执测试')");
     const exam = await db.run("INSERT INTO exams (name, card_id) VALUES ('回执测试', 'receipt_ci')");
     await db.run("INSERT INTO student_scores (exam_id, student_id, total_score) VALUES (?, ?, 50)", exam.lastInsertRowid, student.lastInsertRowid);
+    const { markScoreMutated } = await import("../src/server/services/examPublishEvents");
+    await db.run("UPDATE exams SET score_published = 1 WHERE id = ?", exam.lastInsertRowid);
+    assert.equal(await markScoreMutated(db, Number(exam.lastInsertRowid), null, "score_edit"), false);
+    assert.equal(Number((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id = ?", exam.lastInsertRowid))!.score_published), 1);
+    await db.run("INSERT INTO system_settings (`key`, value) VALUES ('auto_unpublish_on_score_change', '1')");
+    await db.transaction(async tx => {
+      assert.equal(await markScoreMutated(tx, Number(exam.lastInsertRowid), null, "score_edit"), true);
+    });
+    assert.equal(Number((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id = ?", exam.lastInsertRowid))!.score_published), 0);
+    assert.equal((await db.all("SELECT id FROM exam_publish_events WHERE exam_id = ? AND action = 'unpublish'", exam.lastInsertRowid)).length, 1);
+    await db.run("DELETE FROM system_settings WHERE `key` = 'auto_unpublish_on_score_change'");
     const { assertScoresPublishable } = await import("../src/server/services/examPublication");
     const { listMissingParticipants } = await import("../src/server/services/examParticipants");
     const publicationExam = { id: Number(exam.lastInsertRowid) };
-    // 收紧后的发布校验（#248 P1-1/P1-2 口径）：无范围 + 无名单不得「仅校验非空」放行。
-    await assert.rejects(assertScoresPublishable(db, publicationExam), /完整性校验/);
+    await assertScoresPublishable(db, publicationExam); // 无名单也可公布已有成绩
     const absent = await db.run("INSERT INTO users (username, password_hash, name, role_id) VALUES ('absent_publish', 'test-only', '尚未出分', 3)");
     await db.run("INSERT INTO exam_participants (exam_id, student_id, source) VALUES (?, ?, 'explicit'), (?, ?, 'explicit')",
       publicationExam.id, student.lastInsertRowid, publicationExam.id, absent.lastInsertRowid);
-    // 应考集合 ⊄ 已评分集合 → 拒绝。评审 B6（与 CR12 同口径）：拒绝消息只给**人数**，
-    // 不再把缺考学生的姓名/学号拼进 409 文案——公布是高频批量操作，那相当于把「本场没出分」
-    // 这批学生的身份明细成批送到调用方屏幕上。
-    let publishRejection: unknown = null;
-    await assertScoresPublishable(db, publicationExam).catch((error: unknown) => { publishRejection = error; });
-    assert.ok(publishRejection instanceof Error && /不完整/.test(publishRejection.message),
-      `缺考时仍按「成绩记录不完整」拒绝公布（实际 ${String((publishRejection as Error)?.message)}）`);
-    const publishMessage = String((publishRejection as Error).message);
-    assert.match(publishMessage, /缺 1 名应考学生成绩/, "消息给出缺考人数，教师仍知道该去哪儿核对名单");
-    assert.ok(!publishMessage.includes("尚未出分") && !publishMessage.includes("absent_publish"),
-      "409 文案不含缺考学生的姓名与登录名（修复前会回显最多 5 人的「姓名(学号)」）");
-    assert.equal((publishRejection as { missingCount?: number }).missingCount, 1,
-      "人数以结构化字段给出，前端不必再从文案里解析");
+    await assertScoresPublishable(db, publicationExam); // 缺考不能阻塞已有成绩
     const missingRows = await listMissingParticipants(db, publicationExam.id);
     assert.equal(missingRows.length, 1);
     assert.equal(Number(missingRows[0].student_id), Number(absent.lastInsertRowid));
-    // 缺考者从名单剔除后，名单内学生已全部出分 → 可公布（名单外成绩不阻断）
+    // 显式名单变更同样不影响已有成绩公布
     await db.run("DELETE FROM exam_participants WHERE exam_id = ? AND student_id = ?", publicationExam.id, absent.lastInsertRowid);
     await assertScoresPublishable(db, publicationExam);
-    // 无显式名单、无年级/班级范围时，即便名单表里有 roster 残留也不得当成齐全
+    // 无名单且无成绩仍应明确拒绝
     await db.run("DELETE FROM exam_participants WHERE exam_id = ?", publicationExam.id);
     await db.run("DELETE FROM student_scores WHERE exam_id = ?", publicationExam.id);
     await assert.rejects(assertScoresPublishable(db, publicationExam), /尚无成绩/);
     await db.run("INSERT INTO student_scores (exam_id, student_id, total_score) VALUES (?, ?, 50)", publicationExam.id, student.lastInsertRowid);
-    console.log("PASS: strict publication integrity (scope required, missing participant, absent removal, empty-score rejection)");
+    console.log("PASS: partial publication (no scope, missing participant retained, empty-score rejection)");
     await db.run("INSERT INTO scanner_submissions (exam_id, session_id, group_id, student_number, state, pages_json) VALUES (?, 'session_ci', 'group_ci', '09210001', 'saved', '[]')", exam.lastInsertRowid);
     assert.deepEqual(await findSavedScannerOwners(db, "session_ci", "group_ci", "09210001", "receipt_ci"),
       [{ exam_id: exam.lastInsertRowid, student_id: student.lastInsertRowid }]);

@@ -47,7 +47,7 @@ router.get(
       const rows = (await getMysqlDb().all(
         "SELECT `key`, value FROM system_settings"
       )) as Array<{ key: string; value: string }>;
-      const settings: Record<string, string> = {};
+      const settings: Record<string, string> = { auto_unpublish_on_score_change: "0" };
       for (const r of rows) settings[r.key] = r.value;
       res.json({ ok: true, data: settings });
     } catch (err: any) {
@@ -71,6 +71,10 @@ router.put(
       const entries = Object.entries(updates);
       if (entries.length === 0) {
         return res.status(400).json({ ok: false, error: "无有效更新项" });
+      }
+
+      if (entries.some(([key, value]) => key === "auto_unpublish_on_score_change" && value !== "0" && value !== "1")) {
+        return res.status(400).json({ ok: false, message: "成绩变动自动撤回设置必须为 0 或 1" });
       }
 
       const db = getMysqlDb();
