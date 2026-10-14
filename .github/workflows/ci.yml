@@ -80,7 +80,7 @@ jobs:
       - name: Linux x86_64 correction recognizer geometry
         run: npm run verify:recognizer-geometry
       - name: Full-card correction and legacy recognition drafts (SQLite)
-        run: npm run verify:scan-correction && npm run verify:scanner-pending
+        run: npm run verify:scan-correction && npm run verify:scan-correction-security && npm run verify:scanner-pending
       # v57 空置 + 「阅卷中已公布」考试不被强制结考，并检查两套方言迁移版本号不撞号
       - name: Grading-published exam and migration numbering
         run: npm run verify:grading-published-exam

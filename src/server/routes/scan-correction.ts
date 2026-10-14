@@ -5,6 +5,7 @@ import { requirePermissionCompat, requireWholeExamGradingAccess } from "../../ap
 import { PERMISSIONS } from "../auth/permissions";
 import { resolveScannerExam } from "../services/scannerExam";
 import { recognizeSessionCorrection, saveSessionCorrection, sessionCorrection } from "../services/scanCorrection";
+import { correctionCallerLimiter, correctionSessionLimiter, guardCorrectionRequest } from "../middleware/scanCorrectionRequests";
 
 /** Mounted below existing authenticated scanner session scope. */
 export function scanCorrectionRouter(prefix: "session" | "sessions", remote: boolean) {
@@ -22,14 +23,15 @@ export function scanCorrectionRouter(prefix: "session" | "sessions", remote: boo
       requirePermissionCompat(PERMISSIONS.GRADE_WRITE)(req,res,() => { void requireWholeExamGradingAccess(req,res,next).catch(next); });
     } catch (error) { next(error); }
   });
-  router.route(route).get(async (req,res) => {
+  if (remote) router.use(route, correctionCallerLimiter, correctionSessionLimiter);
+  router.route(route).get(guardCorrectionRequest(async (req,res) => {
     try {
       const session = await getMysqlDb().get<{card_id:string}>("SELECT card_id FROM twain_scan_sessions WHERE id=?",req.params.sessionId);
       const card = session && await new CardRepository().findById(session.card_id);
       if (!card) { res.status(404).json({message:"答题卡不存在"}); return; }
       res.json(await sessionCorrection(card,String(req.params.sessionId),String(req.params.groupId),remote));
     } catch (error) { res.status(409).json({message:error instanceof Error ? error.message : "加载失败"}); }
-  }).put(async (req,res) => {
+  })).put(guardCorrectionRequest(async (req,res) => {
     try {
       const session = await getMysqlDb().get<{card_id:string;status:string}>("SELECT card_id,status FROM twain_scan_sessions WHERE id=?",req.params.sessionId);
       const card = session && await new CardRepository().findById(session.card_id);
@@ -37,14 +39,14 @@ export function scanCorrectionRouter(prefix: "session" | "sessions", remote: boo
       const result = await saveSessionCorrection(card,String(req.params.sessionId),String(req.params.groupId),req.body?.pages,req.user?.id ?? null,remote);
       res.json({ok:true,...result});
     } catch (error) { res.status(409).json({message:error instanceof Error ? error.message : "保存失败"}); }
-  });
-  if (remote) router.post<{sessionId:string;groupId:string}>(`${route}/recognize`,async(req,res)=>{
+  }));
+  if (remote) router.post(`${route}/recognize`,guardCorrectionRequest(async(req,res)=>{
     try {
       const session = await getMysqlDb().get<{card_id:string}>("SELECT card_id FROM twain_scan_sessions WHERE id=?",req.params.sessionId);
       const card = session && await new CardRepository().findById(session.card_id);
       if (!card) { res.status(404).json({message:"答题卡不存在"}); return; }
       res.json(await recognizeSessionCorrection(card,String(req.params.sessionId),String(req.params.groupId),req.body));
     } catch(error) { res.status(409).json({message:error instanceof Error?error.message:"重新识别失败"}); }
-  });
+  }));
   return router;
 }
