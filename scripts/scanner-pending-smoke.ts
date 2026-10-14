@@ -389,6 +389,7 @@ try {
     1,
   );
   await db.run("UPDATE exams SET assigned_formula=NULL WHERE id=?", exam.id);
+  await db.run("UPDATE exams SET status='closed' WHERE id=?", exam.id);
   const { analysisCache } = await import("../src/server/services/analysisCache");
   const cacheKey = `getExamOverview:${exam.id}:all`;
   const transaction = db.transaction.bind(db);
