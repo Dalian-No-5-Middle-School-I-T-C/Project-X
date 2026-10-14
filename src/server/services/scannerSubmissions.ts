@@ -73,8 +73,8 @@ export async function linkSavedScannerCrops(db: DbAdapter, cardId: string, recei
  * 识别结果换掉，再点一次提交就会覆盖已入库成绩。归属判据用回执，不用状态字段。
  */
 export async function savedReceiptOwnerOfPage(sessionId: string,
-  recordId: string, includeDiscarded = false): Promise<{ exam_id: number; group_id: string; student_number: string; state: string } | null> {
-  const rows = await getMysqlDb().all<Receipt>(
+  recordId: string, includeDiscarded = false, db = getMysqlDb()): Promise<{ exam_id: number; group_id: string; student_number: string; state: string } | null> {
+  const rows = await db.all<Receipt>(
     "SELECT * FROM scanner_submissions WHERE session_id = ? AND (state = 'saved' OR (? = 1 AND state = 'discarded'))", sessionId, includeDiscarded ? 1 : 0);
   for (const row of rows) {
     let pages: ScanBatchPage[] = [];
@@ -96,6 +96,19 @@ export function enqueueScannerSubmission<T>(work: () => Promise<T>): Promise<T> 
 async function lockExam(db: DbAdapter, examId: number) {
   await db.run("UPDATE exams SET id = id WHERE id = ?", examId);
 }
+/** Upload mutations share the grading queue and exam row locks through commit. */
+export function writeScannerSession<T>(sessionId: string, work: (tx: DbAdapter) => Promise<T>): Promise<T> {
+  return enqueueScannerSubmission(async () => {
+    const db = getMysqlDb();
+    // Discover locks before BEGIN so MariaDB's first consistent read follows the locks.
+    const exams = await db.all<{ id: number }>(
+      "SELECT e.id FROM exams e JOIN twain_scan_sessions s ON s.card_id=e.card_id WHERE s.id=? ORDER BY e.id", sessionId);
+    return db.transaction(async tx => {
+      for (const exam of exams) await lockExam(tx, exam.id);
+      return work(tx);
+    });
+  });
+}
 async function receipts(db: DbAdapter, examId: number): Promise<Receipt[]> {
   return db.all<Receipt>("SELECT * FROM scanner_submissions WHERE exam_id = ? AND state NOT IN ('superseded', 'discarded')", examId);
 }
@@ -107,14 +120,6 @@ function conflictCard(row: Receipt): ScanConflictCard {
     pages: JSON.parse(row.pages_json) as ScanBatchPage[] };
 }
 async function withdraw(db: DbAdapter, examId: number, studentNumber: string, reason: "scanner_duplicate" | "scanner_retry" = "scanner_duplicate") {
-  const published = await db.get<{score_published:number}>("SELECT score_published FROM exams WHERE id=?",examId);
-  const held = await db.get("SELECT 1 FROM scanner_submissions WHERE exam_id=? AND student_number=? AND state='held'",examId,studentNumber);
-  const publishedBefore = await db.get("SELECT 1 FROM exam_publish_events WHERE exam_id=? LIMIT 1",examId);
-  if (Number(published?.score_published) === 1 || held || publishedBefore) {
-    // A new conflicting upload cannot withdraw the established grade or its source.
-    await db.run("UPDATE scanner_submissions SET state='held' WHERE exam_id=? AND student_number=? AND state NOT IN ('saved','superseded','discarded','conflict','roster')",examId,studentNumber);
-    return;
-  }
   const user = await db.get<{ id: number }>("SELECT id FROM users WHERE student_number = ?", studentNumber);
   if (!user) return;
   const score = await db.get("SELECT * FROM student_scores WHERE exam_id = ? AND student_id = ?", examId, user.id);
@@ -135,29 +140,35 @@ async function withdraw(db: DbAdapter, examId: number, studentNumber: string, re
   await db.run("UPDATE scanner_submissions SET state = 'conflict' WHERE exam_id = ? AND student_number = ? AND state NOT IN ('superseded', 'discarded')", examId, studentNumber);
 }
 
+export async function invalidateScanRecognitionInTransaction(tx: DbAdapter, sessionId: string, recordId: string): Promise<Set<number>> {
+  const changedExams = new Set<number>();
+  const owned = await tx.all<Receipt>("SELECT * FROM scanner_submissions WHERE session_id = ? AND state NOT IN ('superseded', 'discarded')", sessionId);
+  for (const receipt of owned) {
+    if (!(JSON.parse(receipt.pages_json) as ScanBatchPage[]).some(p => p.recordId === recordId)) continue;
+    await lockExam(tx, receipt.exam_id);
+    if (receipt.state === "saved") {
+      if (await tx.get("SELECT id FROM exams WHERE id=? AND (score_published=1 OR EXISTS (SELECT 1 FROM exam_publish_events p WHERE p.exam_id=exams.id))",receipt.exam_id)) throw new Error("已公布的正式原卷不能重新识别覆盖，请上传新卷并由老师确认");
+      await withdraw(tx, receipt.exam_id, receipt.student_number, "scanner_retry");
+      changedExams.add(receipt.exam_id);
+    }
+    await tx.run("UPDATE scanner_submissions SET state = 'pending', result_json = NULL, score_snapshot = NULL WHERE exam_id = ? AND session_id = ? AND group_id = ?",
+      receipt.exam_id, sessionId, receipt.group_id);
+  }
+  await tx.run("UPDATE twain_scan_records SET identity_json = NULL, student_id = NULL, student_conf = NULL, ocr_status = 'processing', ocr_error = NULL WHERE id = ? AND session_id = ?", recordId, sessionId);
+  await tx.run("DELETE FROM twain_recognition_results WHERE scan_record_id = ?", recordId);
+  await tx.run("DELETE FROM scan_correction_pages WHERE source_type = 'twain_scan_record' AND source_id = ?", recordId);
+  await tx.run("DELETE FROM answer_block_crops WHERE source_type = ? AND source_record_id = ?", "twain_scan_record", recordId);
+  await tx.run("DELETE FROM twain_student_grading_results WHERE session_id = ?", sessionId);
+  return changedExams;
+}
+
 /** Invalidate a page before retry; saved grades are withdrawn only through their owning receipt. */
 export async function invalidateScanRecognition(sessionId: string, recordId: string): Promise<void> {
   return enqueueScannerSubmission(async () => {
     const db = getMysqlDb();
     const changedExams = new Set<number>();
     await db.transaction(async tx => {
-      const owned = await tx.all<Receipt>("SELECT * FROM scanner_submissions WHERE session_id = ? AND state NOT IN ('superseded', 'discarded')", sessionId);
-      for (const receipt of owned) {
-        if (!(JSON.parse(receipt.pages_json) as ScanBatchPage[]).some(p => p.recordId === recordId)) continue;
-        await lockExam(tx, receipt.exam_id);
-        if (receipt.state === "saved") {
-          if (await tx.get("SELECT id FROM exams WHERE id=? AND (score_published=1 OR EXISTS (SELECT 1 FROM exam_publish_events p WHERE p.exam_id=exams.id))",receipt.exam_id)) throw new Error("已公布的正式原卷不能重新识别覆盖，请上传新卷并由老师确认");
-          await withdraw(tx, receipt.exam_id, receipt.student_number, "scanner_retry");
-          changedExams.add(receipt.exam_id);
-        }
-        await tx.run("UPDATE scanner_submissions SET state = 'pending', result_json = NULL, score_snapshot = NULL WHERE exam_id = ? AND session_id = ? AND group_id = ?",
-          receipt.exam_id, sessionId, receipt.group_id);
-      }
-      await tx.run("UPDATE twain_scan_records SET identity_json = NULL, student_id = NULL, student_conf = NULL, ocr_status = 'processing', ocr_error = NULL WHERE id = ? AND session_id = ?", recordId, sessionId);
-      await tx.run("DELETE FROM twain_recognition_results WHERE scan_record_id = ?", recordId);
-      await tx.run("DELETE FROM scan_correction_pages WHERE source_type = 'twain_scan_record' AND source_id = ?", recordId);
-      await tx.run("DELETE FROM answer_block_crops WHERE source_type = ? AND source_record_id = ?", "twain_scan_record", recordId);
-      await tx.run("DELETE FROM twain_student_grading_results WHERE session_id = ?", sessionId);
+      for (const id of await invalidateScanRecognitionInTransaction(tx, sessionId, recordId)) changedExams.add(id);
     });
     for (const examId of changedExams) {
       analysisCache.invalidateExam(examId);
@@ -356,7 +367,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
           const outside = !student || (roster.rosterKnown && !await isExamParticipant(tx,exam.id,student.id));
           if (outside || prior?.state === "held" || prior?.state === "roster") {
             await tx.run("UPDATE scanner_submissions SET state=? WHERE exam_id=? AND session_id=? AND group_id=? AND state<>'saved'",
-              outside ? "roster" : prior?.state === "held" ? "held" : "pending",exam.id,sessionId,candidate.groupId);
+              outside ? "roster" : "pending",exam.id,sessionId,candidate.groupId);
           }
           if (prior && prior.student_number !== candidate.studentNumber && prior.previously_saved) {
             await tx.run("UPDATE scanner_submissions SET previously_saved = 1 WHERE exam_id = ? AND session_id = ? AND group_id = ?", exam.id, sessionId, candidate.groupId);

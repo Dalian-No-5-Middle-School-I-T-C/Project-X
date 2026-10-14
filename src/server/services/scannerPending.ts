@@ -139,7 +139,7 @@ async function evidence(db: DbAdapter, row: PendingRow) {
 export async function listPendingScans(examId: number) {
   const db = getMysqlDb();
   const rows = await db.all<PendingRow>(
-    "SELECT * FROM scanner_submissions WHERE exam_id=? AND state IN ('held','roster') ORDER BY session_id,group_id",
+    "SELECT * FROM scanner_submissions WHERE exam_id=? AND (state IN ('held','roster','conflict') OR (state='pending' AND previously_saved=1)) ORDER BY session_id,group_id",
     examId,
   );
   return Promise.all(
@@ -149,7 +149,7 @@ export async function listPendingScans(examId: number) {
         sessionId: row.session_id,
         groupId: row.group_id,
         studentNumber: row.student_number,
-        reason: row.state === "roster" ? "roster" : "duplicate",
+        reason: row.state === "roster" ? "roster" : row.state === "pending" ? "correction" : "duplicate",
         existingScore: e.score?.total_score ?? null,
         proposedScore: e.result?.totalScore ?? null,
         token: e.token,
@@ -179,6 +179,9 @@ export async function confirmPendingScan(
         groupId,
       );
       if (!row) throw new Error("此卷已处理，请刷新");
+      if (row.state !== "roster") throw new Error("重复学号卷须通过填涂订正消除冲突后保存，不能直接采用或忽略");
+      const related = await tx.all("SELECT group_id FROM scanner_submissions WHERE exam_id=? AND student_number=? AND state NOT IN ('superseded','discarded')", examId, row.student_number);
+      if (action === "accept" && related.length > 1) throw new Error("重复学号：所有相关答题卡需订正后重新保存");
       const e = await evidence(tx, row);
       if (token !== e.token)
         throw new Error("原卷或正式成绩已更新，请刷新后重新核对");

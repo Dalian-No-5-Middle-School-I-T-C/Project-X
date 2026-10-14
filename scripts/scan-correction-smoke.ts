@@ -104,8 +104,7 @@ try {
   assert.deepEqual(emptyDoc.pages[0].recognition.questions[0].selectedOptions,[],"blank single-choice persists after reopening");
   assert.equal(Number((await db.get<{score:number}>("SELECT score FROM question_scores WHERE exam_id=? AND student_id=? AND score_type='objective'",exam.id,student.id))!.score),0);
   assert.equal(JSON.stringify(await db.all("SELECT * FROM review_sessions")),reviewBefore);
-  await db.run("UPDATE exams SET score_published=0 WHERE id=?",exam.id);
-  // Unpublished conflicting originals retain human scores in a snapshot; edited marks must
+  // Published conflicting originals retain human scores in a snapshot; edited marks must
   // update that snapshot, otherwise recovery silently loses the correction.
   const duplicateSession = await store.createSession(card.id,"duplicate");
   await db.run("UPDATE twain_scan_sessions SET status='completed',card_version=?,version_source='upload' WHERE id=?",cardFingerprint(current),duplicateSession.id);
@@ -117,6 +116,16 @@ try {
   assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id=? AND student_id=?",exam.id,student.id),null);
   const conflicted = (await sessionCorrection(current,session.id,"0",false)).pages[0];
   await saveSessionCorrection(current,session.id,"0",[{sourceId:conflicted.sourceId,revision:conflicted.revision,selected:toggleCorrectionCell(current,conflicted,conflicted.selected,a.id)}],null);
+  // Even while duplicate resolution is incomplete, a saved teacher correction is protected from late upload retries.
+  await db.run("UPDATE twain_scan_sessions SET status='incomplete' WHERE id=?",session.id);
+  const correctedBefore = JSON.stringify(await db.get("SELECT * FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?",record.id));
+  const lateUpload = new FormData(); lateUpload.set("token",record.id); lateUpload.set("pageNum","1");
+  lateUpload.set("image",new Blob([Buffer.from(info.images.original,"base64")],{type:"image/png"}),"late.png");
+  lateUpload.set("recognition",JSON.stringify(recognition));
+  const lateResponse = await fetch(`${fixture.baseUrl}/api/scanner/upload/sessions/${session.id}/pages`,{method:"POST",headers:{"X-Api-Key":info.key},body:lateUpload});
+  assert.equal(lateResponse.status,409);
+  assert.equal((await lateResponse.json()).code,"SCAN_PAGE_CORRECTED");
+  assert.equal(JSON.stringify(await db.get("SELECT * FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?",record.id)),correctedBefore);
   const snapshot = JSON.parse((await db.get<{score_snapshot:string}>("SELECT score_snapshot FROM scanner_submissions WHERE session_id=? AND group_id='0'",session.id))!.score_snapshot);
   assert.equal(snapshot.score.total_score,22); assert.equal(snapshot.score.subjective_score,17);
   const duplicatePage = (await sessionCorrection(current,duplicateSession.id,"0",false)).pages[0];

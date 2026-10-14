@@ -206,8 +206,7 @@ export async function upsertRecognitionResult(params: {
   totalScore?: number | null;
   maxScore?: number | null;
   gradeStatus?: string;
-}): Promise<RecognitionResultRow> {
-  const d = db();
+}, d = db()): Promise<RecognitionResultRow> {
   const existing = await d.get(
     "SELECT id FROM twain_recognition_results WHERE scan_record_id = ?",
     params.scanRecordId

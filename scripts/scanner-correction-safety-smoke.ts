@@ -79,12 +79,16 @@ try {
       assert.equal(await protectedState(), before, `${kind}: ${mode} must not mutate protected business data`);
     }
   }
-  // A valid duplicate waits for teacher approval and preserves the published formal grade.
-  const formalBefore = await businessState();
+  // Valid conflicting papers withdraw both originals even after publication.
   const valid = await makeSession("valid-duplicate", "91002");
   assert.equal((await correct(valid.session.id, "91001")).status, 200);
-  assert.equal(await businessState(), formalBefore);
-  assert.equal((await db.all("SELECT * FROM scanner_submissions WHERE exam_id=? AND student_number='91001' AND state='saved'", exam.id)).length, 1);
-  assert.equal((await db.all("SELECT * FROM scanner_submissions WHERE exam_id=? AND student_number='91001' AND state='held'", exam.id)).length, 1);
-  console.log(`PASS scanner correction safety: ${db.dialect}, eight invalid structures preserve saved manual grades/publication; valid duplicate remains reviewable`);
+  assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id=? AND student_id=?", exam.id, owner.id), null);
+  assert.equal((await db.all("SELECT * FROM scanner_submissions WHERE exam_id=? AND student_number='91001' AND state='conflict'", exam.id)).length, 2);
+  const snapshot = JSON.parse((await db.get<{score_snapshot:string}>("SELECT score_snapshot FROM scanner_submissions WHERE session_id=? AND group_id='0'", original.session.id))!.score_snapshot);
+  assert.equal(Number(snapshot.score.total_score), 4);
+  assert.equal(Number(snapshot.score.assigned_score), 82);
+  assert.equal(Number(snapshot.questions[0].manually_modified), 1);
+  assert.equal((await db.get<{exam_id:number|null}>("SELECT exam_id FROM answer_block_crops WHERE id='original-crop'"))!.exam_id, null);
+  assert.equal(Number((await db.get<{score_published:number}>("SELECT score_published FROM exams WHERE id=?",exam.id))!.score_published), autoUnpublish ? 0 : 1);
+  console.log(`PASS scanner correction safety: ${db.dialect}, eight invalid structures preserve saved manual grades/publication; valid published duplicates withdraw both copies and retain manual snapshots`);
 } finally { await fixture.close(); }

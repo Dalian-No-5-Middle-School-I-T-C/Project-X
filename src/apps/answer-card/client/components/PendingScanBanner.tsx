@@ -123,13 +123,13 @@ export function PendingScanBanner({
   return (
     <section
       className="m-4 rounded-lg border border-warning-border bg-warning-soft p-4"
-      aria-label="扫描卷待确认"
+      aria-label="异常扫描卷"
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <strong>{items.length} 份扫描卷待确认</strong>
+          <strong>{items.length} 份扫描卷待处理</strong>
           <p className="m-0 text-sm">
-            重复上传或名单外学生需要核对，已有正式成绩保持不变。名单内新增学生自动入库。
+            重复学号的相关卷均转为异常卷，已入库成绩撤回，请订正后保存。名单外学生需核对后加入名单。
           </p>
         </div>
         <Button
@@ -140,7 +140,7 @@ export function PendingScanBanner({
             void load();
           }}
         >
-          {open ? "收起" : "查看待确认卷"}
+          {open ? "收起" : "查看异常卷"}
         </Button>
       </div>
       {open &&
@@ -151,7 +151,7 @@ export function PendingScanBanner({
           >
             <strong>
               学号 {item.studentNumber} ·{" "}
-              {item.reason === "roster" ? "不在应考名单" : "重复上传"}
+              {item.reason === "roster" ? "不在应考名单" : item.reason === "correction" ? "待订正保存" : "重复学号"}
             </strong>
             <span className="text-sm">
               正式成绩：{item.existingScore ?? "未出分"}　此卷成绩：
@@ -172,29 +172,33 @@ export function PendingScanBanner({
               <CardCorrectionButton
                 disabled={busy}
                 url={`/api/scanner/upload/sessions/${encodeURIComponent(item.sessionId)}/groups/${encodeURIComponent(item.groupId)}/correction`}
-                onSaved={load}
+                onSaved={() => { void load(); onChanged?.(); }}
               />
-              <Button
-                size="sm"
-                disabled={busy || !!item.issue}
-                onClick={() => {
-                  setError("");
-                  setChoice({ item, action: "accept" });
-                }}
-              >
-                {item.reason === "roster" ? "确认加入名单并入库" : "采用此卷"}
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={busy}
-                onClick={() => {
-                  setError("");
-                  setChoice({ item, action: "discard" });
-                }}
-              >
-                忽略此卷
-              </Button>
+              {item.reason === "roster" && (
+                <>
+                  <Button
+                    size="sm"
+                    disabled={busy || !!item.issue}
+                    onClick={() => {
+                      setError("");
+                      setChoice({ item, action: "accept" });
+                    }}
+                  >
+                    确认加入名单并入库
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => {
+                      setError("");
+                      setChoice({ item, action: "discard" });
+                    }}
+                  >
+                    忽略此卷
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         ))}
@@ -217,7 +221,7 @@ export function PendingScanBanner({
               </DialogTitle>
               <DialogDescription>
                 {choice?.action === "accept"
-                  ? `学号 ${choice.item.studentNumber}：正式成绩 ${choice.item.existingScore ?? "未出分"} → ${choice.item.proposedScore ?? "待订正"}。采用后其余同学号卷归档；名单外学生会在权限校验通过后加入应考名单。`
+                  ? `学号 ${choice.item.studentNumber}：正式成绩 ${choice.item.existingScore ?? "未出分"} → ${choice.item.proposedScore ?? "待订正"}。学生会在权限校验通过后加入应考名单。`
                   : "忽略后保留现有正式成绩，此卷归档，不再重复提醒。"}
               </DialogDescription>
             </DialogHeader>
