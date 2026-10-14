@@ -306,16 +306,29 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
       await db.transaction(async tx => {
         await lockExam(tx, exam.id);
         const old = await receipts(tx, exam.id);
+        // A single-card correction must scope every write, not just final grading.
+        // Include the target's old ID so changing its ID can resolve that conflict,
+        // and include matching local papers so a real duplicate cannot slip through.
+        const targetNumbers = new Set<string>();
+        if (saveGroupId !== undefined) {
+          const target = candidates.find(c => c.groupId === saveGroupId);
+          const prior = old.find(r => r.session_id === sessionId && r.group_id === saveGroupId);
+          if (target) targetNumbers.add(target.studentNumber);
+          if (prior) targetNumbers.add(prior.student_number);
+        }
+        const scopedCandidates = saveGroupId === undefined ? candidates : candidates.filter(c =>
+          c.groupId === saveGroupId || targetNumbers.has(c.studentNumber));
         for (const groupId of repeatedGroups) {
           if (discarded.has(groupId)) continue;
           const owner = old.find(row => row.session_id === sessionId && row.group_id === groupId && row.state === "saved");
+          if (saveGroupId !== undefined && groupId !== saveGroupId && (!owner || !targetNumbers.has(owner.student_number))) continue;
           if (owner) {
             await withdraw(tx, exam.id, owner.student_number, "scanner_retry");
             receiptMutated = true;
           }
         }
-        const affectedStudents = new Set(candidates.map(c => c.studentNumber));
-        for (const candidate of candidates) {
+        const affectedStudents = new Set(scopedCandidates.map(c => c.studentNumber));
+        for (const candidate of scopedCandidates) {
           receiptMutated = true;
           const prior = old.find(r => r.session_id === sessionId && r.group_id === candidate.groupId);
           if (prior && prior.student_number !== candidate.studentNumber) {
@@ -334,7 +347,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
         }
         // Legacy scores have no reliable receipt. Keep their full score snapshot and any
         // matching old scanner pages as evidence instead of treating a cache as proof of saving.
-        for (const studentNumber of new Set(candidates.map(c => c.studentNumber))) {
+        for (const studentNumber of new Set(scopedCandidates.map(c => c.studentNumber))) {
           const all = await receipts(tx, exam.id);
           if (all.some(r => r.student_number === studentNumber && (r.result_json || r.score_snapshot))) continue;
           const score = await tx.get<{ student_id: number; total_score: number; objective_score: number; subjective_score: number }>("SELECT ss.* FROM student_scores ss JOIN users u ON u.id = ss.student_id WHERE ss.exam_id = ? AND u.student_number = ?", exam.id, studentNumber);
@@ -377,7 +390,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
         for (const studentNumber of affectedStudents) {
           const related = all.filter(r => r.student_number === studentNumber);
           let remaining = related;
-          const local = candidates.filter(c => c.studentNumber === studentNumber);
+          const local = scopedCandidates.filter(c => c.studentNumber === studentNumber);
           // Re-upload proof requires the original image and recognition evidence.
           // Multiple papers in one batch and legacy snapshots still need a teacher.
           if (related.length > 1 && local.length === 1) {
@@ -413,7 +426,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
       if (!exists) continue;
       // Historical partial saves can have grades and receipts but unbound crops.
       // Replay repairs their ownership without rewriting scores or publication.
-      if (mode === "save") await db.transaction(async tx => {
+      if (mode === "save" && (saveGroupId === undefined || row.group_id === saveGroupId)) await db.transaction(async tx => {
         await lockExam(tx, exam.id);
         await linkSavedScannerCrops(tx, card.id, row);
       });

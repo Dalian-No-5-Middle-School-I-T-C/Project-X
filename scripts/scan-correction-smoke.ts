@@ -169,6 +169,44 @@ try {
   Object.assign(noisy,recognizedCells(noisy.layout,noisy.recognition));
   assert(correctionState(current,noisy,noisy.selected).invalid.has(ten.id));
   assert(!correctionState(current,noisy,noisy.selected,[ten.id]).invalid.has(ten.id),"explicit selection repairs detected invalid line");
+  // Saving one corrected card must not admit unrelated siblings to the receipt
+  // conflict pass, even when a sibling duplicates an already-saved student.
+  async function correctionBatch(numbers:string[]) {
+    const batch = await store.createSession(card.id,"targeted correction safety");
+    await db.run("UPDATE twain_scan_sessions SET status='completed',card_version=?,version_source='upload' WHERE id=?",cardFingerprint(current),batch.id);
+    for (const [index,number] of numbers.entries()) {
+      const row = await store.createScanRecord({sessionId:batch.id,cardId:card.id,pageNum:index+1,imagePath:`targeted-${index}.png`});
+      await db.run("UPDATE twain_scan_records SET identity_json=?,student_id=?,ocr_status='done' WHERE id=?",JSON.stringify(identity),number,row.id);
+      await store.upsertRecognitionResult({scanRecordId:row.id,objectiveJson:JSON.stringify(recognition.questions),subjectiveJson:JSON.stringify(recognition.subjectiveQuestions)});
+      await storeCorrectionPage(current,"twain_scan_record",row.id,{...recognition,studentId:{status:"ok",value:number}});
+    }
+    return batch;
+  }
+  async function saveFirstCard(batchId:string) {
+    const document = await sessionCorrection(current,batchId,"0",false), p=document.pages[0];
+    return saveSessionCorrection(current,batchId,"0",[{sourceId:p.sourceId,revision:p.revision,selected:toggleCorrectionCell(current,p,p.selected,a.id)}],null);
+  }
+  const protectedOriginal = async()=>JSON.stringify(await Promise.all([
+    db.all("SELECT objective_score,subjective_score,total_score,manually_modified,modified_by,modified_at FROM student_scores WHERE exam_id=? AND student_id=?",exam.id,student.id),
+    db.all("SELECT * FROM question_scores WHERE exam_id=? AND student_id=? ORDER BY id",exam.id,student.id),
+    db.all("SELECT * FROM scanner_submissions WHERE exam_id=? AND student_number='91001' ORDER BY session_id,group_id",exam.id),
+    db.all("SELECT * FROM answer_block_crops WHERE exam_id=? AND student_id=? ORDER BY id",exam.id,student.id),
+    db.all("SELECT * FROM review_sessions ORDER BY id"),
+  ]));
+  await db.run(`INSERT INTO answer_block_crops
+    (id,card_id,exam_id,student_id,source_type,source_record_id,block_id,block_type,page_number,segment_index,question_numbers,image_path,width_px,height_px,dpi,rect_json)
+    VALUES ('targeted-protected-crop',?,?,?,'twain_scan_record',?,'manual','subjective',1,0,'[2]','protected-crop.png',1,1,300,'{}')`,card.id,exam.id,student.id,record.id);
+  const unrelatedDuplicate = await correctionBatch(["91006","91001"]);
+  const originalBefore = await protectedOriginal();
+  assert.equal((await saveFirstCard(unrelatedDuplicate.id)).saved,true);
+  assert.equal(await protectedOriginal(),originalBefore,"targeted correction must preserve an unrelated saved student's manual grades, receipts, crops and review data");
+  assert.equal(await db.get("SELECT group_id FROM scanner_submissions WHERE session_id=? AND group_id='1'",unrelatedDuplicate.id),null,"unrequested unrelated sibling gets no receipt");
+  const genuineDuplicate = await correctionBatch(["91002","91002"]);
+  assert.equal((await saveFirstCard(genuineDuplicate.id)).saved,false,"target's actual duplicate must still block admission");
+  assert.equal((await db.all("SELECT group_id FROM scanner_submissions WHERE session_id=? AND state='conflict'",genuineDuplicate.id)).length,2,"both locally conflicting papers enter review");
+  const duplicateOwner = (await db.get<{id:number}>("SELECT id FROM users WHERE student_number='91002'"))!;
+  assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id=? AND student_id=?",exam.id,duplicateOwner.id),null,"genuine conflict still withdraws the matching saved grade");
+  assert.equal(await protectedOriginal(),originalBefore,"genuine conflict leaves unrelated saved student intact");
   const { ExamRepository } = await import("../src/server/repositories/ExamRepository");
   const examRepo = new ExamRepository(db);
   const historicalExam = await examRepo.createExam({name:"correction history",card_id:card.id});
