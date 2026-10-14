@@ -74,6 +74,10 @@ jobs:
       - name: Grading-published exam and migration numbering
         run: npm run verify:grading-published-exam
 
+      # 公布失败必须回可读 message 且就地渲染（「按钮正常、点了没反应」的回归护栏）
+      - name: Exam publish observability
+        run: npm run verify:exam-publish-observability
+
       - name: Scan page numbering regression
         run: npm run verify:scan-page-numbering
 

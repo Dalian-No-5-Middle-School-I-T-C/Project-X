@@ -160,7 +160,8 @@ export type WorkspaceValue = {
   setNewExamSubject: Dispatch<SetStateAction<string>>;
   newExamCardId: string;
   setNewExamCardId: Dispatch<SetStateAction<string>>;
-  loadExams: () => Promise<void>;
+  /** 返回刷新后的考试列表（失败时为空数组），供调用方复核写入是否真的生效 */
+  loadExams: () => Promise<ExamRecord[]>;
   loadExamGroups: () => Promise<void>;
   deleteExams: (target: ExamDeleteTarget) => Promise<boolean>;
   setExamDeleteTarget: Dispatch<SetStateAction<ExamDeleteTarget | null>>;

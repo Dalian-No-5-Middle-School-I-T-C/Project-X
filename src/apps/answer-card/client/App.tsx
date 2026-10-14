@@ -485,7 +485,7 @@ function App() {
       items.push({ id: "exam-manage", icon: <ClipboardList size={22} />, label: "考试管理", shortLabel: "考试", onEnter: async () => { await loadExams(); await loadExamGroups(); } });
     }
     if (canAnalyze) {
-      items.push({ id: "analysis", icon: <BarChart3 size={22} />, label: "成绩分析", shortLabel: "分析", onEnter: loadExams });
+      items.push({ id: "analysis", icon: <BarChart3 size={22} />, label: "成绩分析", shortLabel: "分析", onEnter: () => { void loadExams(); } });
     }
     if (showScoresTab) {
       items.push({ id: "scores", icon: <BarChart3 size={22} />, label: "我的成绩", shortLabel: "成绩" });
@@ -1464,12 +1464,19 @@ function App() {
     }
   }
 
-  async function loadExams() {
+  async function loadExams(): Promise<ExamRecord[]> {
     try {
       const data = await fetchJson<ExamRecord[]>("/api/exams");
-      setExams(asArray<ExamRecord>(data));
-    } catch {
+      const list = asArray<ExamRecord>(data);
+      setExams(list);
+      return list;
+    } catch (err) {
       setExams([]);
+      // 401 由 notifyUnauthorized 统一处理；其余失败必须说出来，否则表现为「考试列表凭空变空且无提示」
+      if ((err as { status?: number }).status !== 401) {
+        setStatus(`考试列表加载失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+      return [];
     } finally {
       setExamListRefreshKey((value) => value + 1);
     }
@@ -1508,7 +1515,7 @@ function App() {
       });
     }
     if (canAnalyze) {
-      items.push({ type: "item", id: "analysis", icon: <BarChart3 />, label: "成绩分析", onClick: loadExams });
+      items.push({ type: "item", id: "analysis", icon: <BarChart3 />, label: "成绩分析", onClick: () => { void loadExams(); } });
     }
     if (showScoresTab) {
       items.push({ type: "item", id: "scores", icon: <BarChart3 />, label: "我的成绩" });

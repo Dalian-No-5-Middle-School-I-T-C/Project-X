@@ -75,6 +75,7 @@
     "verify:card-identity": "tsx scripts/verify-card-identity.ts",
     "verify:wechat-grade-release": "tsx scripts/wechat-grade-release-smoke.ts",
     "verify:exam-paper": "tsx scripts/exam-paper-answer-key-smoke.ts",
+    "verify:exam-publish-observability": "tsx scripts/exam-publish-observability-smoke.ts",
     "verify:recognizer-layout": "tsx scripts/verify-recognizer-layout.ts",
     "verify:recognizer-pencil": "tsx scripts/verify-recognizer-pencil.ts",
     "verify:recognizer-limits": "tsx scripts/verify-recognizer-limits.ts",
