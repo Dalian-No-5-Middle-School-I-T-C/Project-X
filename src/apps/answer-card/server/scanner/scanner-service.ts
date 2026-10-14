@@ -236,9 +236,11 @@ export async function runOcrOnSession(
       continue;
     }
 
+    let invalidated = false;
     try {
       // Invalidate before retry: a failed new attempt must not expose old grades/crops.
       await invalidateScanRecognition(sessionId, record.id);
+      invalidated = true;
       const recognition = (await recognizeAnswerCard({
         identityMode: session?.identity_mode ?? "strict",
         imagePath: record.image_path,
@@ -330,7 +332,7 @@ export async function runOcrOnSession(
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      await updateScanOcrResult(record.id, null, null, "failed", msg);
+      if (invalidated) await updateScanOcrResult(record.id, null, null, "failed", msg);
 
       onProgress({
         sessionId, type: "ocr_page_done",

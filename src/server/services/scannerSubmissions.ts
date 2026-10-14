@@ -103,10 +103,18 @@ function conflictCard(row: Receipt): ScanConflictCard {
   const result = row.result_json ? JSON.parse(row.result_json) as CombinedStudentResult : null;
   const snapshot = row.score_snapshot ? JSON.parse(row.score_snapshot) : null;
   return { sessionId: row.session_id, groupId: row.group_id, studentId: row.student_number,
-    previouslySaved: Boolean(row.previously_saved), totalScore: snapshot?.score?.total_score ?? result?.totalScore,
+    previouslySaved: Boolean(row.previously_saved), formalScoreRetained: row.state === "saved", totalScore: snapshot?.score?.total_score ?? result?.totalScore,
     pages: JSON.parse(row.pages_json) as ScanBatchPage[] };
 }
 async function withdraw(db: DbAdapter, examId: number, studentNumber: string, reason: "scanner_duplicate" | "scanner_retry" = "scanner_duplicate") {
+  const published = await db.get<{score_published:number}>("SELECT score_published FROM exams WHERE id=?",examId);
+  const held = await db.get("SELECT 1 FROM scanner_submissions WHERE exam_id=? AND student_number=? AND state='held'",examId,studentNumber);
+  const publishedBefore = await db.get("SELECT 1 FROM exam_publish_events WHERE exam_id=? LIMIT 1",examId);
+  if (Number(published?.score_published) === 1 || held || publishedBefore) {
+    // A new conflicting upload cannot withdraw the established grade or its source.
+    await db.run("UPDATE scanner_submissions SET state='held' WHERE exam_id=? AND student_number=? AND state NOT IN ('saved','superseded','discarded','conflict','roster')",examId,studentNumber);
+    return;
+  }
   const user = await db.get<{ id: number }>("SELECT id FROM users WHERE student_number = ?", studentNumber);
   if (!user) return;
   const score = await db.get("SELECT * FROM student_scores WHERE exam_id = ? AND student_id = ?", examId, user.id);
@@ -138,6 +146,7 @@ export async function invalidateScanRecognition(sessionId: string, recordId: str
         if (!(JSON.parse(receipt.pages_json) as ScanBatchPage[]).some(p => p.recordId === recordId)) continue;
         await lockExam(tx, receipt.exam_id);
         if (receipt.state === "saved") {
+          if (await tx.get("SELECT id FROM exams WHERE id=? AND (score_published=1 OR EXISTS (SELECT 1 FROM exam_publish_events p WHERE p.exam_id=exams.id))",receipt.exam_id)) throw new Error("已公布的正式原卷不能重新识别覆盖，请上传新卷并由老师确认");
           await withdraw(tx, receipt.exam_id, receipt.student_number, "scanner_retry");
           changedExams.add(receipt.exam_id);
         }
@@ -332,6 +341,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
           receiptMutated = true;
           const prior = old.find(r => r.session_id === sessionId && r.group_id === candidate.groupId);
           if (prior && prior.student_number !== candidate.studentNumber) {
+            if (prior.state === "saved") throw new Error("已入库卷不能通过上传修改归属，请由老师处理");
             affectedStudents.add(prior.student_number);
             // Corrections invalidate a previous receipt, never silently move a saved grade.
             await withdraw(tx, exam.id, prior.student_number);
@@ -341,6 +351,13 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
           const cols = ["exam_id", "session_id", "group_id", "student_number", "pages_json"];
           await tx.run(buildUpsertSQL(tx.dialect, "scanner_submissions", cols, ["exam_id", "session_id", "group_id"], ["pages_json"]),
             exam.id, sessionId, candidate.groupId, candidate.studentNumber, JSON.stringify(candidate.pages));
+          const student = await tx.get<{id:number}>("SELECT id FROM users WHERE student_number=? AND role_id=3",candidate.studentNumber);
+          const roster = await ensureExamParticipants(tx,exam.id);
+          const outside = !student || (roster.rosterKnown && !await isExamParticipant(tx,exam.id,student.id));
+          if (outside || prior?.state === "held" || prior?.state === "roster") {
+            await tx.run("UPDATE scanner_submissions SET state=? WHERE exam_id=? AND session_id=? AND group_id=? AND state<>'saved'",
+              outside ? "roster" : prior?.state === "held" ? "held" : "pending",exam.id,sessionId,candidate.groupId);
+          }
           if (prior && prior.student_number !== candidate.studentNumber && prior.previously_saved) {
             await tx.run("UPDATE scanner_submissions SET previously_saved = 1 WHERE exam_id = ? AND session_id = ? AND group_id = ?", exam.id, sessionId, candidate.groupId);
           }
@@ -398,7 +415,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
             const copy = related.find(r => r.session_id === sessionId && r.group_id === candidate.groupId);
             const original = related.find(r => r.state === "saved" && r.result_json
               && !(r.session_id === sessionId && r.group_id === candidate.groupId));
-            if (original && copy && !copy.previously_saved && !copy.score_snapshot && copy.state !== "saved") {
+            if (original && copy && copy.state !== "held" && copy.state !== "roster" && !copy.previously_saved && !copy.score_snapshot && copy.state !== "saved") {
               const oldEvidence = await scannerDuplicateEvidence(tx, original.session_id, studentNumber, JSON.parse(original.pages_json));
               const newEvidence = await scannerDuplicateEvidence(tx, sessionId, studentNumber, candidate.pages);
               if (oldEvidence && newEvidence && JSON.stringify(oldEvidence) === JSON.stringify(newEvidence)) {
@@ -445,6 +462,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
         if (current.filter(r => r.student_number === result.studentId).length > 1) throw new Error("重复学号：所有相关答题卡需订正后重新保存");
         const receipt = current.find(r => r.session_id === sessionId && r.group_id === candidate.groupId);
         if (!receipt) throw new Error("扫描成绩回执缺失，无法保存");
+        if (receipt.state === "held" || receipt.state === "roster") throw new Error("此卷待老师确认，已有正式成绩保持不变，请在考试或成绩分析页面处理");
         if (receipt?.score_snapshot && receipt.previously_saved && receipt.state !== "saved") {
           await restoreScoreSnapshot(tx, receipt);
         } else {
@@ -463,6 +481,8 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
     all = await receipts(db, exam.id);
     for (const candidate of candidates) {
       if (discarded.has(candidate.groupId)) continue;
+      const own = all.find(r => r.session_id===sessionId && r.group_id===candidate.groupId);
+      if (own?.state === "saved" && all.some(r => r.student_number===candidate.studentNumber && ["held","roster"].includes(r.state))) continue;
       const others = all.filter(r => r.student_number === candidate.studentNumber && !(r.session_id === sessionId && r.group_id === candidate.groupId));
       const localDuplicates = candidates.filter(c => c.studentNumber === candidate.studentNumber);
       if (others.length === 0 && localDuplicates.length < 2) continue;
@@ -473,7 +493,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
         related.push({ sessionId, groupId: local.groupId, studentId: candidate.studentNumber, previouslySaved: false, pages: local.pages });
       }
       response.failures.push({ groupId: candidate.groupId, studentId: candidate.studentNumber, stage: "recognition", pages: candidate.pages,
-        message: "重复学号：新旧答题卡均需核对订正，已保存成绩撤出后才可重新保存", conflicts: related });
+        message: all.some(r => r.student_number===candidate.studentNumber && ["held","roster"].includes(r.state)) ? "重复上传待老师确认，已有正式成绩保持不变，请在考试或成绩分析页面处理" : "重复学号：新旧答题卡均需核对订正，已保存成绩撤出后才可重新保存", conflicts: related });
     }
     if (mode === "save" && receiptMutated) {
       analysisCache.invalidateExam(exam.id);

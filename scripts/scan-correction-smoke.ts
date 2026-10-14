@@ -103,7 +103,8 @@ try {
   assert.deepEqual(emptyDoc.pages[0].recognition.questions[0].selectedOptions,[],"blank single-choice persists after reopening");
   assert.equal(Number((await db.get<{score:number}>("SELECT score FROM question_scores WHERE exam_id=? AND student_id=? AND score_type='objective'",exam.id,student.id))!.score),0);
   assert.equal(JSON.stringify(await db.all("SELECT * FROM review_sessions")),reviewBefore);
-  // Conflicting originals retain human scores in a snapshot; edited marks must
+  await db.run("UPDATE exams SET score_published=0 WHERE id=?",exam.id);
+  // Unpublished conflicting originals retain human scores in a snapshot; edited marks must
   // update that snapshot, otherwise recovery silently loses the correction.
   const duplicateSession = await store.createSession(card.id,"duplicate");
   await db.run("UPDATE twain_scan_sessions SET status='completed',card_version=?,version_source='upload' WHERE id=?",cardFingerprint(current),duplicateSession.id);

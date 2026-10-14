@@ -545,6 +545,7 @@ router.post("/sessions/:sessionId/correct", dualAuth, async (req, res, next) => 
       const group = groupSessionPages(card, records).groups.get(groupId);
       if (!group) throw new Error("答题卡分组不存在");
       await getMysqlDb().transaction(async tx => {
+        if (await tx.get("SELECT 1 FROM scanner_submissions WHERE session_id=? AND group_id=? AND state IN ('saved','discarded')",sessionId,groupId)) throw new Error("此卷已入库或归档，请刷新结果");
         for (const { record } of group) await tx.run("UPDATE twain_scan_records SET student_id = ? WHERE id = ? AND session_id = ?", studentId, record.id, sessionId);
       });
     });

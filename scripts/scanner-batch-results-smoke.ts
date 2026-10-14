@@ -510,7 +510,9 @@ try {
   newCard.bodyBlocks = card.bodyBlocks;
   assert.equal((await processScannerSession(newCard, noExam.id, "save")).failures[0].stage, "saving", "Unlinked cards must not be saved");
 
-  await db.run("UPDATE exams SET status = 'closed', score_published = 1 WHERE id = ?", exam.lastInsertRowid);
+  // This block exercises the never-published conflict recovery path. Published retention has a separate HTTP regression.
+  await db.run("DELETE FROM exam_publish_events WHERE exam_id=?",exam.lastInsertRowid);
+  await db.run("UPDATE exams SET status = 'closed', score_published = 0 WHERE id = ?", exam.lastInsertRowid);
   const duplicateSession = await makeSession(["91001", "91001"]);
   const rejected = await remote(duplicateSession.id);
   assert.equal(rejected.status, 409);
@@ -521,8 +523,8 @@ try {
   assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, users[0]), null);
   assert.equal((await db.all("SELECT id FROM question_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, users[0])).length, 0);
   assert(await store.getScanRecordWithResult(records[0].id), "Keep original recognition for correction");
-  assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id = ?", exam.lastInsertRowid))!.score_published, publicationAfterMutation);
-  assert.equal(Boolean(await db.get("SELECT id FROM exam_publish_events WHERE exam_id = ? AND reason = ?", exam.lastInsertRowid, "扫描重复学号自动撤回")), autoUnpublish, "Conflict publication audit follows policy");
+  assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id = ?", exam.lastInsertRowid))!.score_published, 0);
+  assert.equal(Boolean(await db.get("SELECT id FROM exam_publish_events WHERE exam_id = ? AND reason = ?", exam.lastInsertRowid, "扫描重复学号自动撤回")), false, "Unpublished conflicts need no publication withdrawal event");
   assert((await request()).failures.some(f => f.studentId === "91001"), "Old session must show the saved original as a problem too");
   for (const [groupId, number] of ["91991", "91992"].entries()) {
     const student = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)", number, "test", number, role.id, number);
@@ -630,11 +632,12 @@ try {
   assert(await db.get("SELECT id FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, savedRetryUser.lastInsertRowid));
   await db.run("UPDATE exams SET score_published = 1 WHERE id = ?", exam.lastInsertRowid);
   const savedRetryRecord = (await store.listScanRecords(savedRetry.id))[0];
+  const savedRetryBefore = await store.getScanRecordWithResult(savedRetryRecord.id);
   await runOcrOnSession(savedRetry.id, card.id, () => {}, { recordIds: new Set([savedRetryRecord.id]), studentId: "91996" });
-  assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, savedRetryUser.lastInsertRowid), null, "Failed retry withdraws its previously saved score");
-  assert.equal((await store.getScanRecordWithResult(savedRetryRecord.id))?.ocr_status, "failed");
-  assert.equal(Boolean(await db.get("SELECT id FROM exam_publish_events WHERE exam_id = ? AND reason = ?", exam.lastInsertRowid, "扫描重新识别自动撤回")), autoUnpublish);
-  assert.equal((await db.get<{ result_json: string | null }>("SELECT result_json FROM scanner_submissions WHERE session_id = ?", savedRetry.id))?.result_json, null);
+  assert(await db.get("SELECT id FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, savedRetryUser.lastInsertRowid), "Published original stays intact when retry is refused");
+  assert.deepEqual(await store.getScanRecordWithResult(savedRetryRecord.id), savedRetryBefore, "Refused retry preserves original recognition");
+  assert.equal(Boolean(await db.get("SELECT id FROM exam_publish_events WHERE exam_id = ? AND reason = ?", exam.lastInsertRowid, "扫描重新识别自动撤回")), false);
+  assert((await db.get<{ result_json: string | null }>("SELECT result_json FROM scanner_submissions WHERE session_id = ?", savedRetry.id))?.result_json);
   const identityRejected: CombinedRecognitionResult = { status: "failed", message: "Student ID recognition failed.", identity: { status: "rejected", code: "CARD_MISMATCH" },
     quality: { matchCount: 6, missingRoles: [] }, questions: [], subjectiveQuestions: [] };
   applyScanStudentId(identityRejected, "91001");

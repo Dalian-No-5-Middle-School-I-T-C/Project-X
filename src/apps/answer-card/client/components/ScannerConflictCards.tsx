@@ -71,7 +71,7 @@ export function ScannerConflictCards({ cards, remote = false, request = authFetc
       const key = `${card.sessionId}/${card.groupId}`;
       const legacy = card.sessionId.startsWith("legacy:");
       return <div key={key} className="flex flex-col gap-2 border-t border-border-subtle pt-2">
-        <span className="text-sm">学号 {corrected[key] ?? card.studentId} · {card.previouslySaved ? "原已入库，成绩已撤出" : "未入库"}{card.totalScore != null ? ` · 原总分 ${card.totalScore}` : ""} · {card.pages.length} 面</span>
+        <span className="text-sm">学号 {corrected[key] ?? card.studentId} · {card.formalScoreRetained ? "正式成绩已保留" : card.previouslySaved ? "原已入库，成绩已撤出" : "未入库"}{card.totalScore != null ? ` · 原总分 ${card.totalScore}` : ""} · {card.pages.length} 面</span>
         <div className="flex flex-wrap gap-2">
           {!legacy && <CardCorrectionButton disabled={busy} request={request} url={`/api/scanner/${remote ? "upload/sessions" : "session"}/${encodeURIComponent(card.sessionId)}/groups/${encodeURIComponent(card.groupId)}/correction`} onSaved={() => onChanged(card.sessionId)} />}
           <Button size="sm" variant="outline" disabled={busy || !card.pages.length} onClick={() => void view(card)}>查看原卷</Button>

@@ -84,6 +84,7 @@ import backupRoutes from "../../../server/routes/backup";
 import exportScoresRoutes from "../../../server/routes/export-scores";
 import examGroupRoutes from "../../../server/routes/exam-groups";
 import aiProviderRoutes from "../../../server/routes/ai-providers";
+import scannerPendingRoutes from "../../../server/routes/scanner-pending";
 import scoreEditingRoutes from "../../../server/routes/score-editing";
 import reviewRoutes from "../../../server/routes/review";
 import reviewAssignRoutes from "../../../server/routes/review-assign";
@@ -497,10 +498,12 @@ async function persistGradingResultsLocked(
   const { ExamRepository } = await import("../../../server/repositories/ExamRepository");
   const { getMysqlDb } = await import("../../../server/db");
 
-  const examRepo = new ExamRepository();
-  const db = getMysqlDb();
+  let backupAfterCommit = false;
+  const outcome = await getMysqlDb().transaction(async db => {
+  const examRepo = new ExamRepository(db);
 
   const examId = Number(examIdParam);
+  await db.run("UPDATE exams SET id=id WHERE id=?", examId);
   const exam = await examRepo.findExamById(examId);
   if (!exam) {
     throw Object.assign(new Error("考试不存在"), { status: 404, code: ApiError.NOT_FOUND });
@@ -563,7 +566,9 @@ async function persistGradingResultsLocked(
       continue;
     }
     try {
-      await db.transaction(async (tx) => {
+      await db.exec("SAVEPOINT grading_student");
+      const tx = db;
+      {
         // 每个学生写入时应用当前公布策略，覆盖批次中途公布的情况。
         await markScoreMutated(tx, examId, createdBy ?? null, "grading_save");
         const txExamRepo = new ExamRepository(tx);
@@ -598,10 +603,13 @@ async function persistGradingResultsLocked(
         for (const sq of row.subjectiveQuestions ?? []) {
           await tx.run(upsertSubjectiveQsSql, examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
         }
-      });
+      }
+      await db.exec("RELEASE SAVEPOINT grading_student");
       analysisCache.invalidateExam(examId);
       persisted++;
     } catch (err) {
+      await db.exec("ROLLBACK TO SAVEPOINT grading_student");
+      await db.exec("RELEASE SAVEPOINT grading_student");
       console.error(`[Grading] Failed to persist row for ${studentId}:`, err);
       failedStudents.push({
         fileName: row.fileName,
@@ -635,7 +643,7 @@ async function persistGradingResultsLocked(
       examId, batchId
     );
     if (previousExamStatus !== "closed" && !earlierClosedBatch) {
-      autoBackupOnExamClose(examId).catch((e) => console.error("[AutoBackup] Failed:", e));
+      backupAfterCommit = true;
     }
   } else if (status === "error") {
     await examRepo.updateStatus(examId, previousExamStatus);
@@ -646,11 +654,14 @@ async function persistGradingResultsLocked(
     const { recomputeExamRankings } = await import("../../../server/services/rankingUpdate");
     const recalc = await recomputeExamRankings(db, examId);
     if (!recalc.assignedScoresRecalculated) {
-      throw new Error(`成绩已保存，但赋分更新失败：${recalc.assignedScoreError}`);
+      throw new Error(`赋分更新失败，本批次成绩未保存：${recalc.assignedScoreError}`);
     }
   }
   console.log(`[Grading] exam=${examId} batch=${batchId} status=${status} persisted=${persisted} failed=${failedStudents.length}`);
   return { batchId, status, persisted, failedCount: failedStudents.length, failed: failedStudents };
+  });
+  if (backupAfterCommit) void autoBackupOnExamClose(Number(examIdParam)).catch(e => console.error("[AutoBackup] Failed:",e));
+  return outcome;
 }
 
 /**
@@ -2182,6 +2193,7 @@ export async function createApp(): Promise<express.Express> {
 
   // ── Score editing: mounted before exam routes to match
   //     /api/exams/:examId/student/:studentId/scores before /api/exams/:examId
+  app.use("/api/exams", scannerPendingRoutes);
   app.use("/api/exams", scoreEditingRoutes);
 
   // ── Exam API ──────────────────────────────────────────

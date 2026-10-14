@@ -99,6 +99,7 @@ export interface ScanConflictCard {
   groupId: string;
   studentId: string;
   previouslySaved: boolean;
+  formalScoreRetained?: boolean;
   totalScore?: number;
   pages: ScanBatchPage[];
 }

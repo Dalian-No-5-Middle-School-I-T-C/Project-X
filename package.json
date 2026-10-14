@@ -114,7 +114,8 @@
     "verify:scanner-panel-session": "tsx scripts/scanner-panel-session-smoke.ts",
     "verify:scanner-review-regressions": "tsx scripts/scanner-review-regressions.ts",
     "verify:scanner-review-fixes": "tsx scripts/scanner-discard-regression.ts && tsx scripts/scanner-version-regression.ts && tsx scripts/scanner-publish-regression.ts && tsx scripts/scanner-dsm-regression.ts",
-    "native:build:correction:linux-x64": "bash scripts/build-recognizer-linux.sh"
+    "native:build:correction:linux-x64": "bash scripts/build-recognizer-linux.sh",
+    "verify:scanner-pending": "tsx scripts/scanner-pending-smoke.ts"
   },
   "browserslist": [
     "iOS >= 15",

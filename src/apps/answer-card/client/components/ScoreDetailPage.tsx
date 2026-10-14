@@ -1,3 +1,4 @@
+import { PendingScanBanner } from "./PendingScanBanner";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity, AlertTriangle, ArrowLeft, BarChart3, CheckCircle2, ClipboardList,
@@ -401,6 +402,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
         )}
       </header>
 
+      {isTeacher && <PendingScanBanner examId={examId} onChanged={() => { void loadOverview(); void loadRanking(); void loadQuestions(); void loadMetrics(); }} />}
       <Tabs
         value={subTab}
         onValueChange={(v) => setSubTab(v as SubTab)}
