@@ -17,7 +17,7 @@ async function main(): Promise<void> {
   // 避免测试往仓库 data/ 里落真实的 bootstrap-admin.txt。
   const bootstrapTmpDir = mkdtempSync(path.join(tmpdir(), "projectx-mariadb-bootstrap-"));
   process.env.PROJECTX_DB_PATH = path.join(bootstrapTmpDir, "projectx.db");
-  const { getMysqlDb, initMariadbSchema, resetAdapter, buildUpsertSQL, buildInsertIgnore } =
+  const { getMysqlDb, initMariadbSchema, runMariadbMigrations, getMariadbConfig, resetAdapter, buildUpsertSQL, buildInsertIgnore } =
     await import("../src/server/db/mysql");
   const { ensureDefaultAdmin, getBootstrapAdminPath, hashPassword, verifyPassword } =
     await import("../src/server/db/index");
@@ -35,6 +35,14 @@ async function main(): Promise<void> {
     await initMariadbSchema();
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'identity_mode'"));
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_records LIKE 'identity_json'"));
+    // Upgrade an existing v61 database without relying on fresh-schema CREATEs.
+    await db.exec("DROP TABLE scan_correction_pages");
+    await db.run("DELETE FROM schema_migrations WHERE version = 62");
+    assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version=49"));
+    const migrationConnection = await (await import("mysql2/promise")).createConnection(getMariadbConfig());
+    try { await runMariadbMigrations(migrationConnection); } finally { await migrationConnection.end(); }
+    assert.ok(await db.get("SHOW COLUMNS FROM scan_correction_pages LIKE 'recognition_json'"));
+    assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version=62"));
     // Simulate a pre-QR installation and exercise the incremental migration too.
     await db.exec("ALTER TABLE twain_scan_sessions DROP COLUMN identity_mode");
     await db.exec("ALTER TABLE twain_scan_records DROP COLUMN identity_json");

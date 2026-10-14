@@ -1044,7 +1044,6 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
 
   mariadbMigrations.push({ version: 49, name: "scanner-submission-receipts", sqls: [
     scannerSubmissionSchema("mariadb"),
-    scanCorrectionSchema("mariadb"),
     "CREATE INDEX IF NOT EXISTS idx_scanner_submission_student ON scanner_submissions(exam_id, student_number)",
   ] });
   mariadbMigrations.push({ version: 50, name: "archive-class-and-grade", sqls: [
@@ -1152,6 +1151,8 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE twain_scan_sessions ADD COLUMN version_source VARCHAR(24) NOT NULL DEFAULT 'legacy'",
     "ALTER TABLE twain_scan_sessions ALTER COLUMN version_source SET DEFAULT 'upload'",
   ] });
+
+  mariadbMigrations.push({ version: 62, name: "scan-correction-pages", sqls: [scanCorrectionSchema("mariadb")] });
 
   for (const m of mariadbMigrations) {
     if (applied.has(m.version)) continue;
