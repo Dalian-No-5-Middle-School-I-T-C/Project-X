@@ -1,3 +1,4 @@
+import { recoverCorrectionDocument } from "../lib/scanCorrectionRecovery";
 import { useEffect, useState } from "react";
 import { authFetch } from "../auth/api";
 import { Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter } from "./ui/v2";
@@ -24,7 +25,7 @@ export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved}: 
   const [pageIndex,setPageIndex] = useState(0);
   const dirty = !!document && edits.some(edit => {
     const original = document.pages.find(p => p.sourceId === edit.sourceId)!;
-    return [...original.selected].sort().join() !== [...edit.selected].sort().join() || !!edit.touched?.length;
+    return [...original.selected].sort().join() !== [...edit.selected].sort().join() || !!edit.touched?.length || !!edit.recovery;
   });
   useEffect(() => {
     let alive = true;
@@ -59,8 +60,21 @@ export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved}: 
   const close = () => { if (!busy && (!dirty || window.confirm("修改尚未保存，确定放弃本次修改？"))) onClose(); };
   const page = document?.pages[pageIndex], edit = edits[pageIndex];
   const state = document && page && edit ? correctionState(document.card,page,edit.selected,edit.touched) : null;
-  const errors = document ? document.pages.flatMap((p,i) => correctionState(document.card,p,edits[i]?.selected ?? p.selected,edits[i]?.touched).errors) : [];
+  const missing = document?.pages.some(p=>!p.recognition.geometry) ?? false;
+  const errors = document && !missing ? document.pages.flatMap((p,i) => correctionState(document.card,p,edits[i]?.selected ?? p.selected,edits[i]?.touched).errors) : [];
   const geometry = page?.recognition.geometry;
+  async function recover() {
+    if (!document) return;
+    setBusy(true); setMessage("正在重新识别服务器旧卷…");
+    try {
+      const next = await recoverCorrectionDocument(document,url,send);
+      setDocument(next);
+      setEdits(next.pages.map(p=>p.recovery ? {sourceId:p.sourceId,revision:p.revision,selected:[...p.selected],touched:[],
+        recovery:{fingerprint:p.recovery.fingerprint,signature:p.recovery.signature,recognition:p.recognition}} : edits.find(e=>e.sourceId===p.sourceId)!));
+      setMessage("重新识别完成，结果尚未保存。核对后点击保存修改。");
+    } catch(error) { setMessage(error instanceof Error?error.message:"重新识别失败"); }
+    finally { setBusy(false); }
+  }
   async function save() {
     setBusy(true); setMessage("");
     try {
@@ -93,6 +107,11 @@ export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved}: 
       </div>
       <DialogBody className="min-h-0 flex-1 overflow-auto bg-muted p-3">
         {busy && !document && <p role="status">正在加载完整答题卡…</p>}
+        {missing && <div className="mb-3 flex flex-wrap items-center gap-3 text-sm">
+          <span>此卷缺少坐标数据，请重新识别，核对后保存。</span>
+          <Button variant="outline" disabled={busy} onClick={()=>void recover()}>重新识别旧卷</Button>
+        </div>}
+        {page && !geometry && <img src={images[page.sourceId]} alt="待重新识别的完整原卷" className="block w-full" />}
         {page && geometry && <svg viewBox={`0 0 ${geometry.imageWidth} ${geometry.imageHeight}`} width={`${zoom*100}%`} className="block max-w-none" aria-label={`第 ${page.layout.pageNumber} 页答题卡`}>
           <image href={images[page.sourceId]} width={geometry.imageWidth} height={geometry.imageHeight} />
           {correctionCells(page.layout).map(cell => {
@@ -106,9 +125,9 @@ export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved}: 
         </svg>}
       </DialogBody>
       <DialogFooter className="flex-wrap">
-        <div className="min-w-0 flex-1 text-sm" role="status">{message || (errors.length ? <span className="text-destructive-fg">{[...new Set(errors)].slice(0,3).join("；")}{errors.length>3 ? "…" : ""}</span> : dirty ? "修改尚未保存" : "点击填涂格开始修改")}</div>
+        <div className="min-w-0 flex-1 text-sm" role="status">{message || (errors.length ? <span className="text-destructive-fg">{[...new Set(errors)].slice(0,3).join("；")}{errors.length>3 ? "…" : ""}</span> : dirty ? "修改尚未保存" : missing ? "请先重新识别旧卷" : "点击填涂格开始修改")}</div>
         <Button variant="outline" disabled={busy} onClick={close}>取消</Button>
-        <Button variant="primary" disabled={!dirty || busy || errors.length>0} loading={busy && !!document} onClick={() => void save()}>保存修改</Button>
+        <Button variant="primary" disabled={!dirty || busy || missing || errors.length>0} loading={busy && !!document} onClick={() => void save()}>保存修改</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;

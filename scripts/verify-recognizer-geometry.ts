@@ -1,3 +1,4 @@
+import { recoveryRecognitionSchema } from "../src/server/services/scanCorrectionRecovery";
 import assert from "node:assert/strict";
 import {mkdtemp,writeFile,rm} from "node:fs/promises";
 import path from "node:path";
@@ -6,27 +7,31 @@ import sharp from "sharp";
 import {createDefaultCard} from "../src/shared/defaultCard";
 import {buildLayout} from "../src/shared/layout";
 import {qrDarkRects} from "../src/shared/cardIdentity";
-import {recognizeAnswerCard} from "../src/apps/answer-card/server/recognition";
+import {recognizeAnswerCard,recognizeCorrectionCard} from "../src/apps/answer-card/server/recognition";
 import type {CombinedRecognitionResult,Rect} from "../src/shared/types";
 
-const dir = await mkdtemp(path.join(os.tmpdir(),"projectx-geometry-"));
+const dir = await mkdtemp(path.join(os.tmpdir(),"projectx-geometry-中文-"));
 try {
   const card = createDefaultCard("91514003"); card.studentInfo.studentNumberDigits=5;
   card.bodyBlocks=[{id:"geometry",type:"objective",title:"geometry",questionStart:1,questionCount:1,optionCount:4,mode:"single",scorePerQuestion:5,density:"normal",answerKey:{1:["A"]}}];
+  card.bodyBlocks.push({id:"paper",type:"subjective",title:"手阅",questions:[{id:"q2",number:2,score:30,style:"manual_score_grid",kind:"plain_box",minHeightMm:30}]});
   const layout=buildLayout(card),page=layout.pages[0],dpi=300;
   const box=(r:Rect,fill:string,stroke=0)=>`<rect x="${r.x}" y="${r.y*1.02-2}" width="${r.width}" height="${r.height*1.02}" fill="${fill}" stroke="#111" stroke-width="${stroke}"/>`;
-  const svg=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${page.width} ${page.height}"><rect width="100%" height="100%" fill="white"/>${page.markers.map(m=>box(m.rect,"black")).join("")}${qrDarkRects(page.header.qrCode).map(r=>box(r,"black")).join("")}${page.elements.flatMap(e=>e.type==="student_digit"?[box(e.rect,Number("12345"[e.digitIndex])===e.digit?"black":"white",.15)]:e.type==="objective_option"?[box(e.rect,e.option==="A"?"black":"white",.15)]:[]).join("")}</svg>`;
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${page.width} ${page.height}"><rect width="100%" height="100%" fill="white"/>${page.markers.map(m=>box(m.rect,"black")).join("")}${qrDarkRects(page.header.qrCode).map(r=>box(r,"black")).join("")}${page.elements.flatMap(e=>e.type==="student_digit"?[box(e.rect,Number("12345"[e.digitIndex])===e.digit?"black":"white",.15)]:e.type==="objective_option"?[box(e.rect,e.option==="A"?"black":"white",.15)]:e.type==="score_cell"?[box(e.rect,"white",.15),...(e.score===10?[`<line x1="${e.rect.x-.4}" y1="${(e.rect.y+.2)*1.02-2}" x2="${e.rect.x+e.rect.width+.4}" y2="${(e.rect.y+e.rect.height-.2)*1.02-2}" stroke="red" stroke-width=".45"/>`]:[])]:[]).join("")}</svg>`;
   const width=Math.round(page.width/25.4*dpi),height=Math.round(page.height/25.4*dpi);
   const base=await sharp(Buffer.from(svg)).resize(width,height).png().toBuffer();
   const layoutPath=path.join(dir,"layout.json");await writeFile(layoutPath,JSON.stringify(layout));
   for(const angle of [0,90,180,270]) {
     const imagePath=path.join(dir,`rotation-${angle}.png`);await sharp(base).rotate(angle).png().toFile(imagePath);
-    const result=await recognizeAnswerCard({imagePath,layoutPath,pageNumber:1,dpi}) as CombinedRecognitionResult;
+    const run = process.platform==="linux" && process.arch==="x64" ? recognizeCorrectionCard : recognizeAnswerCard;
+    const result=await run({imagePath,layoutPath,pageNumber:1,dpi}) as CombinedRecognitionResult;
     assert.notEqual(result.status,"failed",result.message);assert.equal(result.studentId?.value,"12345");assert.deepEqual(result.questions[0].selectedOptions,["A"]);
+    recoveryRecognitionSchema.parse(result);
+    assert.equal(result.subjectiveQuestions[0]?.score,10,"hand-marked score recognized");
     const geometry=result.geometry!;assert(geometry,"native output must include mapping");
     assert.equal(geometry.imageWidth,angle%180?height:width);assert.equal(geometry.imageHeight,angle%180?width:height);
     const project=(m:number[],x:number,y:number)=>{const z=m[6]*x+m[7]*y+m[8];return [(m[0]*x+m[1]*y+m[2])/z,(m[3]*x+m[4]*y+m[5])/z];};
-    for(const e of page.elements.filter(e=>e.type==="student_digit"||e.type==="objective_option")) {
+    for(const e of page.elements.filter(e=>e.type==="student_digit"||e.type==="objective_option"||e.type==="score_cell")) {
       const x=e.rect.x+e.rect.width/2,y=e.rect.y+e.rect.height/2;
       const px=x*width/page.width,py=(y*1.02-2)*height/page.height;
       const expected=angle===90?[height-1-py,px]:angle===180?[width-1-px,height-1-py]:angle===270?[py,width-1-px]:[px,py];

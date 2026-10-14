@@ -121,7 +121,10 @@ export async function incrementPageCount(id: string): Promise<void> {
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  await db().run("DELETE FROM twain_scan_sessions WHERE id = ?", id);
+  await db().transaction(async tx => {
+    await tx.run("DELETE FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id IN (SELECT id FROM twain_scan_records WHERE session_id=?)", id);
+    await tx.run("DELETE FROM twain_scan_sessions WHERE id = ?", id);
+  });
 }
 
 // ── Scan Record CRUD ───────────────────────────────────
@@ -188,7 +191,10 @@ export async function updateScanQuality(id: string, quality: number): Promise<vo
 }
 
 export async function deleteScanRecord(id: string): Promise<void> {
-  await db().run("DELETE FROM twain_scan_records WHERE id = ?", id);
+  await db().transaction(async tx => {
+    await tx.run("DELETE FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?", id);
+    await tx.run("DELETE FROM twain_scan_records WHERE id = ?", id);
+  });
 }
 
 // ── Recognition Result CRUD ────────────────────────────

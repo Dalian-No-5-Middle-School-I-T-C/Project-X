@@ -4,7 +4,7 @@ import { CardRepository } from "../repositories/CardRepository";
 import { requirePermissionCompat, requireWholeExamGradingAccess } from "../../apps/answer-card/server/middleware";
 import { PERMISSIONS } from "../auth/permissions";
 import { resolveScannerExam } from "../services/scannerExam";
-import { saveSessionCorrection, sessionCorrection } from "../services/scanCorrection";
+import { recognizeSessionCorrection, saveSessionCorrection, sessionCorrection } from "../services/scanCorrection";
 
 /** Mounted below existing authenticated scanner session scope. */
 export function scanCorrectionRouter(prefix: "session" | "sessions", remote: boolean) {
@@ -34,9 +34,17 @@ export function scanCorrectionRouter(prefix: "session" | "sessions", remote: boo
       const session = await getMysqlDb().get<{card_id:string;status:string}>("SELECT card_id,status FROM twain_scan_sessions WHERE id=?",req.params.sessionId);
       const card = session && await new CardRepository().findById(session.card_id);
       if (!card || session?.status === "scanning") { res.status(409).json({message:"请等待扫描结束"}); return; }
-      const result = await saveSessionCorrection(card,String(req.params.sessionId),String(req.params.groupId),req.body?.pages,req.user?.id ?? null);
+      const result = await saveSessionCorrection(card,String(req.params.sessionId),String(req.params.groupId),req.body?.pages,req.user?.id ?? null,remote);
       res.json({ok:true,...result});
     } catch (error) { res.status(409).json({message:error instanceof Error ? error.message : "保存失败"}); }
+  });
+  if (remote) router.post<{sessionId:string;groupId:string}>(`${route}/recognize`,async(req,res)=>{
+    try {
+      const session = await getMysqlDb().get<{card_id:string}>("SELECT card_id FROM twain_scan_sessions WHERE id=?",req.params.sessionId);
+      const card = session && await new CardRepository().findById(session.card_id);
+      if (!card) { res.status(404).json({message:"答题卡不存在"}); return; }
+      res.json(await recognizeSessionCorrection(card,String(req.params.sessionId),String(req.params.groupId),req.body));
+    } catch(error) { res.status(409).json({message:error instanceof Error?error.message:"重新识别失败"}); }
   });
   return router;
 }

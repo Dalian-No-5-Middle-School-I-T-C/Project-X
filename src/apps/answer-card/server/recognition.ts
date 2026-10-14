@@ -195,6 +195,18 @@ export async function recognizeAnswerCard(request: RecognitionRequest): Promise<
   return validateIdentity(await runWithCropsFallback(request, exePath, baseArgs), request);
 }
 
+/** Linux x86_64 recovery executable; ordinary scanning keeps its Windows resolver. */
+export function resolveCorrectionRecognizerExe(): string {
+  const exe = path.join(rootDir, "resources", "native", "correction-linux-x64", "answer-card-recognizer");
+  if (!existsSync(exe)) throw new Error("缺少整卡改分识别器，请安装完整的 2.7.0 或更新版本 Ubuntu 服务端包");
+  return exe;
+}
+
+export async function recognizeCorrectionCard(request: RecognitionRequest): Promise<RecognitionResult> {
+  if (process.platform !== "linux" || process.arch !== "x64") throw new Error("旧卷重新识别需要 Linux x86_64 服务端");
+  return validateIdentity(await execRecognizer(resolveCorrectionRecognizerExe(), buildBaseArgs(request)), request);
+}
+
 export class CardIdentityError extends Error {
   readonly status = 422;
   constructor(message: string, readonly code = "CARD_IDENTITY_REJECTED") { super(message); }

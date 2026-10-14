@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(ProjectXNative LANGUAGES CXX)
 
-if(NOT WIN32)
-  message(FATAL_ERROR "Native scanner components require a Windows target; use the MinGW toolchain for cross compilation.")
+if(NOT WIN32 AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  message(FATAL_ERROR "Build the scanner components for Windows or the correction recognizer for Linux.")
 endif()
 
 set(CMAKE_CXX_STANDARD 23)
@@ -22,20 +22,28 @@ add_executable(answer-card-recognizer
 target_include_directories(answer-card-recognizer PRIVATE "${NLOHMANN_JSON_INCLUDE_DIR}" ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(answer-card-recognizer PRIVATE ${OpenCV_LIBS})
 
+set(NATIVE_COMPONENTS answer-card-recognizer)
+if(WIN32)
 set(BRIDGE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ScannerBridge/scanner-bridge")
 add_executable(scanner-bridge "${BRIDGE_DIR}/main.cpp" "${BRIDGE_DIR}/twain_controller.cpp")
 target_include_directories(scanner-bridge PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ScannerBridge/third_party/twain-dsm-2.5.1/include")
 target_link_libraries(scanner-bridge PRIVATE gdiplus user32 gdi32 ole32)
 
-foreach(component answer-card-recognizer scanner-bridge)
+list(APPEND NATIVE_COMPONENTS scanner-bridge)
+endif()
+
+foreach(component IN LISTS NATIVE_COMPONENTS)
   target_compile_definitions(${component} PRIVATE UNICODE _UNICODE NOMINMAX _WIN32_WINNT=0x0601)
   if(MINGW)
     # TWAIN capability containers use the pointer aliasing conventions of the SDK/MSVC.
     target_compile_options(${component} PRIVATE -Wall -Wextra -fno-strict-aliasing)
     target_link_options(${component} PRIVATE -municode -static -static-libgcc -static-libstdc++ -Wl,--dynamicbase -Wl,--nxcompat)
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_options(${component} PRIVATE -Wall -Wextra)
+    target_link_options(${component} PRIVATE -static-libgcc -static-libstdc++)
   elseif(MSVC)
     target_compile_options(${component} PRIVATE /utf-8)
   endif()
 endforeach()
 
-install(TARGETS answer-card-recognizer scanner-bridge RUNTIME DESTINATION .)
+install(TARGETS ${NATIVE_COMPONENTS} RUNTIME DESTINATION .)

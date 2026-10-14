@@ -97,6 +97,9 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
       }
 
       // 2. 删除过期的识别结果（先删子表）
+      await tx.run(`DELETE FROM scan_correction_pages WHERE source_type='scan_record' AND source_id IN (
+        SELECT id FROM scan_records WHERE expires_at IS NOT NULL AND expires_at < ?${PROTECT_ACTIVE_EXAMS_SQL}
+      )`, cutoffStr);
       const deletedRecognitions = await tx.run(
         `DELETE FROM objective_recognitions
          WHERE record_id IN (

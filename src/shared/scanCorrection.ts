@@ -12,9 +12,10 @@ export type CorrectionPage = {
   selected: string[];
   invalid: string[];
   imageUrl: string;
+  recovery?: { fingerprint: string; identityMode: "strict" | "legacy"; dpi: number; signature?: string };
 };
 export type CorrectionDocument = { card: AnswerCard; pages: CorrectionPage[]; version: string };
-export type CorrectionEdit = { sourceId: string; revision: number; selected: string[]; touched?: string[] };
+export type CorrectionEdit = { sourceId: string; revision: number; selected: string[]; touched?: string[]; recovery?: { fingerprint: string; signature?: string; recognition: CombinedRecognitionResult } };
 export function correctionCells(page: PageLayout): CorrectionCell[] {
   return page.elements.filter((e): e is CorrectionCell => ["student_digit", "objective_option", "score_cell"].includes(e.type));
 }

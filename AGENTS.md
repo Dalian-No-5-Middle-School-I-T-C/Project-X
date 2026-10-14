@@ -6,7 +6,7 @@
 
 本仓库为 Project-X 答题卡设计阅卷系统，覆盖答题卡设计、PDF 导出、扫描识别、判分、网上阅卷、成绩分析和 AI 分析。
 
-- **实际部署形态：Windows 扫描端配原生 OMR 组件 + Linux 服务端。服务端部署使用 MariaDB，服务端不执行 OMR。**
+- **实际部署形态：Windows 扫描端配原生 OMR 组件 + Linux 服务端。服务端部署使用 MariaDB；仅异常卷缺少坐标数据时，可显式调用随包分发的 Linux x86_64 识别器补识别，常规 OMR 仍在 Windows 扫描端。**
 - Web：教师 / 学生页面，构建到 `dist/web/`；扫描端：Electron 桌面应用，构建到 `dist/scanner/`。两者入口分离，不要把扫描端依赖引入 Web。
 - Windows 扫描端负责扫描仪调用和原生识别；Linux 服务端接收扫描端上传并提供业务 API、阅卷和分析。
 - SQLite 仍用于本地模式及部分测试；不能因生产使用 MariaDB 而移除 SQLite 兼容，也不能用 SQLite 测试代替 MariaDB 验证。

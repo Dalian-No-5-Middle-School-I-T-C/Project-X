@@ -1,3 +1,7 @@
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
+import sharp from "sharp";
+import { recoverCorrectionDocument } from "../src/apps/answer-card/client/lib/scanCorrectionRecovery";
 import assert from "node:assert/strict";
 import { startScannerFlowFixture } from "./scanner-upload-flow-fixture";
 import { buildLayout } from "../src/shared/layout";
@@ -11,7 +15,7 @@ try {
   const {getMysqlDb} = await import("../src/server/db");
   const {CardRepository} = await import("../src/server/repositories/CardRepository");
   const store = await import("../src/apps/answer-card/server/database/scan-store");
-  const {storeCorrectionPage,studentCorrection,saveStudentCorrection,sessionCorrection,saveSessionCorrection} = await import("../src/server/services/scanCorrection");
+  const {recognizeSessionCorrection,storeCorrectionPage,studentCorrection,saveStudentCorrection,sessionCorrection,saveSessionCorrection} = await import("../src/server/services/scanCorrection");
   const {processScannerSession} = await import("../src/server/services/scannerSubmissions");
   const db = getMysqlDb(), repo = new CardRepository();
   const card = (await repo.findById(info.cardId))!;
@@ -98,6 +102,56 @@ try {
   await processScannerSession(current,duplicateSession.id,"validate");
   assert.equal((await processScannerSession(current,session.id,"save")).results[0]?.saved,true);
   assert.equal(Number((await db.get<{total_score:number}>("SELECT total_score FROM student_scores WHERE exam_id=? AND student_id=?",exam.id,student.id))!.total_score),22,"snapshot restores corrected answer and unrelated manual score");
+  // An uploaded legacy scan obtains alignment only through a local, read-only draft.
+  const recoverySession = await store.createSession(card.id,"remote recovery");
+  await db.run("UPDATE twain_scan_sessions SET status='completed',card_version=?,version_source='upload' WHERE id=?",cardFingerprint(current),recoverySession.id);
+  const recoveryImage = path.join(process.env.ANSWER_CARD_DATA_DIR!,"recovery.png");
+  const imageBytes = await sharp({create:{width:2100,height:2970,channels:3,background:"white"}}).png().toBuffer();
+  await writeFile(recoveryImage,imageBytes);
+  const recoveryRecord = await store.createScanRecord({sessionId:recoverySession.id,cardId:card.id,pageNum:1,imagePath:recoveryImage});
+  await db.run("UPDATE twain_scan_records SET ocr_status='failed',ocr_error='old recognizer' WHERE id=?",recoveryRecord.id);
+  const recoveryUrl = `${fixture.baseUrl}/api/scanner/upload/sessions/${recoverySession.id}/groups/0/correction`;
+  const recoverRequest = (method="GET",body?:unknown) => fetch(recoveryUrl,{method,headers:{"X-Api-Key":info.key,"Content-Type":"application/json"},...(body?{body:JSON.stringify(body)}:{})});
+  const missingResponse = await recoverRequest(); assert.equal(missingResponse.status,200,await missingResponse.clone().text());
+  const missing = await missingResponse.json();
+  assert(missing.pages[0].recovery); assert(!missing.pages[0].recognition.geometry);
+  let nativeCalls=0;
+  const restoredRecognition = {...recognition,studentId:{status:"ok",value:"91004"}};
+  const draft = await recoverCorrectionDocument(missing,recoveryUrl,async (url,init)=>{
+    assert.equal(url,`${recoveryUrl}/recognize`); assert.equal(init?.method,"POST");
+    const result = await recognizeSessionCorrection(current,recoverySession.id,"0",JSON.parse(init!.body as string),async request=>{
+      assert.equal(request.imagePath,recoveryImage); assert.equal(request.cropsDir,undefined); nativeCalls++;
+      return restoredRecognition;
+    });
+    return Response.json(result);
+  });
+  assert.equal(nativeCalls,1);
+  assert.equal((await fetch(`${recoveryUrl}/recognize`,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})).status,401,"recognition requires existing scanner authorization");
+  await recoverCorrectionDocument(draft,recoveryUrl,async()=>{throw new Error("must not recognize existing geometry");});
+  assert.equal(await db.get("SELECT source_id FROM scan_correction_pages WHERE source_id=?",recoveryRecord.id),null,"canceling recovery must not store metadata");
+  assert.equal((await db.get<{ocr_status:string}>("SELECT ocr_status FROM twain_scan_records WHERE id=?",recoveryRecord.id))!.ocr_status,"failed");
+  const rp = draft.pages[0];
+  const redit = {sourceId:rp.sourceId,revision:0,selected:toggleCorrectionCell(current,rp,rp.selected,a.id),recovery:{fingerprint:rp.recovery!.fingerprint,signature:rp.recovery!.signature,recognition:rp.recognition}};
+  assert.equal((await recoverRequest("PUT",{pages:[{...redit,recovery:{...redit.recovery,signature:undefined}}]})).status,409,"unsigned client recognition is rejected");
+  const wrongIdentity = structuredClone(redit); wrongIdentity.recovery.recognition.identity!.cardId="wrong";
+  assert.equal((await recoverRequest("PUT",{pages:[wrongIdentity]})).status,409,"recovery identity cannot bypass QR checks");
+  const wrongGeometry = structuredClone(redit); wrongGeometry.recovery.recognition.geometry!.imageWidth++;
+  assert.equal((await recoverRequest("PUT",{pages:[wrongGeometry]})).status,409,"geometry must match original image size");
+  assert.equal(await db.get("SELECT source_id FROM scan_correction_pages WHERE source_id=?",recoveryRecord.id),null,"failed save rolls back metadata");
+  await db.run("UPDATE twain_scan_records SET ocr_error='changed' WHERE id=?",recoveryRecord.id);
+  assert.equal((await recoverRequest("PUT",{pages:[redit]})).status,409,"stale recovery draft rejected");
+  const refreshed = await (await recoverRequest()).json(); redit.recovery.fingerprint=refreshed.pages[0].recovery.fingerprint;
+  assert.equal((await recoverRequest("PUT",{pages:[redit]})).status,409,"a known new fingerprint cannot rebind an old signature");
+  const recoveryInput = {version:refreshed.version,pages:[{sourceId:rp.sourceId,fingerprint:redit.recovery.fingerprint}]};
+  await assert.rejects(recognizeSessionCorrection(current,recoverySession.id,"0",recoveryInput,async()=>wrongGeometry.recovery.recognition),/尺寸/);
+  await assert.rejects(recognizeSessionCorrection(current,recoverySession.id,"0",recoveryInput,async()=>wrongIdentity.recovery.recognition),/二维码/);
+  const freshDraft = await recognizeSessionCorrection(current,recoverySession.id,"0",recoveryInput,async()=>restoredRecognition);
+  redit.recovery.signature=freshDraft.pages[0].recovery!.signature;
+  const recoverySaved = await recoverRequest("PUT",{pages:[redit]}); assert.equal(recoverySaved.status,200,await recoverySaved.clone().text());
+  assert.equal((await recoverySaved.json()).saved,true);
+  assert.equal((await recoverRequest("PUT",{pages:[redit]})).status,409,"recovery cannot overwrite an existing snapshot");
+  assert((await db.get("SELECT source_id FROM scan_correction_pages WHERE source_id=?",recoveryRecord.id)));
+  assert.equal(JSON.stringify(await db.all("SELECT * FROM review_sessions")),reviewBefore,"recovery leaves online review unchanged");
   const multi = structuredClone(current); (multi.bodyBlocks[0] as any).mode="multiple"; (multi.bodyBlocks[0] as any).answerKey={1:["A","C"]}; (multi.bodyBlocks[0] as any).questions=[{questionNumber:1,mode:"multiple",answerKey:["A","C"],optionCount:4,score:5}];
   const multiSelected = toggleCorrectionCell(multi,page,page.selected,a.id);
   const mixed = correctionState(multi,page,multiSelected);
@@ -115,5 +169,40 @@ try {
   Object.assign(noisy,recognizedCells(noisy.layout,noisy.recognition));
   assert(correctionState(current,noisy,noisy.selected).invalid.has(ten.id));
   assert(!correctionState(current,noisy,noisy.selected,[ten.id]).invalid.has(ten.id),"explicit selection repairs detected invalid line");
+  const { ExamRepository } = await import("../src/server/repositories/ExamRepository");
+  const examRepo = new ExamRepository(db);
+  const historicalExam = await examRepo.createExam({name:"correction history",card_id:card.id});
+  const historyStudent = (await db.get<{id:number}>("SELECT id FROM users WHERE student_number='91005'"))!;
+  const historyIds:number[]=[];
+  for (const status of ["done","partial","error"] as const) {
+    const batch = await examRepo.createScanBatch(historicalExam.id,status);
+    const id = await examRepo.addScanRecord({batch_id:batch,file_path:"history.png",file_name:"history.png",student_id:historyStudent.id,student_number:"91005"});
+    await storeCorrectionPage(current,"scan_record",id,{...recognition,studentId:{status:"ok",value:"91005"}});
+    await examRepo.finishBatchWithOutcome(batch,status,status==="error"?0:1,status==="done"?0:1,null);
+    historyIds.push(id);
+  }
+  const latestDocument = await studentCorrection(current,historicalExam.id,historyStudent.id);
+  assert.deepEqual(latestDocument.pages.map(p=>p.sourceId),[String(historyIds[1])],"latest successful student batch excludes old and failed runs");
+  const deletingSession = await store.createSession(card.id,"snapshot deletion");
+  const deletingRecords=[];
+  for(let i=1;i<=2;i++) {
+    const row = await store.createScanRecord({sessionId:deletingSession.id,cardId:card.id,pageNum:i,imagePath:"delete.png"});
+    await storeCorrectionPage(current,"twain_scan_record",row.id,recognition); deletingRecords.push(row.id);
+  }
+  await store.deleteScanRecord(deletingRecords[0]);
+  assert.equal(await db.get("SELECT source_id FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?",deletingRecords[0]),null);
+  assert(await db.get("SELECT source_id FROM scan_correction_pages WHERE source_id=?",deletingRecords[1]),"individual deletion keeps sibling snapshot");
+  await store.deleteSession(deletingSession.id);
+  assert.equal(await db.get("SELECT source_id FROM scan_correction_pages WHERE source_id=?",deletingRecords[1]),null,"session deletion clears cascaded snapshots");
+  await db.run("UPDATE exams SET status='closed' WHERE id=?",historicalExam.id);
+  await db.run("UPDATE scan_records SET expires_at='2000-01-01 00:00:00',file_path=NULL WHERE id=?",historyIds[0]);
+  const { runCleanup } = await import("../src/server/db/cleanup");
+  assert.deepEqual((await runCleanup()).errors,[]);
+  assert.equal(await db.get("SELECT source_id FROM scan_correction_pages WHERE source_type='scan_record' AND source_id=?",String(historyIds[0])),null,"retention cleanup clears expired recognition snapshot");
+  assert(await db.get("SELECT source_id FROM scan_correction_pages WHERE source_type='scan_record' AND source_id=?",String(historyIds[1])),"retention keeps current scan");
+  const { deleteExamRows } = await import("../src/apps/answer-card/server/helpers");
+  await deleteExamRows(db,[historicalExam.id]);
+  for(const id of historyIds) assert.equal(await db.get("SELECT source_id FROM scan_correction_pages WHERE source_type='scan_record' AND source_id=?",String(id)),null,"exam deletion clears scan snapshots");
+  assert(await db.get("SELECT source_id FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?",record.id),"unrelated original remains");
   console.log(`PASS scan correction: ${db.dialect}; geometry, colours, toggles, draft isolation, stale-write rejection, persisted answers, rankings/publication, review preservation and scanner replay`);
 } finally { await fixture.close(); }

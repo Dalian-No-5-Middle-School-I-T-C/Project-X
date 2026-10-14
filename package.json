@@ -1,6 +1,6 @@
 {
   "name": "answer-card-designer",
-  "version": "2.6.1",
+  "version": "2.7.0",
   "description": "Project-X answer card scanning desktop app; Web version deployed separately via dist/web/.",
   "author": "Project-X",
   "private": true,
@@ -113,7 +113,8 @@
     "verify:scanner-scan-timeout": "tsx scripts/verify-scanner-scan-timeout.ts",
     "verify:scanner-panel-session": "tsx scripts/scanner-panel-session-smoke.ts",
     "verify:scanner-review-regressions": "tsx scripts/scanner-review-regressions.ts",
-    "verify:scanner-review-fixes": "tsx scripts/scanner-discard-regression.ts && tsx scripts/scanner-version-regression.ts && tsx scripts/scanner-publish-regression.ts && tsx scripts/scanner-dsm-regression.ts"
+    "verify:scanner-review-fixes": "tsx scripts/scanner-discard-regression.ts && tsx scripts/scanner-version-regression.ts && tsx scripts/scanner-publish-regression.ts && tsx scripts/scanner-dsm-regression.ts",
+    "native:build:correction:linux-x64": "bash scripts/build-recognizer-linux.sh"
   },
   "browserslist": [
     "iOS >= 15",
