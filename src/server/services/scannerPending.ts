@@ -250,7 +250,7 @@ export async function confirmPendingScan(
           );
       }
       await tx.run(
-        "INSERT INTO answer_overrides (exam_id,card_id,question_number,score_type,override_type,old_value,new_value,created_by,created_at) VALUES (?,?,'*','objective','score',?,?,?,CURRENT_TIMESTAMP)",
+        "INSERT INTO answer_overrides (exam_id,card_id,question_number,score_type,override_type,old_value,new_value,created_by,created_at) VALUES (?,?,NULL,'objective','score',?,?,?,CURRENT_TIMESTAMP)",
         examId,
         e.card.id,
         JSON.stringify({ totalScore: e.score?.total_score ?? null }),
