@@ -112,7 +112,9 @@ import { notifyGradeReleaseSubscribers } from "../../../server/services/gradeRel
 import { logWechatSubscriptionStatus } from "../../../server/services/WechatMiniProgramService";
 import {
   getAnswerBlockCropFile,
-  persistAnswerBlockCrops
+  persistAnswerBlockCrops,
+  restoreCropFileMoves,
+  type CropFileMove,
 } from "../../../server/services/AnswerBlockCropService";
 import { optionalAuth, authMiddleware, requirePermission } from "../../../server/middleware/auth";
 import { requirePasswordChangeCompleted } from "../../../server/middleware/auth";
@@ -499,7 +501,10 @@ async function persistGradingResultsLocked(
   const { getMysqlDb } = await import("../../../server/db");
 
   let backupAfterCommit = false;
-  const outcome = await getMysqlDb().transaction(async db => {
+  const fileMoves: CropFileMove[] = [];
+  let outcome: GradingPersistenceResult;
+  try {
+  outcome = await getMysqlDb().transaction(async db => {
   const examRepo = new ExamRepository(db);
 
   const examId = Number(examIdParam);
@@ -565,6 +570,7 @@ async function persistGradingResultsLocked(
       failedStudents.push({ fileName: row.fileName, studentId, code: "STUDENT_NOT_IN_EXAM", message: "学生不属于本次考试应考名单，已拒绝入库" });
       continue;
     }
+    const fileCheckpoint = fileMoves.length;
     try {
       await db.exec("SAVEPOINT grading_student");
       const tx = db;
@@ -588,7 +594,8 @@ async function persistGradingResultsLocked(
           studentNumber: studentId,
           sourceType: "scan_record",
           sourceRecordId: recordId,
-          crops: row.recognition.blockCrops ?? []
+          crops: row.recognition.blockCrops ?? [],
+          fileMoves,
         }, tx);
 
         await txExamRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
@@ -610,6 +617,8 @@ async function persistGradingResultsLocked(
     } catch (err) {
       await db.exec("ROLLBACK TO SAVEPOINT grading_student");
       await db.exec("RELEASE SAVEPOINT grading_student");
+      await restoreCropFileMoves(fileMoves.slice(fileCheckpoint));
+      fileMoves.length = fileCheckpoint;
       console.error(`[Grading] Failed to persist row for ${studentId}:`, err);
       failedStudents.push({
         fileName: row.fileName,
@@ -660,6 +669,11 @@ async function persistGradingResultsLocked(
   console.log(`[Grading] exam=${examId} batch=${batchId} status=${status} persisted=${persisted} failed=${failedStudents.length}`);
   return { batchId, status, persisted, failedCount: failedStudents.length, failed: failedStudents };
   });
+  } catch (error) {
+    try { await restoreCropFileMoves(fileMoves); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], "批次回滚后恢复切图失败", { cause: error }); }
+    throw error;
+  }
   // Readers may repopulate the old committed view while the transaction is open.
   analysisCache.invalidateExam(Number(examIdParam));
   if (backupAfterCommit) void autoBackupOnExamClose(Number(examIdParam)).catch(e => console.error("[AutoBackup] Failed:",e));

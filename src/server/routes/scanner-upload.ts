@@ -39,6 +39,7 @@ import { persistAnswerBlockCrops, isInsideDir, type CropPersistenceStats } from 
 import { isValidImageBuffer } from "../../apps/answer-card/server/validate-upload";
 import type { RecognitionBlockCrop } from "../../shared/types";
 import { z } from "zod";
+import { assertScanImageDimensions, ScanImageBudgetError } from "../lib/scanImageBudget";
 import { CardRepository } from "../repositories/CardRepository";
 import { ExamRepository } from "../repositories/ExamRepository";
 import { ensureExamParticipants, listMissingParticipants } from "../services/examParticipants";
@@ -340,6 +341,14 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
       res.status(409).json({
         message: "该扫描页的成绩已入库或原卷已撤销，不能由上传直接改写",
         code: savedOwner.state === "discarded" ? "SCAN_PAGE_DISCARDED" : "SCAN_PAGE_SAVED", examId: savedOwner.exam_id,
+      });
+      return;
+    }
+    try { await assertScanImageDimensions(req.file.buffer); }
+    catch (error) {
+      res.status(error instanceof ScanImageBudgetError ? error.status : 400).json({
+        code: error instanceof ScanImageBudgetError ? error.code : "SCAN_IMAGE_INVALID",
+        message: error instanceof ScanImageBudgetError ? error.message : "扫描图片尺寸无法读取，请检查图片格式",
       });
       return;
     }

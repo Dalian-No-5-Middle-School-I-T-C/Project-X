@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 import path from "node:path";
-import sharp from "sharp";
+import { assertScanImageDimensions } from "../lib/scanImageBudget";
 import { z } from "zod";
 import type { DbAdapter } from "../db";
 import { cardFingerprint } from "../../shared/cardVersion";
@@ -47,9 +47,9 @@ export async function recoverySource(db: DbAdapter, card: AnswerCard, sourceId: 
   if (row.card_version && row.card_version !== cardFingerprint(card)) throw new Error("答题卡版式已变化，请核对原卷版本后重新扫描");
   const root = process.env.ANSWER_CARD_DATA_DIR || path.join(process.cwd(),"data","answer-card");
   if (!row.image_path || !isInsideDir(root,path.resolve(row.image_path))) throw new Error("原卷图片不存在");
+  const metadata = await assertScanImageDimensions(row.image_path);
   const hash = createHash("sha256").update(JSON.stringify(row)).update(cardFingerprint(card));
   for await (const chunk of createReadStream(row.image_path)) hash.update(chunk);
-  const metadata = await sharp(row.image_path).metadata();
   const fingerprint = hash.digest("hex");
   return { fingerprint, identityMode:parseIdentityMode(row.identity_mode), dpi:parseRecognitionDpi(row.dpi), width:metadata.width,height:metadata.height,imagePath:row.image_path as string };
 }

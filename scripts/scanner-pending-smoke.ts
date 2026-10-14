@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { startScannerFlowFixture } from "./scanner-upload-flow-fixture";
 import { cardFingerprint } from "../src/shared/cardVersion";
@@ -335,7 +336,24 @@ try {
     );
   // scan_records belong to batches rather than carrying exam_id.
   tables.splice(tables.indexOf("scan_records"), 1);
+  tables.push("answer_block_crops");
   const beforeBatch = await snapshot();
+  const { blockCropsDir } = await import("../src/apps/answer-card/server/storage");
+  const preservedFile = path.join(blockCropsDir, "preserved.png");
+  await mkdir(blockCropsDir, { recursive: true });
+  const cropBytes = Buffer.from(info.images.original, "base64");
+  await writeFile(preservedFile, cropBytes);
+  async function cropFiles(dir = blockCropsDir): Promise<string[]> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const nested = await Promise.all(entries.map(async entry => {
+      const name = path.join(dir, entry.name);
+      return entry.isDirectory() ? [name, ...await cropFiles(name)] : [name];
+    }));
+    return nested.flat().sort();
+  }
+  const beforeFiles = await cropFiles();
+  const retryCrop = path.join(process.env.ANSWER_CARD_DATA_DIR!, "rollback-input.png");
+  await writeFile(retryCrop, cropBytes);
   const row = {
     fileName: "batch.png",
     studentId: "91001",
@@ -368,12 +386,19 @@ try {
       cardId: card.id,
       questions: [],
       subjectiveQuestions: [],
+      blockCrops: [{ blockId: "flow_q", blockTitle: "回滚切图", blockType: "objective", pageNumber: 1, segmentIndex: 0, questionNumbers: [1],
+        rect: { x: 0, y: 0, width: 1, height: 1 }, path: retryCrop, widthPx: 24, heightPx: 24, dpi: 300 }],
     },
   } as CombinedGradingRow;
   await assert.rejects(
     persistGradingResults(String(exam.id), [row], teacher.id),
     /本批次成绩未保存/,
   );
+  assert.deepEqual(await cropFiles(), beforeFiles, "batch rollback removes newly written files and empty directories");
+  assert.deepEqual(await readFile(retryCrop), cropBytes, "batch rollback restores recognition input for retry");
+  await assert.rejects(persistGradingResults(String(exam.id), [row], teacher.id), /本批次成绩未保存/);
+  assert.deepEqual(await cropFiles(), beforeFiles, "repeated MariaDB/SQLite rollback does not accumulate orphan directories");
+  assert.deepEqual(await readFile(preservedFile), cropBytes, "rollback preserves pre-existing crop files");
   assert.equal(
     await snapshot(),
     beforeBatch,
@@ -407,7 +432,36 @@ try {
     assert.equal(persisted.persisted, 1);
     assert(repopulatedBeforeCommit, "simulate a concurrent analysis read immediately before commit");
     assert.equal(analysisCache.get(cacheKey), undefined, "successful batch commit invalidates any repopulated old analysis");
+    const crop = await db.get<{image_path:string}>("SELECT image_path FROM answer_block_crops WHERE exam_id=? AND source_type='scan_record' ORDER BY source_record_id DESC LIMIT 1", exam.id);
+    assert(crop && existsSync(crop.image_path), "retry after fixing the formula commits its crop file");
+    assert(!existsSync(retryCrop), "successful commit consumes the restored retry input");
   } finally { db.transaction = transaction; }
+  const partialInputs = ["partial-good.png", "partial-failed.png"].map(name=>path.join(process.env.ANSWER_CARD_DATA_DIR!,name));
+  for (const input of partialInputs) await writeFile(input,cropBytes);
+  const partialRows = ["91001","91002"].map((studentId,index)=>({ ...structuredClone(row),studentId,
+    recognition:{...structuredClone(row.recognition),blockCrops:[{...row.recognition.blockCrops![0],path:partialInputs[index]}]},
+  }));
+  const secondStudent = (await db.get<{id:number}>("SELECT id FROM users WHERE student_number='91002'"))!;
+  const previousSecondScore = JSON.stringify(await db.get("SELECT * FROM student_scores WHERE exam_id=? AND student_id=?",exam.id,secondStudent.id));
+  const beforePartialFiles = await cropFiles();
+  db.transaction = async fn=>transaction(async tx=>{
+    const run = tx.run.bind(tx);
+    tx.run = async (sql,...params)=>{
+      if (/INSERT INTO question_scores/i.test(sql) && Number(params[1])===Number(secondStudent.id)) throw new Error("forced per-student persistence failure");
+      return run(sql,...params);
+    };
+    try { return await fn(tx); } finally { tx.run = run; }
+  });
+  try {
+    const partial = await persistGradingResults(String(exam.id),partialRows,teacher.id);
+    assert.equal(partial.status,"partial"); assert.equal(partial.persisted,1); assert.equal(partial.failedCount,1);
+  } finally { db.transaction = transaction; }
+  assert.equal(JSON.stringify(await db.get("SELECT * FROM student_scores WHERE exam_id=? AND student_id=?",exam.id,secondStudent.id)),previousSecondScore,"row savepoint failure preserves prior student grade");
+  assert(!existsSync(partialInputs[0]),"successful student retains its moved crop");
+  assert.deepEqual(await readFile(partialInputs[1]),cropBytes,"row savepoint rollback restores only failed student's input");
+  const addedFiles = (await cropFiles()).filter(name=>!beforePartialFiles.includes(name));
+  assert.equal(addedFiles.length,2,"partial batch keeps one successful crop file and its directory, without failed-row leftovers");
+  assert.deepEqual(await readFile(preservedFile),cropBytes);
   console.log(
     `PASS scanner pending (${db.dialect}): auto admission, preserved grades, authority, stale/duplicate approval, roster, configurable withdrawal and atomic batch assignment`,
   );

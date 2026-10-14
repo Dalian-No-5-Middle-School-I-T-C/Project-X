@@ -4,6 +4,7 @@ import path from "node:path";
 import { rootDir } from "./storage";
 import { readFile } from "node:fs/promises";
 import { parseIdentityMode, type CardIdentity, type IdentityMode } from "../../../shared/cardIdentity";
+import { assertScanImageDimensions } from "../../../server/lib/scanImageBudget";
 
 export type RecognitionRequest = {
   identityMode?: IdentityMode;
@@ -204,6 +205,7 @@ export function resolveCorrectionRecognizerExe(): string {
 
 export async function recognizeCorrectionCard(request: RecognitionRequest): Promise<RecognitionResult> {
   if (process.platform !== "linux" || process.arch !== "x64") throw new Error("旧卷重新识别需要 Linux x86_64 服务端");
+  await assertScanImageDimensions(request.imagePath);
   return validateIdentity(await execRecognizer(resolveCorrectionRecognizerExe(), buildBaseArgs(request)), request);
 }
 

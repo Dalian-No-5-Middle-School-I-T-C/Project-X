@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { open, truncate, writeFile } from "node:fs/promises";
 import path from "node:path";
+import sharp from "sharp";
 import { startScannerFlowFixture } from "./scanner-upload-flow-fixture";
 import { cardFingerprint } from "../src/shared/cardVersion";
 
@@ -12,7 +13,33 @@ try {
   const store = await import("../src/apps/answer-card/server/database/scan-store");
   const { hashSecret } = await import("../src/server/lib/field-crypto");
   const { recognizeSessionCorrection } = await import("../src/server/services/scanCorrection");
+  const { assertScanImageDimensions, scanImagePixelLimit, ScanImageBudgetError } = await import("../src/server/lib/scanImageBudget");
   const db = getMysqlDb(), card = (await new CardRepository().findById(info.cardId))!;
+  const png = Buffer.from(info.images.original, "base64");
+  for (const format of ["jpeg", "tiff", "webp"] as const) {
+    const bytes = await sharp(png).toFormat(format).toBuffer();
+    assert.deepEqual(await assertScanImageDimensions(bytes), { width: 24, height: 24 }, `${format} headers remain supported`);
+  }
+  const bmp = Buffer.alloc(54); bmp.write("BM"); bmp.writeUInt32LE(54, 2); bmp.writeUInt32LE(54, 10);
+  bmp.writeUInt32LE(40, 14); bmp.writeUInt32LE(24, 18); bmp.writeInt32LE(-24, 22);
+  assert.deepEqual(await assertScanImageDimensions(bmp), { width: 24, height: 24 }, "top-down BMP headers remain supported");
+  assert.equal(scanImagePixelLimit("1000000", "x64"), 1_000_000);
+  assert.equal(scanImagePixelLimit("999999999999", "x64"), 400_000_000);
+  assert.equal(scanImagePixelLimit("0", "x64"), 100_000_000);
+  assert.equal(scanImagePixelLimit("9223372036854775808", "x64"), 100_000_000);
+  assert.equal(scanImagePixelLimit("bad", "ia32"), 40_000_000);
+  const ordinary = Buffer.from(png); ordinary.writeUInt32BE(7016, 16); ordinary.writeUInt32BE(9933, 20);
+  assert.deepEqual(await assertScanImageDimensions(ordinary), { width: 7016, height: 9933 }, "A3 at 600 DPI remains within the default pixel budget");
+  const oversized = Buffer.from(png); oversized.writeUInt32BE(30000, 16); oversized.writeUInt32BE(30000, 20);
+  await assert.rejects(assertScanImageDimensions(oversized), ScanImageBudgetError);
+  const originalPixelEnv = process.env.PROJECTX_RECOGNIZER_MAX_IMAGE_PIXELS;
+  try {
+    process.env.PROJECTX_RECOGNIZER_MAX_IMAGE_PIXELS = "1000000";
+    await assert.rejects(assertScanImageDimensions(ordinary), ScanImageBudgetError);
+  } finally {
+    if (originalPixelEnv === undefined) delete process.env.PROJECTX_RECOGNIZER_MAX_IMAGE_PIXELS;
+    else process.env.PROJECTX_RECOGNIZER_MAX_IMAGE_PIXELS = originalPixelEnv;
+  }
   const imagePath = path.join(process.env.ANSWER_CARD_DATA_DIR!, "large-recovery.png");
   await writeFile(imagePath, Buffer.from(info.images.original, "base64"));
   // Sparse trailing data keeps fixture setup small but forces hashing the full scan.
@@ -28,6 +55,27 @@ try {
   const keys = [info.key, "correction-security-second", "correction-security-third"];
   for (const key of keys.slice(1)) await db.run("INSERT INTO api_keys (name,api_key,scope,is_active) VALUES (?,?,'scanner',1)", key, hashSecret(key));
   const request = (url: string, key = keys[0]) => fetch(url, { headers: { "X-Api-Key": key } });
+  const upload = await fetch(`${fixture.baseUrl}/api/scanner/upload/sessions`, { method: "POST", headers: { "X-Api-Key": info.key, "Content-Type": "application/json" },
+    body: JSON.stringify({ cardId: card.id, cardVersion: cardFingerprint(card), pageCount: 1 }) });
+  assert.equal(upload.status, 201);
+  const uploadedSession = await upload.json(), token = uploadedSession.uploadTokens[0];
+  const uploadState = JSON.stringify(await db.get("SELECT * FROM twain_scan_records WHERE id=?", token));
+  const form = new FormData(); form.set("image", new Blob([oversized], { type: "image/png" }), "oversized.png");
+  form.set("token", token); form.set("pageNum", "1"); form.set("side", "front");
+  const rejectedUpload = await fetch(`${fixture.baseUrl}/api/scanner/upload/sessions/${uploadedSession.sessionId}/pages`, { method: "POST", headers: { "X-Api-Key": info.key }, body: form });
+  assert.equal(rejectedUpload.status, 413); assert.equal((await rejectedUpload.json()).code, "SCAN_IMAGE_PIXEL_LIMIT");
+  assert.equal(JSON.stringify(await db.get("SELECT * FROM twain_scan_records WHERE id=?", token)), uploadState, "oversized upload leaves the record unchanged");
+  const oversizedPath = path.join(process.env.ANSWER_CARD_DATA_DIR!, "old-oversized.png");
+  await writeFile(oversizedPath, oversized);
+  const oldOversized = await source();
+  await db.run("UPDATE twain_scan_records SET image_path=? WHERE id=?", oversizedPath, oldOversized.record.id);
+  const refused = await request(oldOversized.url);
+  assert.equal(refused.status, 409); assert.match((await refused.json()).message, /安全像素上限/);
+  let recognizerCalled = false;
+  await assert.rejects(recognizeSessionCorrection(card, oldOversized.session.id, "0", {}, async () => {
+    recognizerCalled = true; throw new Error("oversized scan reached recognizer");
+  }), ScanImageBudgetError);
+  assert.equal(recognizerCalled, false, "oversized historical scans are rejected before native recognition");
   const first = await source();
   assert.equal((await fetch(first.url)).status, 401, "authorization precedes recovery work");
   const burst = await Promise.all(Array.from({ length: 8 }, () => request(first.url)));
@@ -83,5 +131,5 @@ try {
     }
   }
   assert(callerLimited, "the caller rate limit covers all groups and sessions");
-  console.log("PASS correction recovery security: concurrent key/session/global bounds, full-file fingerprint, stale source rejection, error cleanup and request rate limits");
+  console.log("PASS correction recovery security: decoded-pixel bounds, supported image headers, upload/recovery preflight, concurrent key/session/global bounds, full-file fingerprint, stale source rejection, error cleanup and request rate limits");
 } finally { await fixture.close(); }

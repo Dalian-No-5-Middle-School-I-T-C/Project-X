@@ -23,6 +23,7 @@ const runtimeDependencies = [
   "express",
   "express-rate-limit",
   "fontkit",
+  "image-size",
   "mammoth",
   "multer",
   "mysql2",
