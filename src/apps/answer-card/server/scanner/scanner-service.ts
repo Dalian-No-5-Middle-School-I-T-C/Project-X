@@ -10,7 +10,7 @@ import {
 import type { ScanProgressEvent, ScanSessionConfig } from "./scanner-types";
 import { listSources, scan } from "./twain-bridge";
 import { recognizeAnswerCard } from "../recognition";
-import { invalidateScanRecognition } from "../../../../server/services/scannerSubmissions";
+import { enqueueScannerSubmission, invalidateScanRecognitionInQueue } from "../../../../server/services/scannerSubmissions";
 import { gradeCombinedRecognition } from "../../../../shared/grading";
 import type { CombinedRecognitionResult } from "../../../../shared/types";
 import { getMysqlDb } from "../../../../server/db";
@@ -201,6 +201,19 @@ export async function runOcrOnSession(
   cardId: string,
   onProgress: ProgressHandler,
   retry?: { recordIds: Set<string>; studentId?: string },
+  recognize: typeof recognizeAnswerCard = recognizeAnswerCard,
+): Promise<void> {
+  // Keep native work, snapshots, OCR/crops and failure writes ordered with human
+  // corrections. The invalidation helper below already runs inside this queue.
+  return enqueueScannerSubmission(() => runOcrOnSessionInQueue(sessionId, cardId, onProgress, retry, recognize));
+}
+
+async function runOcrOnSessionInQueue(
+  sessionId: string,
+  cardId: string,
+  onProgress: ProgressHandler,
+  retry: { recordIds: Set<string>; studentId?: string } | undefined,
+  recognize: typeof recognizeAnswerCard,
 ): Promise<void> {
   const records = (await listScanRecords(sessionId))
     .filter(r => !retry || retry.recordIds.has(r.id))
@@ -239,9 +252,9 @@ export async function runOcrOnSession(
     let invalidated = false;
     try {
       // Invalidate before retry: a failed new attempt must not expose old grades/crops.
-      await invalidateScanRecognition(sessionId, record.id);
+      await invalidateScanRecognitionInQueue(sessionId, record.id);
       invalidated = true;
-      const recognition = (await recognizeAnswerCard({
+      const recognition = (await recognize({
         identityMode: session?.identity_mode ?? "strict",
         imagePath: record.image_path,
         layoutPath: currentLayoutPath,

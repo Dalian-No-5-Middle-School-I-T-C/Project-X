@@ -164,17 +164,20 @@ export async function invalidateScanRecognitionInTransaction(tx: DbAdapter, sess
 
 /** Invalidate a page before retry; saved grades are withdrawn only through their owning receipt. */
 export async function invalidateScanRecognition(sessionId: string, recordId: string): Promise<void> {
-  return enqueueScannerSubmission(async () => {
-    const db = getMysqlDb();
-    const changedExams = new Set<number>();
-    await db.transaction(async tx => {
-      for (const id of await invalidateScanRecognitionInTransaction(tx, sessionId, recordId)) changedExams.add(id);
-    });
-    for (const examId of changedExams) {
-      analysisCache.invalidateExam(examId);
-      await recomputeExamRankings(db, examId);
-    }
+  return enqueueScannerSubmission(() => invalidateScanRecognitionInQueue(sessionId, recordId));
+}
+
+/** Caller owns the scanner queue for the entire recognition-and-write sequence. */
+export async function invalidateScanRecognitionInQueue(sessionId: string, recordId: string): Promise<void> {
+  const db = getMysqlDb();
+  const changedExams = new Set<number>();
+  await db.transaction(async tx => {
+    for (const id of await invalidateScanRecognitionInTransaction(tx, sessionId, recordId)) changedExams.add(id);
   });
+  for (const examId of changedExams) {
+    analysisCache.invalidateExam(examId);
+    await recomputeExamRankings(db, examId);
+  }
 }
 
 /** Archive only a verified conflict copy; retain all source evidence for review. */

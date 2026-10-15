@@ -108,6 +108,7 @@
     "verify:scanner-upload-flow": "tsx scripts/scanner-upload-flow-smoke.ts",
     "verify:scanner-duplex-correction": "tsx scripts/scanner-duplex-correction-smoke.ts",
     "verify:scan-correction": "tsx scripts/scan-correction-smoke.ts",
+    "verify:scanner-retry-concurrency": "tsx scripts/scanner-retry-concurrency-smoke.ts",
     "verify:scan-correction-security": "tsx scripts/scan-correction-security-smoke.ts",
     "verify:recognizer-geometry": "tsx scripts/verify-recognizer-geometry.ts",
     "verify:scanner-correction-safety": "tsx scripts/scanner-correction-safety-smoke.ts",
