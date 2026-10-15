@@ -8,9 +8,12 @@
  *  G4  未公布考试天梯 → 403（checkLadderPublished）
  *  G5  未公布单场 AI 分析 → 403（不触发 LLM）
  *  G6  公布后：/me 出现该考试、明细 200
- *  G7  教师改分自动撤回 → 学生端立即不可见（/me 消失、明细 404）
+ *  G7  开启 auto_unpublish_on_score_change 后教师改分自动撤回 → 学生端立即不可见（/me 消失、明细 404）
  *  G8  重新公布 → 学生端恢复可见
  *  G9  教师/管理员代查仍可见未公布成绩（publishedOnly=false 不误伤教师端）
+ *
+ * 另含自动撤回策略两态：默认关闭＝改分保持公布、学生继续查分；经 PUT /api/system-settings
+ * 开启后写分即撤回、关闭后恢复保持公布；学生改策略 403、非法值 400、管理员改动能持久化。
  *
  * 用法: npx tsx scripts/verify-p1-readgate.ts（须用 Node 24 运行 tsx）
  */
@@ -156,6 +159,30 @@ async function main() {
     ok(detail.status === 200, `G6 公布后明细 → 200 (实际 ${detail.status})`);
   }
 
+  // 默认保持公布；管理员可以显式打开撤回，教师不能修改系统策略。
+  {
+    const defaultPolicy = await fetch(`${base}/api/system-settings`, { headers: adminHeaders });
+    const policyBody = await defaultPolicy.json();
+    ok(policyBody.data.auto_unpublish_on_score_change === "0", "默认保持公布");
+    const revoked = await markScoreMutated(getMysqlDb(), examId, 1, "score_edit");
+    ok(!revoked, "默认改分不撤回整场");
+    const detail = await fetch(`${base}/api/scores/me/exams/${examId}`, { headers: stuHeaders });
+    ok(detail.status === 200, "默认改分后学生继续查分");
+    const denied = await fetch(`${base}/api/system-settings`, {
+      method: "PUT", headers: { ...stuHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ key: "auto_unpublish_on_score_change", value: "1" })
+    });
+    ok(denied.status === 403, "学生不能修改公布策略");
+    const invalid = await fetch(`${base}/api/system-settings`, {
+      method: "PUT", headers: { ...adminHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ key: "auto_unpublish_on_score_change", value: "invalid" })
+    });
+    ok(invalid.status === 400, "策略值必须合法");
+    const enable = await fetch(`${base}/api/system-settings`, {
+      method: "PUT", headers: { ...adminHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ key: "auto_unpublish_on_score_change", value: "1" })
+    });
+    ok(enable.status === 200, "管理员开启自动撤回");
+    ok((await getMysqlDb().get<{ value: string }>("SELECT value FROM system_settings WHERE `key` = ?", "auto_unpublish_on_score_change"))?.value === "1", "策略持久化成功");
+  }
+
   // ── G7: 教师改分自动撤回 → 学生端立即不可见 ──
   {
     const dbAdapter = getMysqlDb();
@@ -175,6 +202,15 @@ async function main() {
     ok(pub.status === 200, `G8 重新公布 → 200 (实际 ${pub.status})`);
     const detail = await fetch(`${base}/api/scores/me/exams/${examId}`, { headers: stuHeaders });
     ok(detail.status === 200, `G8 重新公布后明细 → 200 (实际 ${detail.status})`);
+  }
+
+  {
+    const disable = await fetch(`${base}/api/system-settings`, {
+      method: "PUT", headers: { ...adminHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "auto_unpublish_on_score_change", value: "0" })
+    });
+    ok(disable.status === 200 && !await markScoreMutated(getMysqlDb(), examId, 1, "score_edit"), "管理员关闭自动撤回后立即恢复保持公布");
+    ok((await fetch(`${base}/api/scores/me/exams/${examId}`, { headers: stuHeaders })).status === 200, "关闭后学生持续可见");
   }
 
   // ── G9: 教师/管理员代查仍可见未公布成绩 ──

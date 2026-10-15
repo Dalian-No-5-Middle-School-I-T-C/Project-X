@@ -506,26 +506,8 @@ async function persistGradingResultsLocked(
   }
   const previousExamStatus = exam.status;
 
-  // 重新阅卷会逐学生改写 student_scores —— 已公布的考试先自动撤下（记审计），
-  // 避免学生看到阅卷中途的半成品成绩（与 v41 公布门控配套）；阅卷完成结考后需教师重新公布。
-  await db.transaction(async (tx) => {
-    const txExamRepo = new ExamRepository(tx);
-    await txExamRepo.updateStatus(examId, "grading");
-    // 用事务内实时读取代替事务外快照，避免「校验与写入之间被并发公布」导致漏撤
-    const stillPublished = await tx.get(
-      "SELECT score_published FROM exams WHERE id = ?", examId
-    ) as { score_published?: number } | undefined;
-    if (stillPublished?.score_published === 1) {
-      await tx.run(
-        "UPDATE exams SET score_published = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND score_published = 1",
-        examId
-      );
-      await tx.run(
-        "INSERT INTO exam_publish_events (exam_id, action, actor_id, reason) VALUES (?, 'unpublish', ?, ?)",
-        examId, createdBy ?? null, "重新阅卷自动撤回"
-      );
-    }
-  });
+  // 进入阅卷阶段本身不撤回；每次实际写分在事务内应用管理员的公布策略。
+  await examRepo.updateStatus(examId, "grading");
   const batchId = await examRepo.createScanBatch(examId, `阅卷_${new Date().toLocaleDateString("zh-CN")}`, createdBy);
   await db.run("UPDATE scan_batches SET status = 'processing' WHERE id = ?", batchId);
 
@@ -581,8 +563,7 @@ async function persistGradingResultsLocked(
     }
     try {
       await db.transaction(async (tx) => {
-        // Publication may occur after an earlier student in this same batch.
-        // Revoke it atomically before every subsequent student's score write.
+        // 每个学生写入时应用当前公布策略，覆盖批次中途公布的情况。
         await markScoreMutated(tx, examId, createdBy ?? null, "grading_save");
         const txExamRepo = new ExamRepository(tx);
         const recordId = await txExamRepo.addScanRecord({
@@ -615,6 +596,7 @@ async function persistGradingResultsLocked(
           await tx.run(upsertSubjectiveQsSql, examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
         }
       });
+      analysisCache.invalidateExam(examId);
       persisted++;
     } catch (err) {
       console.error(`[Grading] Failed to persist row for ${studentId}:`, err);
@@ -656,6 +638,13 @@ async function persistGradingResultsLocked(
     await examRepo.updateStatus(examId, previousExamStatus);
   } else {
     await examRepo.updateStatus(examId, "grading");
+  }
+  if (persisted > 0) {
+    const { recomputeExamRankings } = await import("../../../server/services/rankingUpdate");
+    const recalc = await recomputeExamRankings(db, examId);
+    if (!recalc.assignedScoresRecalculated) {
+      throw new Error(`成绩已保存，但赋分更新失败：${recalc.assignedScoreError}`);
+    }
   }
   console.log(`[Grading] exam=${examId} batch=${batchId} status=${status} persisted=${persisted} failed=${failedStudents.length}`);
   return { batchId, status, persisted, failedCount: failedStudents.length, failed: failedStudents };
@@ -1575,7 +1564,7 @@ export async function createApp(): Promise<express.Express> {
       const confidenceThreshold = await resolveConfidenceThreshold(req);
 
       const examIdParam = fieldValue(req.body.examId);
-      // 安全（云端安全检查 #05/#10）：判分上传会把成绩写入 examId 并从已公布状态撤回，
+      // 安全（云端安全检查 #05/#10）：判分上传会把成绩写入 examId，并可能按管理员策略从已公布状态撤回，
       // 因此在做任何识别/落库前先校验考试范围，且目标考试必须关联当前答题卡。
       if (examIdParam) {
         const targetExamId = Number(examIdParam);
@@ -1586,7 +1575,7 @@ export async function createApp(): Promise<express.Express> {
         if (!await validateExamIdsAccess(req, res, [targetExamId])) return;
         // 可见性 ≠ 写权限：管理员在权限矩阵里显式 can_grade=0 时必须拦住判分入库
         // （validateExamIdsAccess 只查 getVisibleExamIds，矩阵禁止行拦不住写）。
-        // 整卷上传会写入本场考试全部客观题与主观题成绩并撤回已公布状态，因此只接受
+        // 整卷上传会写入本场考试全部客观题与主观题成绩，并可能按管理员策略撤回已公布状态，因此只接受
         // 「不限题块」的授权：仅有单题块授权（block_id 非空）的教师走题块级网阅接口，
         // 不得借整卷接口覆盖其它题块；管理员/学年主任等特权阅卷人不受遗留矩阵行影响。
         if (req.user && !await isTeacherPermittedForWholeExam(req.user, targetExamId, "can_grade")) {
@@ -2399,24 +2388,26 @@ export async function createApp(): Promise<express.Express> {
 
         const db = getMysqlDb();
         if (!formula?.enabled) {
-          // 评审 P1：禁用赋分会清空全场合计赋分（成绩变更）→ 已公布考试同一事务内自动撤回并写审计
+          // 评审 P1：禁用赋分会清空全场合计赋分（成绩变更）→ 同一事务内按管理员策略处理公布状态
           await db.transaction(async (tx) => {
             await assignedScoreService.disableFormula(examId, tx);
             await markScoreMutated(tx, examId, req.user?.id ?? null, "assigned_disable");
           });
+          analysisCache.invalidateExam(examId);
           res.json({ ok: true, updated: 0, skipped: 0 });
           return;
         }
 
         await assignedScoreService.saveFormula(examId, formula);
         const result = recalculate
-          // 评审 P1：赋分重算改写全部 assigned_score（成绩变更）→ 已公布考试同一事务内自动撤回并写审计
+          // 评审 P1：赋分重算改写全部 assigned_score（成绩变更）→ 同一事务内按管理员策略处理公布状态
           ? await db.transaction(async (tx) => {
               const recalcResult = await assignedScoreService.recalculateAll(examId, tx);
               await markScoreMutated(tx, examId, req.user?.id ?? null, "assigned_recalc");
               return recalcResult;
             })
           : { updated: 0, skipped: 0 };
+        analysisCache.invalidateExam(examId);
         res.json({ ok: true, ...result });
       } catch (error) {
         next(error);
@@ -2624,7 +2615,7 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
-      // 允许阅卷中先公布，但完整性校验照常生效（应考集合 ⊆ 已评分集合）。
+      // 允许阅卷中公布当前已有成绩，无需等待应考名单全员出分。
       if (exam.status !== "closed" && exam.status !== "grading") {
         res.status(409).json({ message: "考试尚未进入阅卷阶段，无法公布成绩" });
         return;
@@ -2634,7 +2625,7 @@ export async function createApp(): Promise<express.Express> {
         res.json({ ok: true, scorePublished: 1, showOriginalPaper: exam.show_original_paper === 1 ? 1 : 0 });
         return;
       }
-      // 收紧校验：应考集合 ⊆ 已评分集合，缺任何一名应考学生即 409（缺考者走应考名单剔除）。
+      // 仅要求已有成绩；缺考、异常卷未入库不阻塞公布。
       await assertScoresPublishable(db, exam);
       // 状态更新与审计日志在同一事务中保证原子性；
       // WHERE 带状态条件，防止校验与写入之间考试被并发改回阅卷中（TOCTOU）
@@ -2725,7 +2716,7 @@ export async function createApp(): Promise<express.Express> {
       const toPublish = existing
         .filter((item) => item.score_published !== 1)
         .map((item) => item.id);
-      // 任一场未通过完整性校验（无成绩 / 无应考范围 / 名单为空 / 缺应考学生成绩）时整体拒绝。
+      // 任一场尚无成绩时整体拒绝；部分学生未出分不阻塞公布。
       const incompleteReasons: string[] = [];
       for (const exam of existing.filter((item) => item.score_published !== 1)) {
         try {
@@ -2994,7 +2985,7 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       await clearExplicitParticipants(db, examId);
-      res.json({ ok: true, message: "显式应考名单已清除（考试将按年级/班级名册校验）" });
+      res.json({ ok: true, message: "显式应考名单已清除（考试已回落年级/班级名册快照）" });
     } catch (error) {
       next(error);
     }

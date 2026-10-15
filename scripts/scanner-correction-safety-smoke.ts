@@ -10,6 +10,10 @@ try {
   const { processScannerSession } = await import("../src/server/services/scannerSubmissions");
   const store = await import("../src/apps/answer-card/server/database/scan-store");
   const db = getMysqlDb();
+  const autoUnpublish = process.env.TEST_AUTO_UNPUBLISH === "1";
+  const publicationAfterMutation = autoUnpublish ? 0 : 1;
+  if (autoUnpublish) await db.run("INSERT INTO system_settings (`key`, value) VALUES ('auto_unpublish_on_score_change', '1')");
+
   const card = (await new CardRepository().findById(info.cardId))!;
   const exam = (await db.get<{ id: number }>("SELECT id FROM exams WHERE card_id=?", card.id))!;
   const owner = (await db.get<{ id: number }>("SELECT id FROM users WHERE student_number='91001'"))!;
@@ -80,7 +84,7 @@ try {
   const valid = await makeSession("valid-duplicate", "91002");
   assert.equal((await correct(valid.session.id, "91001")).status, 200);
   assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id=? AND student_id=?", exam.id, owner.id), null);
-  assert.equal(Number((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id=?", exam.id))!.score_published), 0);
+  assert.equal(Number((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id=?", exam.id))!.score_published), publicationAfterMutation);
   assert.equal((await db.all("SELECT * FROM scanner_submissions WHERE exam_id=? AND student_number='91001' AND state='conflict'", exam.id)).length, 2);
   console.log(`PASS scanner correction safety: ${db.dialect}, eight invalid structures preserve saved manual grades/publication; valid duplicate remains reviewable`);
 } finally { await fixture.close(); }

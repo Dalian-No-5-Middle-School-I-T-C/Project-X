@@ -524,7 +524,7 @@ export async function submitReviewCropScores(params: {
         if (!disputed) {
           totalScore = await recomputeStudentTotals(tx, params.examId, crop.student_id!);
           // 评审 P1：仅当本轮评阅写下正式分数并重算总分时才视为成绩变更 →
-          // 已公布考试同一事务内自动撤回并写审计
+          // 同一事务内按管理员策略处理公布状态
           await markScoreMutated(tx, params.examId, params.userId, "review_submit");
         }
       }

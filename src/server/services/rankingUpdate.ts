@@ -12,6 +12,7 @@
  * - total_score 入库前统一 roundScore，避免浮点误差破坏并列判定
  */
 import type { DbAdapter } from "../db";
+import { analysisCache } from "./analysisCache";
 import { competitionRank } from "../../shared/ranking";
 import { AssignedScoreService } from "./AssignedScoreService";
 
@@ -42,6 +43,8 @@ export interface RankingRecalcResult {
 }
 
 export async function recomputeExamRankings(db: DbAdapter, examId: number): Promise<RankingRecalcResult> {
+  // 即使后续重算失败，也不能继续返回变更前的统计缓存。
+  analysisCache.invalidateExam(examId);
   const allStudents = await db.all(
     "SELECT id, total_score FROM student_scores WHERE exam_id = ? ORDER BY total_score DESC",
     examId
@@ -78,5 +81,6 @@ export async function recomputeExamRankings(db: DbAdapter, examId: number): Prom
     assignedScoresRecalculated = false;
     assignedScoreError = err instanceof Error ? err.message : String(err);
   }
+  analysisCache.invalidateExam(examId);
   return { rankingsRecalculated: true, assignedScoresRecalculated, assignedScoreError };
 }

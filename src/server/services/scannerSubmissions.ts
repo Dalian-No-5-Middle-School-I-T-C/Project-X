@@ -121,18 +121,8 @@ async function withdraw(db: DbAdapter, examId: number, studentNumber: string, re
     for (const source of sources) for (const page of JSON.parse(source.pages_json) as ScanBatchPage[]) {
       await db.run("UPDATE answer_block_crops SET exam_id = NULL, student_id = NULL WHERE source_type = 'twain_scan_record' AND source_record_id = ? AND exam_id = ?", page.recordId, examId);
     }
-    // A withdrawn score invalidates completeness/publication as well as rankings.
-    // 与撤回同事务写入 status + score_published，避免单写 status 后两字段永久错位
-    // （「已公布」徽章仍在而分析页显示「阅卷中」）。score_published 置 0 与上面
-    // markScoreMutated 的既有约定一致（成绩一有变动即视为未公布），这里同值重写只为成对落库。
-    //
-    // 这里**不能再开嵌套事务**：withdraw 收到的 db 恒为调用方 `db.transaction(tx => ...)`
-    // 里传下来的事务适配器（invalidateScanRecognition / recoverLegacyScannerSubmission /
-    // 重复卷处理都是这个形状）。SQLite 侧再执行 BEGIN 会抛
-    // 「cannot start a transaction within a transaction」；MariaDB 侧会对 PoolConnection
-    // 调用不存在的 getConnection()。两者都会让整条撤回链路 500，本应返回的 409 冲突也拿不到。
-    // 原子性由外层事务保证，故合并成单条 UPDATE 直接写在传入的适配器上。
-    await db.run("UPDATE exams SET status = 'grading', score_published = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?", examId);
+    // 冲突成绩移除后回到阅卷阶段；公布状态由管理员策略决定。
+    await db.run("UPDATE exams SET status = 'grading', updated_at = CURRENT_TIMESTAMP WHERE id = ?", examId);
   }
   await db.run("UPDATE scanner_submissions SET state = 'conflict' WHERE exam_id = ? AND student_number = ? AND state NOT IN ('superseded', 'discarded')", examId, studentNumber);
 }
@@ -259,7 +249,7 @@ export async function recoverScannerSubmissionSnapshot(examId: number, sessionId
       if (row.state === "saved") return;
       await restoreScoreSnapshot(tx, row);
       await tx.run("UPDATE scanner_submissions SET state = 'saved' WHERE exam_id = ? AND session_id = ? AND group_id = ?", examId, row.session_id, groupId);
-      await tx.run("UPDATE exams SET status = 'grading', score_published = 0 WHERE id = ?", examId);
+      await tx.run("UPDATE exams SET status = 'grading', updated_at = CURRENT_TIMESTAMP WHERE id = ?", examId);
     });
     analysisCache.invalidateExam(examId);
     await recomputeExamRankings(db, examId);
