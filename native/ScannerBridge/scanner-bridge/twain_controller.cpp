@@ -615,19 +615,12 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     // 真正等待新一页的 XFERREADY；XFERDONE 后必须立即 ENDXFER 才能推进 TWAIN 状态机。
     int pageNum = 0;
     bool hasMorePages = true;
-    // 上一轮的续等是否只靠 CAP_FEEDERLOADED 复核撑着（驱动自己报的 Count 是 0）。
-    // 这种情况改用分片轮询：送纸器一清空就立即收尾，不白等满 pageTimeoutMs。
-    bool feederRecheckWait = false;
     
     while (hasMorePages && !m_cancelRequested) {
         if (config.maxPages > 0 && pageNum >= config.maxPages) break;
         
         // Check if transfer is ready
-        const bool ready = feederRecheckWait
-            ? waitForNextPageOrFeederEmpty(config.pageTimeoutMs)
-            : waitForState(6, config.pageTimeoutMs);
-        feederRecheckWait = false;
-        if (!ready) {
+        if (!waitForState(6, config.pageTimeoutMs)) {
             // ADF 无纸或空闲超时：立即结束，不再干等固定 60s
             fprintf(stderr, "[ScannerBridge] Scan ended: no more pages after %dms idle (pages=%d)\n",
                 config.pageTimeoutMs, pageNum);
@@ -723,9 +716,14 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             bool loaded = false;
             if (queryFeederLoaded(&loaded)) {
                 if (loaded) {
+                    // 复核通过后按原有耐心等满 pageTimeoutMs，不做提前收尾：
+                    // 送纸器从「有纸」变「无纸」只说明纸已被取走进入走纸/扫描，
+                    // MSG_XFERREADY 尚未到达（TWAIN 规范里 CAP_FEEDERLOADED 是进纸器
+                    // 装载状态，不代表没有采集在进行），此时提前结束会静默丢掉在途
+                    // 的最后一张（Codex P1）。正常扫完的批次送纸器本就已空、不会进入
+                    // 本分支，因此这里不引入额外等待。
                     fprintf(stderr, "[ScannerBridge] pending=0 but feeder still loaded; keep waiting for next page\n");
                     hasMorePages = true;
-                    feederRecheckWait = true;
                 } else {
                     fprintf(stderr, "[ScannerBridge] pending=0 and feeder empty; batch finished (pages=%d)\n",
                         pageNum);
@@ -1096,31 +1094,6 @@ bool TwainController::queryFeederLoaded(bool* loaded) {
     if (value) GlobalUnlock(current.hContainer);
     GlobalFree(current.hContainer);
     return readable;
-}
-
-bool TwainController::waitForNextPageOrFeederEmpty(DWORD totalTimeoutMs) {
-    // 分片而不是把 pageTimeoutMs 一次等完：每片之间重问 CAP_FEEDERLOADED。
-    // 传感器随后清空 = 驱动不会再送页，立即收尾（省下最多一整个 pageTimeoutMs）；
-    // 仍有纸 = 保持原有耐心等满，不能缩短——2026-09-28 已实测过「等纸超时偏短
-    // 会让第 2 页起提前放弃、每会话恒 pages=1」，那正是本函数要避免的症状。
-    const DWORD sliceMs = 2000;
-    DWORD waited = 0;
-    while (!m_cancelRequested && waited < totalTimeoutMs) {
-        const DWORD remaining = totalTimeoutMs - waited;
-        const DWORD slice = remaining < sliceMs ? remaining : sliceMs;
-        if (waitForState(6, slice)) return true;
-        waited += slice;
-        bool loaded = false;
-        if (!queryFeederLoaded(&loaded) || !loaded) {
-            fprintf(stderr, "[ScannerBridge] feeder empty during recheck after %lums; batch finished\n",
-                static_cast<unsigned long>(waited));
-            return false;
-        }
-    }
-    if (m_cancelRequested) return false;   // 用户取消，不是「等不到纸」，别留误导日志
-    fprintf(stderr, "[ScannerBridge] feeder still loaded but no XFERREADY in %lums; giving up\n",
-        static_cast<unsigned long>(waited));
-    return false;
 }
 
 bool TwainController::setXferCount() {

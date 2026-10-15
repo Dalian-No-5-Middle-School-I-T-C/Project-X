@@ -124,10 +124,6 @@ private:
     // 不信「Count=0 即结束」这一条（部分 ADF 驱动在还有纸时就报 0）。
     // 返回 false = 驱动不支持该能力，调用方退回「信 Count」的旧行为。
     bool queryFeederLoaded(bool* loaded);
-    // FEEDERLOADED 复核后的续等：分片等 XFERREADY，每片之间重问一次送纸器。
-    // 送纸器已空即刻返回 false（驱动不会再送页，没必要等满超时）；仍有纸则
-    // 等满 totalTimeoutMs。避免「复核判断错」时白等一整个 pageTimeoutMs。
-    bool waitForNextPageOrFeederEmpty(DWORD totalTimeoutMs);
     
     // Image saving
     bool saveDIBToFile(HANDLE hbitmap, const std::string& filePath, PageResult& result);
