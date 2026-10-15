@@ -38,7 +38,7 @@ export async function persistScannerResultToMainDb(
     if (!user) { if (requireExam) throw new Error(`学号 ${result.studentId} 不在学生名单中，成绩未入库`); return 0; }
 
     // Find exams linked to this card
-    const exams = await db.all("SELECT e.id FROM exams e WHERE e.card_id = ? AND e.status != 'closed' AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)" + (context ? " AND e.id = ?" : ""), ...[cardId, ...(context ? [context.examId] : [])]) as Array<{ id: number }>;
+    const exams = await db.all("SELECT e.id FROM exams e WHERE e.card_id = ? AND (e.status != 'closed' OR e.score_published=1 OR EXISTS (SELECT 1 FROM exam_publish_events p WHERE p.exam_id=e.id)) AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)" + (context ? " AND e.id = ?" : ""), ...[cardId, ...(context ? [context.examId] : [])]) as Array<{ id: number }>;
     if (exams.length === 0) { if (requireExam) throw new Error("答题卡未关联可阅卷的考试，成绩未入库"); return 0; }
 
     // P1-1: 扫描入库拒绝非应考学生（名单可知时）

@@ -1,3 +1,6 @@
+import { scanCorrectionRouter } from "./scan-correction";
+import { loadCorrectionPage, storeCorrectionPage } from "../services/scanCorrection";
+import { gradeCombinedRecognition, gradeSessionStudentResults } from "../../shared/grading";
 /**
  * v1.6.0 — 扫描上传端点
  * 供扫描端 Electron 通过 HTTP 上传扫描结果到服务端
@@ -37,20 +40,27 @@ import { persistAnswerBlockCrops, isInsideDir, type CropPersistenceStats } from 
 import { isValidImageBuffer } from "../../apps/answer-card/server/validate-upload";
 import type { RecognitionBlockCrop } from "../../shared/types";
 import { z } from "zod";
+import { assertScanImageDimensions, ScanImageBudgetError } from "../lib/scanImageBudget";
 import { CardRepository } from "../repositories/CardRepository";
 import { ExamRepository } from "../repositories/ExamRepository";
 import { ensureExamParticipants, listMissingParticipants } from "../services/examParticipants";
 import { recomputeExamRankings } from "../services/rankingUpdate";
-import { processScannerSession, enqueueScannerSubmission, invalidateScanRecognition, savedReceiptOwnerOfPage, discardScannerGroup } from "../services/scannerSubmissions";
+import { processScannerSession, enqueueScannerSubmission, writeScannerSession, invalidateScanRecognition, invalidateScanRecognitionInTransaction, savedReceiptOwnerOfPage, discardScannerGroup } from "../services/scannerSubmissions";
 import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
 import { groupSessionPages } from "../../apps/answer-card/server/scanner/session-results";
 import { scannerLegacyRecoveryRouter } from "./scanner-legacy-recovery";
 import { listScanRecordsGroupedByStudent, upsertRecognitionResult } from "../../apps/answer-card/server/database/scan-store";
 
+const geometrySchema = z.object({
+  imageWidth: z.number().int().positive().max(100000), imageHeight: z.number().int().positive().max(100000),
+  imageToLayout: z.array(z.number().finite()).length(9), layoutToImage: z.array(z.number().finite()).length(9),
+});
 const recognitionSchema = z.object({
+  geometry: geometrySchema.optional(),
+  pageNumber: z.number().int().positive().optional(),
   identity: z.object({ status: z.enum(["verified", "unverified"]), code: z.string(), cardId: z.string().optional(), pageNumber: z.number().int().positive().optional() }),
   status: z.enum(["ok", "partial"]),
-  studentId: z.object({ status: z.string(), value: z.string().min(1).max(64) }),
+  studentId: z.object({ status: z.string(), value: z.string().min(1).max(64), digits: z.array(z.object({ digitIndex: z.number().int().nonnegative(), selectedDigit: z.number().int().min(0).max(9).nullable(), selectedDigits: z.array(z.number().int().min(0).max(9)).optional() })).max(64).optional() }),
   questions: z.array(z.object({
     questionNumber: z.number().int().positive(), selectedOptions: z.array(z.string().max(8)),
     confidence: z.number().finite(),
@@ -139,6 +149,7 @@ router.use("/sessions/:sessionId", dualAuth, requireScannerExamScope);
 router.use("/records/:recordId", dualAuth, requireScannerRecordScope({ recordIdParam: "recordId" }));
 router.use("/legacy", dualAuth);
 router.use(scannerLegacyRecoveryRouter());
+router.use(scanCorrectionRouter("sessions", true));
 
 // v1.6.0: 双鉴权 — API Key 优先，无 Key 时强制 JWT（见 scanner-auth.ts）
 
@@ -239,7 +250,7 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
 
     // 会话与其全部待上传页必须在同一事务内写入：中途失败会留下「会话存在但缺页」的半成品，
     // 客户端后续 complete 会因页数为 0 而卡死。
-    await db.transaction(async (tx) => {
+    await enqueueScannerSubmission(() => db.transaction(async (tx) => {
       await tx.run(
         `INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, page_count, identity_mode, card_version, status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading')`,
@@ -262,7 +273,7 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
           uploadTokens[i], sessionId, String(cardId), `pending:${uploadTokens[i]}`, i + 1, i === 0 ? "front" : "back"
         );
       }
-    });
+    }));
 
     res.status(201).json({
       sessionId,
@@ -304,85 +315,101 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
       return;
     }
 
-    const db = await getMysqlDb();
+    const image = req.file;
+    const uploaded = await writeScannerSession(String(sessionId), async db => {
 
-    // 验证 session
-    const session = await db.get<{ id: string; card_id: string; identity_mode: string; status: string }>(
-      "SELECT id, card_id, identity_mode, status FROM twain_scan_sessions WHERE id = ?", sessionId);
-    if (!session) {
-      res.status(404).json({ message: "会话不存在" });
-      return;
-    }
-    const record = await db.get<{ ocr_status: string }>(
-      "SELECT id, ocr_status FROM twain_scan_records WHERE id = ? AND session_id = ?", token, sessionId);
-    if (!record) { res.status(400).json({ message: "扫描页不属于当前会话" }); return; }
-    // 安全（R02）：会话完成（或该页已入库）后，令牌即失效。
-    // 此前令牌在 ocr_status='completed' 后仍然可用，任何持有旧令牌者都能覆盖已判分页面
-    // 的图片与识别结果，把「已完成扫描」变成对既有成绩的静默改写。
-    // 需要重扫时由扫描端新建会话，归属仍按原会话回执保持不变。
-    if (session.status === "completed" || record.ocr_status === "completed") {
-      res.status(409).json({ message: "该扫描会话已完成，页面不可再改写；请新建扫描会话后重新上传" });
-      return;
-    }
-    // 安全（PR #312 复核 CR2）：/complete 部分失败时已保存的分组既没有 completed 会话也没有
-    // completed 页面，只看状态会漏掉它们——那一页的成绩其实已经入库。改看回执归属。
-    const savedOwner = await savedReceiptOwnerOfPage(String(sessionId), token, true);
-    if (savedOwner) {
-      res.status(409).json({
-        message: "该扫描页的成绩已入库或原卷已撤销，不能由上传直接改写",
-        code: savedOwner.state === "discarded" ? "SCAN_PAGE_DISCARDED" : "SCAN_PAGE_SAVED", examId: savedOwner.exam_id,
-      });
-      return;
-    }
-    let recognition: z.infer<typeof recognitionSchema> | undefined;
-    if (req.body.recognition) {
-      try { recognition = recognitionSchema.parse(JSON.parse(req.body.recognition)); }
-      catch {
-        await invalidateScanRecognition(String(sessionId), token);
-        await db.run("UPDATE twain_scan_records SET ocr_status = 'failed', ocr_error = ? WHERE id = ?", "识别结果格式无效，请更新扫描端后重试", token);
-        res.status(400).json({ message: "识别结果格式无效，请更新扫描端后重试" }); return;
+      // 验证 session
+      const session = await db.get<{ id: string; card_id: string; identity_mode: string; status: string }>(
+        "SELECT id, card_id, identity_mode, status FROM twain_scan_sessions WHERE id = ?", sessionId);
+      if (!session) {
+        res.status(404).json({ message: "会话不存在" });
+        return;
       }
-    }
+      const record = await db.get<{ ocr_status: string }>(
+        "SELECT id, ocr_status FROM twain_scan_records WHERE id = ? AND session_id = ?", token, sessionId);
+      if (!record) { res.status(400).json({ message: "扫描页不属于当前会话" }); return; }
+      // 安全（R02）：会话完成（或该页已入库）后，令牌即失效。
+      // 此前令牌在 ocr_status='completed' 后仍然可用，任何持有旧令牌者都能覆盖已判分页面
+      // 的图片与识别结果，把「已完成扫描」变成对既有成绩的静默改写。
+      // 需要重扫时由扫描端新建会话，归属仍按原会话回执保持不变。
+      if (session.status === "completed" || record.ocr_status === "completed") {
+        res.status(409).json({ message: "该扫描会话已完成，页面不可再改写；请新建扫描会话后重新上传" });
+        return;
+      }
+      if (record.ocr_status === "review") {
+        res.status(409).json({ code: "SCAN_PAGE_CORRECTED", message: "此页已保存填涂订正，不能由上传改写；请通过整卡订正继续修改" });
+        return;
+      }
+      // 安全（PR #312 复核 CR2）：/complete 部分失败时已保存的分组既没有 completed 会话也没有
+      // completed 页面，只看状态会漏掉它们——那一页的成绩其实已经入库。改看回执归属。
+      const savedOwner = await savedReceiptOwnerOfPage(String(sessionId), token, true, db);
+      if (savedOwner) {
+        res.status(409).json({
+          message: "该扫描页的成绩已入库或原卷已撤销，不能由上传直接改写",
+          code: savedOwner.state === "discarded" ? "SCAN_PAGE_DISCARDED" : "SCAN_PAGE_SAVED", examId: savedOwner.exam_id,
+        });
+        return;
+      }
+      try { await assertScanImageDimensions(image.buffer); }
+      catch (error) {
+        res.status(error instanceof ScanImageBudgetError ? error.status : 400).json({
+          code: error instanceof ScanImageBudgetError ? error.code : "SCAN_IMAGE_INVALID",
+          message: error instanceof ScanImageBudgetError ? error.message : "扫描图片尺寸无法读取，请检查图片格式",
+        });
+        return;
+      }
+      let recognition: z.infer<typeof recognitionSchema> | undefined;
+      if (req.body.recognition) {
+        try { recognition = recognitionSchema.parse(JSON.parse(req.body.recognition)); }
+        catch {
+          await invalidateScanRecognitionInTransaction(db, String(sessionId), token);
+          await db.run("UPDATE twain_scan_records SET ocr_status = 'failed', ocr_error = ? WHERE id = ?", "识别结果格式无效，请更新扫描端后重试", token);
+          res.status(400).json({ message: "识别结果格式无效，请更新扫描端后重试" }); return;
+        }
+      }
 
-    const card = await new CardRepository().findById(session.card_id);
-    if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
-    const mapped = mapScanPageToLayout(pageNum, side, buildLayout(card).pages.length, card.sided);
-    const identity = recognition?.identity;
-    const verified = identity?.status === "verified" && identity.cardId === card.id && identity.pageNumber === mapped.layoutPage;
-    const legacy = session.identity_mode === "legacy" && identity?.status === "unverified" && ["QR_MISSING", "QR_UNREADABLE"].includes(identity.code);
-    if (mapped.unusedSide || (!verified && !legacy)) {
-      await invalidateScanRecognition(String(sessionId), token);
-      await db.run("UPDATE twain_scan_records SET ocr_status = 'failed', ocr_error = ? WHERE id = ?", "页面未通过二维码身份校验", token);
-      res.status(409).json({ message: "页面未通过二维码身份校验，请在 Windows 扫描端重新识别" }); return;
-    }
+      const card = await new CardRepository(db).findById(session.card_id);
+      if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+      const mapped = mapScanPageToLayout(pageNum, side, buildLayout(card).pages.length, card.sided);
+      const identity = recognition?.identity;
+      const verified = identity?.status === "verified" && identity.cardId === card.id && identity.pageNumber === mapped.layoutPage;
+      const legacy = session.identity_mode === "legacy" && identity?.status === "unverified" && ["QR_MISSING", "QR_UNREADABLE"].includes(identity.code);
+      if (mapped.unusedSide || (!verified && !legacy)) {
+        await invalidateScanRecognitionInTransaction(db, String(sessionId), token);
+        await db.run("UPDATE twain_scan_records SET ocr_status = 'failed', ocr_error = ? WHERE id = ?", "页面未通过二维码身份校验", token);
+        res.status(409).json({ message: "页面未通过二维码身份校验，请在 Windows 扫描端重新识别" }); return;
+      }
 
-    // 保存图片（对扩展名做白名单，session id 用 basename 兜底，避免路径遍历）
-    const rawExt = path.extname(req.file.originalname).toLowerCase();
-    const ext = [".jpg", ".jpeg", ".png", ".webp", ".bmp"].includes(rawExt) ? rawExt : ".jpg";
-    const safeSessionId = path.basename(String(sessionId));
-    const fileName = `${safeSessionId}_p${String(pageNum).padStart(2, "0")}_${side}${ext}`;
-    const filePath = path.join(scannerUploadDir(), fileName);
-    writeFileSync(filePath, req.file.buffer);
+      // 保存图片（对扩展名做白名单，session id 用 basename 兜底，避免路径遍历）
+      const rawExt = path.extname(image.originalname).toLowerCase();
+      const ext = [".jpg", ".jpeg", ".png", ".webp", ".bmp"].includes(rawExt) ? rawExt : ".jpg";
+      const safeSessionId = path.basename(String(sessionId));
+      const fileName = `${safeSessionId}_p${String(pageNum).padStart(2, "0")}_${side}${ext}`;
+      const filePath = path.join(scannerUploadDir(), fileName);
+      writeFileSync(filePath, image.buffer);
 
-    // 更新记录
-    if (token) {
-      await db.run(
-        `UPDATE twain_scan_records SET image_path = ?, page_num = ?, side = ?, ocr_status = 'uploaded'
-         WHERE id = ? AND session_id = ?`,
-        filePath, pageNum, side, token, sessionId
-      );
-    }
+      // 更新记录
+      if (token) {
+        await db.run(
+          `UPDATE twain_scan_records SET image_path = ?, page_num = ?, side = ?, ocr_status = 'uploaded'
+           WHERE id = ? AND session_id = ?`,
+          filePath, pageNum, side, token, sessionId
+        );
+      }
 
-    if (recognition) {
-      await db.run("UPDATE twain_scan_records SET identity_json = ? WHERE id = ?", JSON.stringify(recognition.identity), token);
-      await upsertRecognitionResult({ scanRecordId: token,
-        objectiveJson: JSON.stringify(recognition.questions),
-        subjectiveJson: JSON.stringify(recognition.subjectiveQuestions), gradeStatus: "recognized" });
-      await db.run("UPDATE twain_scan_records SET student_id = ?, recognized_at = CURRENT_TIMESTAMP WHERE id = ? AND session_id = ?",
-        recognition.studentId.value, token, sessionId);
-    }
+      if (recognition) {
+        await storeCorrectionPage(card, "twain_scan_record", token, { ...recognition, pageNumber: mapped.layoutPage }, db);
+        await db.run("UPDATE twain_scan_records SET identity_json = ? WHERE id = ?", JSON.stringify(recognition.identity), token);
+        await upsertRecognitionResult({ scanRecordId: token,
+          objectiveJson: JSON.stringify(recognition.questions),
+          subjectiveJson: JSON.stringify(recognition.subjectiveQuestions), gradeStatus: "recognized" }, db);
+        await db.run("UPDATE twain_scan_records SET student_id = ?, recognized_at = CURRENT_TIMESTAMP WHERE id = ? AND session_id = ?",
+          recognition.studentId.value, token, sessionId);
+      }
 
-    res.json({ ok: true, pageNum, side, fileName });
+      return { ok: true, pageNum, side, fileName };
+    });
+    if (uploaded) res.json(uploaded);
   } catch (err: any) {
     // 安全审计（F-12-1）：不向客户端回传内部错误原文，仅写服务端日志
     console.error("[scanner-upload] 请求处理失败:", err);
@@ -395,96 +422,102 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, cropUploadBu
   try {
     const sessionId = String(req.params.sessionId);
     const recordId = String(req.params.recordId);
-    const db = await getMysqlDb();
-    const record = await db.get<any>(
-      "SELECT id, card_id, student_id, identity_json, ocr_status FROM twain_scan_records WHERE id = ? AND session_id = ?",
-      recordId,
-      sessionId
-    );
-    if (!record) {
-      res.status(404).json({ message: "扫描页不存在" });
-      return;
-    }
-
-    // 安全（R02）：会话终态后切块同样不可重放——否则已入库成绩的阅卷图会被静默替换
-    const session = await db.get<{ status: string }>(
-      "SELECT status FROM twain_scan_sessions WHERE id = ?", sessionId);
-    if (!session) { res.status(404).json({ message: "会话不存在" }); return; }
-    if (session.status === "completed") {
-      res.status(409).json({ message: "该扫描会话已完成，切块不可再改写；请新建扫描会话后重新上传" });
-      return;
-    }
-    // 安全（PR #312 复核 CR2）：切块是阅卷人实际看到的图，同样不能覆盖已入库回执的页面。
-    if (await savedReceiptOwnerOfPage(sessionId, recordId, true)) {
-      res.status(409).json({ message: "该扫描页的成绩已入库，切块不可再由上传改写", code: "SCAN_PAGE_SAVED" });
-      return;
-    }
-
-    if (!record.identity_json || !["uploaded", "completed"].includes(record.ocr_status)) {
-      res.status(409).json({ message: "页面尚未通过身份校验，不能上传切块" }); return;
-    }
-    const manifestRaw = typeof req.body?.manifest === "string" ? req.body.manifest : "[]";
-    let manifest: Array<z.infer<typeof cropManifestSchema>>;
-    try {
-      const parsed: unknown = JSON.parse(manifestRaw);
-      if (!Array.isArray(parsed)) throw new Error("manifest 必须是数组");
-      if (parsed.length > MAX_CROPS_PER_REQUEST) throw new Error(`单次最多 ${MAX_CROPS_PER_REQUEST} 个切块`);
-      manifest = parsed.map((item, index) => cropManifestSchema.parse(item));
-    } catch (err: any) {
-      res.status(400).json({ message: `切块清单无效: ${err?.message ?? "格式错误"}` });
-      return;
-    }
-    const files = Array.isArray(req.files) ? req.files as Express.Multer.File[] : [];
-    for (const file of files) {
-      if (!isValidImageBuffer(file.buffer)) {
-        res.status(400).json({ message: `切块文件 ${file.originalname} 不是受支持的图片格式` });
+    const uploaded = await writeScannerSession(sessionId, async db => {
+      const record = await db.get<any>(
+        "SELECT id, card_id, student_id, identity_json, ocr_status FROM twain_scan_records WHERE id = ? AND session_id = ?",
+        recordId,
+        sessionId
+      );
+      if (!record) {
+        res.status(404).json({ message: "扫描页不存在" });
         return;
       }
-    }
-    const tempDir = path.resolve(scannerUploadDir(), "crops-temp", path.basename(sessionId), path.basename(recordId));
-    if (!existsSync(tempDir)) mkdirSync(tempDir, { recursive: true });
 
-    let saved: CropPersistenceStats;
-    try {
-      const crops: RecognitionBlockCrop[] = [];
-      for (const [index, crop] of manifest.entries()) {
-        const file = crop.fileName
-          ? files.find((item) => item.originalname === crop.fileName)
-          : files[index];
-        if (!file) continue;
-        const targetPath = path.join(tempDir, `${index}_${path.basename(file.originalname || "crop.png")}`);
-        // 安全（R07）：写入前再确认一次路径仍在本次请求的临时目录内
-        if (!insideDir(tempDir, targetPath)) continue;
-        writeFileSync(targetPath, file.buffer);
-        // 只采用校验过的字段；客户端上报的 path 与其它额外字段一律丢弃
-        crops.push({
-          blockId: crop.blockId,
-          blockTitle: crop.blockTitle ?? "",
-          blockType: crop.blockType ?? "",
-          pageNumber: crop.pageNumber,
-          segmentIndex: crop.segmentIndex,
-          questionNumbers: crop.questionNumbers,
-          rect: crop.rect,
-          widthPx: crop.widthPx,
-          heightPx: crop.heightPx,
-          dpi: crop.dpi,
-          path: targetPath,
-        });
+      // 安全（R02）：会话终态后切块同样不可重放——否则已入库成绩的阅卷图会被静默替换
+      const session = await db.get<{ status: string }>(
+        "SELECT status FROM twain_scan_sessions WHERE id = ?", sessionId);
+      if (!session) { res.status(404).json({ message: "会话不存在" }); return; }
+      if (session.status === "completed") {
+        res.status(409).json({ message: "该扫描会话已完成，切块不可再改写；请新建扫描会话后重新上传" });
+        return;
+      }
+      if (record.ocr_status === "review") {
+        res.status(409).json({ code: "SCAN_PAGE_CORRECTED", message: "此页已保存填涂订正，不能由上传改写；请通过整卡订正继续修改" });
+        return;
+      }
+      // 安全（PR #312 复核 CR2）：切块是阅卷人实际看到的图，同样不能覆盖已入库回执的页面。
+      if (await savedReceiptOwnerOfPage(sessionId, recordId, true, db)) {
+        res.status(409).json({ message: "该扫描页的成绩已入库，切块不可再由上传改写", code: "SCAN_PAGE_SAVED" });
+        return;
       }
 
-      saved = await persistAnswerBlockCrops({
-        cardId: String(record.card_id),
-        studentNumber: record.student_id ?? null,
-        sourceType: "twain_scan_record",
-        sourceRecordId: recordId,
-        crops
-      }, db);
-    } finally {
-      // 切块要么被持久化搬走，要么本次无效；临时目录不留残余（否则每次重试都在涨盘）
-      await rm(tempDir, { recursive: true, force: true }).catch((err) => console.warn("[scanner-upload] 切块临时目录清理失败:", err));
-    }
-    // 响应排在清理之后：客户端拿到 200 时磁盘状态已确定，重试不会与残余目录相互干扰
-    res.json({ ok: true, count: saved.persisted, skipped: saved.skipped, crops: [] });
+      if (!record.identity_json || !["uploaded", "completed"].includes(record.ocr_status)) {
+        res.status(409).json({ message: "页面尚未通过身份校验，不能上传切块" }); return;
+      }
+      const manifestRaw = typeof req.body?.manifest === "string" ? req.body.manifest : "[]";
+      let manifest: Array<z.infer<typeof cropManifestSchema>>;
+      try {
+        const parsed: unknown = JSON.parse(manifestRaw);
+        if (!Array.isArray(parsed)) throw new Error("manifest 必须是数组");
+        if (parsed.length > MAX_CROPS_PER_REQUEST) throw new Error(`单次最多 ${MAX_CROPS_PER_REQUEST} 个切块`);
+        manifest = parsed.map((item, index) => cropManifestSchema.parse(item));
+      } catch (err: any) {
+        res.status(400).json({ message: `切块清单无效: ${err?.message ?? "格式错误"}` });
+        return;
+      }
+      const files = Array.isArray(req.files) ? req.files as Express.Multer.File[] : [];
+      for (const file of files) {
+        if (!isValidImageBuffer(file.buffer)) {
+          res.status(400).json({ message: `切块文件 ${file.originalname} 不是受支持的图片格式` });
+          return;
+        }
+      }
+      const tempDir = path.resolve(scannerUploadDir(), "crops-temp", path.basename(sessionId), path.basename(recordId));
+      if (!existsSync(tempDir)) mkdirSync(tempDir, { recursive: true });
+
+      let saved: CropPersistenceStats;
+      try {
+        const crops: RecognitionBlockCrop[] = [];
+        for (const [index, crop] of manifest.entries()) {
+          const file = crop.fileName
+            ? files.find((item) => item.originalname === crop.fileName)
+            : files[index];
+          if (!file) continue;
+          const targetPath = path.join(tempDir, `${index}_${path.basename(file.originalname || "crop.png")}`);
+          // 安全（R07）：写入前再确认一次路径仍在本次请求的临时目录内
+          if (!insideDir(tempDir, targetPath)) continue;
+          writeFileSync(targetPath, file.buffer);
+          // 只采用校验过的字段；客户端上报的 path 与其它额外字段一律丢弃
+          crops.push({
+            blockId: crop.blockId,
+            blockTitle: crop.blockTitle ?? "",
+            blockType: crop.blockType ?? "",
+            pageNumber: crop.pageNumber,
+            segmentIndex: crop.segmentIndex,
+            questionNumbers: crop.questionNumbers,
+            rect: crop.rect,
+            widthPx: crop.widthPx,
+            heightPx: crop.heightPx,
+            dpi: crop.dpi,
+            path: targetPath,
+          });
+        }
+
+        saved = await persistAnswerBlockCrops({
+          cardId: String(record.card_id),
+          studentNumber: record.student_id ?? null,
+          sourceType: "twain_scan_record",
+          sourceRecordId: recordId,
+          crops
+        }, db);
+      } finally {
+        // 切块要么被持久化搬走，要么本次无效；临时目录不留残余（否则每次重试都在涨盘）
+        await rm(tempDir, { recursive: true, force: true }).catch((err) => console.warn("[scanner-upload] 切块临时目录清理失败:", err));
+      }
+      // 响应排在清理之后：客户端拿到 200 时磁盘状态已确定，重试不会与残余目录相互干扰
+      return { ok: true, count: saved.persisted, skipped: saved.skipped, crops: [] };
+    });
+    if (uploaded) res.json(uploaded);
   } catch (err: any) {
     // 安全审计（F-12-1）：不向客户端回传内部错误原文，仅写服务端日志
     console.error("[scanner-upload] 请求处理失败:", err);
@@ -510,7 +543,29 @@ router.get("/sessions/:sessionId/results", dualAuth, async (req, res, next) => {
     const session = await getMysqlDb().get<{ card_id: string }>("SELECT card_id FROM twain_scan_sessions WHERE id = ?", req.params.sessionId);
     const card = session && await new CardRepository().findById(session.card_id);
     if (!card) { res.status(404).json({ message: "扫描会话或答题卡不存在" }); return; }
-    res.json(await processScannerSession(card, String(req.params.sessionId)));
+    const batch = await processScannerSession(card, String(req.params.sessionId));
+    // Teacher edits live in correction snapshots, while upload receipts retain
+    // the original recognition. Read the current marks without resaving grades.
+    for (const result of batch.results) {
+      const currentPages = await Promise.all(result.pages.map(async page => {
+        const correction = await loadCorrectionPage("twain_scan_record", page.recordId, "");
+        const recognition = correction ? { ...correction.recognition, studentId: { status: "ok", value: result.studentId } }
+          : page.grading?.recognition;
+        if (!recognition) return null;
+        const grading = gradeCombinedRecognition(card, page.recordId, recognition);
+        Object.assign(page, { grading, objectiveScore: grading.objectiveScore, subjectiveScore: grading.subjectiveScore,
+          totalScore: grading.totalScore, totalMaxScore: grading.totalMaxScore });
+        return { ...page, imagePath: page.recordId, ocrStatus: "completed", recognition };
+      }));
+      if (currentPages.every(page => page !== null)) {
+        const combined = gradeSessionStudentResults(card, currentPages);
+        Object.assign(result, { totalScore: combined.totalScore, maxScore: combined.totalMaxScore,
+          objectiveScore: combined.objectiveScore, subjectiveScore: combined.subjectiveScore,
+          objectiveMaxScore: combined.objectiveMaxScore, subjectiveMaxScore: combined.subjectiveMaxScore,
+          needsReviewCount: combined.needsReviewCount });
+      }
+    }
+    res.json(batch);
   } catch (error) { next(error); }
 });
 router.post("/sessions/:sessionId/correct", dualAuth, async (req, res, next) => {
@@ -535,6 +590,7 @@ router.post("/sessions/:sessionId/correct", dualAuth, async (req, res, next) => 
       const group = groupSessionPages(card, records).groups.get(groupId);
       if (!group) throw new Error("答题卡分组不存在");
       await getMysqlDb().transaction(async tx => {
+        if (await tx.get("SELECT 1 FROM scanner_submissions WHERE session_id=? AND group_id=? AND state IN ('saved','discarded')",sessionId,groupId)) throw new Error("此卷已入库或归档，请刷新结果");
         for (const { record } of group) await tx.run("UPDATE twain_scan_records SET student_id = ? WHERE id = ? AND session_id = ?", studentId, record.id, sessionId);
       });
     });

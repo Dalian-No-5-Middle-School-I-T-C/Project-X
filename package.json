@@ -1,6 +1,6 @@
 {
   "name": "answer-card-designer",
-  "version": "2.6.1",
+  "version": "2.7.0",
   "description": "Project-X answer card scanning desktop app; Web version deployed separately via dist/web/.",
   "author": "Project-X",
   "private": true,
@@ -107,11 +107,18 @@
     "verify:scanner-duplicate-rescan": "tsx scripts/duplicate-rescan-smoke.ts",
     "verify:scanner-upload-flow": "tsx scripts/scanner-upload-flow-smoke.ts",
     "verify:scanner-duplex-correction": "tsx scripts/scanner-duplex-correction-smoke.ts",
+    "verify:scan-correction": "tsx scripts/scan-correction-smoke.ts",
+    "verify:scanner-retry-concurrency": "tsx scripts/scanner-retry-concurrency-smoke.ts",
+    "verify:ladder-options-soft-delete": "tsx scripts/ladder-options-soft-delete-smoke.ts",
+    "verify:scan-correction-security": "tsx scripts/scan-correction-security-smoke.ts",
+    "verify:recognizer-geometry": "tsx scripts/verify-recognizer-geometry.ts",
     "verify:scanner-correction-safety": "tsx scripts/scanner-correction-safety-smoke.ts",
     "verify:scanner-scan-timeout": "tsx scripts/verify-scanner-scan-timeout.ts",
     "verify:scanner-panel-session": "tsx scripts/scanner-panel-session-smoke.ts",
     "verify:scanner-review-regressions": "tsx scripts/scanner-review-regressions.ts",
-    "verify:scanner-review-fixes": "tsx scripts/scanner-discard-regression.ts && tsx scripts/scanner-version-regression.ts && tsx scripts/scanner-publish-regression.ts && tsx scripts/scanner-dsm-regression.ts"
+    "verify:scanner-review-fixes": "tsx scripts/scanner-discard-regression.ts && tsx scripts/scanner-version-regression.ts && tsx scripts/scanner-publish-regression.ts && tsx scripts/scanner-dsm-regression.ts",
+    "native:build:correction:linux-x64": "bash scripts/build-recognizer-linux.sh",
+    "verify:scanner-pending": "tsx scripts/scanner-pending-smoke.ts"
   },
   "browserslist": [
     "iOS >= 15",
@@ -140,6 +147,7 @@
     "express": "^5.1.0",
     "express-rate-limit": "^8.6.0",
     "fontkit": "^2.0.4",
+    "image-size": "^2.0.4",
     "mammoth": "^1.12.0",
     "multer": "^2.0.2",
     "mysql2": "^3.22.5",

@@ -95,6 +95,10 @@
    组件一律消费本块生成的语义工具类（bg-background / text-foreground / border-border …），
    禁止业务代码直接写 --px-red-600 等 L1 原始令牌。 */
 @theme {
+  --px-correction-normal: #2563eb;
+  --px-correction-error: #dc2626;
+  --color-correction-normal: var(--px-correction-normal);
+  --color-correction-error: var(--px-correction-error);
   /* 底色 / 表面 */
   --color-background: var(--px-bg-canvas);
   --color-foreground: var(--px-fg-primary);

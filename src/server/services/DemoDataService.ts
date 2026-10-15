@@ -10,6 +10,7 @@
 
 import { buildInsertIgnore, generateBootstrapAdminPassword, getMysqlDb, hashPassword, type DbAdapter } from "../db";
 import { encryptField } from "../lib/field-crypto";
+import { deleteExamCorrectionPages } from "./scanCorrectionCleanup";
 import { UserRepository } from "../repositories/UserRepository";
 import { ClassRepository } from "../repositories/ClassRepository";
 import { ROLE_IDS } from "../auth/permissions";
@@ -349,6 +350,7 @@ async function cleanupDemoData(db: DbAdapter): Promise<ClearDemoStats> {
     }
 
     if (demoExamIds.length > 0) {
+      for (const examId of demoExamIds) await deleteExamCorrectionPages(tx, examId);
       const ph = demoExamIds.map(() => "?").join(",");
       // 先清所有引用（exam_participants 依赖外键级联，但 SQLite 可能外键关闭/旧库无级联，显式删除最稳）
       await tx.run(`DELETE FROM exam_participants WHERE exam_id IN (${ph})`, ...demoExamIds);

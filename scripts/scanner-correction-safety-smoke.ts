@@ -11,7 +11,6 @@ try {
   const store = await import("../src/apps/answer-card/server/database/scan-store");
   const db = getMysqlDb();
   const autoUnpublish = process.env.TEST_AUTO_UNPUBLISH === "1";
-  const publicationAfterMutation = autoUnpublish ? 0 : 1;
   if (autoUnpublish) await db.run("INSERT INTO system_settings (`key`, value) VALUES ('auto_unpublish_on_score_change', '1')");
 
   const card = (await new CardRepository().findById(info.cardId))!;
@@ -80,11 +79,16 @@ try {
       assert.equal(await protectedState(), before, `${kind}: ${mode} must not mutate protected business data`);
     }
   }
-  // A complete valid duplicate still withdraws both attempts for teacher review.
+  // Valid conflicting papers withdraw both originals even after publication.
   const valid = await makeSession("valid-duplicate", "91002");
   assert.equal((await correct(valid.session.id, "91001")).status, 200);
   assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id=? AND student_id=?", exam.id, owner.id), null);
-  assert.equal(Number((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id=?", exam.id))!.score_published), publicationAfterMutation);
   assert.equal((await db.all("SELECT * FROM scanner_submissions WHERE exam_id=? AND student_number='91001' AND state='conflict'", exam.id)).length, 2);
-  console.log(`PASS scanner correction safety: ${db.dialect}, eight invalid structures preserve saved manual grades/publication; valid duplicate remains reviewable`);
+  const snapshot = JSON.parse((await db.get<{score_snapshot:string}>("SELECT score_snapshot FROM scanner_submissions WHERE session_id=? AND group_id='0'", original.session.id))!.score_snapshot);
+  assert.equal(Number(snapshot.score.total_score), 4);
+  assert.equal(Number(snapshot.score.assigned_score), 82);
+  assert.equal(Number(snapshot.questions[0].manually_modified), 1);
+  assert.equal((await db.get<{exam_id:number|null}>("SELECT exam_id FROM answer_block_crops WHERE id='original-crop'"))!.exam_id, null);
+  assert.equal(Number((await db.get<{score_published:number}>("SELECT score_published FROM exams WHERE id=?",exam.id))!.score_published), autoUnpublish ? 0 : 1);
+  console.log(`PASS scanner correction safety: ${db.dialect}, eight invalid structures preserve saved manual grades/publication; valid published duplicates withdraw both copies and retain manual snapshots`);
 } finally { await fixture.close(); }

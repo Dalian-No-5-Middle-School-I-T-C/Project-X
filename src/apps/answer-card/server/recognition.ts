@@ -4,6 +4,7 @@ import path from "node:path";
 import { rootDir } from "./storage";
 import { readFile } from "node:fs/promises";
 import { parseIdentityMode, type CardIdentity, type IdentityMode } from "../../../shared/cardIdentity";
+import { assertScanImageDimensions } from "../../../server/lib/scanImageBudget";
 
 export type RecognitionRequest = {
   identityMode?: IdentityMode;
@@ -193,6 +194,19 @@ export async function recognizeAnswerCard(request: RecognitionRequest): Promise<
   const exePath = resolveRecognizerExe();
   const baseArgs = buildBaseArgs(request);
   return validateIdentity(await runWithCropsFallback(request, exePath, baseArgs), request);
+}
+
+/** Linux x86_64 recovery executable; ordinary scanning keeps its Windows resolver. */
+export function resolveCorrectionRecognizerExe(): string {
+  const exe = path.join(rootDir, "resources", "native", "correction-linux-x64", "answer-card-recognizer");
+  if (!existsSync(exe)) throw new Error("缺少整卡改分识别器，请安装完整的 2.7.0 或更新版本 Ubuntu 服务端包");
+  return exe;
+}
+
+export async function recognizeCorrectionCard(request: RecognitionRequest): Promise<RecognitionResult> {
+  if (process.platform !== "linux" || process.arch !== "x64") throw new Error("旧卷重新识别需要 Linux x86_64 服务端");
+  await assertScanImageDimensions(request.imagePath);
+  return validateIdentity(await execRecognizer(resolveCorrectionRecognizerExe(), buildBaseArgs(request)), request);
 }
 
 export class CardIdentityError extends Error {

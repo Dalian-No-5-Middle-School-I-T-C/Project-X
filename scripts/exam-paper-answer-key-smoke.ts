@@ -131,6 +131,16 @@ async function main() {
   sqlite.prepare("INSERT INTO exam_participants (exam_id, student_id, source) VALUES (?, ?, 'roster')").run(examId, s2);
   sqlite.prepare("INSERT INTO exam_participants (exam_id, student_id, source) VALUES (?, ?, 'roster')").run(batchExamId, s1);
 
+  const outsiderId = Number(sqlite.prepare("INSERT INTO users (username,password_hash,name,role_id,is_active) VALUES ('publish-outsider',?,'外部教师',2,1)")
+    .run(bcrypt.hashSync("teacher-pass",10)).lastInsertRowid);
+  const partialQuiz = insertExam("部分出分晨测",0);
+  const ownedQuiz = insertExam("本人晨测",0);
+  for (const id of [partialQuiz,ownedQuiz]) {
+    sqlite.prepare("UPDATE exams SET exam_mode='quiz',status='grading' WHERE id=?").run(id);
+    sqlite.prepare("INSERT INTO student_scores (exam_id,student_id,total_score) VALUES (?,?,85)").run(id,s1);
+    for (const sid of [s1,s2]) sqlite.prepare("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'roster')").run(id,sid);
+  }
+  sqlite.prepare("UPDATE exams SET created_by=? WHERE id=?").run(outsiderId,ownedQuiz);
   const app = await createApp();
   const server: Server = await new Promise((resolve) => {
     const s = createServer(app);
@@ -142,6 +152,21 @@ async function main() {
   const otherToken = (await login(base, "50002", "50002")).token!;
   ok(Boolean(adminToken && stuToken && otherToken), "admin / 两名学生登录成功");
 
+  const outsiderToken = (await login(base,"publish-outsider","teacher-pass")).token!;
+  ok(Boolean(outsiderToken),"无组织归属教师登录成功");
+  const deniedSingle = await jsonFetch(base,`/api/exams/${partialQuiz}/publish`,{method:"POST",body:JSON.stringify({showOriginalPaper:true})},outsiderToken);
+  ok(deniedSingle.status===403,"晨测可见不代表可公布：无归属教师单场发布返回 403");
+  const deniedBatch = await jsonFetch(base,"/api/exams/publish-batch",{method:"POST",body:JSON.stringify({examIds:[ownedQuiz,partialQuiz],showOriginalPaper:true})},outsiderToken);
+  ok(deniedBatch.status===403,"批量混入无权考试整批返回 403");
+  for (const id of [partialQuiz,ownedQuiz]) {
+    const row = sqlite.prepare("SELECT score_published,show_original_paper FROM exams WHERE id=?").get(id);
+    ok(row.score_published===0 && row.show_original_paper!==1,"拒绝后不更改公布和原卷开关");
+    ok(sqlite.prepare("SELECT COUNT(*) AS n FROM exam_publish_events WHERE exam_id=?").get(id).n===0,"拒绝后无公布审计写入");
+  }
+  const hiddenPaper = await jsonFetch(base,`/api/scores/me/exams/${partialQuiz}/paper`,{},stuToken);
+  ok(hiddenPaper.status===404 && !hiddenPaper.body?.pages && !hiddenPaper.body?.answers,`越权公布被拒绝后学生不能读取原卷与答案（HTTP ${hiddenPaper.status}）`);
+  const ownerPublished = await jsonFetch(base,`/api/exams/${ownedQuiz}/publish`,{method:"POST",body:"{}"},outsiderToken);
+  ok(ownerPublished.status===200,"考试创建者仍可公布部分出分晨测");
   const patchExam = (body: unknown, token = adminToken) =>
     jsonFetch(base, `/api/exams/${examId}`, { method: "PATCH", body: JSON.stringify(body) }, token);
   const publish = (id: number, body: unknown, token = adminToken) =>

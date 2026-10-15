@@ -8,6 +8,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 #include <opencv2/core/utils/logger.hpp>
@@ -43,41 +44,42 @@ std::string usage() {
     return "Usage: answer-card-recognizer.exe --image <path> --layout <path> [--page <n>] [--dpi <n>] [--debug-dir <path>] [--crops-dir <path>]";
 }
 
-CliOptions parse_args(int argc, wchar_t* argv[]) {
+CliOptions parse_args(const std::vector<std::string>& argv) {
+    const int argc = static_cast<int>(argv.size());
     CliOptions options;
     for (int index = 1; index < argc; ++index) {
-        const std::wstring name = argv[index];
-        auto require_value = [&](const std::wstring& flag) -> std::wstring {
+        const std::string name = argv[index];
+        auto require_value = [&](const std::string& flag) -> std::string {
             if (index + 1 >= argc) {
-                throw std::runtime_error("Missing value for " + wide_to_utf8(flag));
+                throw std::runtime_error("Missing value for " + flag);
             }
             ++index;
             return argv[index];
         };
 
-        if (name == L"--image") {
-            options.image_path = std::filesystem::path(require_value(name));
-        } else if (name == L"--layout") {
-            options.layout_path = std::filesystem::path(require_value(name));
-        } else if (name == L"--identity-mode") {
+        if (name == "--image") {
+            options.image_path = std::filesystem::u8path(require_value(name));
+        } else if (name == "--layout") {
+            options.layout_path = std::filesystem::u8path(require_value(name));
+        } else if (name == "--identity-mode") {
             const auto mode = require_value(name);
-            if (mode != L"strict" && mode != L"legacy") throw std::runtime_error("Invalid identity mode");
-            options.legacy = mode == L"legacy";
-        } else if (name == L"--page") {
+            if (mode != "strict" && mode != "legacy") throw std::runtime_error("Invalid identity mode");
+            options.legacy = mode == "legacy";
+        } else if (name == "--page") {
             options.page = std::stoi(require_value(name));
-        } else if (name == L"--dpi") {
+        } else if (name == "--dpi") {
             options.dpi = std::stoi(require_value(name));
-        } else if (name == L"--debug-dir") {
+        } else if (name == "--debug-dir") {
             options.debug = true;
-            options.debug_dir = std::filesystem::path(require_value(name));
-        } else if (name == L"--crops-dir") {
-            options.crops_dir = std::filesystem::path(require_value(name));
-        } else if (name == L"--debug") {
+            options.debug_dir = std::filesystem::u8path(require_value(name));
+        } else if (name == "--crops-dir") {
+            options.crops_dir = std::filesystem::u8path(require_value(name));
+        } else if (name == "--debug") {
             options.debug = true;
-        } else if (name == L"--help" || name == L"-h") {
+        } else if (name == "--help" || name == "-h") {
             throw std::runtime_error(usage());
         } else {
-            throw std::runtime_error("Unknown argument: " + wide_to_utf8(name));
+            throw std::runtime_error("Unknown argument: " + name);
         }
     }
 
@@ -103,7 +105,7 @@ nlohmann::json cli_failed_result(const std::string& message) {
 }
 }
 
-int wmain(int argc, wchar_t* argv[]) {
+int run_cli(const std::vector<std::string>& argv) {
     configure_utf8_output();
 #ifdef _WIN32
     // 安全 R19：本进程是服务端/扫描端拉起的子进程，弹一个「找不到磁盘或 DLL」的模态框
@@ -113,7 +115,7 @@ int wmain(int argc, wchar_t* argv[]) {
     try {
         // stdout 只留给 JSON 结果，生效档位写 stderr：现场排查「为什么这张图被拒」时不用猜默认值
         std::fprintf(stderr, "[recognizer-limits] %s\n", describe_recognizer_limits().c_str());
-        const CliOptions options = parse_args(argc, argv);
+        const CliOptions options = parse_args(argv);
         const nlohmann::json result = recognize_objective_answers(
             options.image_path,
             options.layout_path,
@@ -131,3 +133,15 @@ int wmain(int argc, wchar_t* argv[]) {
         return 2;
     }
 }
+
+#ifdef _WIN32
+int wmain(int argc, wchar_t* argv[]) {
+    std::vector<std::string> args;
+    for (int i = 0; i < argc; ++i) args.push_back(wide_to_utf8(argv[i]));
+    return run_cli(args);
+}
+#else
+int main(int argc, char* argv[]) {
+    return run_cli(std::vector<std::string>(argv, argv + argc));
+}
+#endif

@@ -212,7 +212,7 @@ ok(readme.includes("- systemd/project-x-server.service: hardened systemd unit"),
 section("6. 打包脚本自身的接线");
 ok(/writeTextFile\(path\.join\(packageDir, "systemd", "install\.sh"\), createInstallScript\(\)\);/.test(packagingSource),
   "打包时确实写出 systemd/install.sh（只改生成器不接线，包里就不会有这个文件）");
-ok(/for \(const scriptName of \["start\.sh", path\.join\("systemd", "install\.sh"\)\]\)/.test(packagingSource)
+ok(/for \(const scriptName of \["start\.sh", path\.join\("systemd", "install\.sh"\)[^\]]*\]\)/.test(packagingSource)
   && /chmodSync\(path\.join\(packageDir, scriptName\), 0o755\)/.test(packagingSource),
   "start.sh 与 install.sh 都置 0755");
 ok(/mkdirSync\(path\.join\(packageDir, "data", "answer-card"\), \{ recursive: true, mode: 0o750 \}\)/.test(packagingSource),
@@ -351,6 +351,9 @@ section("9. ZIP 内脚本的 Unix 执行位（CR #313 P2-8）");
     writeFileSync(path.join(dir, "start.sh"), "#!/usr/bin/env bash\n", { encoding: "utf8" });
     writeFileSync(path.join(dir, "systemd", "install.sh"), "#!/usr/bin/env bash\n", { encoding: "utf8" });
     writeFileSync(path.join(dir, "package.json"), "{}\n", { encoding: "utf8" });
+    const nativeDir = path.join(dir,"resources","native","correction-linux-x64");
+    mkdirSync(nativeDir,{recursive:true});
+    writeFileSync(path.join(nativeDir,"answer-card-recognizer"),"ELF fixture");
     const zip = new AdmZip();
     zip.addLocalFolder(dir, "pkg");
     const shellEntries = zip.getEntries().filter((entry: any) => !entry.isDirectory && entry.entryName.endsWith(".sh"));
@@ -362,13 +365,13 @@ section("9. ZIP 内脚本的 Unix 执行位（CR #313 P2-8）");
     zip.writeZip(file);
     const readBack = new AdmZip(file);
     for (const entry of readBack.getEntries()) {
-      if (entry.isDirectory || !entry.entryName.endsWith(".sh")) continue;
+      if (entry.isDirectory || (!entry.entryName.endsWith(".sh") && !entry.entryName.endsWith("/correction-linux-x64/answer-card-recognizer"))) continue;
       ok(((entry.attr >> 16) & 0o7777) === 0o755, `${entry.entryName} 在 ZIP 里带着 0755`);
       ok(((entry.header.made >> 8) & 0xff) === 3,
         `${entry.entryName} 的 made-by 标成 Unix（unzip/tar/Python 就是看这个字节决定信不信那 16 位 mode）`);
     }
     const plainFile = readBack.getEntries().find((entry: any) => entry.entryName === "pkg/package.json");
-    ok(!!plainFile && ((plainFile.attr >> 16) & 0o111) === 0, "只给 .sh 补执行位，普通文件没有被顺手改成可执行");
+    ok(!!plainFile && ((plainFile.attr >> 16) & 0o111) === 0, "仅脚本和识别器补执行位，普通文件保持不可执行");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

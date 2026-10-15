@@ -1,3 +1,4 @@
+import { CardCorrectionButton } from "./CardCorrectionEditor";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { uniqueScanConflictCards } from "../../../../shared/scanPages";
 import { ScannerConflictCards } from "./ScannerConflictCards";
@@ -425,6 +426,13 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         pages: result.pages.map(page => ({
           pageNum: page.pageNum, side: page.side, groupId: result.groupId,
           layoutPage: page.layoutPage, studentId: result.studentId,
+          getCorrection: async () => {
+            const response = await authFetch(`/api/scanner/session/${sid}/groups/${result.groupId}/correction`);
+            if (response.status === 409) return undefined; // Older scans have no alignment snapshot.
+            if (!response.ok) throw new Error("读取已保存的填涂订正失败");
+            const document = await response.json() as import("../../../../shared/scanCorrection").CorrectionDocument;
+            return document.pages.find(p => p.sourceId === page.recordId)?.recognition;
+          },
           getBlob: async () => {
             const res = await authFetch(`/api/scanner/scan-image/${page.recordId}`);
             if (!res.ok) throw new Error(`读取本机扫描图失败（HTTP ${res.status}）`);
@@ -917,6 +925,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                   <span className="text-sm">{failure.studentId || "未识别学号"} · {failure.pages.map(p => `第 ${p.pageNum} 张${p.side === "front" ? "正面" : "背面"}`).join("、")}：{failure.message}</span>
                   {!failure.conflicts?.length && <div className="flex flex-wrap items-center gap-2">
                     <Button variant="outline" size="sm" onClick={() => setActiveFailure(failure)}>查看失败卡</Button>
+                    <CardCorrectionButton disabled={resultsBusy} url={`/api/scanner/session/${sessionId}/groups/${failure.groupId}/correction`} onSaved={() => fetchCombinedResults(sessionId)} />
                     {failure.stage !== "saving" && <Input aria-label={`第 ${Number(failure.groupId) + 1} 份答题卡订正学号`} placeholder="订正学号（可选）" value={corrections[failure.groupId] ?? ""} onChange={e => setCorrections(current => ({ ...current, [failure.groupId]: e.target.value }))} disabled={resultsBusy} />}
                     <Button variant="outline" size="sm" disabled={resultsBusy} onClick={() => void retryCard(failure)}>{failure.stage === "saving" ? "重新汇总" : "重新识别此卡"}</Button>
                   </div>}
@@ -958,6 +967,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                         )}
                       </TableCell>
                       <TableCell>
+                        {!sr.saved && <CardCorrectionButton disabled={resultsBusy} url={`/api/scanner/session/${sessionId}/groups/${sr.groupId}/correction`} onSaved={() => fetchCombinedResults(sessionId)} />}
                         <span className="mr-2 text-xs text-muted-foreground">{scannerMode === "remote" ? (uploadState.jobs.find(j => j.id === uploadJobs[sr.groupId])?.message || (uploadJobs[sr.groupId] ? "已加入上传队列" : "待上传")) : (sr.saved ? "已保存" : "待保存")}</span>
                         <Button
                           variant="ghost"

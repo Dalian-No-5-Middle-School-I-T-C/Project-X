@@ -1,3 +1,4 @@
+import { storeCorrectionPage } from "../../../server/services/scanCorrection";
 import { databaseTimestamp } from "../../../server/db/timestamp";
 import express from "express";
 import multer from "multer";
@@ -83,6 +84,7 @@ import backupRoutes from "../../../server/routes/backup";
 import exportScoresRoutes from "../../../server/routes/export-scores";
 import examGroupRoutes from "../../../server/routes/exam-groups";
 import aiProviderRoutes from "../../../server/routes/ai-providers";
+import scannerPendingRoutes from "../../../server/routes/scanner-pending";
 import scoreEditingRoutes from "../../../server/routes/score-editing";
 import reviewRoutes from "../../../server/routes/review";
 import reviewAssignRoutes from "../../../server/routes/review-assign";
@@ -110,7 +112,9 @@ import { notifyGradeReleaseSubscribers } from "../../../server/services/gradeRel
 import { logWechatSubscriptionStatus } from "../../../server/services/WechatMiniProgramService";
 import {
   getAnswerBlockCropFile,
-  persistAnswerBlockCrops
+  persistAnswerBlockCrops,
+  restoreCropFileMoves,
+  type CropFileMove,
 } from "../../../server/services/AnswerBlockCropService";
 import { optionalAuth, authMiddleware, requirePermission } from "../../../server/middleware/auth";
 import { requirePasswordChangeCompleted } from "../../../server/middleware/auth";
@@ -150,7 +154,7 @@ import {
 import {
   makeGate, getVisibleExamIds, requireExamAccess,
   validateExamIdsAccess, setAuthEnforced, hasViewPermission, makeViewPermissionGate, isTeacherPermittedForWholeExam,
-  requirePermissionCompat, requireWholeExamGradingAccess, canManageExamOrganization, hasExamOrganizationAffinity,
+  requirePermissionCompat, requireWholeExamGradingAccess, requireWholeExamGradingAccessForExam, canManageExamOrganization, hasExamOrganizationAffinity,
   canGradeBlock, isExamSoftDeleted
 } from "./middleware";
 import { getAssignedStudentIdSet, isClaimableForAssignedSet } from "../../../server/services/ReviewPoolService";
@@ -496,10 +500,15 @@ async function persistGradingResultsLocked(
   const { ExamRepository } = await import("../../../server/repositories/ExamRepository");
   const { getMysqlDb } = await import("../../../server/db");
 
-  const examRepo = new ExamRepository();
-  const db = getMysqlDb();
+  let backupAfterCommit = false;
+  const fileMoves: CropFileMove[] = [];
+  let outcome: GradingPersistenceResult;
+  try {
+  outcome = await getMysqlDb().transaction(async db => {
+  const examRepo = new ExamRepository(db);
 
   const examId = Number(examIdParam);
+  await db.run("UPDATE exams SET id=id WHERE id=?", examId);
   const exam = await examRepo.findExamById(examId);
   if (!exam) {
     throw Object.assign(new Error("考试不存在"), { status: 404, code: ApiError.NOT_FOUND });
@@ -561,8 +570,11 @@ async function persistGradingResultsLocked(
       failedStudents.push({ fileName: row.fileName, studentId, code: "STUDENT_NOT_IN_EXAM", message: "学生不属于本次考试应考名单，已拒绝入库" });
       continue;
     }
+    const fileCheckpoint = fileMoves.length;
     try {
-      await db.transaction(async (tx) => {
+      await db.exec("SAVEPOINT grading_student");
+      const tx = db;
+      {
         // 每个学生写入时应用当前公布策略，覆盖批次中途公布的情况。
         await markScoreMutated(tx, examId, createdBy ?? null, "grading_save");
         const txExamRepo = new ExamRepository(tx);
@@ -573,6 +585,8 @@ async function persistGradingResultsLocked(
           student_number: studentId,
           student_id: stu.id
         });
+        const correctionCard = await new CardRepository(tx).findById(String(exam.card_id));
+        if (correctionCard) await storeCorrectionPage(correctionCard, "scan_record", recordId, row.recognition, tx);
         await persistAnswerBlockCrops({
           cardId: row.recognition.cardId ?? String(exam.card_id ?? ""),
           examId,
@@ -580,7 +594,8 @@ async function persistGradingResultsLocked(
           studentNumber: studentId,
           sourceType: "scan_record",
           sourceRecordId: recordId,
-          crops: row.recognition.blockCrops ?? []
+          crops: row.recognition.blockCrops ?? [],
+          fileMoves,
         }, tx);
 
         await txExamRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
@@ -595,10 +610,15 @@ async function persistGradingResultsLocked(
         for (const sq of row.subjectiveQuestions ?? []) {
           await tx.run(upsertSubjectiveQsSql, examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
         }
-      });
+      }
+      await db.exec("RELEASE SAVEPOINT grading_student");
       analysisCache.invalidateExam(examId);
       persisted++;
     } catch (err) {
+      await db.exec("ROLLBACK TO SAVEPOINT grading_student");
+      await db.exec("RELEASE SAVEPOINT grading_student");
+      await restoreCropFileMoves(fileMoves.slice(fileCheckpoint));
+      fileMoves.length = fileCheckpoint;
       console.error(`[Grading] Failed to persist row for ${studentId}:`, err);
       failedStudents.push({
         fileName: row.fileName,
@@ -632,7 +652,7 @@ async function persistGradingResultsLocked(
       examId, batchId
     );
     if (previousExamStatus !== "closed" && !earlierClosedBatch) {
-      autoBackupOnExamClose(examId).catch((e) => console.error("[AutoBackup] Failed:", e));
+      backupAfterCommit = true;
     }
   } else if (status === "error") {
     await examRepo.updateStatus(examId, previousExamStatus);
@@ -643,11 +663,21 @@ async function persistGradingResultsLocked(
     const { recomputeExamRankings } = await import("../../../server/services/rankingUpdate");
     const recalc = await recomputeExamRankings(db, examId);
     if (!recalc.assignedScoresRecalculated) {
-      throw new Error(`成绩已保存，但赋分更新失败：${recalc.assignedScoreError}`);
+      throw new Error(`赋分更新失败，本批次成绩未保存：${recalc.assignedScoreError}`);
     }
   }
   console.log(`[Grading] exam=${examId} batch=${batchId} status=${status} persisted=${persisted} failed=${failedStudents.length}`);
   return { batchId, status, persisted, failedCount: failedStudents.length, failed: failedStudents };
+  });
+  } catch (error) {
+    try { await restoreCropFileMoves(fileMoves); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], "批次回滚后恢复切图失败", { cause: error }); }
+    throw error;
+  }
+  // Readers may repopulate the old committed view while the transaction is open.
+  analysisCache.invalidateExam(Number(examIdParam));
+  if (backupAfterCommit) void autoBackupOnExamClose(Number(examIdParam)).catch(e => console.error("[AutoBackup] Failed:",e));
+  return outcome;
 }
 
 /**
@@ -2179,6 +2209,7 @@ export async function createApp(): Promise<express.Express> {
 
   // ── Score editing: mounted before exam routes to match
   //     /api/exams/:examId/student/:studentId/scores before /api/exams/:examId
+  app.use("/api/exams", scannerPendingRoutes);
   app.use("/api/exams", scoreEditingRoutes);
 
   // ── Exam API ──────────────────────────────────────────
@@ -2598,7 +2629,7 @@ export async function createApp(): Promise<express.Express> {
   });
 
   // v41: 单场成绩公布 —— 教师手动公布后学生方可查看。幂等（已公布直接返回 ok）。
-  app.post("/api/exams/:examId/publish", requireExamAccess, requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
+  app.post("/api/exams/:examId/publish", requireExamAccess, requirePermission(PERMISSIONS.GRADE_WRITE), requireWholeExamGradingAccess, async (req, res, next) => {
     try {
       const examId = Number(req.params.examId);
       if (!Number.isInteger(examId) || examId <= 0) {
@@ -2697,6 +2728,11 @@ export async function createApp(): Promise<express.Express> {
       if (denied.length > 0) {
         res.status(403).json({ message: `以下考试超出你的数据权限范围，无法公布: ${denied.join(", ")}` });
         return;
+      }
+      for (const examId of examIds) {
+        let authorized = false;
+        await requireWholeExamGradingAccessForExam(req, res, () => { authorized = true; }, examId);
+        if (!authorized) return;
       }
       // 存在性与结考状态校验（此时仅剩可见范围内的考试）
       const existing = await db.all(

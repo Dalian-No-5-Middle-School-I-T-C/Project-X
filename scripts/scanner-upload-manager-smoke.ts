@@ -3,6 +3,8 @@
 import { createScannerUploadManager } from "../src/apps/answer-card/client/lib/scannerUploadManager";
 import type { StartUploadInput } from "../src/apps/answer-card/client/lib/scannerUploadManager";
 import { mapImportedScanPages, mapScanPageToLayout, uniqueScanConflictCards } from "../src/shared/scanPages";
+import { createDefaultCard } from "../src/shared/defaultCard";
+import { gradeCombinedRecognition } from "../src/shared/grading";
 
 function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(`断言失败: ${msg}`);
@@ -441,6 +443,35 @@ async function main() {
     assert(thirdRecognitions === 1, "已成功卡不得重新识别上传");
   }
 
+  // Saved corrections loaded after queueing override the captured student ID,
+  // including retries and dependent pages without their own student area.
+  {
+    const input = baseInput(2);
+    let correctedId = "91001", failUpload = true;
+    input.pages = input.pages.map((page, i) => ({ ...page, pageNum: 1,
+      side: i === 0 ? "front" : "back", groupId: "corrected-card", layoutPage: i + 1,
+      studentId: "91001", getCorrection: async () => ({ status: "ok",
+        studentId: { status: "ok", value: i === 0 ? correctedId : null },
+        questions: [], subjectiveQuestions: [] }) }));
+    const sent: string[] = [];
+    const mgr = createScannerUploadManager(deps({
+      remoteFetch: async (url, init) => {
+        if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "corrected", uploadTokens: ["a", "b"] });
+        if (url.endsWith(PAGES)) {
+          if (failUpload) return jsonRes({ message: "retry later" }, 409);
+          sent.push(JSON.parse(String((init!.body as FormData).get("recognition"))).studentId.value);
+        }
+        return jsonRes({ ok: true });
+      },
+    }));
+    const id = mgr.startUpload(input);
+    assert((await waitTerminal(mgr, id)).status === "error", "queued upload can be retried after correction");
+    correctedId = "91002"; failUpload = false;
+    mgr.retryFailed(id);
+    assert((await waitTerminal(mgr, id)).status === "done", "corrected queued upload succeeds");
+    assert(sent.join(",") === "91002,91002", "saved ID overrides stale captured ID and propagates to back page");
+  }
+
   // A page-number gap is not a pair, even if array elements are adjacent.
   {
     const input = baseInput(2); input.pages[1].pageNum = 9; input.pages[1].side = "back";
@@ -654,6 +685,47 @@ async function main() {
     assert((await waitTerminal(mgr, duplicate)).status === "error", "重复卷单独待处理");
     assert((await waitTerminal(mgr, old)).status === "done" && oldCompletions === 2, "关联的排队重试不会被置错跳过");
     assert((await waitTerminal(mgr, normal)).status === "done", "后续正常卷继续上传");
+  }
+  {
+    const card = createDefaultCard("refresh-results");
+    card.bodyBlocks = [{ id: "refresh-choice", type: "objective", title: "选择题", questionStart: 1,
+      questionCount: 1, optionCount: 4, mode: "single", scorePerQuestion: 5, density: "normal", answerKey: { 1: ["D"] } }];
+    let corrected = false;
+    let saves = 0;
+    let holdNext = false;
+    let release: (() => void) | undefined;
+    const page = { recordId: "remote-page", pageNum: 1, side: "front", layoutPage: 1 };
+    const mgr = createScannerUploadManager(deps({ remoteFetch: async url => {
+      if (url.endsWith("/sessions")) return jsonRes({ sessionId: "refresh", uploadTokens: ["token"] });
+      if (url.endsWith("/complete")) { saves++; return jsonRes({ ok: true }); }
+      if (url.endsWith("/results")) {
+        const grading = gradeCombinedRecognition(card, page.recordId, {
+        status: "ok", studentId: { status: "ok", value: corrected ? "10002" : "10001" },
+        questions: [{ questionNumber: 1, selectedOptions: [corrected ? "D" : "A"], confidence: 1, status: "ok" }], subjectiveQuestions: [],
+        });
+        const response = jsonRes({ results: [{ groupId: "0", studentId: grading.studentId, saved: true, pages: [{ ...page, grading }] }], failures: [] });
+        if (holdNext) { holdNext = false; await new Promise<void>(resolve => { release = resolve; }); }
+        return response;
+      }
+      assert(!url.includes("/correction"), "刷新不得占用整卡订正接口的配额");
+      return jsonRes({ ok: true });
+    } }));
+    const id = mgr.startUpload({ ...baseInput(1), trackResults: true });
+    await waitTerminal(mgr, id);
+    await mgr.refreshResults(id);
+    assert(mgr.getState().jobs[0].resultRows?.[0].row.totalScore === 0, "初始远端填涂生成最新成绩行");
+    holdNext = true;
+    const olderRefresh = mgr.refreshResults(id);
+    assert(release, "旧刷新已发出但暂未返回");
+    corrected = true;
+    await mgr.refreshResults(id);
+    release();
+    await olderRefresh;
+    const latest = mgr.getState().jobs[0].resultRows?.[0];
+    assert(latest?.row.studentId === "10002" && latest.row.totalScore === 5
+      && latest.row.questions[0].selectedOptions[0] === "D", "刷新后学号、分数和选项明细一起更新");
+    assert(latest.pageNum === 1 && latest.side === "front", "刷新结果按物理页与正反面对应原行");
+    assert(saves === 1, "成绩刷新只读，不重新保存已公布成绩");
   }
   console.log("scanner-upload-manager-smoke: 全部通过");
 }

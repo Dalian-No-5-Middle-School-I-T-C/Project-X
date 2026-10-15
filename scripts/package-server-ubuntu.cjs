@@ -1,6 +1,8 @@
 const AdmZip = require("adm-zip");
+const { createHash } = require("node:crypto");
 const {
   chmodSync,
+  readFileSync,
   copyFileSync,
   cpSync,
   existsSync,
@@ -21,6 +23,7 @@ const runtimeDependencies = [
   "express",
   "express-rate-limit",
   "fontkit",
+  "image-size",
   "mammoth",
   "multer",
   "mysql2",
@@ -143,6 +146,7 @@ This is the browser-accessible web server package. It includes dist/web for the 
 - dist/server/schema.mariadb.sql: MariaDB 10.11 schema.
 - llmclient/: Python AI sidecar source and requirements (no local credentials).
 - resources/background.jpg: runtime resource used by the background API.
+- resources/native/correction-linux-x64/: Linux x86_64 recognizer for explicit recovery of uploaded abnormal cards missing alignment. Ordinary scanning still runs on Windows.
 - package.json: production runtime dependencies only.
 - systemd/project-x-server.service: hardened systemd unit (dedicated non-root account).
 - systemd/install.sh: idempotent install / upgrade script (creates the service account,
@@ -548,7 +552,8 @@ const ZIP_UNIX_EXEC_MODE = 0o100755;
 const ZIP_MADE_BY_UNIX = 0x0314;
 
 function isShellEntry(entry) {
-  return !entry.isDirectory && entry.entryName.toLowerCase().endsWith(".sh");
+  return !entry.isDirectory && (entry.entryName.toLowerCase().endsWith(".sh")
+    || entry.entryName.endsWith("/resources/native/correction-linux-x64/answer-card-recognizer"));
 }
 
 /**
@@ -595,11 +600,20 @@ function buildPackage() {
     throw new Error("Missing dist/server/schema.mariadb.sql. Run npm run build:server before packaging.");
   }
 
+  const correctionDir = path.join(rootDir,"resources","native","correction-linux-x64");
+  const correction = readFileSync(path.join(correctionDir,"answer-card-recognizer"));
+  for (const line of readFileSync(path.join(correctionDir,"source-sha256.txt"),"utf8").trim().split("\n")) {
+    const match = line.match(/^([a-f0-9]{64})  (native\/[A-Za-z0-9_./-]+)$/);
+    if (!match || createHash("sha256").update(readFileSync(path.join(rootDir,match[2]))).digest("hex")!==match[1]) throw new Error("Correction recognizer source has changed; rebuild Linux binary before packaging");
+  }
+  if (correction.length<64 || correction.subarray(0,4).toString("hex")!=="7f454c46" || correction[4]!==2 || correction[5]!==1 || correction.readUInt16LE(18)!==62) throw new Error("Expected Linux x86_64 ELF correction recognizer");
+
   rmSync(outputRoot, { recursive: true, force: true });
   mkdirSync(packageDir, { recursive: true });
 
   copyDirectoryIfExists(path.join(rootDir, "dist", "web"), path.join(packageDir, "dist", "web"));
   copyDirectoryIfExists(path.join(rootDir, "dist", "server"), path.join(packageDir, "dist", "server"));
+  copyDirectoryIfExists(correctionDir,path.join(packageDir,"resources","native","correction-linux-x64"));
   cpSync(path.join(rootDir, "llmclient"), path.join(packageDir, "llmclient"), {
     recursive: true,
     filter: (source) => {
@@ -623,7 +637,7 @@ function buildPackage() {
   writeTextFile(path.join(packageDir, "systemd", "install.sh"), createInstallScript());
   writeTextFile(path.join(packageDir, deployReadmeName), createDeployReadme());
 
-  for (const scriptName of ["start.sh", path.join("systemd", "install.sh")]) {
+  for (const scriptName of ["start.sh", path.join("systemd", "install.sh"), path.join("resources","native","correction-linux-x64","answer-card-recognizer")]) {
     try {
       chmodSync(path.join(packageDir, scriptName), 0o755);
     } catch {
