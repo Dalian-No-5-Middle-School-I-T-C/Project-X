@@ -44,6 +44,10 @@ function sameOptions(left: string[], right: string[]): boolean {
 
 function legacyScoringRule(block: ObjectiveBlock): ObjectiveScoringRule | undefined {
   if (!block.multipleScoring) return undefined;
+  // Repository reads include an empty legacy default. Materializing it as a
+  // per-question rule changes a synchronized card on its first local save.
+  if (Object.keys(block.multipleScoring.partialScores ?? {}).length === 0
+    && (block.multipleScoring.wrongOrExtraScore ?? 0) === 0) return undefined;
   return {
     type: "per_selected_count",
     partialScores: block.multipleScoring.partialScores ?? {},

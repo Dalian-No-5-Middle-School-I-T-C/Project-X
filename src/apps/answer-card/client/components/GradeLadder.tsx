@@ -23,7 +23,7 @@ interface LadderConfig {
 }
 
 export function GradeLadder() {
-  const { isAdmin } = useAuth();
+  const { isAdmin, user } = useAuth();
 
   const [scope, setScope] = useState<Scope>("single");
   const [data, setData] = useState<LadderResponse | null>(null);
@@ -40,8 +40,8 @@ export function GradeLadder() {
   }
 
   // 考试列表
-  const [exams, setExams] = useState<ExamFilterItem[]>([]);
-  const [groups, setGroups] = useState<ExamGroupFilterItem[]>([]);
+  const [exams, setExams] = useState<Pick<ExamFilterItem, "id" | "name" | "subject">[]>([]);
+  const [groups, setGroups] = useState<Pick<ExamGroupFilterItem, "id" | "name">[]>([]);
 
   // 当前选择
   const [selectedExamId, setSelectedExamId] = useState<number | null>(null);
@@ -86,9 +86,18 @@ export function GradeLadder() {
   }, []);
 
   useEffect(() => {
-    loadExams();
-    loadGroups();
-  }, [loadExams, loadGroups]);
+    if (user?.role_name !== "student") {
+      void loadExams();
+      void loadGroups();
+      return;
+    }
+    if (!ladderEnabled) return;
+    let active = true;
+    void fetchJson<{ exams: Pick<ExamFilterItem, "id" | "name" | "subject">[]; groups: Pick<ExamGroupFilterItem, "id" | "name">[] }>("/api/ladder/options")
+      .then(options => { if (active) { setExams(options.exams); setGroups(options.groups); } })
+      .catch(err => { if (active) { setExams([]); setGroups([]); setError(err instanceof Error ? err.message : "加载天梯范围失败"); } });
+    return () => { active = false; };
+  }, [loadExams, loadGroups, user?.role_name, ladderEnabled]);
 
   // 加载天梯数据
   const loadLadder = useCallback(async () => {

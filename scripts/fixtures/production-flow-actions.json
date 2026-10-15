@@ -1,0 +1,303 @@
+{
+  "teacher-correct": [
+    {
+      "goto": "{{server}}/analysis"
+    },
+    {
+      "role": "row",
+      "name": "{{cardTitle}}",
+      "regex": true
+    },
+    {
+      "name": "分数有问题？"
+    },
+    {
+      "name": "^个别改分",
+      "regex": true
+    },
+    {
+      "role": "textbox",
+      "name": "搜索学生",
+      "fill": "10008"
+    },
+    {
+      "assertText": "成绩修改 — {{cardTitle}}"
+    },
+    {
+      "name": "搜索"
+    },
+    {
+      "name": "测试学生10008",
+      "regex": true
+    },
+    {
+      "name": "整卡改分"
+    },
+    {
+      "name": "^第 4 题 D",
+      "regex": true,
+      "wait": "visible"
+    },
+    {
+      "name": "^第 4 题 D",
+      "regex": true
+    },
+    {
+      "name": "^第 5 题 10 分",
+      "regex": true
+    },
+    {
+      "name": "^第 5 题 8 分",
+      "regex": true
+    },
+    {
+      "name": "^第 5 题 20 分",
+      "regex": true
+    },
+    {
+      "name": "^第 5 题 5 分",
+      "regex": true
+    },
+    {
+      "name": "保存修改",
+      "responseIncludes": "/correction"
+    },
+    {
+      "name": "整卡改分",
+      "wait": "visible"
+    },
+    {
+      "selector": "text=总分: 45",
+      "wait": "visible"
+    },
+    {
+      "assertNoApiErrors": true
+    },
+    {
+      "snapshot": "复测教师填涂改分成功"
+    }
+  ],
+  "teacher-publish": [
+    {
+      "goto": "{{server}}/exam-manage"
+    },
+    {
+      "scopeRow": "{{cardTitle}}",
+      "name": "公布分数"
+    },
+    {
+      "name": "确认公布",
+      "responseIncludes": "/exams/{{examId}}/publish"
+    },
+    {
+      "scopeRow": "{{cardTitle}}",
+      "name": "撤回公布",
+      "wait": "visible"
+    }
+  ],
+  "teacher-final": [
+    {
+      "goto": "{{server}}/analysis"
+    },
+    {
+      "role": "row",
+      "name": "{{cardTitle}}",
+      "regex": true
+    },
+    {
+      "name": "分数有问题？",
+      "wait": "visible"
+    },
+    {
+      "settle": true
+    },
+    {
+      "snapshot": "教师最终50人概况"
+    },
+    {
+      "role": "tab",
+      "name": "成绩"
+    },
+    {
+      "settle": true
+    },
+    {
+      "snapshot": "教师最终成绩"
+    },
+    {
+      "role": "tab",
+      "name": "题目分析"
+    },
+    {
+      "settle": true
+    },
+    {
+      "snapshot": "教师最终题目分析"
+    },
+    {
+      "role": "tab",
+      "name": "班级对比"
+    },
+    {
+      "settle": true
+    },
+    {
+      "snapshot": "教师最终班级对比"
+    },
+    {
+      "name": "导出"
+    },
+    {
+      "assertText": "导出成绩 — {{cardTitle}}"
+    },
+    {
+      "name": "导出 Excel",
+      "download": "五十人复测成绩表.xlsx"
+    },
+    {
+      "assertNoApiErrors": true
+    },
+    {
+      "snapshot": "复测教师导出标题与下载"
+    }
+  ],
+  "student10008-published": [
+    {
+      "text": "{{cardTitle}}",
+      "wait": "visible"
+    },
+    {
+      "text": "{{cardTitle}}"
+    },
+    {
+      "role": "row",
+      "name": "数学 45 50 90%",
+      "regex": true
+    },
+    {
+      "role": "row",
+      "name": "5 25 30 subjective",
+      "regex": true,
+      "wait": "visible"
+    }
+  ],
+  "student10008-final": [
+    {
+      "role": "tab",
+      "name": "学科对比"
+    },
+    {
+      "settle": true
+    },
+    {
+      "snapshot": "复测学生学科对比"
+    },
+    {
+      "role": "tab",
+      "name": "学期对比"
+    },
+    {
+      "settle": true
+    },
+    {
+      "snapshot": "复测学生学期对比"
+    },
+    {
+      "role": "tab",
+      "name": "成绩天梯"
+    },
+    {
+      "role": "combobox",
+      "nth": -1
+    },
+    {
+      "role": "option",
+      "name": "{{cardTitle}}",
+      "regex": true
+    },
+    {
+      "assertText": "45 分",
+      "exact": true
+    },
+    {
+      "assertText": "参与人数"
+    },
+    {
+      "snapshot": "复测学生单场天梯"
+    },
+    {
+      "text": "大考组"
+    },
+    {
+      "role": "combobox",
+      "nth": -1
+    },
+    {
+      "role": "option",
+      "name": "{{groupName}}"
+    },
+    {
+      "assertText": "45 分",
+      "exact": true
+    },
+    {
+      "snapshot": "复测学生大考组天梯"
+    },
+    {
+      "text": "跨考累计"
+    },
+    {
+      "assertText": "你的总分"
+    },
+    {
+      "settle": true
+    },
+    {
+      "snapshot": "复测学生跨考天梯"
+    },
+    {
+      "assertNoApiErrors": true
+    },
+    {
+      "goto": "{{server}}"
+    },
+    {
+      "text": "{{cardTitle}}",
+      "wait": "visible"
+    },
+    {
+      "text": "{{cardTitle}}"
+    },
+    {
+      "role": "row",
+      "name": "数学 45 50 90%",
+      "regex": true
+    },
+    {
+      "role": "row",
+      "name": "5 25 30 subjective",
+      "regex": true,
+      "wait": "visible"
+    },
+    {
+      "snapshot": "复测学生改分逐题详情"
+    },
+    {
+      "name": "查看答案解析"
+    },
+    {
+      "role": "heading",
+      "name": "我的作答",
+      "wait": "visible"
+    },
+    {
+      "checkImages": true
+    },
+    {
+      "snapshot": "复测学生本人作答图片"
+    },
+    {
+      "assertNoApiErrors": true
+    }
+  ]
+}

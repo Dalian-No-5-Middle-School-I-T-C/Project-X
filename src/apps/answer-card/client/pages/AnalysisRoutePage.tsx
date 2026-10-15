@@ -1,4 +1,6 @@
 import { useWorkspace } from "../WorkspaceContext";
+import { useEffect, useState } from "react";
+import { fetchJson } from "../auth/api";
 import { ExamSelectPage } from "../components/ExamSelectPage";
 import { ExamGroupDetailPage } from "../components/ExamGroupDetailPage";
 import { ScoreDetailPage } from "../components/ScoreDetailPage";
@@ -21,6 +23,18 @@ export function AnalysisRoutePage() {
     examListRefreshKey,
     exams,
   } = useWorkspace();
+
+  const [exam, setExam] = useState<{ id: number; name: string; subject: string | null } | null>(null);
+  useEffect(() => {
+    let active = true;
+    setExam(null);
+    if (selectedAnalysisExamId != null) {
+      void fetchJson<{ id: number; name: string; subject: string | null }>(`/api/exams/${selectedAnalysisExamId}`)
+        .then(value => { if (active) setExam(value); }).catch(() => {});
+    }
+    return () => { active = false; };
+  }, [selectedAnalysisExamId]);
+  const selectedExam = exam?.id === selectedAnalysisExamId ? exam : exams.find(e => e.id === selectedAnalysisExamId);
 
   return (
     <div className="grid h-full min-h-0 w-full grid-cols-1 overflow-hidden">
@@ -49,13 +63,8 @@ export function AnalysisRoutePage() {
           analysisGroupId == null && (
             <ScoreDetailPage
               examId={selectedAnalysisExamId}
-              examName={
-                exams.find((e) => e.id === selectedAnalysisExamId)?.name ?? ""
-              }
-              subject={
-                exams.find((e) => e.id === selectedAnalysisExamId)?.subject ??
-                null
-              }
+              examName={selectedExam?.name ?? ""}
+              subject={selectedExam?.subject ?? null}
               onBack={() => {
                 setSelectedAnalysisExamId(null);
                 setAnalysisTab("select");

@@ -1,5 +1,6 @@
 import { scanCorrectionRouter } from "./scan-correction";
-import { storeCorrectionPage } from "../services/scanCorrection";
+import { loadCorrectionPage, storeCorrectionPage } from "../services/scanCorrection";
+import { gradeCombinedRecognition, gradeSessionStudentResults } from "../../shared/grading";
 /**
  * v1.6.0 — 扫描上传端点
  * 供扫描端 Electron 通过 HTTP 上传扫描结果到服务端
@@ -542,7 +543,29 @@ router.get("/sessions/:sessionId/results", dualAuth, async (req, res, next) => {
     const session = await getMysqlDb().get<{ card_id: string }>("SELECT card_id FROM twain_scan_sessions WHERE id = ?", req.params.sessionId);
     const card = session && await new CardRepository().findById(session.card_id);
     if (!card) { res.status(404).json({ message: "扫描会话或答题卡不存在" }); return; }
-    res.json(await processScannerSession(card, String(req.params.sessionId)));
+    const batch = await processScannerSession(card, String(req.params.sessionId));
+    // Teacher edits live in correction snapshots, while upload receipts retain
+    // the original recognition. Read the current marks without resaving grades.
+    for (const result of batch.results) {
+      const currentPages = await Promise.all(result.pages.map(async page => {
+        const correction = await loadCorrectionPage("twain_scan_record", page.recordId, "");
+        const recognition = correction ? { ...correction.recognition, studentId: { status: "ok", value: result.studentId } }
+          : page.grading?.recognition;
+        if (!recognition) return null;
+        const grading = gradeCombinedRecognition(card, page.recordId, recognition);
+        Object.assign(page, { grading, objectiveScore: grading.objectiveScore, subjectiveScore: grading.subjectiveScore,
+          totalScore: grading.totalScore, totalMaxScore: grading.totalMaxScore });
+        return { ...page, imagePath: page.recordId, ocrStatus: "completed", recognition };
+      }));
+      if (currentPages.every(page => page !== null)) {
+        const combined = gradeSessionStudentResults(card, currentPages);
+        Object.assign(result, { totalScore: combined.totalScore, maxScore: combined.totalMaxScore,
+          objectiveScore: combined.objectiveScore, subjectiveScore: combined.subjectiveScore,
+          objectiveMaxScore: combined.objectiveMaxScore, subjectiveMaxScore: combined.subjectiveMaxScore,
+          needsReviewCount: combined.needsReviewCount });
+      }
+    }
+    res.json(batch);
   } catch (error) { next(error); }
 });
 router.post("/sessions/:sessionId/correct", dualAuth, async (req, res, next) => {
