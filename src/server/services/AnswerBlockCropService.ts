@@ -24,8 +24,8 @@ type CropRow = {
   block_type: string;
   page_number: number;
   segment_index: number;
-  question_numbers: string;
-  rect_json: string;
+  question_numbers: string | Array<number | string>;
+  rect_json: string | Rect;
   image_path: string;
   width_px: number;
   height_px: number;
@@ -56,10 +56,13 @@ function cropImageUrl(id: string): string {
   return `/api/answer-block-crops/${encodeURIComponent(id)}/image`;
 }
 
-function parseJson<T>(value: string | null | undefined, fallback: T): T {
+function parseJson<T extends object>(value: string | T | null | undefined, fallback: T): T {
   if (!value) return fallback;
   try {
-    return JSON.parse(value) as T;
+    // SQLite returns JSON text; MariaDB may decode its JSON columns already.
+    const parsed: unknown = typeof value === "string" ? JSON.parse(value) : value;
+    if (Array.isArray(fallback)) return Array.isArray(parsed) ? parsed as T : fallback;
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as T : fallback;
   } catch {
     return fallback;
   }

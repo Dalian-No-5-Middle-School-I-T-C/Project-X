@@ -88,6 +88,12 @@ try {
   assert.equal((await studentCorrection(current,exam.id,student.id)).pages[0].revision,scorePage.revision);
   await db.run("UPDATE exams SET assigned_formula=NULL WHERE id=?",exam.id);
   await saveStudentCorrection(current,exam.id,student.id,[scoreEdit],null);
+  const refreshedScores = await fetch(`${fixture.baseUrl}/api/scanner/upload/sessions/${session.id}/results`,{headers:{"X-Api-Key":info.key}});
+  assert.equal(refreshedScores.status,200);
+  const refreshedBatch = await refreshedScores.json();
+  assert.deepEqual(refreshedBatch.results[0].pages[0].grading.questions[0].selectedOptions,["B"],"scanner refresh reads teacher-corrected marks rather than original upload recognition");
+  assert.equal(refreshedBatch.results[0].pages[0].grading.objectiveScore,0);
+  assert.equal(refreshedBatch.results[0].saved,true,"refresh retains saved receipt state without resubmitting grades");
   let total = await db.get<{total_score:number;subjective_score:number}>("SELECT total_score,subjective_score FROM student_scores WHERE exam_id=? AND student_id=?",exam.id,student.id);
   assert.equal(total?.total_score,17); assert.equal(total?.subjective_score,17,"unrelated manual/review score preserved");
   assert.equal(JSON.stringify(await db.all("SELECT * FROM review_sessions")),reviewBefore);

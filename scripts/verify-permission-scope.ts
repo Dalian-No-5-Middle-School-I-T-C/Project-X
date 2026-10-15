@@ -258,6 +258,19 @@ async function main(): Promise<void> {
   ok(groupForeign.status === 403, `学生经组天梯读取未参与的大考被 403（实际 ${groupForeign.status} ${groupForeign.body?.message ?? ""}）`);
   const groupOwn = await get(`/api/ladder/exam-groups/${groupId}`, tokenS1);
   ok(groupOwn.status === 200, `学生读取本人参与的大考组天梯成功（实际 ${groupOwn.status} ${groupOwn.body?.message ?? ""}）`);
+  const ownOptions = await get("/api/ladder/options", tokenS1);
+  ok(ownOptions.status === 200 && ownOptions.body.exams.some((e: any) => e.id === examA)
+    && ownOptions.body.groups.some((g: any) => g.id === groupId), "学生天梯选择器包含本人已公布考试与大考组");
+  const foreignOptions = await get("/api/ladder/options", tokenS4);
+  ok(foreignOptions.status === 200 && !foreignOptions.body.exams.some((e: any) => e.id === examA)
+    && !foreignOptions.body.groups.some((g: any) => g.id === groupId), "学生天梯选择器不暴露未参与的考试和大考组");
+  db.prepare("UPDATE exams SET score_published=0 WHERE id=?").run(examA);
+  const unpublishedOptions = await get("/api/ladder/options", tokenS1);
+  ok(unpublishedOptions.status === 200 && !unpublishedOptions.body.exams.some((e: any) => e.id === examA)
+    && !unpublishedOptions.body.groups.some((g: any) => g.id === groupId), "撤回公布后考试及包含该场的大考组从学生选择器移除");
+  db.prepare("UPDATE exams SET score_published=1 WHERE id=?").run(examA);
+  ok((await get("/api/exams", tokenS1)).status === 403 && (await get("/api/exam-groups", tokenS1)).status === 403,
+    "学生天梯入口可用后，教师管理列表仍禁止学生访问");
 
   console.log("\n== PR #312 CR7/CR10/CR11/CR12 天梯参与子集、冻结名单出路、只读教师与 403 脱敏 ==");
   // created_by 挂在 teacherA 名下：末尾 R06 的解绑步骤要求卡上每场考试都在调用者范围内，

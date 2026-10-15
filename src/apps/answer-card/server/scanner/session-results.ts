@@ -1,5 +1,5 @@
 import { buildLayout } from "../../../../shared/layout";
-import { gradeSessionStudentResults, type CombinedStudentResult } from "../../../../shared/grading";
+import { gradeCombinedRecognition, gradeSessionStudentResults, type CombinedStudentResult } from "../../../../shared/grading";
 import { mapScanPageToLayout, type ScanBatchResponse, type ScanBatchPage } from "../../../../shared/scanPages";
 import type { AnswerCard, CombinedRecognitionResult } from "../../../../shared/types";
 import type { ScanRecordWithResult, StudentGradingResultRow } from "../database/scan-store";
@@ -198,7 +198,13 @@ export async function collectSessionResults(
         saved = (await save(combined)) !== false;
       }
       response.results.push({
-        groupId, studentId, pages: pages.map((page, index) => ({ ...combined.pages[index], ...page })),
+        groupId, studentId, pages: pages.map((page, index) => ({ ...combined.pages[index], ...page,
+          grading: gradeCombinedRecognition(card, page.recordId, {
+            status: "ok", studentId: { status: "ok", value: studentId },
+            questions: JSON.parse(rows[index].record.recognition!.objective_json ?? "[]"),
+            subjectiveQuestions: JSON.parse(rows[index].record.recognition!.subjective_json ?? "[]"),
+          } as CombinedRecognitionResult),
+        })),
         saved, totalScore: combined.totalScore, maxScore: combined.totalMaxScore,
         objectiveScore: combined.objectiveScore, objectiveMaxScore: combined.objectiveMaxScore,
         subjectiveScore: combined.subjectiveScore, subjectiveMaxScore: combined.subjectiveMaxScore,

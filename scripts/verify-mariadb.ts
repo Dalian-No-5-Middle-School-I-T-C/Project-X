@@ -371,6 +371,21 @@ async function main(): Promise<void> {
     assert.equal(Number(blockB2.reviewedCount), 1);
     assert.equal((await listReviewBlocks(blocksExamId, db, ["B2"])).length, 1, "题块级授权只列出被分配的题块（R03）");
     assert.deepEqual(await listReviewBlocks(blocksExamId, db, []), [], "题块授权为空集时不返回任何题块（R03）");
+    // MariaDB JSON columns can arrive as already-decoded arrays/objects. A
+    // one-item array must stay an array when student score details load crops.
+    const { listAnswerBlockCropsForStudent } = await import("../src/server/services/AnswerBlockCropService");
+    const cropRect = { x: 17, y: 108, width: 176, height: 55 };
+    await db.run("UPDATE answer_block_crops SET question_numbers=?,rect_json=? WHERE id='blocks_ci_1'",
+      JSON.stringify([21]), JSON.stringify(cropRect));
+    await db.run("UPDATE answer_block_crops SET question_numbers=?,rect_json=? WHERE id='blocks_ci_2'",
+      JSON.stringify([21, 22]), JSON.stringify(cropRect));
+    const studentCrops = await listAnswerBlockCropsForStudent(blocksExamId, blocksStudentId, db);
+    assert.deepEqual(studentCrops.find(crop => crop.id === "blocks_ci_1")?.questionNumbers, [21]);
+    assert.deepEqual(studentCrops.find(crop => crop.id === "blocks_ci_2")?.questionNumbers, [21, 22]);
+    assert.deepEqual(studentCrops.find(crop => crop.id === "blocks_ci_1")?.rect, cropRect);
+    assert.equal(studentCrops.find(crop => crop.id === "blocks_ci_1")?.maxScore, 10);
+    assert.equal(studentCrops.find(crop => crop.id === "blocks_ci_2")?.maxScore, 15);
+    console.log("PASS: MariaDB JSON crop arrays, coordinates and student-detail score aggregation");
     await db.run("DELETE FROM question_scores WHERE exam_id = ?", blocksExamId);
     await db.run("DELETE FROM block_grading_config WHERE exam_id = ?", blocksExamId);
     await db.run("DELETE FROM answer_block_crops WHERE exam_id = ?", blocksExamId);
