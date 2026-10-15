@@ -60,7 +60,7 @@ await db.run(
   exam.id,
 );
 await db.run(
-  "UPDATE users SET password_hash=(SELECT password_hash FROM users WHERE id=?) WHERE student_number='91001'",
+  "UPDATE users SET password_hash=(SELECT password_hash FROM users WHERE id=?) WHERE student_number IN ('91001','91004','91010')",
   teacher.id,
 );
 const app = await createApp();
@@ -142,12 +142,34 @@ const score = async (number: string) =>
     exam.id,
     number,
   );
+const studentTokens = new Map<string, string>();
+async function assertSingleExamAccess(number: string, expectedScore: number | null, label: string) {
+  if (!studentTokens.has(number)) {
+    studentTokens.set(number, (await authService.login(`flow_${number}`, "PendingTest2026!")).token!);
+  }
+  const headers = { Authorization: `Bearer ${studentTokens.get(number)}` };
+  const options = await fetch(`${base}/api/ladder/options`, { headers });
+  assert.equal(options.status, 200, `${label}: selector loads`);
+  const body = await options.json() as { exams: Array<{ id: number }> };
+  assert.equal(body.exams.some(e => e.id === exam.id), expectedScore !== null, `${label}: selector matches score availability`);
+  const board = await fetch(`${base}/api/ladder/exams/${exam.id}`, { headers });
+  assert.equal(board.status, expectedScore === null ? 403 : 200, `${label}: single-exam access agrees with selector`);
+  if (expectedScore !== null) {
+    assert.equal((await board.json() as { myScore: number }).myScore, expectedScore, `${label}: board shows persisted score`);
+  }
+}
 try {
   await scan("91001");
   await db.run(
     "UPDATE exams SET score_published=1,status='closed' WHERE id=?",
     exam.id,
   );
+  // A frozen-roster absence and an unresolved card both lack a score, even
+  // though the published exam's participation snapshot already includes them.
+  await db.run("UPDATE exam_participants SET source='roster' WHERE exam_id=? AND student_id=(SELECT id FROM users WHERE student_number='91010')", exam.id);
+  await assertSingleExamAccess("91010", null, "absent frozen-roster student");
+  await assertSingleExamAccess("91004", null, "mistaken-ID card before correction");
+  await assertSingleExamAccess("91001", 5, "saved original before duplicate");
   await scan("91002");
   assert.equal(
     Number((await score("91002"))!.total_score),
@@ -158,6 +180,7 @@ try {
   const original = (await db.get<{ session_id: string }>("SELECT session_id FROM scanner_submissions WHERE exam_id=? AND student_number='91001' AND state='saved'", exam.id))!;
   const duplicate = await scan("91001", "B");
   assert.equal(await score("91001"), null, "published duplicate withdraws the previously saved grade");
+  await assertSingleExamAccess("91001", null, "duplicate withdrawal hides the exam");
   assert.equal(JSON.stringify(await score("91002")), unaffected, "unrelated student remains saved");
   assert.equal((await listPendingScans(exam.id)).length, 2, "both duplicate originals appear in teacher abnormal queue");
   const healthySibling = await store.createScanRecord({sessionId:duplicate.session.id,cardId:card.id,pageNum:2,imagePath:duplicate.record.image_path});
@@ -185,11 +208,17 @@ try {
   }
   assert.equal((await saveMarks(original.session_id)).saved, false, "unchanged duplicate remains abnormal");
   assert.equal((await saveMarks(duplicate.session.id, "91004")).saved, true, "teacher mark correction resolves the mistaken ID");
+  await assertSingleExamAccess("91004", 0, "corrected card admits a genuine zero score");
   assert.equal(await score("91001"), null, "withdrawn original requires an explicit save after conflict resolution");
+  await assertSingleExamAccess("91001", null, "original still awaits explicit save");
   assert.equal((await saveMarks(original.session_id)).saved, true);
   assert.equal(Number((await score("91001"))!.total_score), 5);
   assert.equal(Number((await score("91004"))!.total_score), 0);
   assert.equal((await listPendingScans(exam.id)).length, 0);
+  await assertSingleExamAccess("91001", 5, "original restored after conflict resolution");
+  await assertSingleExamAccess("91010", null, "absent student stays hidden after other cards are repaired");
+  assert.ok(await db.get("SELECT 1 FROM exam_participants WHERE exam_id=? AND student_id=(SELECT id FROM users WHERE student_number='91010')", exam.id), "absence regression retains the participation snapshot");
+  console.log("PASS: student ladder absence and duplicate-card correction (hidden before admission, visible after save, zero score included)");
   // An existing account outside the snapshot requires an authorized teacher to add it.
   const extra = await new UserRepository().createUser({
     username: "pending-extra",

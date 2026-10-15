@@ -87,7 +87,7 @@ router.get("/config", async (_req: Request, res: Response) => {
   res.json({ enabled: await isLadderEnabled() });
 });
 
-/** Student selectors use the same publication/participation scope as the boards. */
+/** Single exams require a score; aggregate boards retain roster participation. */
 router.get("/options", async (req: Request, res: Response) => {
   if (req.user?.role_name !== "student") {
     res.status(403).json({ message: "此入口仅供学生查询本人的天梯范围" });
@@ -96,12 +96,16 @@ router.get("/options", async (req: Request, res: Response) => {
   if (!(await checkLadderOpen(req, res))) return;
   try {
     const db = getMysqlDb();
-    const candidates = await db.all<{ id: number; name: string; subject: string | null }>(
-      `SELECT e.id, e.name, e.subject FROM exams e
+    const candidates = await db.all<{ id: number; name: string; subject: string | null; has_score: number }>(
+      `SELECT e.id, e.name, e.subject,
+         EXISTS (SELECT 1 FROM student_scores ss WHERE ss.exam_id = e.id AND ss.student_id = ?) AS has_score
+       FROM exams e
        WHERE e.score_published = 1 AND ${EXAM_NOT_SOFT_DELETED_SQL}
-       ORDER BY e.created_at DESC, e.id DESC`);
+       ORDER BY e.created_at DESC, e.id DESC`, req.user.id);
     const participated = new Set(await new AnalysisRepository().filterParticipatedExamIds(candidates.map(e => e.id), req.user.id));
-    const exams = candidates.filter(e => participated.has(e.id));
+    // Match requireExamAccess / ScoreRepository.hasScore, including zero scores.
+    const exams = candidates.filter(e => Number(e.has_score) === 1)
+      .map(({ id, name, subject }) => ({ id, name, subject }));
     const groups = await db.all<{ id: number; name: string; exam_id: number; score_published: number }>(
       `SELECT eg.id, eg.name, e.id AS exam_id, e.score_published
        FROM exam_groups eg JOIN exam_group_members egm ON egm.group_id = eg.id
