@@ -284,7 +284,12 @@ export async function recoverScannerSubmissionSnapshot(examId: number, sessionId
 /** Both paths consume Windows recognition records; this service never runs OMR. */
 export async function processScannerSession(card: AnswerCard, sessionId: string,
   mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string): Promise<ScanBatchResponse> {
-  return enqueueScannerSubmission(async () => {
+  return enqueueScannerSubmission(() => processScannerSessionInQueue(card, sessionId, mode, saveGroupId));
+}
+
+/** Caller retains scanner queue ownership through correction and admission. */
+export async function processScannerSessionInQueue(card: AnswerCard, sessionId: string,
+  mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string): Promise<ScanBatchResponse> {
     const db = getMysqlDb();
     const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
     const { groups, pageCount } = groupSessionPages(card, records);
@@ -515,5 +520,4 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
     }
     response.reviewCards = all.filter(r => r.state === "pending" && r.previously_saved).map(conflictCard);
     return visible(response);
-  });
 }

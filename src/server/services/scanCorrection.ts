@@ -12,7 +12,7 @@ import { gradeObjectiveQuestion, gradeSubjectiveRecognition } from "../../shared
 import type { AnswerCard, CombinedRecognitionResult } from "../../shared/types";
 import { listScanRecordsGroupedByStudent } from "../../apps/answer-card/server/database/scan-store";
 import { groupSessionPages, validateSessionGroupStructure } from "../../apps/answer-card/server/scanner/session-results";
-import { enqueueScannerSubmission, processScannerSession } from "./scannerSubmissions";
+import { enqueueScannerSubmission, processScannerSessionInQueue } from "./scannerSubmissions";
 import { recomputeExamRankings } from "./rankingUpdate";
 import { markScoreMutated } from "./examPublishEvents";
 import { resolveScannerExam } from "./scannerExam";
@@ -180,7 +180,7 @@ function changedScores(card: AnswerCard, page: CorrectionPage, edit: CorrectionE
 
 /** Commit corrected marks, then admit only this card through the existing receipt and duplicate checks. */
 export async function saveSessionCorrection(card: AnswerCard, sessionId: string, groupId: string, raw: unknown, userId: number | null, allowRecovery = false) {
-  await enqueueScannerSubmission(async () => {
+  return enqueueScannerSubmission(async () => {
     const db = getMysqlDb(), document = await sessionCorrection(card,sessionId,groupId,false,allowRecovery);
     const edits = validateEdits(document,raw);
     const resolved = await resolveScannerExam(card.id,sessionId);
@@ -219,14 +219,14 @@ export async function saveSessionCorrection(card: AnswerCard, sessionId: string,
         await tx.run("UPDATE scanner_submissions SET score_snapshot=? WHERE exam_id=? AND session_id=? AND group_id=?",JSON.stringify(snapshot),receipt.exam_id,sessionId,groupId);
       }
     });
+    // Retain queue ownership until this card has passed normal admission checks;
+    // retry previews must not observe corrected marks with a still-pending receipt.
+    const admission = await resolveScannerExam(card.id,sessionId);
+    if (!admission.exam) return {saved:false,message:"填涂订正已保存，等待上传到关联考试"};
+    const batch = await processScannerSessionInQueue(card,sessionId,"save",groupId);
+    const saved = Boolean(batch.results.find(r => r.groupId === groupId)?.saved);
+    return {saved,message:saved ? "改分已保存" : batch.failures.find(f=>f.groupId===groupId)?.message ?? "订正已保存，请继续处理重复卷"};
   });
-  // The edited card is the only requested save. Other cards retain their pending
-  // state; normal duplicate/identity/roster checks still decide admission.
-  const resolved = await resolveScannerExam(card.id,sessionId);
-  if (!resolved.exam) return {saved:false,message:"填涂订正已保存，等待上传到关联考试"};
-  const batch = await processScannerSession(card,sessionId,"save",groupId);
-  const saved = Boolean(batch.results.find(r => r.groupId === groupId)?.saved);
-  return {saved,message:saved ? "改分已保存" : batch.failures.find(f=>f.groupId===groupId)?.message ?? "订正已保存，请继续处理重复卷"};
 }
 /** Patch only changed objective answers / paper-marked scores. Never rewrite online review submissions. */
 export async function saveStudentCorrection(card: AnswerCard, examId: number, studentId: number, raw: unknown, userId: number | null) {
