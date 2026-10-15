@@ -938,7 +938,7 @@ export async function isTeacherPermittedForExam(
  * 整卷级授权校验（PR #280 第五轮评审 P1）。
  *
  * 与 isTeacherPermittedForExam 的区别：整卷上传会一次性写入本场考试的全部客观题
- * 与主观题成绩并撤回已公布状态，因此只接受「不限题块」的授权（block_id IS NULL）。
+ * 与主观题成绩，并可能按管理员策略撤回已公布状态，因此只接受「不限题块」的授权（block_id IS NULL）。
  * 仅有单个题块授权（block_id 非空）的教师改走题块级网阅接口，不得借整卷接口
  * 覆盖其它题块的成绩。
  *

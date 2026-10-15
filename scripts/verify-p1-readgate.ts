@@ -8,9 +8,12 @@
  *  G4  未公布考试天梯 → 403（checkLadderPublished）
  *  G5  未公布单场 AI 分析 → 403（不触发 LLM）
  *  G6  公布后：/me 出现该考试、明细 200
- *  G7  教师改分自动撤回 → 学生端立即不可见（/me 消失、明细 404）
+ *  G7  开启 auto_unpublish_on_score_change 后教师改分自动撤回 → 学生端立即不可见（/me 消失、明细 404）
  *  G8  重新公布 → 学生端恢复可见
  *  G9  教师/管理员代查仍可见未公布成绩（publishedOnly=false 不误伤教师端）
+ *
+ * 另含自动撤回策略两态：默认关闭＝改分保持公布、学生继续查分；经 PUT /api/system-settings
+ * 开启后写分即撤回、关闭后恢复保持公布；学生改策略 403、非法值 400、管理员改动能持久化。
  *
  * 用法: npx tsx scripts/verify-p1-readgate.ts（须用 Node 24 运行 tsx）
  */

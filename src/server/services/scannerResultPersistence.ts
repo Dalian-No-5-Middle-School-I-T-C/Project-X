@@ -59,8 +59,9 @@ export async function persistScannerResultToMainDb(
     // （难度/区分度/逐题统计都依赖两表一致）。
     const write = async (tx: DbAdapter) => {
       for (const exam of filteredExams) {
-        // Also covers publication between successive scanner uploads. The
-        // withdrawal and score changes must commit or roll back together.
+        // Whether this write also withdraws publication is decided by the
+        // administrator policy (auto_unpublish_on_score_change), but it must
+        // commit or roll back together with the score changes below.
         await markScoreMutated(tx, exam.id, null, "scanner_save");
         const obj = roundScore(result.objectiveScore);
         const subj = roundScore(result.subjectiveScore);

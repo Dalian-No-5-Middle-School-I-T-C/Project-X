@@ -1594,7 +1594,7 @@ export async function createApp(): Promise<express.Express> {
       const confidenceThreshold = await resolveConfidenceThreshold(req);
 
       const examIdParam = fieldValue(req.body.examId);
-      // 安全（云端安全检查 #05/#10）：判分上传会把成绩写入 examId 并从已公布状态撤回，
+      // 安全（云端安全检查 #05/#10）：判分上传会把成绩写入 examId，并可能按管理员策略从已公布状态撤回，
       // 因此在做任何识别/落库前先校验考试范围，且目标考试必须关联当前答题卡。
       if (examIdParam) {
         const targetExamId = Number(examIdParam);
@@ -1605,7 +1605,7 @@ export async function createApp(): Promise<express.Express> {
         if (!await validateExamIdsAccess(req, res, [targetExamId])) return;
         // 可见性 ≠ 写权限：管理员在权限矩阵里显式 can_grade=0 时必须拦住判分入库
         // （validateExamIdsAccess 只查 getVisibleExamIds，矩阵禁止行拦不住写）。
-        // 整卷上传会写入本场考试全部客观题与主观题成绩并撤回已公布状态，因此只接受
+        // 整卷上传会写入本场考试全部客观题与主观题成绩，并可能按管理员策略撤回已公布状态，因此只接受
         // 「不限题块」的授权：仅有单题块授权（block_id 非空）的教师走题块级网阅接口，
         // 不得借整卷接口覆盖其它题块；管理员/学年主任等特权阅卷人不受遗留矩阵行影响。
         if (req.user && !await isTeacherPermittedForWholeExam(req.user, targetExamId, "can_grade")) {
@@ -3021,7 +3021,7 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       await clearExplicitParticipants(db, examId);
-      res.json({ ok: true, message: "显式应考名单已清除（考试将按年级/班级名册校验）" });
+      res.json({ ok: true, message: "显式应考名单已清除（考试已回落年级/班级名册快照）" });
     } catch (error) {
       next(error);
     }

@@ -293,7 +293,7 @@ export function ExamManagePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ studentIds: ids }),
       });
-      setStatus("应考名单已保存（发布完整性将按此名单校验）");
+      setStatus("应考名单已保存（用于扫描入库身份校验与名单展示，公布不再要求名单齐全）");
       setRosterExam(null);
     } catch (err) {
       setRosterErr(err instanceof Error ? err.message : "保存名单失败");
@@ -309,7 +309,7 @@ export function ExamManagePage() {
     setRosterErr(null);
     try {
       await fetchJson(`/api/exams/${rosterExam.id}/participants`, { method: "DELETE" });
-      setStatus("显式应考名单已清除（将按年级/班级名册校验）");
+      setStatus("显式应考名单已清除（已回落年级/班级名册快照）");
       await openRosterModal(rosterExam);
     } catch (err) {
       setRosterErr(err instanceof Error ? err.message : "恢复班级/年级名册失败");
@@ -1039,7 +1039,7 @@ export function ExamManagePage() {
           <DialogHeader>
             <DialogTitle>应考名单 — {rosterExam?.name ?? ""}</DialogTitle>
             <DialogDescription>
-              发布完整性将按此名单校验：应考学生必须全部有成绩，名单外学号不允许入库。
+              名单外学号不允许扫描入库；公布只要求该场已有成绩，不再要求名单内学生全部出分。
               来源：{rosterData?.source === "explicit" ? "管理员显式名单" : rosterData?.source === "roster" ? "年级/班级名册（自动）" : "未确定"}
               （共 {rosterData?.total ?? 0} 人{rosterData?.missing ? `，${rosterData.missing} 人无账号记录` : ""}）
             </DialogDescription>
