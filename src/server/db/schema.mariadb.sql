@@ -971,3 +971,9 @@ CREATE TABLE IF NOT EXISTS exam_answer_key_pages (
     UNIQUE KEY uq_exam_answer_key_pages (exam_id, page_index),
     FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS scan_correction_pages (
+ source_type VARCHAR(32) NOT NULL, source_id VARCHAR(128) NOT NULL, card_version VARCHAR(24) NOT NULL,
+ layout_json LONGTEXT NOT NULL, recognition_json LONGTEXT NOT NULL, revision BIGINT NOT NULL DEFAULT 0,
+ modified_by INTEGER, modified_at VARCHAR(32), PRIMARY KEY (source_type, source_id)
+);

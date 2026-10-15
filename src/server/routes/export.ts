@@ -15,10 +15,12 @@ const router = express.Router();
 const userRepo = new UserRepository();
 
 router.use(authMiddleware);
-router.use(requirePermission(PERMISSIONS.USER_MANAGE));
+// Account exports share /api/export with scoped score exports. Apply the
+// administrator gate only to these routes so unrelated requests can continue.
+const manageAccounts = requirePermission(PERMISSIONS.USER_MANAGE);
 
 /** GET /api/export/students — 导出学生账密 Excel */
-router.get("/students", async (_req: Request, res: Response) => {
+router.get("/students", manageAccounts, async (_req: Request, res: Response) => {
   try {
     const rows = await userRepo.listAllStudentsForExport();
     const data = rows.map((r) => ({
@@ -47,7 +49,7 @@ router.get("/students", async (_req: Request, res: Response) => {
 });
 
 /** GET /api/export/teachers — 导出教师账密 Excel */
-router.get("/teachers", async (_req: Request, res: Response) => {
+router.get("/teachers", manageAccounts, async (_req: Request, res: Response) => {
   try {
     const teachers = await userRepo.listAllTeachersForExport();
     const data = teachers.map((t) => ({
@@ -74,12 +76,12 @@ router.get("/teachers", async (_req: Request, res: Response) => {
 });
 
 /** GET /api/export/students.csv — 重定向到 .xlsx（兼容旧 URL） */
-router.get("/students.csv", async (req: Request, res: Response) => {
+router.get("/students.csv", manageAccounts, async (req: Request, res: Response) => {
   res.redirect(301, "/api/export/students");
 });
 
 /** GET /api/export/teachers.csv — 重定向到 .xlsx（兼容旧 URL） */
-router.get("/teachers.csv", async (req: Request, res: Response) => {
+router.get("/teachers.csv", manageAccounts, async (req: Request, res: Response) => {
   res.redirect(301, "/api/export/teachers");
 });
 

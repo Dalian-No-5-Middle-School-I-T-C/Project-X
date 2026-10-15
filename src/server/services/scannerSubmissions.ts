@@ -73,8 +73,8 @@ export async function linkSavedScannerCrops(db: DbAdapter, cardId: string, recei
  * 识别结果换掉，再点一次提交就会覆盖已入库成绩。归属判据用回执，不用状态字段。
  */
 export async function savedReceiptOwnerOfPage(sessionId: string,
-  recordId: string, includeDiscarded = false): Promise<{ exam_id: number; group_id: string; student_number: string; state: string } | null> {
-  const rows = await getMysqlDb().all<Receipt>(
+  recordId: string, includeDiscarded = false, db = getMysqlDb()): Promise<{ exam_id: number; group_id: string; student_number: string; state: string } | null> {
+  const rows = await db.all<Receipt>(
     "SELECT * FROM scanner_submissions WHERE session_id = ? AND (state = 'saved' OR (? = 1 AND state = 'discarded'))", sessionId, includeDiscarded ? 1 : 0);
   for (const row of rows) {
     let pages: ScanBatchPage[] = [];
@@ -96,6 +96,19 @@ export function enqueueScannerSubmission<T>(work: () => Promise<T>): Promise<T> 
 async function lockExam(db: DbAdapter, examId: number) {
   await db.run("UPDATE exams SET id = id WHERE id = ?", examId);
 }
+/** Upload mutations share the grading queue and exam row locks through commit. */
+export function writeScannerSession<T>(sessionId: string, work: (tx: DbAdapter) => Promise<T>): Promise<T> {
+  return enqueueScannerSubmission(async () => {
+    const db = getMysqlDb();
+    // Discover locks before BEGIN so MariaDB's first consistent read follows the locks.
+    const exams = await db.all<{ id: number }>(
+      "SELECT e.id FROM exams e JOIN twain_scan_sessions s ON s.card_id=e.card_id WHERE s.id=? ORDER BY e.id", sessionId);
+    return db.transaction(async tx => {
+      for (const exam of exams) await lockExam(tx, exam.id);
+      return work(tx);
+    });
+  });
+}
 async function receipts(db: DbAdapter, examId: number): Promise<Receipt[]> {
   return db.all<Receipt>("SELECT * FROM scanner_submissions WHERE exam_id = ? AND state NOT IN ('superseded', 'discarded')", examId);
 }
@@ -103,7 +116,7 @@ function conflictCard(row: Receipt): ScanConflictCard {
   const result = row.result_json ? JSON.parse(row.result_json) as CombinedStudentResult : null;
   const snapshot = row.score_snapshot ? JSON.parse(row.score_snapshot) : null;
   return { sessionId: row.session_id, groupId: row.group_id, studentId: row.student_number,
-    previouslySaved: Boolean(row.previously_saved), totalScore: snapshot?.score?.total_score ?? result?.totalScore,
+    previouslySaved: Boolean(row.previously_saved), formalScoreRetained: row.state === "saved", totalScore: snapshot?.score?.total_score ?? result?.totalScore,
     pages: JSON.parse(row.pages_json) as ScanBatchPage[] };
 }
 async function withdraw(db: DbAdapter, examId: number, studentNumber: string, reason: "scanner_duplicate" | "scanner_retry" = "scanner_duplicate") {
@@ -127,33 +140,44 @@ async function withdraw(db: DbAdapter, examId: number, studentNumber: string, re
   await db.run("UPDATE scanner_submissions SET state = 'conflict' WHERE exam_id = ? AND student_number = ? AND state NOT IN ('superseded', 'discarded')", examId, studentNumber);
 }
 
+export async function invalidateScanRecognitionInTransaction(tx: DbAdapter, sessionId: string, recordId: string): Promise<Set<number>> {
+  const changedExams = new Set<number>();
+  const owned = await tx.all<Receipt>("SELECT * FROM scanner_submissions WHERE session_id = ? AND state NOT IN ('superseded', 'discarded')", sessionId);
+  for (const receipt of owned) {
+    if (!(JSON.parse(receipt.pages_json) as ScanBatchPage[]).some(p => p.recordId === recordId)) continue;
+    await lockExam(tx, receipt.exam_id);
+    if (receipt.state === "saved") {
+      if (await tx.get("SELECT id FROM exams WHERE id=? AND (score_published=1 OR EXISTS (SELECT 1 FROM exam_publish_events p WHERE p.exam_id=exams.id))",receipt.exam_id)) throw new Error("已公布的正式原卷不能重新识别覆盖，请上传新卷并由老师确认");
+      await withdraw(tx, receipt.exam_id, receipt.student_number, "scanner_retry");
+      changedExams.add(receipt.exam_id);
+    }
+    await tx.run("UPDATE scanner_submissions SET state = 'pending', result_json = NULL, score_snapshot = NULL WHERE exam_id = ? AND session_id = ? AND group_id = ?",
+      receipt.exam_id, sessionId, receipt.group_id);
+  }
+  await tx.run("UPDATE twain_scan_records SET identity_json = NULL, student_id = NULL, student_conf = NULL, ocr_status = 'processing', ocr_error = NULL WHERE id = ? AND session_id = ?", recordId, sessionId);
+  await tx.run("DELETE FROM twain_recognition_results WHERE scan_record_id = ?", recordId);
+  await tx.run("DELETE FROM scan_correction_pages WHERE source_type = 'twain_scan_record' AND source_id = ?", recordId);
+  await tx.run("DELETE FROM answer_block_crops WHERE source_type = ? AND source_record_id = ?", "twain_scan_record", recordId);
+  await tx.run("DELETE FROM twain_student_grading_results WHERE session_id = ?", sessionId);
+  return changedExams;
+}
+
 /** Invalidate a page before retry; saved grades are withdrawn only through their owning receipt. */
 export async function invalidateScanRecognition(sessionId: string, recordId: string): Promise<void> {
-  return enqueueScannerSubmission(async () => {
-    const db = getMysqlDb();
-    const changedExams = new Set<number>();
-    await db.transaction(async tx => {
-      const owned = await tx.all<Receipt>("SELECT * FROM scanner_submissions WHERE session_id = ? AND state NOT IN ('superseded', 'discarded')", sessionId);
-      for (const receipt of owned) {
-        if (!(JSON.parse(receipt.pages_json) as ScanBatchPage[]).some(p => p.recordId === recordId)) continue;
-        await lockExam(tx, receipt.exam_id);
-        if (receipt.state === "saved") {
-          await withdraw(tx, receipt.exam_id, receipt.student_number, "scanner_retry");
-          changedExams.add(receipt.exam_id);
-        }
-        await tx.run("UPDATE scanner_submissions SET state = 'pending', result_json = NULL, score_snapshot = NULL WHERE exam_id = ? AND session_id = ? AND group_id = ?",
-          receipt.exam_id, sessionId, receipt.group_id);
-      }
-      await tx.run("UPDATE twain_scan_records SET identity_json = NULL, student_id = NULL, student_conf = NULL, ocr_status = 'processing', ocr_error = NULL WHERE id = ? AND session_id = ?", recordId, sessionId);
-      await tx.run("DELETE FROM twain_recognition_results WHERE scan_record_id = ?", recordId);
-      await tx.run("DELETE FROM answer_block_crops WHERE source_type = ? AND source_record_id = ?", "twain_scan_record", recordId);
-      await tx.run("DELETE FROM twain_student_grading_results WHERE session_id = ?", sessionId);
-    });
-    for (const examId of changedExams) {
-      analysisCache.invalidateExam(examId);
-      await recomputeExamRankings(db, examId);
-    }
+  return enqueueScannerSubmission(() => invalidateScanRecognitionInQueue(sessionId, recordId));
+}
+
+/** Caller owns the scanner queue for the entire recognition-and-write sequence. */
+export async function invalidateScanRecognitionInQueue(sessionId: string, recordId: string): Promise<void> {
+  const db = getMysqlDb();
+  const changedExams = new Set<number>();
+  await db.transaction(async tx => {
+    for (const id of await invalidateScanRecognitionInTransaction(tx, sessionId, recordId)) changedExams.add(id);
   });
+  for (const examId of changedExams) {
+    analysisCache.invalidateExam(examId);
+    await recomputeExamRankings(db, examId);
+  }
 }
 
 /** Archive only a verified conflict copy; retain all source evidence for review. */
@@ -259,8 +283,13 @@ export async function recoverScannerSubmissionSnapshot(examId: number, sessionId
 
 /** Both paths consume Windows recognition records; this service never runs OMR. */
 export async function processScannerSession(card: AnswerCard, sessionId: string,
-  mode: "preview" | "validate" | "save" = "preview"): Promise<ScanBatchResponse> {
-  return enqueueScannerSubmission(async () => {
+  mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string): Promise<ScanBatchResponse> {
+  return enqueueScannerSubmission(() => processScannerSessionInQueue(card, sessionId, mode, saveGroupId));
+}
+
+/** Caller retains scanner queue ownership through correction and admission. */
+export async function processScannerSessionInQueue(card: AnswerCard, sessionId: string,
+  mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string): Promise<ScanBatchResponse> {
     const db = getMysqlDb();
     const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
     const { groups, pageCount } = groupSessionPages(card, records);
@@ -305,19 +334,33 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
       await db.transaction(async tx => {
         await lockExam(tx, exam.id);
         const old = await receipts(tx, exam.id);
+        // A single-card correction must scope every write, not just final grading.
+        // Include the target's old ID so changing its ID can resolve that conflict,
+        // and include matching local papers so a real duplicate cannot slip through.
+        const targetNumbers = new Set<string>();
+        if (saveGroupId !== undefined) {
+          const target = candidates.find(c => c.groupId === saveGroupId);
+          const prior = old.find(r => r.session_id === sessionId && r.group_id === saveGroupId);
+          if (target) targetNumbers.add(target.studentNumber);
+          if (prior) targetNumbers.add(prior.student_number);
+        }
+        const scopedCandidates = saveGroupId === undefined ? candidates : candidates.filter(c =>
+          c.groupId === saveGroupId || targetNumbers.has(c.studentNumber));
         for (const groupId of repeatedGroups) {
           if (discarded.has(groupId)) continue;
           const owner = old.find(row => row.session_id === sessionId && row.group_id === groupId && row.state === "saved");
+          if (saveGroupId !== undefined && groupId !== saveGroupId && (!owner || !targetNumbers.has(owner.student_number))) continue;
           if (owner) {
             await withdraw(tx, exam.id, owner.student_number, "scanner_retry");
             receiptMutated = true;
           }
         }
-        const affectedStudents = new Set(candidates.map(c => c.studentNumber));
-        for (const candidate of candidates) {
+        const affectedStudents = new Set(scopedCandidates.map(c => c.studentNumber));
+        for (const candidate of scopedCandidates) {
           receiptMutated = true;
           const prior = old.find(r => r.session_id === sessionId && r.group_id === candidate.groupId);
           if (prior && prior.student_number !== candidate.studentNumber) {
+            if (prior.state === "saved") throw new Error("已入库卷不能通过上传修改归属，请由老师处理");
             affectedStudents.add(prior.student_number);
             // Corrections invalidate a previous receipt, never silently move a saved grade.
             await withdraw(tx, exam.id, prior.student_number);
@@ -327,13 +370,20 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
           const cols = ["exam_id", "session_id", "group_id", "student_number", "pages_json"];
           await tx.run(buildUpsertSQL(tx.dialect, "scanner_submissions", cols, ["exam_id", "session_id", "group_id"], ["pages_json"]),
             exam.id, sessionId, candidate.groupId, candidate.studentNumber, JSON.stringify(candidate.pages));
+          const student = await tx.get<{id:number}>("SELECT id FROM users WHERE student_number=? AND role_id=3",candidate.studentNumber);
+          const roster = await ensureExamParticipants(tx,exam.id);
+          const outside = !student || (roster.rosterKnown && !await isExamParticipant(tx,exam.id,student.id));
+          if (outside || prior?.state === "held" || prior?.state === "roster") {
+            await tx.run("UPDATE scanner_submissions SET state=? WHERE exam_id=? AND session_id=? AND group_id=? AND state<>'saved'",
+              outside ? "roster" : "pending",exam.id,sessionId,candidate.groupId);
+          }
           if (prior && prior.student_number !== candidate.studentNumber && prior.previously_saved) {
             await tx.run("UPDATE scanner_submissions SET previously_saved = 1 WHERE exam_id = ? AND session_id = ? AND group_id = ?", exam.id, sessionId, candidate.groupId);
           }
         }
         // Legacy scores have no reliable receipt. Keep their full score snapshot and any
         // matching old scanner pages as evidence instead of treating a cache as proof of saving.
-        for (const studentNumber of new Set(candidates.map(c => c.studentNumber))) {
+        for (const studentNumber of new Set(scopedCandidates.map(c => c.studentNumber))) {
           const all = await receipts(tx, exam.id);
           if (all.some(r => r.student_number === studentNumber && (r.result_json || r.score_snapshot))) continue;
           const score = await tx.get<{ student_id: number; total_score: number; objective_score: number; subjective_score: number }>("SELECT ss.* FROM student_scores ss JOIN users u ON u.id = ss.student_id WHERE ss.exam_id = ? AND u.student_number = ?", exam.id, studentNumber);
@@ -376,7 +426,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
         for (const studentNumber of affectedStudents) {
           const related = all.filter(r => r.student_number === studentNumber);
           let remaining = related;
-          const local = candidates.filter(c => c.studentNumber === studentNumber);
+          const local = scopedCandidates.filter(c => c.studentNumber === studentNumber);
           // Re-upload proof requires the original image and recognition evidence.
           // Multiple papers in one batch and legacy snapshots still need a teacher.
           if (related.length > 1 && local.length === 1) {
@@ -384,7 +434,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
             const copy = related.find(r => r.session_id === sessionId && r.group_id === candidate.groupId);
             const original = related.find(r => r.state === "saved" && r.result_json
               && !(r.session_id === sessionId && r.group_id === candidate.groupId));
-            if (original && copy && !copy.previously_saved && !copy.score_snapshot && copy.state !== "saved") {
+            if (original && copy && copy.state !== "held" && copy.state !== "roster" && !copy.previously_saved && !copy.score_snapshot && copy.state !== "saved") {
               const oldEvidence = await scannerDuplicateEvidence(tx, original.session_id, studentNumber, JSON.parse(original.pages_json));
               const newEvidence = await scannerDuplicateEvidence(tx, sessionId, studentNumber, candidate.pages);
               if (oldEvidence && newEvidence && JSON.stringify(oldEvidence) === JSON.stringify(newEvidence)) {
@@ -412,7 +462,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
       if (!exists) continue;
       // Historical partial saves can have grades and receipts but unbound crops.
       // Replay repairs their ownership without rewriting scores or publication.
-      if (mode === "save") await db.transaction(async tx => {
+      if (mode === "save" && (saveGroupId === undefined || row.group_id === saveGroupId)) await db.transaction(async tx => {
         await lockExam(tx, exam.id);
         await linkSavedScannerCrops(tx, card.id, row);
       });
@@ -424,13 +474,14 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
     const activeRecords = [...groups].filter(([groupId]) => !discarded.has(groupId)).flatMap(([, rows]) => rows.map(row => row.record));
     const response = await collectSessionResults(card, activeRecords, cached, mode === "save" ? async result => {
       const candidate = candidates.find(c => c.pages.some(p => p.recordId === result.pages[0]?.recordId));
-      if (!candidate || discarded.has(candidate.groupId)) return;
+      if (!candidate || discarded.has(candidate.groupId) || (saveGroupId !== undefined && candidate.groupId !== saveGroupId)) return false;
       await db.transaction(async tx => {
         await lockExam(tx, exam.id);
         const current = await receipts(tx, exam.id);
         if (current.filter(r => r.student_number === result.studentId).length > 1) throw new Error("重复学号：所有相关答题卡需订正后重新保存");
         const receipt = current.find(r => r.session_id === sessionId && r.group_id === candidate.groupId);
         if (!receipt) throw new Error("扫描成绩回执缺失，无法保存");
+        if (receipt.state === "held" || receipt.state === "roster") throw new Error("此卷待老师确认，已有正式成绩保持不变，请在考试或成绩分析页面处理");
         if (receipt?.score_snapshot && receipt.previously_saved && receipt.state !== "saved") {
           await restoreScoreSnapshot(tx, receipt);
         } else {
@@ -449,6 +500,8 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
     all = await receipts(db, exam.id);
     for (const candidate of candidates) {
       if (discarded.has(candidate.groupId)) continue;
+      const own = all.find(r => r.session_id===sessionId && r.group_id===candidate.groupId);
+      if (own?.state === "saved" && all.some(r => r.student_number===candidate.studentNumber && ["held","roster"].includes(r.state))) continue;
       const others = all.filter(r => r.student_number === candidate.studentNumber && !(r.session_id === sessionId && r.group_id === candidate.groupId));
       const localDuplicates = candidates.filter(c => c.studentNumber === candidate.studentNumber);
       if (others.length === 0 && localDuplicates.length < 2) continue;
@@ -459,7 +512,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
         related.push({ sessionId, groupId: local.groupId, studentId: candidate.studentNumber, previouslySaved: false, pages: local.pages });
       }
       response.failures.push({ groupId: candidate.groupId, studentId: candidate.studentNumber, stage: "recognition", pages: candidate.pages,
-        message: "重复学号：新旧答题卡均需核对订正，已保存成绩撤出后才可重新保存", conflicts: related });
+        message: all.some(r => r.student_number===candidate.studentNumber && ["held","roster"].includes(r.state)) ? "重复上传待老师确认，已有正式成绩保持不变，请在考试或成绩分析页面处理" : "重复学号：新旧答题卡均需核对订正，已保存成绩撤出后才可重新保存", conflicts: related });
     }
     if (mode === "save" && receiptMutated) {
       analysisCache.invalidateExam(exam.id);
@@ -467,5 +520,4 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
     }
     response.reviewCards = all.filter(r => r.state === "pending" && r.previously_saved).map(conflictCard);
     return visible(response);
-  });
 }

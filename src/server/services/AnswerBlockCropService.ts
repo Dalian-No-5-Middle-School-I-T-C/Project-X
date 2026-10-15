@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, rename, unlink } from "node:fs/promises";
+import { copyFile, mkdir, rename, rmdir, unlink } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { getMysqlDb } from "../db";
@@ -24,8 +24,8 @@ type CropRow = {
   block_type: string;
   page_number: number;
   segment_index: number;
-  question_numbers: string;
-  rect_json: string;
+  question_numbers: string | Array<number | string>;
+  rect_json: string | Rect;
   image_path: string;
   width_px: number;
   height_px: number;
@@ -39,6 +39,7 @@ type CropRow = {
   review_round?: number | null;
 };
 
+export type CropFileMove = { sourcePath: string; targetPath: string; createdDir?: string };
 export type PersistAnswerBlockCropsParams = {
   cardId: string;
   examId?: number | null;
@@ -47,16 +48,21 @@ export type PersistAnswerBlockCropsParams = {
   sourceType: AnswerBlockCropSourceType;
   sourceRecordId: string | number;
   crops?: RecognitionBlockCrop[] | null;
+  /** Outer transaction owns these file moves until commit or rollback. */
+  fileMoves?: CropFileMove[];
 };
 
 function cropImageUrl(id: string): string {
   return `/api/answer-block-crops/${encodeURIComponent(id)}/image`;
 }
 
-function parseJson<T>(value: string | null | undefined, fallback: T): T {
+function parseJson<T extends object>(value: string | T | null | undefined, fallback: T): T {
   if (!value) return fallback;
   try {
-    return JSON.parse(value) as T;
+    // SQLite returns JSON text; MariaDB may decode its JSON columns already.
+    const parsed: unknown = typeof value === "string" ? JSON.parse(value) : value;
+    if (Array.isArray(fallback)) return Array.isArray(parsed) ? parsed as T : fallback;
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as T : fallback;
   } catch {
     return fallback;
   }
@@ -99,6 +105,25 @@ async function moveCropFile(sourcePath: string, targetPath: string): Promise<voi
   } catch {
     await copyFile(sourcePath, targetPath);
     await unlink(sourcePath).catch(() => {});
+  }
+}
+
+/** Restore retry inputs and remove only files created by the aborted transaction. */
+export async function restoreCropFileMoves(moves: CropFileMove[]): Promise<void> {
+  for (const { sourcePath, targetPath, createdDir } of [...moves].reverse()) {
+    if (existsSync(targetPath)) {
+      if (existsSync(sourcePath)) await unlink(targetPath);
+      else await moveCropFile(targetPath, sourcePath);
+    }
+    if (createdDir) for (let dir = path.dirname(targetPath); isInsideDir(createdDir, dir); dir = path.dirname(dir)) {
+      try { await rmdir(dir); }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOTEMPTY" || code === "EEXIST") break;
+        if (code !== "ENOENT") throw error;
+      }
+      if (dir === createdDir) break;
+    }
   }
 }
 
@@ -165,7 +190,6 @@ export async function persistAnswerBlockCrops(
   const stats: CropPersistenceStats = { persisted: 0, skipped: 0, empty: false };
   const movedPaths: string[] = [];
   const targetDir = path.join(blockCropsDir, safeId(params.cardId), `${params.sourceType}_${safeId(sourceRecordId)}`);
-  await mkdir(targetDir, { recursive: true });
 
   try {
     for (let index = 0; index < crops.length; index += 1) {
@@ -179,7 +203,7 @@ export async function persistAnswerBlockCrops(
       }
 
       const id = randomUUID();
-      const targetPath = path.join(targetDir, targetFileName(crop, index));
+      const targetPath = path.join(targetDir, `${params.fileMoves ? `${id}_` : ""}${targetFileName(crop, index)}`);
       // 安全（R07）：目标路径必须仍在「该卡/该记录」的切块目录内。
       // 清单里的页码/分段号参与文件名拼装，越界就等于让上传方决定服务端写文件的位置。
       // 源文件由服务端自己产生（识别器临时目录 / 扫描上传临时目录），远端已无法指定。
@@ -188,7 +212,13 @@ export async function persistAnswerBlockCrops(
         console.warn(`[crop] 拒绝越出切块目录的目标路径 #${index} (target=${targetPath}, dir=${targetDir})`);
         continue;
       }
-      await moveCropFile(path.resolve(crop.path), targetPath);
+      const sourcePath = path.resolve(crop.path);
+      if (params.fileMoves) {
+        const move: CropFileMove = { sourcePath, targetPath };
+        params.fileMoves.push(move);
+        move.createdDir = await mkdir(path.dirname(targetPath), { recursive: true });
+      }
+      await moveCropFile(sourcePath, targetPath);
       movedPaths.push(targetPath);
 
       await db.run(
@@ -221,7 +251,7 @@ export async function persistAnswerBlockCrops(
       stats.persisted += 1;
     }
   } catch (error) {
-    await Promise.all(movedPaths.map((targetPath) => unlink(targetPath).catch(() => {})));
+    if (!params.fileMoves) await Promise.all(movedPaths.map((targetPath) => unlink(targetPath).catch(() => {})));
     throw error;
   }
 

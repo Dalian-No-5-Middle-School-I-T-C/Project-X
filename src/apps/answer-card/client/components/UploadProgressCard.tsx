@@ -1,3 +1,4 @@
+import { CardCorrectionButton } from "./CardCorrectionEditor";
 // v2.5.1: 右上角下弹上传进度卡（直扫/导入共用）。
 // 数据源 scannerUploadManager 单例；成功 3 秒自动收起，失败保留并可重试。
 import { useEffect, useState, useSyncExternalStore } from "react";
@@ -203,6 +204,10 @@ function UploadJobCard({
           </p>
           {job.failures?.map(failure => <div key={failure.groupId} className="mt-2">
             <p>{failure.studentId}：{failure.message}</p>
+            {job.remoteSessionId && <CardCorrectionButton
+              url={`/api/scanner/upload/sessions/${encodeURIComponent(job.remoteSessionId)}/groups/${encodeURIComponent(failure.groupId)}/correction`}
+              request={(url, init) => scannerUploadManager.requestJob(job.id, url, init)}
+              onSaved={() => scannerUploadManager.refreshResults(job.id)} /> }
           </div>)}
           <div className="mt-1.5">
             {job.failedPages.length > 0 && <div className="mb-2 flex flex-wrap gap-2">

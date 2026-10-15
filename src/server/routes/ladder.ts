@@ -16,7 +16,7 @@ import { examClassJoin, examClassId, examClassJoinedAt } from "../services/examC
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
 import { LadderService } from "../services/LadderService";
 import { competitionRank, takeLadder } from "../../shared/ranking";
-import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess, GROUP_MEMBER_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
+import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess, EXAM_NOT_SOFT_DELETED_SQL, GROUP_MEMBER_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
 import type { LadderResponse } from "../../shared/types";
 
 const router = express.Router();
@@ -85,6 +85,41 @@ export async function checkLadderParticipation(req: Request, res: Response, exam
 
 router.get("/config", async (_req: Request, res: Response) => {
   res.json({ enabled: await isLadderEnabled() });
+});
+
+/** Single exams require a score; aggregate boards retain roster participation. */
+router.get("/options", async (req: Request, res: Response) => {
+  if (req.user?.role_name !== "student") {
+    res.status(403).json({ message: "此入口仅供学生查询本人的天梯范围" });
+    return;
+  }
+  if (!(await checkLadderOpen(req, res))) return;
+  try {
+    const db = getMysqlDb();
+    const candidates = await db.all<{ id: number; name: string; subject: string | null; has_score: number }>(
+      `SELECT e.id, e.name, e.subject,
+         EXISTS (SELECT 1 FROM student_scores ss WHERE ss.exam_id = e.id AND ss.student_id = ?) AS has_score
+       FROM exams e
+       WHERE e.score_published = 1 AND ${EXAM_NOT_SOFT_DELETED_SQL}
+       ORDER BY e.created_at DESC, e.id DESC`, req.user.id);
+    const participated = new Set(await new AnalysisRepository().filterParticipatedExamIds(candidates.map(e => e.id), req.user.id));
+    // Match requireExamAccess / ScoreRepository.hasScore, including zero scores.
+    const exams = candidates.filter(e => Number(e.has_score) === 1)
+      .map(({ id, name, subject }) => ({ id, name, subject }));
+    const groups = await db.all<{ id: number; name: string; exam_id: number; score_published: number }>(
+      `SELECT eg.id, eg.name, e.id AS exam_id, e.score_published
+       FROM exam_groups eg JOIN exam_group_members egm ON egm.group_id = eg.id
+       JOIN exams e ON e.id = egm.exam_id
+       WHERE (eg.source IS NULL OR eg.source = 'manual') AND ${EXAM_NOT_SOFT_DELETED_SQL}
+       ORDER BY eg.created_at DESC, eg.id DESC`);
+    const byGroup = new Map<number, typeof groups>();
+    for (const member of groups) byGroup.set(member.id, [...(byGroup.get(member.id) ?? []), member]);
+    res.json({ exams, groups: [...byGroup.values()]
+      .filter(members => members.every(m => Number(m.score_published) === 1) && members.some(m => participated.has(m.exam_id)))
+      .map(members => ({ id: members[0].id, name: members[0].name })) });
+  } catch (error) {
+    res.status(500).json({ message: error instanceof Error ? error.message : "获取天梯范围失败" });
+  }
 });
 
 // ── PUT /api/ladder/config (admin only) ──

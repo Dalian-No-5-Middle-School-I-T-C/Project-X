@@ -9,6 +9,7 @@ import { assertCredentialTransportAllowed } from "./remoteCredentialTransport";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
 import { applyScanStudentId, uniqueScanConflictCards } from "../../../../shared/scanPages";
 import type { ScanBatchFailure, ScanConflictCard, ScanBatchResponse } from "../../../../shared/scanPages";
+import type { CombinedGradingRow } from "../../../../shared/types";
 
 export type UploadJobKind = "scan" | "import";
 export type UploadJobStatus =
@@ -25,6 +26,7 @@ export interface UploadPageInput {
   pageNum: number;
   side: "front" | "back";
   getBlob: () => Promise<Blob>;
+  getCorrection?: () => Promise<import("../../../../shared/types").CombinedRecognitionResult | undefined>;
   /** Stable card group and layout page from the local session summary. */
   groupId?: string;
   layoutPage?: number;
@@ -32,6 +34,7 @@ export interface UploadPageInput {
 }
 
 export interface StartUploadInput {
+  trackResults?: boolean;
   identityMode?: "strict" | "legacy";
   kind: UploadJobKind;
   cardId: string;
@@ -49,6 +52,9 @@ export interface StartUploadInput {
 }
 
 export interface UploadJobSnapshot {
+  results?: ScanBatchResponse;
+  resultRows?: Array<{ pageNum: number; side: "front" | "back"; row: CombinedGradingRow }>;
+  remoteSessionId?: string | null;
   reviewCards?: ScanConflictCard[];
   id: string;
   kind: UploadJobKind;
@@ -87,6 +93,10 @@ interface PageRecord {
 }
 
 interface JobRecord {
+  resultRevision?: number;
+  trackResults?: boolean;
+  results?: ScanBatchResponse;
+  resultRows?: UploadJobSnapshot["resultRows"];
   /** Synchronize released, already-uploaded sides before retrying this card. */
   pendingStudentId?: string;
   reviewCards?: ScanConflictCard[];
@@ -260,6 +270,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     snapshot = {
       jobs: jobs.map((j) => ({
         id: j.id,
+        remoteSessionId: j.remoteSessionId,
         kind: j.kind,
         name: j.name,
         cardId: j.cardId,
@@ -277,6 +288,8 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         notice: j.notice,
         canCorrectStudentId: new Set(j.pages.map(p => p.input.groupId ?? `sheet:${p.input.pageNum}`)).size === 1,
         reviewCards: j.reviewCards,
+        results: j.results,
+        resultRows: j.resultRows,
       })),
       activeJobId:
         // cancelled 是终态:不再算“活动任务”（审查 P2:此前注销后仍被算）
@@ -382,9 +395,17 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       throw error;
     }
     const recognition = await recognized.json();
+    // Recognition still produces fresh crops; explicit local edits remain authoritative.
+    const corrected = await page.input.getCorrection?.();
+    if (corrected) {
+      recognition.questions = corrected.questions;
+      recognition.subjectiveQuestions = corrected.subjectiveQuestions;
+      recognition.studentId = corrected.studentId;
+      if (recognition.geometry && recognition.identity?.status !== "rejected") recognition.status = "ok";
+    }
     // Dependencies are fixed when the job is created, independent of array adjacency,
     // retry counts or network latency. Never borrow an ID across physical cards.
-    if (page.input.studentId) {
+    if (!corrected && page.input.studentId) {
       applyScanStudentId(recognition, page.input.studentId);
     } else if (page.anchor) {
       const inherited = page.anchor.studentId;
@@ -404,6 +425,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     form.append("side", page.input.side);
     form.append("recognition", JSON.stringify({
       status: recognition.status, studentId: recognition.studentId, identity: recognition.identity,
+      geometry: recognition.geometry, pageNumber: recognition.pageNumber,
       questions: recognition.questions, subjectiveQuestions: recognition.subjectiveQuestions,
     }));
     const fetcher = jobFetch(j);
@@ -703,6 +725,7 @@ if (j.cancelled) throw cancelledError(j);
       status: "queued",
       resumePhase: "creating",
       remoteSessionId: null,
+      trackResults: input.trackResults,
       message: "",
       createdAt: Date.now(),
       pauseWaiter: null,
@@ -811,11 +834,18 @@ if (j.cancelled) throw cancelledError(j);
       ...(source.failures ?? []).flatMap(failure => failure.conflicts?.map(card => card.sessionId) ?? [])]);
     const outcomes = await Promise.allSettled(jobs.filter(j => j.remoteBase === source.remoteBase && j.apiKey === source.apiKey && j.cardId === source.cardId
       && j.remoteSessionId && sessions.has(j.remoteSessionId) && (j.status === "done" || j.status === "error")).map(async job => {
+      const revision = job.resultRevision = (job.resultRevision ?? 0) + 1;
       const response = await jobFetch(job)(`/api/scanner/upload/sessions/${job.remoteSessionId}/results`, {
         signal: timeoutSignal(pageTimeoutMs),
       });
       if (!response.ok) throw await httpError(response);
       const body = await response.json() as ScanBatchResponse;
+      if (revision !== job.resultRevision) return;
+      job.results = body;
+      if (job.trackResults) {
+        job.resultRows = body.results.flatMap(result => result.pages.flatMap(page =>
+          page.grading ? [{ pageNum: page.pageNum, side: page.side, row: page.grading }] : []));
+      }
       // Corrected new attempts are pending too; keep their view/save actions even
       // after another session has been saved and the duplicate failures disappear.
       job.reviewCards = pendingReviewCards(job.remoteSessionId!, body);
@@ -858,6 +888,7 @@ if (j.cancelled) throw cancelledError(j);
         && j.apiKey === source.apiKey && j.cardId === source.cardId);
       const version = owner?.cardVersion ?? (source && rememberedSessionVersion(source, sessionId));
       if (!source) throw new Error("上传任务已关闭");
+      for (const job of jobs) if (job.remoteBase === source.remoteBase && job.cardId === source.cardId) job.resultRevision = (job.resultRevision ?? 0) + 1;
       return jobFetch(owner ?? source)(`/api/scanner/upload/sessions/${encodeURIComponent(sessionId)}/complete`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(version ? { cardVersion: version } : {}), signal: timeoutSignal(pageTimeoutMs),
@@ -866,6 +897,9 @@ if (j.cancelled) throw cancelledError(j);
     requestJob: (id: string, url: string, init?: RequestInit) => {
       const job = jobs.find(j => j.id === id);
       if (!job) return Promise.reject(new Error("上传任务已关闭"));
+      if (init?.method && init.method !== "GET") {
+        for (const other of jobs) if (other.remoteBase === job.remoteBase && other.cardId === job.cardId) other.resultRevision = (other.resultRevision ?? 0) + 1;
+      }
       return jobFetch(job)(url, init);
     },
     startUpload,

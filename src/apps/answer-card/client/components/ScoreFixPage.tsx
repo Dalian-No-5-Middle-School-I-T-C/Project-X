@@ -1,3 +1,4 @@
+import { CardCorrectionButton } from "./CardCorrectionEditor";
 import { useEffect, useState } from "react";
 import { ArrowLeft, ImageOff, Pencil, Save, Search } from "lucide-react";
 import { fetchJson } from "../auth/api";
@@ -429,6 +430,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
                       )}
                     </span>
                     <div className="flex shrink-0 items-center gap-2">
+                      <CardCorrectionButton disabled={Object.keys(scoreEdits).length > 0 || saving} url={`/api/exams/${examId}/student/${student.student.id}/correction`} onSaved={() => loadStudent(student.student.id,student.student.name,student.student.studentNumber)} />
                       {saveMsg && <span className={cn("text-xs", saveMsgClass)}>{saveMsg}</span>}
                       <Button
                         variant="primary"

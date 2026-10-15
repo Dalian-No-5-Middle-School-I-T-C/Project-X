@@ -459,6 +459,22 @@ async function main(): Promise<void> {
     const restamped = { ...remoteCardOnce!, updatedAt: "1999-01-01 00:00:00" } as typeof remoteCardOnce;
     check(cardFingerprint(restamped!) === remoteCardVersion,
       "updatedAt 不参与指纹（扫描端本地导入会重盖时间戳，若参与则每次上传都会被误判为版本不一致）");
+    // The scanner imports the server's GET payload through PUT, then reads it again
+    // for recognition. Repository defaults must survive that round trip unchanged.
+    const { createDefaultCard: createSyncCard } = await import("../src/shared/defaultCard");
+    const syncCard = createSyncCard("critical-sync-roundtrip");
+    syncCard.bodyBlocks = [{ id: "critical-sync-choices", type: "objective", title: "同步选择题",
+      questionStart: 1, questionCount: 2, optionCount: 4, mode: "single", scorePerQuestion: 5,
+      density: "normal", answerKey: { 1: ["A"], 2: ["B"] } }];
+    const syncUrl = `${base}/api/cards/${syncCard.id}`;
+    const syncHeaders = { Authorization: `Bearer ${adminToken}`, "Content-Type": "application/json" };
+    const initialSyncSave = await fetch(syncUrl, { method: "PUT", headers: syncHeaders, body: JSON.stringify(syncCard) });
+    check(initialSyncSave.ok, "同步回归卡通过正式保存接口创建");
+    const syncBefore = await (await fetch(syncUrl, { headers: syncHeaders })).json() as typeof syncCard;
+    const importedSyncSave = await fetch(syncUrl, { method: "PUT", headers: syncHeaders, body: JSON.stringify(syncBefore) });
+    const syncAfter = await (await fetch(syncUrl, { headers: syncHeaders })).json() as typeof syncCard;
+    check(importedSyncSave.ok && cardFingerprint(syncAfter) === cardFingerprint(syncBefore),
+      "服务器读取的客观题卡经扫描端 PUT→GET 导入后内容指纹保持一致");
     const editedKey = JSON.parse(JSON.stringify(remoteCardOnce!)) as typeof remoteCardOnce;
     if (Array.isArray((editedKey as { bodyBlocks?: unknown }).bodyBlocks) && (editedKey as { bodyBlocks: unknown[] }).bodyBlocks.length > 0) {
       ((editedKey as { bodyBlocks: Array<Record<string, unknown>> }).bodyBlocks[0]).changed = true;
@@ -2583,6 +2599,19 @@ async function main(): Promise<void> {
     // 考试详情 results / 考生搜索 / 成绩导出 / 跨考总分，四入口在名单查看被关闭时全部收敛
     section("评审：can_view_students 名单旁路收口");
     {
+      const teacherTemplates = await fetch(`${base}/api/export/templates`, { headers: authHeaders(teacherToken) });
+      check(teacherTemplates.status === 200, "任课教师可读取自己的成绩导出模板，账密路由不拦截后续成绩路由");
+      const teacherExport = await fetch(`${base}/api/export/exams/${visibleExam}/scores`, {
+        method: "POST", headers: { ...authHeaders(teacherToken), "Content-Type": "application/json" },
+        body: JSON.stringify({ columns: ["studentName", "totalScore"] })
+      });
+      const teacherExportBytes = Buffer.from(await teacherExport.arrayBuffer());
+      check(teacherExport.status === 200 && teacherExportBytes.subarray(0, 2).toString() === "PK",
+        "有考试查看权限的任课教师可通过完整路由栈导出成绩 Excel");
+      for (const endpoint of ["students", "teachers", "students.csv", "teachers.csv"]) {
+        check((await fetch(`${base}/api/export/${endpoint}`, { headers: authHeaders(teacherToken) })).status === 403,
+          `教师仍无权访问账号账密导出 ${endpoint}`);
+      }
       // teacher（数学/classA）配置矩阵行：成绩与图表可看、学生名单关闭
       db.prepare(
         "INSERT INTO teacher_permissions (teacher_id, grade_id, subject, class_id, can_view_scores, can_view_charts, can_view_students, can_grade, can_assign) VALUES (?,?,?,?,1,1,0,1,1)"

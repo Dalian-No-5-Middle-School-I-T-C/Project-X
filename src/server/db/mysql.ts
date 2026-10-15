@@ -1,3 +1,4 @@
+import { scanCorrectionSchema } from "./scanCorrectionSchema";
 import mariadb from "mysql2/promise";
 import type { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from "mysql2/promise";
 import { existsSync, readFileSync } from "node:fs";
@@ -1150,6 +1151,8 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE twain_scan_sessions ADD COLUMN version_source VARCHAR(24) NOT NULL DEFAULT 'legacy'",
     "ALTER TABLE twain_scan_sessions ALTER COLUMN version_source SET DEFAULT 'upload'",
   ] });
+
+  mariadbMigrations.push({ version: 62, name: "scan-correction-pages", sqls: [scanCorrectionSchema("mariadb")] });
 
   for (const m of mariadbMigrations) {
     if (applied.has(m.version)) continue;

@@ -1,3 +1,4 @@
+import { studentCorrection, saveStudentCorrection } from "../services/scanCorrection";
 import { databaseTimestamp } from "../db/timestamp";
 /**
  * 成绩修改 API
@@ -275,6 +276,26 @@ router.get(
     cardId
   });
 });
+
+// Whole-card corrections are independent from review submission/assignment routes.
+router.route("/:examId/student/:studentId/correction")
+  .all(requireExamAccess, requirePermissionCompat(PERMISSIONS.GRADE_WRITE), requireWholeExamGradingAccess)
+  .get(async (req, res) => {
+    try {
+      const exam = await getMysqlDb().get<{card_id:string}>("SELECT card_id FROM exams WHERE id=?",Number(req.params.examId));
+      const card = exam && await new CardRepository().findById(exam.card_id);
+      if (!card) { res.status(404).json({message:"答题卡不存在"}); return; }
+      res.json(await studentCorrection(card,Number(req.params.examId),Number(req.params.studentId)));
+    } catch (error) { res.status(409).json({message:error instanceof Error ? error.message : "加载失败"}); }
+  }).put(async (req,res) => {
+    try {
+      const exam = await getMysqlDb().get<{card_id:string}>("SELECT card_id FROM exams WHERE id=?",Number(req.params.examId));
+      const card = exam && await new CardRepository().findById(exam.card_id);
+      if (!card) { res.status(404).json({message:"答题卡不存在"}); return; }
+      await saveStudentCorrection(card,Number(req.params.examId),Number(req.params.studentId),req.body?.pages,req.user?.id ?? null);
+      res.json({ok:true});
+    } catch (error) { res.status(409).json({message:error instanceof Error ? error.message : "保存失败"}); }
+  });
 
 // ── 逐题修改分数 ──────────────────────────────────
 // 安全（R09）：这里会改写 question_scores、重算 student_scores 总分与全场排名，并可能按管理员

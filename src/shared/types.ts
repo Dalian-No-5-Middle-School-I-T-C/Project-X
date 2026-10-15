@@ -310,7 +310,16 @@ export type ObjectiveRecognitionQuestion = {
   optionScores?: Record<string, number>;
 };
 
+/** Row-major homographies: original pixels <-> layout millimetres. */
+export type RecognitionGeometry = {
+  imageWidth: number;
+  imageHeight: number;
+  imageToLayout: number[];
+  layoutToImage: number[];
+};
+
 export type ObjectiveRecognitionResult = {
+  geometry?: RecognitionGeometry;
   identity?: import("./cardIdentity").CardIdentity;
   status: "ok" | "partial" | "failed" | string;
   cardId?: string;

@@ -8,6 +8,7 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import type { DbAdapter } from "../../../server/db/mysql";
+import { deleteExamCorrectionPages } from "../../../server/services/scanCorrectionCleanup";
 import { answerKeyDir, assetsDir, cardAssetsDir, dataDir, layoutPath, safeId } from "./storage";
 
 export function paramValue(value: string | string[] | undefined): string {
@@ -90,6 +91,7 @@ export async function removeExamAnswerKeyFiles(examId: number | string): Promise
 
 export async function deleteExamRows(db: DbAdapter, examIds: number[]): Promise<void> {
   for (const examId of examIds) {
+    await deleteExamCorrectionPages(db, examId);
     await db.run("DELETE FROM question_scores WHERE exam_id = ?", examId);
     await db.run("DELETE FROM student_scores WHERE exam_id = ?", examId);
     await db.run("DELETE FROM scan_batches WHERE exam_id = ?", examId);

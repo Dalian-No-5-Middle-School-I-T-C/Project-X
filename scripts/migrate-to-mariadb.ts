@@ -157,6 +157,8 @@ const MIGRATION_ORDER: Array<{ table: string; primaryKey: string; optionalInSour
   { table: "twain_recognition_results", primaryKey: "id" },
   { table: "twain_student_grading_results", primaryKey: "session_id, student_id" },
 
+  { table: "scan_correction_pages", primaryKey: "source_type, source_id", optionalInSource: true },
+
   // 成绩
   { table: "student_scores", primaryKey: "id" },
   { table: "question_scores", primaryKey: "id" },

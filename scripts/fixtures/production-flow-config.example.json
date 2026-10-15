@@ -1,0 +1,7 @@
+{
+  "server": "http://10.211.55.4:5196",
+  "scanner": "http://127.0.0.1:5186",
+  "password": "__SET_PRIVATE_TEST_PASSWORD__",
+  "adminPassword": "__SET_PRIVATE_ADMIN_PASSWORD__",
+  "changedPassword": "__SET_PRIVATE_CHANGED_PASSWORD__"
+}

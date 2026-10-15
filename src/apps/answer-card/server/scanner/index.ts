@@ -1,3 +1,4 @@
+import { scanCorrectionRouter } from "../../../../server/routes/scan-correction";
 import { processScannerSession, discardScannerGroup } from "../../../../server/services/scannerSubmissions";
 import { scannerLegacyRecoveryRouter } from "../../../../server/routes/scanner-legacy-recovery";
 import {
@@ -89,6 +90,7 @@ export function createScannerRouter(twainEnabled = true): Router {
   router.use("/grading-image/:cardId/:fileName", requireScannerCardScope({ cardIdParam: "cardId", wholePaperRead: true }));
   router.use("/exam/:examId", requireScannerExamScope);
   router.use(scannerLegacyRecoveryRouter());
+  router.use(scanCorrectionRouter("session", false));
 
   // Write scanner result to projectx.db for linked exams
   // Progress event emitters by sessionId (for WebSocket integration)

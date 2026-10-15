@@ -17,7 +17,7 @@ async function main(): Promise<void> {
   // 避免测试往仓库 data/ 里落真实的 bootstrap-admin.txt。
   const bootstrapTmpDir = mkdtempSync(path.join(tmpdir(), "projectx-mariadb-bootstrap-"));
   process.env.PROJECTX_DB_PATH = path.join(bootstrapTmpDir, "projectx.db");
-  const { getMysqlDb, initMariadbSchema, resetAdapter, buildUpsertSQL, buildInsertIgnore } =
+  const { getMysqlDb, initMariadbSchema, runMariadbMigrations, getMariadbConfig, resetAdapter, buildUpsertSQL, buildInsertIgnore } =
     await import("../src/server/db/mysql");
   const { ensureDefaultAdmin, getBootstrapAdminPath, hashPassword, verifyPassword } =
     await import("../src/server/db/index");
@@ -35,6 +35,14 @@ async function main(): Promise<void> {
     await initMariadbSchema();
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'identity_mode'"));
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_records LIKE 'identity_json'"));
+    // Upgrade an existing v61 database without relying on fresh-schema CREATEs.
+    await db.exec("DROP TABLE scan_correction_pages");
+    await db.run("DELETE FROM schema_migrations WHERE version = 62");
+    assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version=49"));
+    const migrationConnection = await (await import("mysql2/promise")).createConnection(getMariadbConfig());
+    try { await runMariadbMigrations(migrationConnection); } finally { await migrationConnection.end(); }
+    assert.ok(await db.get("SHOW COLUMNS FROM scan_correction_pages LIKE 'recognition_json'"));
+    assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version=62"));
     // Simulate a pre-QR installation and exercise the incremental migration too.
     await db.exec("ALTER TABLE twain_scan_sessions DROP COLUMN identity_mode");
     await db.exec("ALTER TABLE twain_scan_records DROP COLUMN identity_json");
@@ -363,6 +371,21 @@ async function main(): Promise<void> {
     assert.equal(Number(blockB2.reviewedCount), 1);
     assert.equal((await listReviewBlocks(blocksExamId, db, ["B2"])).length, 1, "题块级授权只列出被分配的题块（R03）");
     assert.deepEqual(await listReviewBlocks(blocksExamId, db, []), [], "题块授权为空集时不返回任何题块（R03）");
+    // MariaDB JSON columns can arrive as already-decoded arrays/objects. A
+    // one-item array must stay an array when student score details load crops.
+    const { listAnswerBlockCropsForStudent } = await import("../src/server/services/AnswerBlockCropService");
+    const cropRect = { x: 17, y: 108, width: 176, height: 55 };
+    await db.run("UPDATE answer_block_crops SET question_numbers=?,rect_json=? WHERE id='blocks_ci_1'",
+      JSON.stringify([21]), JSON.stringify(cropRect));
+    await db.run("UPDATE answer_block_crops SET question_numbers=?,rect_json=? WHERE id='blocks_ci_2'",
+      JSON.stringify([21, 22]), JSON.stringify(cropRect));
+    const studentCrops = await listAnswerBlockCropsForStudent(blocksExamId, blocksStudentId, db);
+    assert.deepEqual(studentCrops.find(crop => crop.id === "blocks_ci_1")?.questionNumbers, [21]);
+    assert.deepEqual(studentCrops.find(crop => crop.id === "blocks_ci_2")?.questionNumbers, [21, 22]);
+    assert.deepEqual(studentCrops.find(crop => crop.id === "blocks_ci_1")?.rect, cropRect);
+    assert.equal(studentCrops.find(crop => crop.id === "blocks_ci_1")?.maxScore, 10);
+    assert.equal(studentCrops.find(crop => crop.id === "blocks_ci_2")?.maxScore, 15);
+    console.log("PASS: MariaDB JSON crop arrays, coordinates and student-detail score aggregation");
     await db.run("DELETE FROM question_scores WHERE exam_id = ?", blocksExamId);
     await db.run("DELETE FROM block_grading_config WHERE exam_id = ?", blocksExamId);
     await db.run("DELETE FROM answer_block_crops WHERE exam_id = ?", blocksExamId);
