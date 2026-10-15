@@ -87,7 +87,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const [legacyIdentity, setLegacyIdentity] = useState(false);
   const [sessionLegacyIdentity, setSessionLegacyIdentity] = useState(false);
   const [showUi, setShowUi] = useState(false);
-  const [colorMode, setColorMode] = useState<"gray" | "color" | "bw">("gray");
+  const [colorMode, setColorMode] = useState<"gray" | "color" | "bw">("color");
   const [paperSize, setPaperSize] = useState<"A4" | "Letter" | "A3">("A4");
   // 单次批扫上限按「张」输入（0=不限，最高 400 张）；发给服务端时按单双面折算成页数
   const [maxSheets, setMaxSheets] = useState(0);

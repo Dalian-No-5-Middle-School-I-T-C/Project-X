@@ -155,8 +155,8 @@ export async function runScanSession(
       });
     }
 
-    // 诊断检查点：本会话扫描结束的权威记录（页数/DPI/纸型），进 main.log 便于实机取证
-    console.log(`[checkpoint] scan session=${sessionId} card=${config.cardId} pages=${filteredPages.length} dpi=${config.dpi} duplex=${config.duplex} size=${config.paperSize}`);
+    // 诊断检查点：本会话扫描结束的权威记录（页数/DPI/纸型/色彩），进 main.log 便于实机取证
+    console.log(`[checkpoint] scan session=${sessionId} card=${config.cardId} pages=${filteredPages.length} dpi=${config.dpi} duplex=${config.duplex} size=${config.paperSize} color=${config.colorMode}`);
 
     // 页面落库后不置 completed：OCR 是流水线的一部分，全部完成才算终态。
     // 否则 OCR 阶段取消会被"已 completed"拒绝、SSE 补发也会提前发 done

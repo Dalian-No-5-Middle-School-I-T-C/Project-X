@@ -299,6 +299,19 @@ function parseBridgeJson(stdout: string): Record<string, unknown> {
   return JSON.parse(text) as Record<string, unknown>;
 }
 
+/**
+ * 把桥接进程的 stderr 逐行写进服务端日志（Electron 下即 main.log）。
+ * native 侧的关键诊断（CAP_XFERCOUNT 协商结果、每页 pending 张数、FEEDERLOADED 复核、
+ * 等纸超时退出原因）只打在 stderr；此前 runBridge 捕获后无人读取，
+ * 「只扫一张」这类现场问题完全没有取证手段。行级原文照搬，不做裁剪。
+ */
+function logBridgeStderr(stderr: string): void {
+  for (const line of stderr.split(/\r?\n/)) {
+    const text = line.trim();
+    if (text) console.log(`[scanner-bridge] ${text}`);
+  }
+}
+
 /** 把桥接进程的常见 Windows 退出码翻译成可操作的中文提示（探测/扫描共用）。 */
 export function describeBridgeFailure(code: number | null, stderr: string): string {
   if (code === null || code === undefined) {
@@ -513,7 +526,8 @@ export async function scan(config: {
   // 把零页设备失败转成抛错，才能进入下面的双 DSM 重试。
   // 已有部分页（page_count>0）属中途失败，重试会重复扫描同一批纸，不重试。
   const attempt = async (env?: NodeJS.ProcessEnv): Promise<BridgeScanResult> => {
-    const { stdout } = await runBridge(args, timeoutMs, sessionId, env);
+    const { stdout, stderr } = await runBridge(args, timeoutMs, sessionId, env);
+    logBridgeStderr(stderr);
     const result = parseBridgeJson(stdout) as unknown as BridgeScanResult;
     if (result.status === "error" && result.page_count === 0) {
       const message = result.message || "扫描未产生任何页面";

@@ -86,7 +86,7 @@ export async function createSession(
     INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, identity_mode, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
   `, id, cardId, name, config.dpi ?? 300, config.duplex ? 1 : 0,
-    config.colorMode ?? "gray", config.paperSize ?? "A4", config.identityMode ?? "strict");
+    config.colorMode ?? "color", config.paperSize ?? "A4", config.identityMode ?? "strict");
   return (await getSession(id))!;
 }
 

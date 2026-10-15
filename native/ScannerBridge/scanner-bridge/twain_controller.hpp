@@ -20,7 +20,7 @@ struct ScanConfig {
     int dpi = 300;
     bool duplex = false;
     bool showUi = false;     // Show scanner's native UI
-    std::string colorMode = "gray";  // "gray", "color", "bw"
+    std::string colorMode = "color";  // "color", "gray", "bw"
     std::string paperSize = "A4";    // "A4", "Letter"
     std::string outputDir;
     std::string filePrefix = "scan";
@@ -120,6 +120,14 @@ private:
     bool setPaperSize(const std::string& size);
     bool enableADF();
     bool setXferCount();
+    // CAP_FEEDERLOADED 复核：pending.Count=0 但送纸器里还有纸时继续等下一页，
+    // 不信「Count=0 即结束」这一条（部分 ADF 驱动在还有纸时就报 0）。
+    // 返回 false = 驱动不支持该能力，调用方退回「信 Count」的旧行为。
+    bool queryFeederLoaded(bool* loaded);
+    // FEEDERLOADED 复核后的续等：分片等 XFERREADY，每片之间重问一次送纸器。
+    // 送纸器已空即刻返回 false（驱动不会再送页，没必要等满超时）；仍有纸则
+    // 等满 totalTimeoutMs。避免「复核判断错」时白等一整个 pageTimeoutMs。
+    bool waitForNextPageOrFeederEmpty(DWORD totalTimeoutMs);
     
     // Image saving
     bool saveDIBToFile(HANDLE hbitmap, const std::string& filePath, PageResult& result);
@@ -142,6 +150,10 @@ private:
     TW_UINT16 m_lastOpenDsmRc;
     TW_UINT16 m_lastConditionCode;
     bool m_hasOpenDsmAttempt;
+
+    // 送纸器（ADF）是否实际启用：由 enableADF 回读 CAP_FEEDERENABLED 得到。
+    // 平板/未启用时不做 FEEDERLOADED 复核，避免「Count=0 还多等一轮」。
+    bool m_feederEnabled = false;
     
     // Callbacks
     ProgressCallback m_progressCallback;

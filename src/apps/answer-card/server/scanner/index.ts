@@ -129,7 +129,7 @@ export function createScannerRouter(twainEnabled = true): Router {
           // 安全（#24）：本机 TWAIN 入口同样夹紧 DPI，避免超大 DPI 传给 scanner-bridge / 识别器。
           dpi: parseRecognitionDpi(body.dpi),
           duplex: body.duplex === true,
-          colorMode: body.colorMode || "gray",
+          colorMode: body.colorMode || "color",
           paperSize: body.paperSize || "A4",
           // 400 张双面 = 800 页；超出夹紧，防止异常入参把扫描子进程挂到超时
           maxPages: Math.min(800, Math.max(0, Math.floor(Number(body.maxPages) || 0))),
