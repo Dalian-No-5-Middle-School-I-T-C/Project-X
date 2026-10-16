@@ -41,6 +41,8 @@ struct PageResult {
     std::string side;  // "front" or "back"
     int width;
     int height;
+    double dpiX = 0;
+    double dpiY = 0;
 };
 
 struct ScanResult {
@@ -120,7 +122,9 @@ private:
     bool setPaperSize(const std::string& size);
     bool enableADF();
     bool setXferCount();
-    bool readCurrentUInt16Capability(TW_UINT16 cap, TW_UINT16 type, TW_UINT16* effective);
+    bool readCurrentUInt16Capability(TW_UINT16 cap, TW_UINT16 type, TW_UINT16* effective, bool* unsupported = nullptr);
+    bool readCurrentResolution(TW_UINT16 cap, double* effective);
+    bool validateImageResolution(const TW_IMAGEINFO& info);
     // 送纸器启用且支持复核时，托盘空仍需等待在途帧；正反面共用此规则。
     bool shouldWaitForTransfer(TW_UINT16 pendingCount);
     bool queryFeederLoaded(bool* loaded);
@@ -138,8 +142,9 @@ private:
     TW_IDENTITY m_sourceId;
     
     // State
-    int m_state;  // 1=DSM open, 2=DS open, 3=DS enabled, 4=transferring, 5=transfer done
+    int m_state;  // 1=DSM open, 2=DS open, 3/5=DS enabled, 6=transfer ready, 7=transfer needs ENDXFER
     bool m_cancelRequested;
+    bool m_sourceCloseRequested = false;
     HWND m_hwnd;
 
     // 最近一次 OPENDSM 失败的真实返回码与条件码（诊断用，避免只报「失败」）
@@ -156,6 +161,7 @@ private:
     
     // Current scan config
     ScanConfig m_config;
+    std::string m_transferError;
     
     // Single instance for callback
     static TwainController* s_instance;

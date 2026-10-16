@@ -27,7 +27,9 @@ class FakeEventSource {
   onmessage: ((event: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   constructor(_url: string) { streams.push(this); }
-  close() {}
+  closed = false;
+  close() { this.closed = true; }
+  emit(data: unknown) { this.onmessage?.({ data: JSON.stringify(data) }); }
   done() { this.onmessage?.({ data: JSON.stringify({ type: "done" }) }); }
 }
 install("EventSource", FakeEventSource);
@@ -94,6 +96,18 @@ try {
   assert.equal(uploads[1].identityMode, "strict");
   assert.equal(uploads[1].cardVersion, nextVersion);
   assert.equal(uploads[0].cardVersion, version, "Later card loads cannot replace the original session version");
+  await click("开始新扫描"); await settle();
+  await click("开始扫描"); await settle();
+  const partial = streams[2];
+  await act(async () => {
+    partial.emit({ type: "page_done", recordId: "partial-page", pageNum: 1, side: "front" });
+    partial.emit({ type: "error", message: "实际输出 DPI 与设置不一致" });
+  }); await settle();
+  assert.equal(partial.closed, true, "Terminal errors close the progress stream");
+  assert(document.body.textContent?.includes("实际输出 DPI 与设置不一致"), "Partial summary preserves the scanner error");
+  assert.equal(uploads.length, 2, "A failed batch does not automatically upload partial results");
+  await act(async () => { partial.onerror?.(); }); await settle();
+  assert.equal(streams.length, 3, "Terminal errors do not reconnect the stream");
   console.log("PASS scanner panel React/SSE: early start/cancel guards version loading; legacy/strict sessions upload their own pinned metadata");
 } finally {
   releaseCard();

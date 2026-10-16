@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <cmath>
 #include <cwctype>
 #include <iterator>
 #include <string>
@@ -406,7 +407,7 @@ TW_UINT16 TwainController::processTwainEvent(MSG& msg) {
             fprintf(stderr, "[ScannerBridge] MSG_XFERREADY received (state=%d)\n", m_state);
             m_state = 6;
         } else if (event.TWMessage == MSG_CLOSEDSREQ || event.TWMessage == MSG_CLOSEDSOK) {
-            m_state = 0;
+            m_sourceCloseRequested = true;
         }
     }
 
@@ -502,6 +503,7 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     result.success = false;
     m_config = config;
     m_cancelRequested = false;
+    m_sourceCloseRequested = false;
     
     // 1. Open DSM（幂等：已打开则直接复用，避免二次 OPENDSM 导致 SEQERROR）
     if (!openDSM()) {
@@ -583,9 +585,6 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     if (!setPixelType()) {
         // Continue anyway - some scanners don't support all caps
     }
-    if (!setResolution(config.dpi)) {
-        // Continue
-    }
     if (!setPaperSize(config.paperSize)) {
         result.errorMessage = config.paperSize == "A3"
             ? "该扫描仪不支持 A3 原稿（请在扫描设置中改选 A4）"
@@ -606,6 +605,14 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         return result;
     }
     setXferCount();   // 必须在 ENABLEDS 之前；不设时驱动默认只交付 1 页
+    // 纸型、色彩、ADF 等能力可能重置分辨率；最后设置英寸单位及 X/Y DPI 并回读确认。
+    if (!setResolution(config.dpi)) {
+        result.errorMessage = "扫描仪未应用所设置的 " + std::to_string(config.dpi) +
+            " DPI，请检查驱动支持的分辨率及扫描设置";
+        closeSource();
+        closeDSM();
+        return result;
+    }
     
     // 5. Enable source (shows scanner UI or goes to ready state)
     if (!enableSource(m_config.showUi)) {
@@ -628,9 +635,13 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         
         // Check if transfer is ready
         if (!waitForState(6, config.pageTimeoutMs)) {
-            // ADF 无纸或空闲超时：立即结束，不再干等固定 60s
-            fprintf(stderr, "[ScannerBridge] Scan ended: no more pages after %dms idle (pages=%d)\n",
-                config.pageTimeoutMs, pageNum);
+            if (m_cancelRequested || m_sourceCloseRequested) {
+                fprintf(stderr, "[ScannerBridge] Scan ended: %s (pages=%d)\n",
+                    m_cancelRequested ? "cancel requested" : "source close requested", pageNum);
+            } else {
+                fprintf(stderr, "[ScannerBridge] Scan ended: no more pages after %dms idle (pages=%d)\n",
+                    config.pageTimeoutMs, pageNum);
+            }
             hasMorePages = false;
             break;
         }
@@ -653,7 +664,8 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             }
             
             if (!captureNativeTransfer(filePath, pageNum, "front", pageResult)) {
-                result.errorMessage = "Failed to capture page " + std::to_string(pageNum) + " (front)";
+                result.errorMessage = m_transferError.empty()
+                    ? "Failed to capture page " + std::to_string(pageNum) + " (front)" : m_transferError;
                 break;
             }
             result.pages.push_back(pageResult);
@@ -672,7 +684,7 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             break;
         }
         // 非零（含 0xffff 未知数量）表示 DS 已在状态 6，可直接取下一帧，不会再发 XFERREADY。
-        if (pending.Count > 0) m_state = 6;
+        m_state = pending.Count > 0 ? 6 : 5;
         
         // 背面也可能在 Count=0 后到达；必须在当前物理张内等待，不能交给下轮正面。
         if (config.duplex) {
@@ -696,7 +708,8 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             }
             
             if (!captureNativeTransfer(filePath, pageNum, "back", pageResult)) {
-                result.errorMessage = "Failed to capture page " + std::to_string(pageNum) + " (back)";
+                result.errorMessage = m_transferError.empty()
+                    ? "Failed to capture page " + std::to_string(pageNum) + " (back)" : m_transferError;
                 break;
             }
             result.pages.push_back(pageResult);
@@ -712,7 +725,7 @@ ScanResult TwainController::scan(const ScanConfig& config) {
                 hasMorePages = false;
                 break;
             }
-            if (pending.Count > 0) m_state = 6;
+            m_state = pending.Count > 0 ? 6 : 5;
         }
         
         fprintf(stderr, "[ScannerBridge] page %d done, pending=%d\n",
@@ -722,9 +735,12 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     }
     
     // 7. Cleanup
-    disableSource();
-    closeSource();
-    closeDSM();
+    const bool disabled = disableSource();
+    const bool sourceClosed = closeSource();
+    const bool dsmClosed = closeDSM();
+    if ((!disabled || !sourceClosed || !dsmClosed) && result.errorMessage.empty()) {
+        result.errorMessage = "扫描图像已保留，但扫描仪会话未正常关闭，请检查驱动后重试";
+    }
     
     // 成功 = 无中途失败且至少捕获到一页（部分失败的批次不再被当作成功）
     result.success = result.errorMessage.empty() && result.pages.size() > 0;
@@ -865,6 +881,22 @@ bool TwainController::enableSource(bool showUi) {
 
 bool TwainController::disableSource() {
     if (m_state < 3) return true;
+    if (m_state >= 7) {
+        TW_PENDINGXFERS pending{};
+        const TW_UINT16 endRc = DSM_Entry(&m_appId, &m_sourceId,
+            DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER, &pending);
+        fprintf(stderr, "[ScannerBridge] end unfinished transfer before disable rc=%u\n", static_cast<unsigned>(endRc));
+        if (endRc != TWRC_SUCCESS) return false;
+        m_state = pending.Count > 0 ? 6 : 5;
+    }
+    if (m_state >= 6) {
+        TW_PENDINGXFERS pending{};
+        const TW_UINT16 resetRc = DSM_Entry(&m_appId, &m_sourceId,
+            DG_CONTROL, DAT_PENDINGXFERS, MSG_RESET, &pending);
+        fprintf(stderr, "[ScannerBridge] reset pending transfers before disable rc=%u\n", static_cast<unsigned>(resetRc));
+        if (resetRc != TWRC_SUCCESS) return false;
+        m_state = 5;
+    }
     TW_USERINTERFACE ui;
     memset(&ui, 0, sizeof(ui));
     ui.ShowUI = FALSE;
@@ -876,7 +908,7 @@ bool TwainController::disableSource() {
         DG_CONTROL, DAT_USERINTERFACE, MSG_DISABLEDS,
         (TW_MEMREF)&ui
     );
-    m_state = 2;
+    if (rc == TWRC_SUCCESS) m_state = 2;
     return rc == TWRC_SUCCESS;
 }
 
@@ -944,19 +976,6 @@ bool TwainController::setCapability(TW_UINT16 cap, TW_UINT16 type, void* value) 
         return true;
     }
 
-    if (rc != TWRC_SUCCESS) {
-        // Try MSG_RESET to check if cap is settable
-        TW_CAPABILITY checkCap;
-        memset(&checkCap, 0, sizeof(checkCap));
-        checkCap.Cap = cap;
-        TW_UINT16 rc2 = DSM_Entry(
-            &m_appId, &m_sourceId,
-            DG_CONTROL, DAT_CAPABILITY, MSG_GETCURRENT,
-            (TW_MEMREF)&checkCap
-        );
-        // Ignore - scanner may not support this cap
-    }
-    
     return rc == TWRC_SUCCESS;
 }
 
@@ -979,26 +998,46 @@ bool TwainController::setPixelType() {
 }
 
 bool TwainController::setResolution(int dpi) {
+    TW_UINT16 units = TWUN_INCHES;
+    const bool unitsSet = setCapability(ICAP_UNITS, TWTY_UINT16, &units);
+    TW_UINT16 effectiveUnits = 0;
+    const bool unitsRead = readCurrentUInt16Capability(ICAP_UNITS, TWTY_UINT16, &effectiveUnits);
+    fprintf(stderr, "[ScannerBridge] ICAP_UNITS requested=inches set=%s effective=%d\n",
+        unitsSet ? "ok" : "rejected", unitsRead ? static_cast<int>(effectiveUnits) : -1);
+    if (!unitsRead || effectiveUnits != TWUN_INCHES) return false;
     TW_FIX32 res;
     res.Whole = (TW_INT16)dpi;
     res.Frac = 0;
-    return setCapability(ICAP_XRESOLUTION, TWTY_FIX32, &res) &&
-           setCapability(ICAP_YRESOLUTION, TWTY_FIX32, &res);
+    const bool xSet = setCapability(ICAP_XRESOLUTION, TWTY_FIX32, &res);
+    const bool ySet = setCapability(ICAP_YRESOLUTION, TWTY_FIX32, &res);
+    double x = 0, y = 0;
+    const bool xRead = readCurrentResolution(ICAP_XRESOLUTION, &x);
+    const bool yRead = readCurrentResolution(ICAP_YRESOLUTION, &y);
+    fprintf(stderr, "[ScannerBridge] DPI requested=%d X(set=%s effective=%.4f) Y(set=%s effective=%.4f)\n",
+        dpi, xSet ? "ok" : "rejected", xRead ? x : -1, ySet ? "ok" : "rejected", yRead ? y : -1);
+    return xRead && yRead && std::abs(x - dpi) < 0.01 && std::abs(y - dpi) < 0.01;
 }
 
 bool TwainController::setDuplex(bool duplex) {
     TW_BOOL val = duplex ? TRUE : FALSE;
     const bool accepted = setCapability(CAP_DUPLEXENABLED, TWTY_BOOL, &val);
     TW_UINT16 effective = 0;
-    const bool readable = readCurrentUInt16Capability(CAP_DUPLEXENABLED, TWTY_BOOL, &effective);
+    bool enabledUnsupported = false;
+    const bool readable = readCurrentUInt16Capability(CAP_DUPLEXENABLED, TWTY_BOOL, &effective, &enabledUnsupported);
     fprintf(stderr, "[ScannerBridge] CAP_DUPLEXENABLED requested=%d set=%s effective=%d\n",
         duplex ? 1 : 0, accepted ? "ok" : "rejected", readable ? (effective != 0 ? 1 : 0) : -1);
     if (readable) return (effective != 0) == duplex;
     // 单面设备可完全不支持 CAP_DUPLEXENABLED；用 CAP_DUPLEX 确认其硬件为单面。
     if (!duplex) {
         TW_UINT16 capability = 0;
-        if (readCurrentUInt16Capability(CAP_DUPLEX, TWTY_UINT16, &capability)) {
+        bool capabilityUnsupported = false;
+        if (readCurrentUInt16Capability(CAP_DUPLEX, TWTY_UINT16, &capability, &capabilityUnsupported)) {
             return capability == TWDX_NONE;
+        }
+        // 两项可选能力均明确不支持是合法的单面设备；通信失败和容器异常不走此回退。
+        if (enabledUnsupported && capabilityUnsupported) {
+            fprintf(stderr, "[ScannerBridge] duplex capabilities unsupported; using simplex source\n");
+            return true;
         }
     }
     return false;
@@ -1074,7 +1113,8 @@ bool TwainController::queryFeederLoaded(bool* loaded) {
     return readable;
 }
 
-bool TwainController::readCurrentUInt16Capability(TW_UINT16 cap, TW_UINT16 type, TW_UINT16* effective) {
+bool TwainController::readCurrentUInt16Capability(TW_UINT16 cap, TW_UINT16 type, TW_UINT16* effective, bool* unsupported) {
+    if (unsupported) *unsupported = false;
     TW_CAPABILITY current;
     memset(&current, 0, sizeof(current));
     current.Cap = cap;
@@ -1082,6 +1122,12 @@ bool TwainController::readCurrentUInt16Capability(TW_UINT16 cap, TW_UINT16 type,
         DG_CONTROL, DAT_CAPABILITY, MSG_GETCURRENT,
         (TW_MEMREF)&current);
     if (rc != TWRC_SUCCESS || !current.hContainer) {
+        if (unsupported && rc == TWRC_FAILURE) {
+            TW_STATUS status{};
+            if (DSM_Entry(&m_appId, &m_sourceId, DG_CONTROL, DAT_STATUS, MSG_GET, &status) == TWRC_SUCCESS) {
+                *unsupported = status.ConditionCode == TWCC_CAPUNSUPPORTED || status.ConditionCode == TWCC_BADCAP;
+            }
+        }
         fprintf(stderr, "[ScannerBridge] GETCURRENT cap=%u failed rc=%u container=%s\n",
             static_cast<unsigned>(cap), static_cast<unsigned>(rc), current.hContainer ? "present" : "missing");
         if (current.hContainer) GlobalFree(current.hContainer);
@@ -1102,6 +1148,37 @@ bool TwainController::readCurrentUInt16Capability(TW_UINT16 cap, TW_UINT16 type,
     if (value) GlobalUnlock(current.hContainer);
     GlobalFree(current.hContainer);
     return readable;
+}
+
+bool TwainController::readCurrentResolution(TW_UINT16 cap, double* effective) {
+    TW_CAPABILITY current{};
+    current.Cap = cap;
+    const TW_UINT16 rc = DSM_Entry(&m_appId, &m_sourceId, DG_CONTROL, DAT_CAPABILITY, MSG_GETCURRENT, &current);
+    bool readable = false;
+    if (rc == TWRC_SUCCESS && current.hContainer && current.ConType == TWON_ONEVALUE) {
+        const auto* value = static_cast<pTW_ONEVALUE>(GlobalLock(current.hContainer));
+        if (value && value->ItemType == TWTY_FIX32) {
+            TW_FIX32 resolution{};
+            memcpy(&resolution, &value->Item, sizeof(resolution));
+            *effective = resolution.Whole + resolution.Frac / 65536.0;
+            readable = true;
+        }
+        if (value) GlobalUnlock(current.hContainer);
+    }
+    if (current.hContainer) GlobalFree(current.hContainer);
+    return readable;
+}
+
+bool TwainController::validateImageResolution(const TW_IMAGEINFO& info) {
+    const double x = info.XResolution.Whole + info.XResolution.Frac / 65536.0;
+    const double y = info.YResolution.Whole + info.YResolution.Frac / 65536.0;
+    fprintf(stderr, "[ScannerBridge] image DPI requested=%d actualX=%.4f actualY=%.4f pixels=%ldx%ld pixelType=%d bitsPerPixel=%d\n",
+        m_config.dpi, x, y, static_cast<long>(info.ImageWidth), static_cast<long>(info.ImageLength),
+        static_cast<int>(info.PixelType), static_cast<int>(info.BitsPerPixel));
+    if (std::abs(x - m_config.dpi) < 0.01 && std::abs(y - m_config.dpi) < 0.01) return true;
+    m_transferError = "扫描仪实际输出分辨率与所设置的 " + std::to_string(m_config.dpi) +
+        " DPI 不一致，请检查驱动设置后重试";
+    return false;
 }
 
 bool TwainController::shouldWaitForTransfer(TW_UINT16 pendingCount) {
@@ -1152,6 +1229,7 @@ bool TwainController::captureNativeTransfer(
     const std::string& outputPath, int pageNum,
     const std::string& side, PageResult& result)
 {
+    m_transferError.clear();
     TW_IMAGEINFO imageInfo;
     memset(&imageInfo, 0, sizeof(imageInfo));
     
@@ -1165,10 +1243,14 @@ bool TwainController::captureNativeTransfer(
         logError("Failed to get image info: " + twainResultToString(rc));
         return false;
     }
+    if (!validateImageResolution(imageInfo)) return false;
+    result.dpiX = imageInfo.XResolution.Whole + imageInfo.XResolution.Frac / 65536.0;
+    result.dpiY = imageInfo.YResolution.Whole + imageInfo.YResolution.Frac / 65536.0;
     
     // Use native transfer — DAT_IMAGENATIVEXFER 返回的句柄是指针宽（x64 下 8 字节），
     // 必须用 TW_HANDLE（=HANDLE）接收，否则会截断句柄并污染栈
     TW_HANDLE handle = nullptr;
+    m_state = 7; // 原生传输成功、取消或失败后均需 ENDXFER，再按 Count 复位。
     rc = DSM_Entry(
         &m_appId, &m_sourceId,
         DG_IMAGE, DAT_IMAGENATIVEXFER, MSG_GET,
@@ -1181,8 +1263,6 @@ bool TwainController::captureNativeTransfer(
     }
     
     // 当前帧已取走；调用方立即 ENDXFER，并依据剩余数恢复就绪或等待新事件。
-    m_state = 5;
-    
     // Convert DIB handle to file
     bool saved = saveDIBToFile((HANDLE)(uintptr_t)handle, outputPath, result);
     
@@ -1280,6 +1360,10 @@ bool TwainController::saveDIBToFile(HANDLE hDib, const std::string& filePath, Pa
     GlobalUnlock(hDib);
     
     if (!bitmap) return false;
+    if (bitmap->SetResolution(static_cast<Gdiplus::REAL>(result.dpiX), static_cast<Gdiplus::REAL>(result.dpiY)) != Gdiplus::Ok) {
+        delete bitmap;
+        return false;
+    }
     
     // Save as JPEG
     CLSID jpegClsid;
@@ -1338,15 +1422,16 @@ bool TwainController::waitForState(int targetState, DWORD timeoutMs) {
     
     while (GetTickCount() - start < timeoutMs) {
         // Check cancel
-        if (m_cancelRequested) return false;
+        if (m_cancelRequested || m_sourceCloseRequested) return false;
         if (m_state >= targetState) return true;
-        if (m_state == 0) return false; // MSG_CLOSEDSREQ / MSG_CLOSEDSOK
+        if (m_state == 0) return false;
         
         // Peek messages for TWAIN
         while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
             // DSM 通知可能使用线程消息或其它窗口；在普通派发前将每条消息交给 DSM。
             // 仅靠本程序 WndProc 转发无法覆盖所有 XFERREADY 投递方式。
             const TW_UINT16 eventRc = processTwainEvent(msg);
+            if (m_cancelRequested || m_sourceCloseRequested) return false;
             if (eventRc != TWRC_DSEVENT) {
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
@@ -1466,7 +1551,9 @@ std::string scanResultToJson(const ScanResult& result) {
         json += "      \"page\": " + std::to_string(page.pageNumber) + ",\n";
         json += "      \"side\": \"" + page.side + "\",\n";
         json += "      \"width\": " + std::to_string(page.width) + ",\n";
-        json += "      \"height\": " + std::to_string(page.height) + "\n";
+        json += "      \"height\": " + std::to_string(page.height) + ",\n";
+        json += "      \"dpi_x\": " + std::to_string(page.dpiX) + ",\n";
+        json += "      \"dpi_y\": " + std::to_string(page.dpiY) + "\n";
         json += "    }";
         if (i < result.pages.size() - 1) json += ",";
         json += "\n";

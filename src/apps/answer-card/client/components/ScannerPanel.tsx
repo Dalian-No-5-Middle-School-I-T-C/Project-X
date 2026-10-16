@@ -337,15 +337,21 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
             setProgressMessage("扫描识别完成，正在汇总成绩...");
             break;
           case "error":
+            completedRef.current = true;
+            es.close();
             setState("error");
             setErrorMessage(data.message || "扫描出错");
+            if (pagesRef.current.length > 0) void fetchCombinedResults(sid, true);
             break;
           case "cancelled":
+            completedRef.current = true;
+            es.close();
             setState("idle");
             setProgressMessage(data.message || "扫描已取消");
             break;
           case "done":
             completedRef.current = true;
+            es.close();
             setState("done");
             // 通过 ref 读取最新页数，避免闭包捕获扫描开始时的空数组
             onScansComplete?.(sid, pagesRef.current.length);
@@ -357,7 +363,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
 
       es.onerror = () => {
         es.close();
-        // 扫描已正常完成（服务端在 done 后关闭流），无需重连
+        // 服务端关闭终态流后无需重连。
         if (completedRef.current) return;
         // 重连次数耗尽 — 放弃，转为错误态
         if (reconnectAttemptsRef.current >= MAX_RECONNECT) {
@@ -392,21 +398,25 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     return data as ScanBatchResponse;
   }
 
-  async function fetchCombinedResults(sid: string) {
+  async function fetchCombinedResults(sid: string, partial = false) {
     if (resultsBusyRef.current) return;
     resultsBusyRef.current = true;
     setResultsBusy(true);
-    setErrorMessage("");
+    if (!partial) setErrorMessage("");
     try {
       const data = await readResults(sid);
       if (sid !== sessionIdRef.current) return;
       applyResults(data);
       // 远端模式：成绩汇总一完成即自动后台上传（先出分、图片续传，进度见右上角进度条）
-      if (getScannerMode() === "remote" && isRemoteServerConfigured()) {
+      if (!partial && getScannerMode() === "remote" && isRemoteServerConfigured()) {
         queueSuccessfulUploads(data, sid);
       }
     }
-    catch (err) { setErrorMessage(err instanceof Error ? err.message : "汇总失败，请重试"); }
+    catch (err) {
+      const message = err instanceof Error ? err.message : "汇总失败，请重试";
+      if (partial) setResultMessage(message);
+      else setErrorMessage(message);
+    }
     finally { resultsBusyRef.current = false; setResultsBusy(false); }
   }
 

@@ -506,11 +506,18 @@ export function createScannerRouter(twainEnabled = true): Router {
     catch (error) { next(error); }
   });
 
+  async function sessionReadyForResults(sessionId: string, status: string): Promise<boolean> {
+    if (status === "completed") return true;
+    if (status !== "error") return false;
+    const records = await listScanRecords(sessionId);
+    return records.length > 0 && records.every(record => record.ocr_status !== "pending" && record.ocr_status !== "processing");
+  }
+
   async function sessionResults(id: string, save: boolean, res: Response, validate = false, previewOnly = false) {
     const sessionId = safeId(id);
     const session = await getSession(sessionId);
     if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
-    if (session.status !== "completed") { res.status(409).json({ message: "请等待扫描和识别全部完成" }); return; }
+    if (!await sessionReadyForResults(sessionId, session.status)) { res.status(409).json({ message: "请等待扫描和识别全部完成" }); return; }
     // Use the same database card as scan/OCR; synced cards have no legacy JSON file.
     const card = await findCardForLayout(session.card_id);
     if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
@@ -526,7 +533,7 @@ export function createScannerRouter(twainEnabled = true): Router {
       await enqueuePersist(async () => {
         const session = await getSession(sessionId);
         if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
-        if (session.status !== "completed") { res.status(409).json({ message: "请等待扫描完成" }); return; }
+        if (!await sessionReadyForResults(sessionId, session.status)) { res.status(409).json({ message: "请等待扫描和识别全部完成" }); return; }
         const card = await findCardForLayout(session.card_id);
         if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
         const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);

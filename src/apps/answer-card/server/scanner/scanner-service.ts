@@ -173,6 +173,9 @@ export async function runScanSession(
     if (postScan?.status === "cancelled") {
       return sessionId;
     }
+    if (result.status === "error") {
+      throw new Error(result.message || "扫描中途失败，已扫描的页面已保留");
+    }
     await updateSessionStatus(sessionId, "completed");
 
     onProgress({
