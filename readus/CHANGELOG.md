@@ -5,8 +5,8 @@
 ### ② 「仍旧只能扫描一张」的最后一处：`TWRC_ENDOFLJOB` 被当成 ENDXFER 失败
 
 - 主线（#330）已覆盖 `CAP_XFERCOUNT=-1`、`Count=0` 的状态 5 续等、送纸器回读与双面配对，本条只补批次边界的最后一处：驱动用 `TWRC_ENDOFLJOB`（0x0007，随包 `twain.h` 里同值的 `TWRC_ENDOFLIST`）告知「这就是最后一张」，而正面、背面两处 `MSG_ENDXFER` 都按 `!= TWRC_SUCCESS` 判失败——已经到手的页面被报成「ENDXFER failed」，整批判为失败。现在两处（含 `disableSource` 收尾的 ENDXFER）按正常结束处理，日志留 `end of job after sheet N`。
-- `scripts/fixtures/scanner-native-recheck.cpp` 的假 DSM 增加可控的 ENDXFER 返回码：单张 ENDOFLJOB 批次成功且不再空等一个 `pageTimeoutMs`；双面背面后的 ENDOFLJOB 正常结束；保存失败收尾时 ENDOFLJOB 不再报「会话未正常关闭」。这三条由 `npm run verify:scanner-adf-recheck` 编译真实扫描循环执行（需要 C++ 编译器，CI 在 ubuntu 用 g++）。
-- **仍要重编译 `scanner-bridge.exe` 才能作用于现场**（`npm run native:build:x64` / `npm run native:build:ia32`，或 ia32 交叉工序 `npm run native:build:mingw:ia32`）：随包 exe 是 #330 的产物，不含这一段。
+- `scripts/fixtures/scanner-native-recheck.cpp` 的假 DSM 增加可控的 ENDXFER 返回码：单张 ENDOFLJOB 批次成功且不再空等一个 `pageTimeoutMs`；双面背面后的 ENDOFLJOB 正常结束；保存失败收尾时 ENDOFLJOB 不再报「会话未正常关闭」。这四条由 `npm run verify:scanner-adf-recheck` 编译真实扫描循环执行，CI（ubuntu + g++）已真跑通过（run 38899548731）；本机没有任何 C++ 编译器，所以这几条只能看 CI。注意该 smoke 只把 `TwainController::` 方法体拼进 `production.inc` 再编译，生产代码里的文件级自造常量在 CI 不可见——收尾码因此直接用随包头文件真实存在的 `TWRC_ENDOFLIST`，TWAIN 2.x 的 ENDOFLJOB 语义写在调用点注释里。
+- **仍要重编译 `scanner-bridge.exe` 才能作用于现场**：新增 `.github/workflows/native-ia32.yml`——提交信息含 `[build-native]` 时在 ubuntu 上用 `mingw-w64` 跑仓库自带的 `scripts/build-native-mingw.sh`（OpenCV 4.13 源码构建、静态链接，产完自检 `pei-i386` 与 quirc 符号），`ignored/native-mingw/stage/win-ia32/` 作为 artifact 上传，核对后入库 `resources/native/win-ia32/`；x64 那颗仍归 `npm run native:build:x64` 的 MSVC 工序。随包 exe 目前是 #330 的产物，不含这一段。
 
 ### ③ 「大题分数有时读不到」：含红笔分数格的卡强制彩色，零红笔批次必须告警
 
@@ -19,7 +19,7 @@
 
 - 随包 `resources/native/win-x64|win-ia32/answer-card-recognizer.exe` 仍是 2026-10-06 的产物，早于 10-15 引入的坐标映射（`geometry`/`layoutToImage`）：Windows 扫描端识别出的每一页都没有坐标，`storeCorrectionPage` 因此删掉订正快照，整卡改分退化成不可点击的原图，成绩修改侧直接抛「此卷缺少坐标映射」。本机 `npm run verify:recognizer-geometry` 即复现（把 `ANSWER_CARD_RECOGNIZER_EXE` 指向随包 ia32 识别器，报 `ZodError: geometry invalid_type`；x64 那颗在本机缺 `opencv_world4130.dll`，连启动都是 0xC0000135）。
 - 唯一可用的补救是 Ubuntu 服务端包里的独立识别器显式补识别（Linux x86_64、单次串行、结果不落库，每次打开重算）；扫描端本地与 Windows 服务端没有这条路。
-- 结论同 ②：需要按打包工序重编译两个 Windows 识别器并重出安装包，之后再用真机异常卷核对。
+- 结论同 ②：需要按打包工序重编译两个 Windows 识别器并重出安装包，之后再用真机异常卷核对。`win-ia32` 那颗可由上面新增的 `[build-native]` CI job 一并产出（同一脚本同时编识别器与扫描桥），`win-x64` 仍需配好 VS+OpenCV 4.13 的构建机。
 
 ## 2026-10-16：扫描 DPI 同步、单面设备兼容与失败批次恢复
 

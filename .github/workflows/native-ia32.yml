@@ -1,0 +1,37 @@
+name: Native ia32 build
+
+# 随包 Windows 32 位原生件（扫描桥 + 识别器）的仓库工序见 readus/Windows32位扫描端交叉打包.md：
+# 由 Linux/macOS 构建机交叉编译，OpenCV 4.13 源码构建、静态链接。CI 平时不编 C++，
+# 只有提交信息含 [build-native] 时才跑这里；产物下载后由维护者核对再入库 resources/native/win-ia32/。
+on:
+  push:
+    branches: [main, "fix/**", "chore/**"]
+
+jobs:
+  native-ia32:
+    if: contains(github.event.head_commit.message, '[build-native]')
+    name: Build Windows ia32 native components
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    concurrency:
+      group: native-ia32
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64 cmake
+
+      - name: Build (OpenCV 4.13 + recognizer + TWAIN bridge, ia32)
+        run: bash scripts/build-native-mingw.sh
+        env:
+          NATIVE_BUILD_JOBS: 3
+
+      - name: Upload staged binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-win-ia32
+          path: ignored/native-mingw/stage/win-ia32/
+          if-no-files-found: error
