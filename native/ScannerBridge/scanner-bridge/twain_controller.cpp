@@ -14,10 +14,6 @@
 #include <string>
 #include <vector>
 
-// TWAIN 2.x 用 TWRC_ENDOFLJOB 表示「本次作业再无待传输图像」，与随包 twain.h 里的
-// TWRC_ENDOFLIST 同值（0x0007）但语义相反于失败。MSG_ENDXFER 返回它属正常收尾。
-static constexpr TW_UINT16 TWRC_ENDOFLJOB = TWRC_ENDOFLIST;
-
 using DsmEntryProc = TW_UINT16(TW_CALLINGSTYLE*)(
     pTW_IDENTITY,
     pTW_IDENTITY,
@@ -696,7 +692,9 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         TW_UINT16 endRc = DSM_Entry(&m_appId, &m_sourceId,
             DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER,
             (TW_MEMREF)&pending);
-        if (endRc == TWRC_ENDOFLJOB) {
+        if (endRc == TWRC_ENDOFLIST) {
+            // TWAIN 2.x 里这个码叫 TWRC_ENDOFLJOB（随包 twain.h 只有同值的 TWRC_ENDOFLIST）：
+            // 「本次作业再无待传输图像」，MSG_ENDXFER 返回它属正常收尾，不是失败。
             fprintf(stderr, "[ScannerBridge] ENDXFER: end of job after sheet %d (pending=%u)\n",
                 pageNum, static_cast<unsigned>(pending.Count));
             // 已交付的帧已经结束，按 Count 复位状态，收尾时不再重复发 ENDXFER
@@ -746,7 +744,8 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             endRc = DSM_Entry(&m_appId, &m_sourceId,
                 DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER,
                 (TW_MEMREF)&pending);
-            if (endRc == TWRC_ENDOFLJOB) {
+            if (endRc == TWRC_ENDOFLIST) {
+                // 同上：ENDOFLIST 即 TWAIN 2.x 的 TWRC_ENDOFLJOB，正常收尾
                 fprintf(stderr, "[ScannerBridge] ENDXFER: end of job after back of sheet %d (pending=%u)\n",
                     pageNum, static_cast<unsigned>(pending.Count));
                 m_state = pending.Count > 0 ? 6 : 5;
@@ -920,8 +919,8 @@ bool TwainController::disableSource() {
         const TW_UINT16 endRc = DSM_Entry(&m_appId, &m_sourceId,
             DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER, &pending);
         fprintf(stderr, "[ScannerBridge] end unfinished transfer before disable rc=%u\n", static_cast<unsigned>(endRc));
-        // ENDOFLJOB 同样出现在收尾的 ENDXFER 上，此时作业已无待传图像，可继续 DISABLEDS
-        if (endRc != TWRC_SUCCESS && endRc != TWRC_ENDOFLJOB) return false;
+        // ENDOFLIST 即 TWAIN 2.x 的 ENDOFLJOB，同样出现在收尾的 ENDXFER 上，此时作业已无待传图像，可继续 DISABLEDS
+        if (endRc != TWRC_SUCCESS && endRc != TWRC_ENDOFLIST) return false;
         m_state = pending.Count > 0 ? 6 : 5;
     }
     if (m_state >= 6) {
