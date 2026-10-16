@@ -120,6 +120,10 @@ private:
     bool setPaperSize(const std::string& size);
     bool enableADF();
     bool setXferCount();
+    // ENDXFER 之后「还要不要继续等下一帧」。pending.Count 在 CAP_XFERCOUNT=-1 时不可信，
+    // 判定要综合状态机、送纸器能力与 CAP_FEEDERLOADED，理由见实现处。
+    bool shouldWaitForTransfer(TW_UINT16 pendingCount);
+    bool queryFeederLoaded(bool* loaded);
     
     // Image saving
     bool saveDIBToFile(HANDLE hbitmap, const std::string& filePath, PageResult& result);
@@ -136,6 +140,9 @@ private:
     // State
     int m_state;  // 1=DSM open, 2=DS open, 3=DS enabled, 4=transferring, 5=transfer done
     bool m_cancelRequested;
+    // enableADF() 回读到的送纸器实际状态。批量续等的判定只在真的走送纸器时才有意义，
+    // SET 被静默拒绝（平板机型）时必须按 false 处理，否则每张之间会白等一个超时。
+    bool m_feederEnabled = false;
     HWND m_hwnd;
 
     // 最近一次 OPENDSM 失败的真实返回码与条件码（诊断用，避免只报「失败」）

@@ -79,6 +79,9 @@ jobs:
 
       - name: Linux x86_64 correction recognizer geometry
         run: npm run verify:recognizer-geometry
+      # issue #331 ③：同一张卡、同一条红笔斜线，彩色读到分数、灰度归零——「有时读不到」的机制
+      - name: Linux x86_64 red pen score cells
+        run: npm run verify:recognizer-red-pen
       - name: Full-card correction and legacy recognition drafts (SQLite)
         run: npm run verify:scan-correction && npm run verify:scan-correction-security && npm run verify:scanner-pending && npm run verify:scanner-retry-concurrency && npm run verify:ladder-options-soft-delete
       # v57 空置 + 「阅卷中已公布」考试不被强制结考，并检查两套方言迁移版本号不撞号
@@ -96,12 +99,14 @@ jobs:
       - name: Scanner delivered DPI cross-check
         run: npm run verify:scanner-delivered-dpi
 
-      - name: Scanner block crop audit
-        run: npm run verify:scanner-block-crops
+      # issue #331 ②：进纸器批次为什么只收到一张——锁住「续等不能只认 pending.Count」
+      # 及 ENDOFLJOB 收尾、双面背面、送纸器回读与桥接诊断回传。
+      - name: Scanner ADF batch continuation regression
+        run: npm run verify:scanner-adf-continuation
 
-      # issue #331 ④：整卡改分/异常卷弹层用 vh 定高，移动端底部按钮落在可视视口外
-      - name: Correction dialog viewport fit
-        run: npm run verify:correction-viewport-fit
+      # issue #331 ③：含红笔分数格的卡色彩模式由服务端定，全批零红笔必须告警而不是静默 0 分
+      - name: Scanner red pen score color mode regression
+        run: npm run verify:scanner-red-pen-colormode
 
       - name: Scanner upload manager recovery
         run: npm run verify:scanner-upload-manager

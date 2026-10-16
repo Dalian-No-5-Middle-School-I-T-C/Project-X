@@ -299,6 +299,18 @@ function parseBridgeJson(stdout: string): Record<string, unknown> {
   return JSON.parse(text) as Record<string, unknown>;
 }
 
+/**
+ * 桥接 stderr 里带 [ScannerBridge] 标记的诊断行（CAP_XFERCOUNT 实际生效值、密度回读、
+ * 批次结束原因）。scan() 原本只取 stdout 的 JSON，成功时这些行被整段丢弃，现场「只扫进
+ * 一张」就无从区分「驱动只交 1 张」与「我们提前收了尾」。
+ */
+export function extractBridgeDiagnostics(stderr: string): string[] {
+  return stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.includes("[ScannerBridge]"));
+}
+
 /** 把桥接进程的常见 Windows 退出码翻译成可操作的中文提示（探测/扫描共用）。 */
 export function describeBridgeFailure(code: number | null, stderr: string): string {
   if (code === null || code === undefined) {
@@ -513,7 +525,11 @@ export async function scan(config: {
   // 把零页设备失败转成抛错，才能进入下面的双 DSM 重试。
   // 已有部分页（page_count>0）属中途失败，重试会重复扫描同一批纸，不重试。
   const attempt = async (env?: NodeJS.ProcessEnv): Promise<BridgeScanResult> => {
-    const { stdout } = await runBridge(args, timeoutMs, sessionId, env);
+    const { stdout, stderr } = await runBridge(args, timeoutMs, sessionId, env);
+    // 成功路径也要留痕：为什么只交了这些页、密度与张数上限实际生效成什么样，桥接只写在 stderr
+    for (const line of extractBridgeDiagnostics(stderr)) {
+      console.warn(`[scanner] ${line}`);
+    }
     const result = parseBridgeJson(stdout) as unknown as BridgeScanResult;
     if (result.status === "error" && result.page_count === 0) {
       const message = result.message || "扫描未产生任何页面";

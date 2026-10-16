@@ -92,11 +92,11 @@ export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved}: 
     setMessage("");
   }
   return <Dialog open onOpenChange={open => {if (!open) close();}}>
-    <DialogContent size="lg" className="h-[calc(100vh-64px)] supports-[height:100dvh]:h-[calc(100dvh-64px)] max-w-[1400px]" onInteractOutside={e => e.preventDefault()}>
+    <DialogContent size="lg" className="h-[calc(100vh-48px)] max-w-[1400px]" onInteractOutside={e => e.preventDefault()}>
       <DialogHeader><DialogTitle>整卡改分{dirty ? " · 未保存" : ""}</DialogTitle>
         <DialogDescription>点击原卷中的填涂格修改。学号点击切换；单选题点击切换，再次点击已选项可清空；多选题与分数格点击勾选、再次点击取消。点击保存后生效。</DialogDescription>
       </DialogHeader>
-      <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border-subtle px-5 py-2 text-sm">
+      <div className="flex flex-wrap items-center gap-3 border-b border-border-subtle px-5 py-2 text-sm">
         <span className="text-correction-normal">蓝框：默认 / 正确 / 合法</span><span className="text-correction-error">红框：错误 / 异常</span>
         <Button size="sm" variant="outline" disabled={pageIndex===0 || busy} onClick={() => setPageIndex(i=>i-1)}>上一页</Button>
         <span>{document ? `${pageIndex+1} / ${document.pages.length}` : "—"}</span>

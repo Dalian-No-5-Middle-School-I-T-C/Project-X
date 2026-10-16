@@ -1,14 +1,35 @@
 # Project-X CHANGELOG
 
-## 2026-10-16：扫描端分辨率生效、大题切块核对与异常卷弹层高度（issue #331）
+## 2026-10-16：扫描端分辨率、进纸器批次续等与红笔分数格强制彩色（issue #331 ①②③）
+
+### ① 设定分辨率真正生效
 
 - TWAIN 的 `ICAP_XRESOLUTION/YRESOLUTION` 是「每 `ICAP_UNITS` 的点数」，不是每英寸。设置密度前先把单位钉成 `TWUN_INCHES`，钉不上时按驱动实际单位换算；纸型协商（`ICAP_SUPPORTEDSIZES`）会连带刷新成像参数，因此纸型谈完再设一次密度。
 - 设值后用 `MSG_GETCURRENT` 回读实际生效密度并在 stderr 标注 `accepted:` / `SUBSTITUTED BY DRIVER:`；`TWRC_CHECKSTATUS` 不再当作物已成功，也不因密度设不上中止扫描会话。
 - 扫描端不依赖 exe 是否重编译：用桥接本来就回报的页面像素尺寸反查出图密度，写入 `[checkpoint] scan ... deliveredDpi=`，被驱动替代时在扫描端显示常驻「扫描告警」并进入「复制诊断」。
-- 大题切块逐页以布局声明的大题为基准核对，区分「识别漏块」「识别器不支持 `--crops-dir`（整页没有切块字段）」「识别报出切块但一个都没入库」三类，会话汇总进 `[checkpoint] blocks` 日志与界面告警；native `build_block_crops` 的两处静默 `continue` 改为 `[recognizer-crops]` 输出，识别成功时由扫描端转发到日志。
-- 整卡改分（异常卷）弹层与 `AppShell` 的视口高度改用可视视口 `dvh`，`fixed` 弹层的取消/保存按钮不再落在移动端工具栏下面；兼容目标是 safari15 而 dvh 要 15.4+，因此保留 `100vh` 兜底、仅在 `@supports (height:100dvh)` 时升级。翻页/缩放工具条补 `shrink-0`，弹层定高与 `DialogContent` 上限对齐。
-- 新增 `verify:scanner-delivered-dpi`、`verify:scanner-block-crops`、`verify:correction-viewport-fit` 并接入 CI。
-- 尚未覆盖：issue #331 ②「只能扫描一张」属于未合并的 PR #330（ADF 与 `CAP_XFERCOUNT`）；本机无 cmake/MSVC，两个 Windows 原生组件只改源码未重编译，需在打包环境编译后以真实扫描仪与原卷验收；④ 的「滚动」描述不明确，本轮按「可视视口高度导致内容滚不出来」这一类可复现缺陷修复。
+- 新增 `verify:scanner-delivered-dpi` 并接入 CI。
+
+### ② 「仍旧只能扫描一张」：批次续等不再只认 pending.Count
+
+- `CAP_XFERCOUNT=-1`（不限张数）时多数驱动恒报 `DAT_PENDINGXFERS.Count=0`，旧循环 `hasMorePages = pending.Count > 0` 因此第一张就收尾。续等改由 `shouldWaitForTransfer` 判定：状态机已就绪或 `Count>0`（含 0xFFFF）继续；`Count=0` 时只有送纸器确实没开才结束批次，`CAP_FEEDERLOADED` 问不到则宁可多等一个超时（少收一张不可恢复，多等只是慢）。
+- 驱动用 `TWRC_ENDOFLJOB`（0x0007）表示「这就是最后一张」，属正常收尾；旧实现按 ENDXFER 失败处理，连已经到手的那张都报成扫描失败。正反两面两处都补上，并把 `Count>0` 显式推进到状态 6（此时驱动不会再发一次 XFERREADY）。
+- 双面背面不再由 `pending.Count > 0` 决定是否等待；混合批次里某张确实只有正面时只结束批次，不再把整批判为失败。
+- `enableADF` 回读 `CAP_FEEDERENABLED` 的实际生效值（SET 被静默拒绝的平板机型必须按未开处理，否则每张之间白等超时）；`enableSource` 改为 `if (m_state < 3)`，不再抹掉 `MSG_ENABLEDS` 内部就已到达的第一帧 XFERREADY。
+- 桥接 stderr 的 `[ScannerBridge]` 诊断行（送纸器生效状态、密度回读、批次结束原因）逐行转发到服务端日志：现场要能区分「驱动只交 1 张」与「软件提前收了尾」。
+- 新增 `verify:scanner-adf-continuation` 并接入 CI。**以上判定全在原生桥内，必须用 `npm run native:build:x64` / `native:build:ia32`（或 ia32 交叉工序）重编译 `scanner-bridge.exe` 才会作用于现场。**
+
+### ③ 「大题分数有时读不到」：含红笔分数格的卡强制彩色
+
+- 识别器只在彩色像素里做红笔门控（`COLOR_BGR2HSV` + 饱和度 ≥55），灰度图被补成 B=G=R、饱和度恒为 0，红笔斜线整题落到 `no_valid_subjective_score` 并按 0 分计；而扫描端、服务端路由与 TWAIN 桥三处 `colorMode` 缺省都是 `gray`——「谁忘了切彩色」的批次整批读不到，现场表现为「有时读不到、无规律」。
+- 版面里存在 `score_cell` 时色彩模式由服务端定：会话行记录实际生效值，送进桥接的是升级后的模式，自动改写当场给操作员提示，`[checkpoint]` 日志记 `colorMode=...(forced)`。不含分数格的卡保持原选择，黑白/灰度照常可用。
+- 一批卷子里一张红笔分数都没读到时给出可执行告警（按当前模式分别提示改彩色重扫 / 核对笔迹与斜线是否贯穿分数格），不再静默按 0 分入库。个别卷子空白属缺考或未打分，不触发告警。
+- 新增 `verify:recognizer-red-pen`（同一张卡同一条斜线：彩色读到 10 分，灰度 0 分且 `no_valid_subjective_score`，定位/学号/客观题不受影响）与 `verify:scanner-red-pen-colormode`，均接入 CI。
+
+### ④ 异常卷「完全不好用」的定位（未在本条修复）
+
+- 随包 `resources/native/win-x64|win-ia32/answer-card-recognizer.exe` 仍是 2026-10-06 的产物，早于 10-15 引入的坐标映射（`geometry`/`layoutToImage`）：Windows 扫描端识别出的每一页都没有坐标，`storeCorrectionPage` 因此删掉订正快照，整卡改分退化成不可点击的原图，成绩修改侧直接抛「此卷缺少坐标映射」。
+- 唯一可用的补救是 Ubuntu 服务端包里的独立识别器显式补识别（Linux x86_64、单次串行、结果不落库，每次打开重算）；扫描端本地与 Windows 服务端没有这条路。
+- 结论同 ②：需要按打包工序重编译两个 Windows 识别器并重出安装包，之后再用真机异常卷核对。
 
 ## 2026-10-14：2.7.0 整卡改分与旧卷补识别
 

@@ -299,6 +299,11 @@ TwainController* TwainController::s_instance = nullptr;
 
 static const char* WINDOW_CLASS = "ScannerBridgeTwainClass";
 
+// DAT_PENDINGXFERS / MSG_ENDXFER 用返回值 0x0007 表示「本次逻辑作业结束，不会再有下一帧」。
+// TWAIN 2.x 规范把这个上下文里的 0x0007 称作 TWRC_ENDOFLJOB，而随包的 twain.h 只按枚举
+// 场景定义了同值的 TWRC_ENDOFLIST，所以这里按规范语义起个名字，避免误当失败处理。
+static constexpr TW_UINT16 TWRC_ENDOFLJOB = TWRC_ENDOFLIST;
+
 // ── Window Procedure ──────────────────────────────────
 
 // TWAIN DSM 通过注册窗口消息把 MSG_XFERREADY 等状态投递到本窗口，
@@ -619,6 +624,9 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     // 状态机约定：waitForState(6) 等 MSG_XFERREADY（processTwainEvent 置 m_state=6）；
     // captureNativeTransfer 收到 XFERDONE 后把 m_state 复位为 5，使下一轮 waitForState(6)
     // 真正等待新一页的 XFERREADY；XFERDONE 后必须立即 ENDXFER 才能推进 TWAIN 状态机。
+    // ②（issue #331「仍旧只能扫描一张」）：批次边界只认 ENDXFER 的返回码 + 送纸器状态，
+    // 不能只认 pending.Count —— 请求不限张数（CAP_XFERCOUNT=-1）时多数驱动恒报 Count=0，
+    // 旧循环 `hasMorePages = pending.Count > 0` 因此第一张就退出。
     int pageNum = 0;
     bool hasMorePages = true;
     
@@ -664,17 +672,35 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         TW_UINT16 endRc = DSM_Entry(&m_appId, &m_sourceId,
             DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER,
             (TW_MEMREF)&pending);
+        // ENDOFLJOB 是驱动给的「这就是最后一张」，属正常收尾；旧实现把它当 ENDXFER 失败，
+        // 于是「一张进纸器批次」连已经到手的那张都报成扫描失败。
+        if (endRc == TWRC_ENDOFLJOB) {
+            fprintf(stderr, "[ScannerBridge] ENDXFER: end of job after sheet %d (pending=%u)\n",
+                pageNum, static_cast<unsigned>(pending.Count));
+            hasMorePages = false;
+            break;
+        }
         if (endRc != TWRC_SUCCESS) {
             logError("ENDXFER failed: " + twainResultToString(endRc));
             result.errorMessage = "ENDXFER failed: " + twainResultToString(endRc);
             hasMorePages = false;
             break;
         }
-        
-        // Back side (duplex) — 由 pending.Count 决定是否还有背面，避免干等 30 秒
-        if (config.duplex && pending.Count > 0) {
+        // Count 非零表示 DS 已把下一帧挂在状态 6 等我们取，它不会再发一次 XFERREADY
+        if (pending.Count > 0) m_state = 6;
+
+        // Back side (duplex) — 背面会不会到不能只问 Count：不回报剩余张数的驱动恒报 0，
+        // 旧代码据此跳过背面，双面批次于是只剩正面。
+        if (config.duplex) {
+            if (!shouldWaitForTransfer(pending.Count)) {
+                hasMorePages = false;
+                break;
+            }
             if (!waitForState(6, config.pageTimeoutMs)) {
-                result.errorMessage = "Timeout waiting for back side of page " + std::to_string(pageNum);
+                // 混合批次里某一张确实只有正面，等不到背面不该把已经到手的一整批判失败
+                fprintf(stderr, "[ScannerBridge] no back side for sheet %d after %dms; ending batch\n",
+                    pageNum, config.pageTimeoutMs);
+                hasMorePages = false;
                 break;
             }
             
@@ -702,15 +728,22 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             endRc = DSM_Entry(&m_appId, &m_sourceId,
                 DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER,
                 (TW_MEMREF)&pending);
+            if (endRc == TWRC_ENDOFLJOB) {
+                fprintf(stderr, "[ScannerBridge] ENDXFER: end of job after back of sheet %d (pending=%u)\n",
+                    pageNum, static_cast<unsigned>(pending.Count));
+                hasMorePages = false;
+                break;
+            }
             if (endRc != TWRC_SUCCESS) {
                 logError("ENDXFER (back) failed: " + twainResultToString(endRc));
                 result.errorMessage = "ENDXFER (back) failed: " + twainResultToString(endRc);
                 hasMorePages = false;
                 break;
             }
+            if (pending.Count > 0) m_state = 6;
         }
-        
-        hasMorePages = pending.Count > 0;
+
+        hasMorePages = shouldWaitForTransfer(pending.Count);
     }
     
     // 7. Cleanup
@@ -821,7 +854,9 @@ bool TwainController::enableSource(bool showUi) {
                 DG_CONTROL, DAT_STATUS, MSG_GET,
                 (TW_MEMREF)&status);
         }
-        m_state = 3;
+        // 驱动可能在 MSG_ENABLEDS 内部就泵出第一帧的 MSG_XFERREADY（进纸器已装纸时常见），
+        // 无条件写回 3 会把已经到达的就绪状态抹掉，随后 waitForState(6) 干等一个不会再来的事件。
+        if (m_state < 3) m_state = 3;
         return true;
     }
     
@@ -843,7 +878,7 @@ bool TwainController::enableSource(bool showUi) {
                     DG_CONTROL, DAT_STATUS, MSG_GET,
                     (TW_MEMREF)&status);
             }
-            m_state = 3;
+            if (m_state < 3) m_state = 3;
             return true;
         }
     }
@@ -1133,12 +1168,57 @@ bool TwainController::setPaperSize(const std::string& size) {
 
 bool TwainController::enableADF() {
     TW_BOOL adf = TRUE;
-    setCapability(CAP_FEEDERENABLED, TWTY_BOOL, &adf);
-    
+    const bool accepted = setCapability(CAP_FEEDERENABLED, TWTY_BOOL, &adf);
+
     TW_BOOL autoFeed = TRUE;
     setCapability(CAP_AUTOFEED, TWTY_BOOL, &autoFeed);
-    
+
+    // SET 成功不等于走纸器真的开了（平板/驱动差异会静默回 FALSE）。批量续等的判定
+    // 依赖这个事实，所以必须回读；回读不可用时只能退回 SET 的返回值。
+    TW_UINT32 rawItem = 0;
+    TW_UINT16 itemType = 0;
+    const bool readable = readCurrentOneValueCap(&m_appId, &m_sourceId, CAP_FEEDERENABLED, rawItem, itemType)
+        && itemType == TWTY_BOOL;
+    m_feederEnabled = readable ? rawItem != 0 : accepted;
+    fprintf(stderr, "[ScannerBridge] CAP_FEEDERENABLED set=%s effective=%d (%s) CAP_AUTOFEED requested=1\n",
+        accepted ? "ok" : "rejected", m_feederEnabled ? 1 : 0,
+        readable ? "GETCURRENT" : "SET result");
     return true;  // Best effort
+}
+
+bool TwainController::queryFeederLoaded(bool* loaded) {
+    if (!loaded) return false;
+    TW_UINT32 rawItem = 0;
+    TW_UINT16 itemType = 0;
+    const bool readable = readCurrentOneValueCap(&m_appId, &m_sourceId, CAP_FEEDERLOADED, rawItem, itemType)
+        && itemType == TWTY_BOOL;
+    *loaded = readable && rawItem != 0;
+    return readable;
+}
+
+bool TwainController::shouldWaitForTransfer(TW_UINT16 pendingCount) {
+    // DS 已经把下一帧挂在状态 6（或驱动直接送来了新的 MSG_XFERREADY），不用等事件再来。
+    if (m_state >= 6) return true;
+    // Count>0 含 0xFFFF（规范里表示「驱动不知道还剩几张」），都是明确的继续信号。
+    if (pendingCount > 0) return true;
+    // Count=0 不等于「没有了」：请求 CAP_XFERCOUNT=-1（不限张数）时大量驱动恒报 0。
+    // 旧循环把 Count>0 当循环条件，第一张之后就直接收尾——issue #331 ②「只能扫描一张」。
+    // 托盘状态是这里唯一可靠的否决证据：没开送纸器（平板/单张）时 Count=0 才可信。
+    if (!m_feederEnabled) {
+        fprintf(stderr, "[ScannerBridge] pending=0 and feeder not enabled; ending batch\n");
+        return false;
+    }
+    bool loaded = false;
+    if (!queryFeederLoaded(&loaded)) {
+        // 驱动不答 CAP_FEEDERLOADED：宁可多等一个超时，也不能少收一张（少收不可恢复，
+        // 多等只是慢）。真正的作业结束由 ENDXFER 的 ENDOFLJOB 提前判定，不走到这里。
+        fprintf(stderr, "[ScannerBridge] pending=0 and CAP_FEEDERLOADED unreadable; waiting up to %dms\n",
+            m_config.pageTimeoutMs);
+        return true;
+    }
+    fprintf(stderr, "[ScannerBridge] pending=0 feederLoaded=%d; waiting up to %dms for next transfer\n",
+        loaded ? 1 : 0, m_config.pageTimeoutMs);
+    return true;
 }
 
 bool TwainController::setXferCount() {

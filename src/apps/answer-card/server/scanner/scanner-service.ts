@@ -14,12 +14,12 @@ import { enqueueScannerSubmission, invalidateScanRecognitionInQueue } from "../.
 import { gradeCombinedRecognition } from "../../../../shared/grading";
 import type { CombinedRecognitionResult } from "../../../../shared/types";
 import { getMysqlDb } from "../../../../server/db";
-import { persistAnswerBlockCrops, type CropPersistenceStats } from "../../../../server/services/AnswerBlockCropService";
+import { persistAnswerBlockCrops } from "../../../../server/services/AnswerBlockCropService";
 import { prepareCardLayoutById } from "../card-layout";
 import { parseRecognitionDpi } from "../helpers";
 import { mapScanPageToLayout, applyScanStudentId, assignScanRecordPageNums } from "../../../../shared/scanPages";
 import { verifyDeliveredScanDpi } from "../../../../shared/scanDeliveredDpi";
-import { auditBlockCrops, summarizeBlockCropAudits, type BlockCropAudit } from "../../../../shared/scanBlockCrops";
+import { layoutNeedsRedPenScoring, resolveScanColorMode, colorModeUpgradeNotice, redPenMissNotice } from "../../../../shared/scanRedPenScore";
 
 export { listSources };
 
@@ -47,7 +47,9 @@ export async function createScanSession(config: ScanSessionConfig): Promise<stri
   const session = await createSession(config.cardId, config.sessionName, {
     dpi: config.dpi,
     duplex: config.duplex,
-    colorMode: config.colorMode,
+    // ③（issue #331）：会话行记的是**实际会送进扫描仪**的色彩模式。写用户当时的选择会让事后
+    // 取证与识别器拿到的图对不上，而含红笔分数格的卡在这里已被强制改为彩色。
+    colorMode: resolveScanColorMode(config.colorMode, layoutNeedsRedPenScoring(prepared.layout.pages)).colorMode,
     paperSize: config.paperSize,
     identityMode: config.identityMode
   });
@@ -84,11 +86,20 @@ export async function runScanSession(
     onProgress({ sessionId, type: "scanning", message: "正在连接扫描仪..." });
 
     const filePrefix = `session_${sessionId}`;
+    // ③（issue #331）：识别器只能在彩色像素里做红笔门控，三处 colorMode 缺省又都是 gray，
+    // 所以「忘切彩色」的批次会整批把红笔分数读成 0。卡面既然有分数格，这里就不把决定权留给现场。
+    const colorMode = resolveScanColorMode(
+      config.colorMode,
+      layoutNeedsRedPenScoring(prepared.layout.pages)
+    );
+    if (colorMode.upgraded) {
+      onProgress({ sessionId, type: "warning", message: colorModeUpgradeNotice(config.colorMode) });
+    }
     const scanConfig = {
       sourceName: config.sourceName,
       dpi: config.dpi,
       duplex: config.duplex,
-      colorMode: config.colorMode,
+      colorMode: colorMode.colorMode,
       paperSize: config.paperSize,
       outputDir,
       filePrefix,
@@ -162,7 +173,7 @@ export async function runScanSession(
     // ①（issue #331）设定 DPI 是否真生效，用桥接已回报的像素尺寸反查——不依赖 exe 是否
     // 带 MSG_GETCURRENT 回读，现网随包 exe 也能给出「实际约 200dpi」的可核对结论。
     const dpiVerdict = verifyDeliveredScanDpi(result.pages, { dpi: config.dpi, paperSize: config.paperSize });
-    console.log(`[checkpoint] scan session=${sessionId} card=${config.cardId} pages=${filteredPages.length} dpi=${config.dpi} deliveredDpi=${dpiVerdict.deliveredDpi ?? "unknown"}(${dpiVerdict.status}, samples=${dpiVerdict.samplePages}) duplex=${config.duplex} size=${config.paperSize}`);
+    console.log(`[checkpoint] scan session=${sessionId} card=${config.cardId} pages=${filteredPages.length} dpi=${config.dpi} deliveredDpi=${dpiVerdict.deliveredDpi ?? "unknown"}(${dpiVerdict.status}, samples=${dpiVerdict.samplePages}) duplex=${config.duplex} size=${config.paperSize} colorMode=${colorMode.colorMode}${colorMode.upgraded ? "(forced)" : ""}`);
     if (dpiVerdict.status === "mismatch" && dpiVerdict.message) {
       onProgress({ sessionId, type: "warning", message: dpiVerdict.message });
     }
@@ -233,7 +244,11 @@ async function runOcrOnSessionInQueue(
   const { card, layout, layoutPath: currentLayoutPath } = prepared;
   const session = await getSession(sessionId);
   const studentIdsByGroup = new Map<number, string>();
-  const blockCropAudits: BlockCropAudit[] = [];
+  // ③（issue #331）：整批一张红笔分数都没读到，说明色彩模式或笔迹出了问题，
+  // 但识别器只会安静地把每题记成 0 分——这里把它变成一条照得做的提示。
+  const needsRedPen = layoutNeedsRedPenScoring(layout.pages);
+  let redPenPages = 0;
+  let redMarkPages = 0;
 
   for (const record of records) {
     if (!record.image_path) continue;
@@ -272,6 +287,13 @@ async function runOcrOnSessionInQueue(
         dpi: parseRecognitionDpi(session?.dpi),
         cropsDir: await createRecognitionCropTempDir(cardId, record.id)
       })) as CombinedRecognitionResult;
+
+      if (needsRedPen) {
+        redPenPages += 1;
+        if ((recognition.subjectiveQuestions ?? []).some((question) => (question.validCells?.length ?? 0) > 0)) {
+          redMarkPages += 1;
+        }
+      }
 
       await getMysqlDb().run("UPDATE twain_scan_records SET identity_json = ? WHERE id = ?", JSON.stringify(recognition.identity), record.id);
       const recognizedStudentId = retry?.studentId ?? (recognition.studentId?.status === "ok" ? recognition.studentId.value : null);
@@ -331,9 +353,8 @@ async function runOcrOnSessionInQueue(
         }
       }
 
-      let cropStats: CropPersistenceStats | undefined;
       try {
-        cropStats = await persistAnswerBlockCrops({
+        await persistAnswerBlockCrops({
           cardId,
           studentNumber: studentId,
           sourceType: "twain_scan_record",
@@ -342,27 +363,6 @@ async function runOcrOnSessionInQueue(
         }, getMysqlDb());
       } catch (cropError) {
         console.error(`[Scanner] Block crop persistence failed for record ${record.id}:`, cropError);
-      }
-
-      // ③（issue #331「大题划分有时读不到，无规律」）：识别成功不等于切块可用——旧 exe 降级、
-      // 识别漏块、切块图片丢失都会让网阅队列少题，而界面只看学号和分数就全看不出来。
-      // 这里用布局声明的大题当基准逐页核对，缺哪个、缺几次、属于哪一类都变成可数的证据。
-      if (recognition.status !== "failed") {
-        const audit = auditBlockCrops(
-          record.page_num,
-          layout.pages[layoutPage - 1]?.blocks ?? [],
-          recognition.blockCrops,
-          cropStats?.persisted
-        );
-        blockCropAudits.push(audit);
-        if (audit.status !== "ok") {
-          console.warn(
-            `[checkpoint] blocks session=${sessionId} record=${record.id} page=${record.page_num} side=${record.side} ` +
-              `status=${audit.status} expected=${audit.expected} crops=${recognition.blockCrops?.length ?? "none"} ` +
-              `persisted=${cropStats?.persisted ?? "db-error"} skipped=${cropStats?.skipped ?? "-"} ` +
-              `missing=${audit.missingBlockIds.join("|")}`
-          );
-        }
       }
 
       if (recognition.quality?.overallScore !== undefined) {
@@ -386,13 +386,15 @@ async function runOcrOnSessionInQueue(
     }
   }
 
-  const blockSummary = summarizeBlockCropAudits(blockCropAudits);
-  console.log(
-    `[checkpoint] blocks session=${sessionId} pages=${blockSummary.auditedPages} ` +
-      `partial=${blockSummary.partialPages} unsupported=${blockSummary.unsupportedPages} notPersisted=${blockSummary.notPersistedPages}`
-  );
-  if (blockSummary.message) {
-    onProgress({ sessionId, type: "warning", message: blockSummary.message });
+  const missNotice = redPenMissNotice({
+    needsRedPen,
+    colorMode: session?.color_mode,
+    pageCount: redPenPages,
+    pagesWithRedMark: redMarkPages
+  });
+  if (missNotice) {
+    console.warn(`[checkpoint] ocr session=${sessionId} card=${cardId} redScoreCells=0/${redPenPages} colorMode=${session?.color_mode ?? "unknown"}`);
+    onProgress({ sessionId, type: "warning", message: missNotice });
   }
 
   onProgress({ sessionId, type: "ocr_done", message: "识别完成" });

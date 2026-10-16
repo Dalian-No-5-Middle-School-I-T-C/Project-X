@@ -139,11 +139,6 @@ function execRecognizer(exePath: string, args: string[]): Promise<RecognitionRes
       try {
         const parsed = parseRecognizerOutput(stdout);
         if (parsed) {
-          // 识别器 stdout 只留给 JSON，丢切块的原因写在 stderr 标签行里。成功返回时也要留痕，
-          // 否则「这一页少个大题」在扫描端日志里永远是查不到的（issue #331 ③）。
-          for (const line of stderr.split("\n")) {
-            if (line.includes("[recognizer-crops]")) console.warn(`[recognizer] ${line.trim()}`);
-          }
           resolve(parsed);
           return;
         }
