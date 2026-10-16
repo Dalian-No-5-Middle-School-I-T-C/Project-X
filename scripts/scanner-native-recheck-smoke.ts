@@ -12,25 +12,34 @@ try {
   const source = readFileSync(path.join(root, "native/ScannerBridge/scanner-bridge/twain_controller.cpp"), "utf8");
   const methods = ["scan", "shouldWaitForTransfer", "readCurrentUInt16Capability",
     "enableADF", "enableSource", "setPixelType", "setDuplex", "verifyDuplexMode", "setResolution", "readCurrentResolution",
-    "requestedPixelType", "validateImageSettings", "disableSource", "waitForState", "processTwainEvent"];
+    "requestedPixelType", "validateImageSettings", "disableSource", "waitForState", "processWindowEvent", "processTwainEvent"];
   const implementations = methods.map((name) => {
     const match = source.match(new RegExp(`^(?:ScanResult|bool|TW_UINT16) TwainController::${name}\\([\\s\\S]*?^}`, "m"));
     assert.ok(match, `Missing production method ${name}`);
     return match[0];
   }).join("\n\n");
-  writeFileSync(path.join(dir, "production.inc"), `namespace ScannerBridge {\n${implementations}\n}`);
+  const windowProcedure = source.match(/^static LRESULT CALLBACK WndProc\([\s\S]*?^}/m);
+  assert.ok(windowProcedure, "Missing production window procedure");
+  writeFileSync(path.join(dir, "production.inc"), `namespace ScannerBridge {\n${windowProcedure[0]}\n${implementations}\n}`);
   writeFileSync(path.join(dir, "windows.h"), `#pragma once
 #include <cstdint>
 using DWORD = uint32_t;
 using HWND = void*;
 using HANDLE = void*;
-struct MSG {};
+using UINT = unsigned int;
+using WPARAM = uintptr_t;
+using LPARAM = intptr_t;
+using LRESULT = intptr_t;
+#define CALLBACK
+struct POINT { long x; long y; };
+struct MSG { HWND hwnd; UINT message; WPARAM wParam; LPARAM lParam; DWORD time; POINT pt; };
 constexpr int TRUE = 1, FALSE = 0, PM_REMOVE = 1;
 DWORD GetTickCount();
 void Sleep(DWORD);
 bool PeekMessage(MSG*, void*, int, int, int);
 void TranslateMessage(MSG*);
 void DispatchMessage(MSG*);
+LRESULT DefWindowProcA(HWND, UINT, WPARAM, LPARAM);
 void* GlobalLock(void*);
 void GlobalUnlock(void*);
 void GlobalFree(void*);

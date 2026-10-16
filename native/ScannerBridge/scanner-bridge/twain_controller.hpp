@@ -93,6 +93,7 @@ public:
     void cancel();
 
     TW_UINT16 processTwainEvent(MSG& msg);
+    TW_UINT16 processWindowEvent(MSG& msg);
     static TwainController* current();
 
     // WndProc 守卫：仅当源已打开（m_state >= 2）才把窗口消息转发给 DSM，
@@ -147,6 +148,8 @@ private:
     bool m_cancelRequested;
     bool m_sourceCloseRequested = false;
     HWND m_hwnd;
+    // 仅在本程序 DispatchMessage 调用期间标记已提交 DSM 的消息；WndProc 匹配后消费。
+    const MSG* m_dispatchedMessage = nullptr;
 
     // 最近一次 OPENDSM 失败的真实返回码与条件码（诊断用，避免只报「失败」）
     TW_UINT16 m_lastOpenDsmRc;
@@ -154,7 +157,7 @@ private:
     bool m_hasOpenDsmAttempt;
 
     // 送纸器（ADF）是否实际启用：由 enableADF 回读 CAP_FEEDERENABLED 得到。
-    // 平板/未启用时不做 FEEDERLOADED 复核，避免「Count=0 还多等一轮」。
+    // 平板/未启用时不做 ADF 续扫等待，避免「Count=0 还多等一轮」。
     bool m_feederEnabled = false;
     
     // Callbacks

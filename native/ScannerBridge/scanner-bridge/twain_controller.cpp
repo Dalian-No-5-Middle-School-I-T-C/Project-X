@@ -302,14 +302,14 @@ static const char* WINDOW_CLASS = "ScannerBridgeTwainClass";
 // ── Window Procedure ──────────────────────────────────
 
 // TWAIN DSM 通过注册窗口消息把 MSG_XFERREADY 等状态投递到本窗口，
-// 因此 WndProc 必须把每一条消息都转发给 DAT_EVENT/MSG_PROCESSEVENT，
-// 并传入真实 MSG 结构（pEvent），DSM 回填 TWMessage 后驱动状态机。
+// WndProc 转发驱动直接发送或其内部消息泵派发的消息；本程序消息泵已交给 DSM
+// 检查过的队列消息由 processWindowEvent 跳过，避免同一消息被提交两次。
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     // 仅当源已打开（m_state >= 2）才转发：pDest 传 &m_sourceId，
     // DSM 的 AppValidateIds 对 NULL pDest 直接返回失败，事件永远不会被处理
     if (TwainController::current() && TwainController::current()->canProcessEvents()) {
         MSG m = { hwnd, msg, wParam, lParam, 0, { 0, 0 } };
-        TW_UINT16 rc = TwainController::current()->processTwainEvent(m);
+        TW_UINT16 rc = TwainController::current()->processWindowEvent(m);
         if (rc == TWRC_DSEVENT) {
             return 0;   // DSM 已消费该消息
         }
@@ -383,6 +383,18 @@ TwainController::~TwainController() {
 
 TwainController* TwainController::current() {
     return s_instance;
+}
+
+TW_UINT16 TwainController::processWindowEvent(MSG& msg) {
+    if (m_dispatchedMessage && m_dispatchedMessage->hwnd == msg.hwnd &&
+        m_dispatchedMessage->message == msg.message &&
+        m_dispatchedMessage->wParam == msg.wParam && m_dispatchedMessage->lParam == msg.lParam) {
+        // 仅跳过这一次 DispatchMessage 对应的窗口回调。后续同步消息即使字段
+        // 相同也是新消息，仍需提交 DSM；不能用覆盖整个派发期间的布尔开关。
+        m_dispatchedMessage = nullptr;
+        return TWRC_NOTDSEVENT;
+    }
+    return processTwainEvent(msg);
 }
 
 TW_UINT16 TwainController::processTwainEvent(MSG& msg) {
@@ -1450,7 +1462,10 @@ bool TwainController::waitForState(int targetState, DWORD timeoutMs) {
             if (m_cancelRequested || m_sourceCloseRequested) return false;
             if (eventRc != TWRC_DSEVENT) {
                 TranslateMessage(&msg);
+                const MSG* previous = m_dispatchedMessage;
+                m_dispatchedMessage = &msg;
                 DispatchMessage(&msg);
+                m_dispatchedMessage = previous;
             }
             
             // Check if TWAIN event processing advanced our state

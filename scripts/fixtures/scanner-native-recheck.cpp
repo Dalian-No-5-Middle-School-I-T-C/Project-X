@@ -14,6 +14,13 @@ static int frameIndex;
 static bool announced;
 static bool normalMessagePending;
 static int dispatchedMessages;
+static int normalMessageOffers, defaultWindowMessages;
+static bool notifyDuringDispatch, repeatDuringDefault;
+static constexpr UINT normalMessage = 0x8001, readyMessage = 0x8002, closeMessage = 0x8003;
+static HWND testWindow = reinterpret_cast<HWND>(1);
+static HWND normalTarget;
+static bool directNormalOnEnable;
+namespace ScannerBridge { static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM); }
 static int readyEvents;
 static DWORD nextReady;
 static std::vector<DWORD> delays;
@@ -43,12 +50,45 @@ static TW_ONEVALUE capabilityValue;
 
 DWORD GetTickCount() { return clockMs; }
 void Sleep(DWORD ms) { clockMs += ms; }
-bool PeekMessage(MSG*, void*, int, int, int) {
-    return normalMessagePending || (!announced && frameIndex < static_cast<int>(delays.size()) && clockMs >= nextReady)
-        || (closeAfterFrames && !closeDelivered && frameIndex >= static_cast<int>(delays.size()));
+bool PeekMessage(MSG* message, void*, int, int, int) {
+    *message = {};
+    if (normalMessagePending) {
+        normalMessagePending = false;
+        *message = { normalTarget, normalMessage, 17, 23, clockMs, { 0, 0 } };
+        return true;
+    }
+    if (!announced && frameIndex < static_cast<int>(delays.size()) && clockMs >= nextReady) {
+        message->message = readyMessage; // Thread notification: never dispatched to a window.
+        return true;
+    }
+    if (closeAfterFrames && !closeDelivered && frameIndex >= static_cast<int>(delays.size())) {
+        message->hwnd = testWindow;
+        message->message = closeMessage;
+        return true;
+    }
+    return false;
 }
 void TranslateMessage(MSG*) {}
-void DispatchMessage(MSG*) { ++dispatchedMessages; }
+void DispatchMessage(MSG* message) {
+    ++dispatchedMessages;
+    if (message->hwnd == testWindow) ScannerBridge::WndProc(message->hwnd, message->message, message->wParam, message->lParam);
+    else if (notifyDuringDispatch) {
+        notifyDuringDispatch = false;
+        ScannerBridge::WndProc(testWindow, readyMessage, 0, 0);
+    }
+}
+LRESULT DefWindowProcA(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    ++defaultWindowMessages;
+    if (notifyDuringDispatch) {
+        notifyDuringDispatch = false;
+        ScannerBridge::WndProc(hwnd, readyMessage, 0, 0);
+    }
+    if (repeatDuringDefault) {
+        repeatDuringDefault = false;
+        ScannerBridge::WndProc(hwnd, message, wParam, lParam); // Distinct synchronous message, same fields.
+    }
+    return 0;
+}
 void* GlobalLock(void* p) { return p; }
 void GlobalUnlock(void*) {}
 void GlobalFree(void*) {}
@@ -70,15 +110,17 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(pTW_IDENTITY, pTW_IDENTITY,
         return TWRC_SUCCESS;
     }
     if (dat == DAT_EVENT) {
-        if (normalMessagePending) {
-            normalMessagePending = false;
+        const auto* message = static_cast<MSG*>(static_cast<pTW_EVENT>(data)->pEvent);
+        if (message->message == normalMessage) {
+            ++normalMessageOffers;
             return TWRC_NOTDSEVENT;
         }
-        if (closeAfterFrames && frameIndex >= static_cast<int>(delays.size())) {
+        if (message->message == closeMessage) {
             closeDelivered = true;
             static_cast<pTW_EVENT>(data)->TWMessage = MSG_CLOSEDSREQ;
             return TWRC_DSEVENT;
         }
+        assert(message->message == readyMessage);
         announced = true;
         pendingTransfers = true;
         if (duplexChangesOnReady && frameIndex == 0) duplexEffective = !duplexEffective;
@@ -90,13 +132,13 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(pTW_IDENTITY, pTW_IDENTITY,
         ++enableCalls;
         if (failNoUiEnable && !static_cast<pTW_USERINTERFACE>(data)->ShowUI) return TWRC_FAILURE;
         sourceEnabled = true;
+        if (directNormalOnEnable) ScannerBridge::WndProc(testWindow, normalMessage, 17, 23);
         if (duplexChangesOnEnable) duplexEffective = !duplexEffective;
         if (resolutionChangesOnEnable) effectiveX = effectiveY = 150;
         if (pixelChangesOnEnable) effectivePixelType = TWPT_GRAY;
         if (synchronousReady) {
             normalMessagePending = false;
-            MSG event;
-            TwainController::current()->processTwainEvent(event);
+            ScannerBridge::WndProc(testWindow, readyMessage, 0, 0);
         }
         return forceUiCheckStatus ? TWRC_CHECKSTATUS : TWRC_SUCCESS;
     }
@@ -209,6 +251,9 @@ bool TwainController::captureNativeTransfer(const std::string& output, int page,
 static void reset(std::vector<DWORD> frameDelays, std::vector<TW_UINT16> pending) {
     clockMs = 0; frameIndex = 0; announced = false;
     normalMessagePending = true; dispatchedMessages = 0;
+    normalMessageOffers = defaultWindowMessages = 0;
+    notifyDuringDispatch = repeatDuringDefault = false;
+    normalTarget = testWindow; directNormalOnEnable = false;
     readyEvents = 0;
     delays = frameDelays; counts = pending; nextReady = delays.at(0);
     feederSetAccepted = true;
@@ -240,6 +285,21 @@ static ScanResult run(bool duplex = false, int maxPages = 0, const std::string& 
     return result;
 }
 int main() {
+    reset({0}, {0});
+    { TwainController controller;
+      ScannerBridge::WndProc(testWindow, normalMessage, 17, 23);
+      assert(normalMessageOffers == 0 && defaultWindowMessages == 1); // No source: no DSM forwarding.
+    }
+    reset({0}, {0}); notifyDuringDispatch = true;
+    assert(run(false, 1).success && readyEvents == 1 && normalMessageOffers == 1 && defaultWindowMessages == 1);
+    reset({0}, {0}); repeatDuringDefault = true;
+    assert(run(false, 1).success && normalMessageOffers == 2 && defaultWindowMessages == 2);
+    reset({0}, {0}); directNormalOnEnable = true;
+    assert(run(false, 1).success && normalMessageOffers == 2 && defaultWindowMessages == 2);
+    reset({0}, {0}); normalTarget = nullptr;
+    assert(run(false, 1).success && normalMessageOffers == 1 && defaultWindowMessages == 0);
+    reset({0}, {0}); normalTarget = reinterpret_cast<HWND>(2); notifyDuringDispatch = true;
+    assert(run(false, 1).success && normalMessageOffers == 1 && defaultWindowMessages == 0 && readyEvents == 1);
     reset({0, 0}, {1, 0}); duplexChangesOnEnable = true;
     auto overriddenDuplex = run(false, 2, "color", true);
     assert(!overriddenDuplex.success && overriddenDuplex.pages.empty() && frameIndex == 0);
@@ -291,6 +351,7 @@ int main() {
     auto result = run();
     assert(result.success && result.pages.size() == 2);
     assert(dispatchedMessages == 1); // Normal messages dispatch; DSM thread messages are consumed by the pump.
+    assert(normalMessageOffers == 1 && defaultWindowMessages == 1); // The dispatched window message is offered once.
     assert(clockMs == 85000); // full 60-second end-of-batch wait, no short grace cutoff
     // Count=0 before every side; a 45-second back must stay paired with its original front.
     reset({0, 45000, 1000, 30000}, {0, 0, 0, 0});
@@ -372,5 +433,5 @@ int main() {
     reset({0}, {0}); closeAfterFrames = true;
     result = run();
     assert(result.success && result.pages.size() == 1 && clockMs == 0 && disableCalls == 1);
-    std::puts("PASS production scan loop: read-only duplex verification per frame after explicit/fallback/CHECKSTATUS UI, delayed/synchronous ready, later-frame changes; pixel/DPI, State 5, cleanup and limits");
+    std::puts("PASS production scan loop/WndProc: one DSM offer per queued message, synchronous/nested notifications preserved; duplex/pixel/DPI, State 5, cleanup and limits");
 }
