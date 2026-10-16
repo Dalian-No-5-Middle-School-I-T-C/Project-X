@@ -1,12 +1,13 @@
 # Project-X CHANGELOG
 
-## 2026-10-16：issue #331 剩余项——批次收尾判定、红笔分数格强制彩色（②③，并定位④）
+## 2026-10-16：issue #331 剩余项——批次收尾判定、红笔分数格强制彩色、随包 ia32 原生件重编（②③④）
 
 ### ② 「仍旧只能扫描一张」的最后一处：`TWRC_ENDOFLJOB` 被当成 ENDXFER 失败
 
 - 主线（#330）已覆盖 `CAP_XFERCOUNT=-1`、`Count=0` 的状态 5 续等、送纸器回读与双面配对，本条只补批次边界的最后一处：驱动用 `TWRC_ENDOFLJOB`（0x0007，随包 `twain.h` 里同值的 `TWRC_ENDOFLIST`）告知「这就是最后一张」，而正面、背面两处 `MSG_ENDXFER` 都按 `!= TWRC_SUCCESS` 判失败——已经到手的页面被报成「ENDXFER failed」，整批判为失败。现在两处（含 `disableSource` 收尾的 ENDXFER）按正常结束处理，日志留 `end of job after sheet N`。
 - `scripts/fixtures/scanner-native-recheck.cpp` 的假 DSM 增加可控的 ENDXFER 返回码：单张 ENDOFLJOB 批次成功且不再空等一个 `pageTimeoutMs`；双面背面后的 ENDOFLJOB 正常结束；保存失败收尾时 ENDOFLJOB 不再报「会话未正常关闭」。这四条由 `npm run verify:scanner-adf-recheck` 编译真实扫描循环执行，CI（ubuntu + g++）已真跑通过（run 38899548731）；本机没有任何 C++ 编译器，所以这几条只能看 CI。注意该 smoke 只把 `TwainController::` 方法体拼进 `production.inc` 再编译，生产代码里的文件级自造常量在 CI 不可见——收尾码因此直接用随包头文件真实存在的 `TWRC_ENDOFLIST`，TWAIN 2.x 的 ENDOFLJOB 语义写在调用点注释里。
-- **仍要重编译 `scanner-bridge.exe` 才能作用于现场**：新增 `.github/workflows/native-ia32.yml`——提交信息含 `[build-native]` 时在 ubuntu 上用 `mingw-w64` 跑仓库自带的 `scripts/build-native-mingw.sh`（OpenCV 4.13 源码构建、静态链接，产完自检 `pei-i386` 与 quirc 符号），`ignored/native-mingw/stage/win-ia32/` 作为 artifact 上传，核对后入库 `resources/native/win-ia32/`；x64 那颗仍归 `npm run native:build:x64` 的 MSVC 工序。随包 exe 目前是 #330 的产物，不含这一段。
+- **随包 ia32 已重编译入库**：`.github/workflows/native-ia32.yml` 在提交信息含 `[build-native]` 时用 ubuntu + `mingw-w64` 跑仓库自带的 `scripts/build-native-mingw.sh`（OpenCV 4.13 源码构建、静态链接，产物自检 `pei-i386` 与 `_quirc_decode`），`resources/native/win-ia32/scanner-bridge.exe` 换成含收尾判定的这颗；`scripts/verify-scanner-page-timeout.ts` ⑥ 用 exe 里的 `ENDXFER: end of job after sheet %d (pending=%u)` 字串把「包内件是否带本修复」变成常驻检查。win-x64 那颗仍归 MSVC 工序（`npm run native:build:x64`），所以 ⑥ 只对 ia32 设硬门槛。
+- ia32 两颗改为 MinGW 静态件后，同目录的 `opencv_world4130.dll` 与 UCRT/VC 桩不再被它们加载（静态链入）。文件先留着：MSVC 工序 `scripts/build-answer-card-recognizer.bat` 会重新投放，是否清除由维护者按打包路线定，本条不擅自删包。
 
 ### ③ 「大题分数有时读不到」：含红笔分数格的卡强制彩色，零红笔批次必须告警
 
@@ -15,11 +16,12 @@
 - 新增 `verify:recognizer-red-pen`（同一张卡、同一条斜线：彩色读到 10 分，灰度读 0 分且 `no_valid_subjective_score`，定位/学号/客观题不受影响；走 Linux x86_64 识别器）与 `verify:scanner-red-pen-colormode`，均接入 CI。判定全在服务端与共享层，不依赖原生重编译。
 - **没有动的部分**：斜线判定的原生阈值（贯穿比例 0.52、要求单一直线）不改。红笔打「X」会落到 `multiple_red_components` 而读不出分数，是否放宽需要现场样本再定，不在这里猜。
 
-### ④ 异常卷「完全不好用」的定位（未在本条修复）
+### ④ 异常卷「完全不好用」：根因是随包识别器过期，ia32 那颗已重编译入库
 
-- 随包 `resources/native/win-x64|win-ia32/answer-card-recognizer.exe` 仍是 2026-10-06 的产物，早于 10-15 引入的坐标映射（`geometry`/`layoutToImage`）：Windows 扫描端识别出的每一页都没有坐标，`storeCorrectionPage` 因此删掉订正快照，整卡改分退化成不可点击的原图，成绩修改侧直接抛「此卷缺少坐标映射」。本机 `npm run verify:recognizer-geometry` 即复现（把 `ANSWER_CARD_RECOGNIZER_EXE` 指向随包 ia32 识别器，报 `ZodError: geometry invalid_type`；x64 那颗在本机缺 `opencv_world4130.dll`，连启动都是 0xC0000135）。
-- 唯一可用的补救是 Ubuntu 服务端包里的独立识别器显式补识别（Linux x86_64、单次串行、结果不落库，每次打开重算）；扫描端本地与 Windows 服务端没有这条路。
-- 结论同 ②：需要按打包工序重编译两个 Windows 识别器并重出安装包，之后再用真机异常卷核对。`win-ia32` 那颗可由上面新增的 `[build-native]` CI job 一并产出（同一脚本同时编识别器与扫描桥），`win-x64` 仍需配好 VS+OpenCV 4.13 的构建机。
+- 根因：`resources/native/win-x64|win-ia32/answer-card-recognizer.exe` 停在 2026-10-06，早于 10-15 引入的坐标映射（`geometry`/`layoutToImage`）——Windows 扫描端识别出的每一页都没有坐标，`storeCorrectionPage` 因此删掉订正快照，整卡改分退化成不可点击的原图，成绩修改侧直接抛「此卷缺少坐标映射」。本机复现过：旧 ia32 那颗跑 `npm run verify:recognizer-geometry` 报 `ZodError: geometry invalid_type`；旧 x64 那颗缺 `opencv_world4130.dll`，启动就是 0xC0000135。字串层面也能直接看出差异：旧的两颗 Windows 识别器里根本没有 `geometry`/`layoutToImage`，而按同一份源码在 Linux 上出的 `resources/native/correction-linux-x64/answer-card-recognizer` 有。
+- 已修（ia32）：上面新增的 `[build-native]` CI job 同时编识别器与扫描桥，`resources/native/win-ia32/answer-card-recognizer.exe` 换成这颗（19,555,580 字节，MinGW 静态链 OpenCV 4.13）。本机以 `ANSWER_CARD_RECOGNIZER_EXE` 指向它跑通 `verify:recognizer-geometry`（0/90/180/270 四种旋转的原图映射与反查）、`verify:recognizer-limits`（45/0）、`verify:recognizer-layout`、`verify:recognizer-pencil`、`verify:recognizer-red-pen`；`verify-scanner-page-timeout.ts` ⑥ 用 `layoutToImage` 字串常驻核对。
+- 未修（x64）：`win-x64` 那颗仍要 VS+OpenCV 构建机跑 `npm run native:build:x64`，本机没有该工具链，所以 ⑥ 只对 ia32 设硬门槛，没出的包不当作已出。真机异常卷改分与扫描仪联调仍待验收。
+- 另一条独立缺口：只有 Ubuntu 服务端包里的独立识别器能显式补识别（Linux x86_64、单次串行、结果不落库，每次打开重算）；扫描端本地与 Windows 服务端没有这条路，是否落库/自动补识别待维护者定。
 
 ## 2026-10-16：扫描 DPI 同步、单面设备兼容与失败批次恢复
 

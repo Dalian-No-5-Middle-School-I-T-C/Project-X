@@ -76,4 +76,15 @@ for (const rel of ["resources/native/win-x64/scanner-bridge.exe", "resources/nat
     `⑤: native 默认 ${m![1]}ms 与服务端 ${PAGE_TIMEOUT_DEFAULT_MS}ms 不一致，重编译后行为会漂移`);
 }
 
-console.log("verify-scanner-page-timeout: 全部通过（默认值回落 / 恒定传参 / 预编译 exe 支持开关 / 头文件同源）");
+// ⑥ issue #331 的收尾判定与坐标映射都在原生件里：随包 ia32 两颗必须真的带上，否则现场拿不到。
+//    只对 ia32 设硬门槛——win-x64 仍归 MSVC 工序（npm run native:build:x64），没出的包不能当成已出。
+{
+  const bridge = readFileSync(fileURLToPath(new URL("../resources/native/win-ia32/scanner-bridge.exe", import.meta.url)));
+  assert.ok(bridge.includes("ENDXFER: end of job after sheet %d (pending=%u)"),
+    "⑥: win-ia32/scanner-bridge.exe 不含批次收尾判定，现场仍会把驱动的正常收尾报成「ENDXFER failed」（只能扫一张还整批判失败），请重编随包桥接程序");
+  const recognizer = readFileSync(fileURLToPath(new URL("../resources/native/win-ia32/answer-card-recognizer.exe", import.meta.url)));
+  assert.ok(recognizer.includes("layoutToImage"),
+    "⑥: win-ia32/answer-card-recognizer.exe 不含 geometry 坐标映射，异常卷改分只剩不可点击的原图，请重编随包识别器");
+}
+
+console.log("verify-scanner-page-timeout: 全部通过（默认值回落 / 恒定传参 / 预编译 exe 支持开关 / 头文件同源 / ia32 随包件含收尾判定与坐标映射）");
