@@ -62,6 +62,7 @@ type ScannerState =
   | "scanning"
   | "recognizing"
   | "done"
+  | "partial"
   | "error";
 
 interface ScanPage {
@@ -101,6 +102,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const [progressMessage, setProgressMessage] = useState("");
   const [pages, setPages] = useState<ScanPage[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
+  const [scanErrorMessage, setScanErrorMessage] = useState("");
+  const partialSessionRef = useRef(false);
   const [studentResults, setStudentResults] = useState<StudentResult[]>([]);
   const [failures, setFailures] = useState<ScanBatchFailure[]>([]);
   const [reviewCards, setReviewCards] = useState<ScanConflictCard[]>([]);
@@ -227,7 +230,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     return [
       `Project-X 扫描端诊断 @ ${new Date().toLocaleString("zh-CN")}`,
       `答题卡 ID：${cardId}`,
-      `错误信息：${errorMessage || "（无）"}`,
+      `错误信息：${[scanErrorMessage, errorMessage].filter(Boolean).join("；") || "（无）"}`,
       ...(sourcesDiag ? diagnosticLines(sourcesDiag) : ["（无检测诊断数据）"]),
     ].join("\n");
   }
@@ -339,9 +342,15 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           case "error":
             completedRef.current = true;
             es.close();
-            setState("error");
-            setErrorMessage(data.message || "扫描出错");
-            if (pagesRef.current.length > 0) void fetchCombinedResults(sid, true);
+            partialSessionRef.current = pagesRef.current.length > 0;
+            if (partialSessionRef.current) {
+              setState("partial");
+              setScanErrorMessage(data.message || "扫描出错");
+              void fetchCombinedResults(sid);
+            } else {
+              setState("error");
+              setErrorMessage(data.message || "扫描出错");
+            }
             break;
           case "cancelled":
             completedRef.current = true;
@@ -398,11 +407,13 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     return data as ScanBatchResponse;
   }
 
-  async function fetchCombinedResults(sid: string, partial = false) {
+  async function fetchCombinedResults(sid: string) {
     if (resultsBusyRef.current) return;
+    // SSE 回调及订正后的刷新都必须沿用本会话的失败状态，避免刷新触发自动上传。
+    const partial = partialSessionRef.current;
     resultsBusyRef.current = true;
     setResultsBusy(true);
-    if (!partial) setErrorMessage("");
+    setErrorMessage("");
     try {
       const data = await readResults(sid);
       if (sid !== sessionIdRef.current) return;
@@ -414,8 +425,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     }
     catch (err) {
       const message = err instanceof Error ? err.message : "汇总失败，请重试";
-      if (partial) setResultMessage(message);
-      else setErrorMessage(message);
+      setErrorMessage(message);
     }
     finally { resultsBusyRef.current = false; setResultsBusy(false); }
   }
@@ -454,7 +464,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     }
     uploadJobsRef.current = nextJobs;
     setUploadJobs(nextJobs);
-    if (queued > 0) setResultMessage("成功答题卡已自动加入上传队列，图片将在后台续传；失败答题卡保留在本机，可继续订正。");
+    if (queued > 0) setResultMessage("成功答题卡已加入上传队列，图片将在后台续传；失败答题卡保留在本机，可继续订正。");
   }
 
   async function saveSuccessful() {
@@ -505,6 +515,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     // 回退 MSG_GETDEFAULT（系统默认数据源）；真失败时由 bridge 返回可诊断的错误。
     setState("scanning");
     setErrorMessage("");
+    setScanErrorMessage("");
+    partialSessionRef.current = false;
     setPages([]);
     pagesRef.current = [];
     setStudentResults([]);
@@ -610,6 +622,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     setActiveStudent(null);
     setProgressMessage("");
     setErrorMessage("");
+    setScanErrorMessage("");
+    partialSessionRef.current = false;
     setSourcesDiag(null);
     detectSources();
   }
@@ -649,11 +663,11 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       )}
 
       {/* State: error */}
-      {state === "error" && (
+      {(state === "error" || state === "partial") && (
         <div className="flex flex-col gap-2 rounded-md border border-destructive-border bg-destructive-soft px-3 py-3 text-sm text-destructive-fg">
           <div className="flex items-center gap-2">
             <AlertTriangle size={20} className="shrink-0" />
-            <span className="min-w-0 flex-1 break-words">{errorMessage}</span>
+            <span className="min-w-0 flex-1 break-words">{state === "partial" ? scanErrorMessage : errorMessage}</span>
             <Button
               variant="outline"
               size="sm"
@@ -663,9 +677,9 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
             >
               {diagCopied ? "已复制" : "复制诊断"}
             </Button>
-            <Button variant="outline" size="sm" className="shrink-0" icon={<RefreshCw size={14} />} onClick={detectSources}>
+            {state === "error" && <Button variant="outline" size="sm" className="shrink-0" icon={<RefreshCw size={14} />} onClick={detectSources}>
               重试
-            </Button>
+            </Button>}
           </div>
           {sourcesDiag?.hint && (
             <p className="m-0 text-xs leading-relaxed">{sourcesDiag.hint}</p>
@@ -905,13 +919,13 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         </div>
       )}
 
-      {/* State: done */}
-      {state === "done" && (
+      {/* 已完成的批次与中断后保留的部分结果共用查看、订正和显式保存入口。 */}
+      {(state === "done" || state === "partial") && (
         <div className="flex flex-col gap-3">
-          <div className="flex items-center gap-2 rounded-md border border-success-border bg-success-soft px-3 py-3 text-sm text-success-foreground">
-            <Check size={20} className="shrink-0" />
+          <div className={`flex items-center gap-2 rounded-md border px-3 py-3 text-sm ${state === "partial" ? "border-warning-border bg-warning-soft text-warning-foreground" : "border-success-border bg-success-soft text-success-foreground"}`}>
+            {state === "partial" ? <AlertTriangle size={20} className="shrink-0" /> : <Check size={20} className="shrink-0" />}
             <span>
-              扫描完成 — {resultsBusy ? "正在汇总…" : `${studentResults.length} 份成功，${failures.length} 份失败`}
+              {state === "partial" ? `扫描中断，已保留 ${pages.length} 页` : "扫描完成"} — {resultsBusy ? "正在汇总…" : `${studentResults.length} 份成功，${failures.length} 份失败`}
             </span>
           </div>
 
