@@ -32,15 +32,20 @@ assert.equal(layoutNeedsRedPenScoring([page(["objective_option", "student_digit"
 assert.equal(layoutNeedsRedPenScoring([page(["objective_option"]), page(["score_cell"])]), true,
   "①: 任意一页有分数格即需彩色");
 
-// ② 色彩模式判定只有一处入口：gray/bw/缺省/非法值都要升级到 color
-for (const requested of ["gray", "bw", undefined, "", "Grey", "COLOR"]) {
+// ② 色彩模式判定只有一处入口：gray/bw 才按低色彩走，缺省与非法值一律落彩色
+for (const requested of ["gray", "bw", undefined, "", "Grey", "COLOR", "color"]) {
   const resolved = resolveScanColorMode(requested, true);
   assert.equal(resolved.colorMode, "color", `②: ${JSON.stringify(requested)} 含分数格必须落到彩色`);
-  assert.equal(resolved.upgraded, requested !== "color", "②: 已经是彩色时不该谎称改过");
+  assert.equal(resolved.upgraded, requested === "gray" || requested === "bw",
+    `②: ${JSON.stringify(requested)} 只有真从低色彩抬上来才算改过`);
 }
 assert.deepEqual(resolveScanColorMode("gray", false), { colorMode: "gray", upgraded: false },
   "②: 无分数格的卡保持操作员选择");
 assert.equal(resolveScanColorMode("bw", false).colorMode, "bw", "②: 黑白仍是合法值");
+// 不认识的值不能被当成灰度：不含分数格的卡不升级，那种卡就会静默按灰度扫（③ 的病根之一）
+for (const junk of [undefined, "", "Grey", "COLOR"]) {
+  assert.equal(resolveScanColorMode(junk, false).colorMode, "color", `②: ${JSON.stringify(junk)} 不得降级成灰度扫描`);
+}
 // 升级提示必须点名「原来是什么、为什么改」，否则操作员只看到模式自己跳了
 assert.match(colorModeUpgradeNotice("gray"), /从「灰度」改为「彩色」/, "②: 提示要写明原模式");
 assert.match(colorModeUpgradeNotice("bw"), /从「黑白」改为「彩色」/, "②: 提示要写明原模式");

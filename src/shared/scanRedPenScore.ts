@@ -37,6 +37,15 @@ export function pageNeedsRedPenScoring(page: Pick<PageLayout, "elements"> | unde
 }
 
 /**
+ * 只有明确写成 `gray` / `bw` 才按低色彩扫；其余（缺省的 color、缺字段、非法字符串）一律按彩色。
+ * #330 之后路由缺省已是彩色，这里若把「不认识的值」降级成灰度，等于自己造出 ③ 的病根——
+ * 不含分数格的卡更不会被升级，那种卡就会静默按灰度扫。
+ */
+function asScanColorMode(value: ScanColorMode | string | undefined): ScanColorMode {
+  return value === "gray" || value === "bw" ? value : "color";
+}
+
+/**
  * 含分数格的卡恒定用彩色扫描：这是扫描前的唯一判定点，
  * 调用方不能各自再写一套 `colorMode === "color"` 判断。
  */
@@ -44,14 +53,14 @@ export function resolveScanColorMode(
   requested: ScanColorMode | string | undefined,
   needsRedPen: boolean
 ): { colorMode: ScanColorMode; upgraded: boolean } {
-  const current: ScanColorMode = requested === "color" || requested === "bw" ? requested : "gray";
+  const current = asScanColorMode(requested);
   if (!needsRedPen || current === "color") return { colorMode: current, upgraded: false };
   return { colorMode: "color", upgraded: true };
 }
 
 /** 自动改用彩色时给操作员的提示（未升级时为 null）。 */
 export function colorModeUpgradeNotice(from: ScanColorMode | string | undefined): string {
-  const label = COLOR_MODE_LABELS[from === "color" || from === "bw" ? from : "gray"];
+  const label = COLOR_MODE_LABELS[asScanColorMode(from)];
   return `本答题卡含红笔手写分数格，已自动把扫描模式从「${label}」改为「彩色」：红笔斜线在${label}下与印刷边框同为灰色，分数会一律读成 0。`;
 }
 
@@ -78,5 +87,8 @@ export function redPenMissNotice(input: {
   if (input.colorMode === "color") {
     return `${counted}。已用彩色扫描，请确认教师用的是红笔、斜线是否贯穿整个分数格；确属未打分的卷子按 0 分处理，可在异常卷手工改分。`;
   }
+  // 这条走不到当代新扫描的批次：含分数格的卡在创建会话时就被 scanner-service 强制成彩色，
+  // 落库的 color_mode 也是升级后的值。能进来的只有 #330 之前的历史会话，以及
+  // 「先扫完、后来才在卡面加分数格」这类扫描时确实按灰度出图的批次。
   return `${counted}，而扫描模式为「${COLOR_MODE_LABELS[input.colorMode === "bw" ? "bw" : "gray"]}」：红笔在该模式下会被拍成灰线，分数一律按 0 计。请改用彩色模式重扫，或在异常卷手工改分。`;
 }

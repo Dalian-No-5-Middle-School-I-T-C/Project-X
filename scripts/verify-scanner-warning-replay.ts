@@ -21,6 +21,8 @@ import { fileURLToPath } from "node:url";
 
 // 必须在导入任何 db 模块前设置数据库路径（getDatabase 在模块求值期读取该变量）
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-warning-replay-"));
+// 断言中途抛错也要清掉临时库：exit 监听在正常结束、process.exit 与未捕获错误终止时都会跑。
+process.on("exit", () => rmSync(tmpDir, { recursive: true, force: true }));
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "verify.db");
 process.env.PROJECTX_AUTH_ENFORCE = "0";
 for (const name of Object.keys(process.env)) {
@@ -62,7 +64,8 @@ assert.ok(capped.length <= 20 && capped.includes("告警 29") && !capped.include
 assert.deepEqual(await readStored(session.id), [
   "本答题卡含红笔手写分数格，已自动把扫描模式从「灰度」改为「彩色」",
   "实际交付 DPI 与设定不一致",
-], "两条告警必须原序留在会话行");await store.appendSessionWarning("no-such-session", "会话不存在时不得抛错");
+], "两条告警必须原序留在会话行");
+await store.appendSessionWarning("no-such-session", "会话不存在时不得抛错");
 assert.deepEqual(store.parseSessionWarnings("{坏的 JSON"), [], "脏数据必须回落成空列表");
 
 // ── 2. 终态会话订阅时补发告警，再补终态 ──────────────────────
@@ -103,9 +106,13 @@ closeDatabase();
 // 用字串包含而不是正则：这几处含 `?.`、`??`、`[`，写成正则容易自我打结。
 const router = readFileSync(fileURLToPath(new URL(
   "../src/apps/answer-card/server/scanner/index.ts", import.meta.url)), "utf8").replace(/\r/g, "");
-const persistAt = router.indexOf('void enqueuePersist(() => appendSessionWarning(sessionId, text))');
+const persistAt = router.indexOf("persistSessionWarning(sessionId, event.message.trim())");
 const broadcastAt = router.indexOf("for (const fn of listeners) fn(event)");
-assert.ok(persistAt > 0 && broadcastAt > persistAt, "告警必须在广播给监听者之前先落会话行");
+assert.ok(persistAt > 0 && broadcastAt > persistAt, "告警必须在广播给监听者之前先起落库");
+assert.ok(!router.includes("enqueuePersist(() => appendSessionWarning"),
+  "告警不能排在主库持久化的串行队列后面——那会把补发空窗重新打开");
+assert.ok(router.includes(".then(() => appendSessionWarning(sessionId, text))"),
+  "同一会话的告警按会话串行写入，读行去重与写回之间不留并发缺口");
 assert.ok(router.includes('if (event.type === "warning" && event.message?.trim())'), "只有非空 warning 事件才落库");
 assert.ok(router.includes('if (event.type === "warning") {') && router.includes('writeWarning(event.message?.trim() ?? "");'),
   "实时告警必须走连接级去重，不能与补发重复");
@@ -114,5 +121,4 @@ const terminalAt = router.indexOf('session.status === "completed"', replayAt);
 assert.ok(replayAt > 0 && terminalAt > replayAt, "补发必须早于终态事件");
 
 console.log("verify-scanner-warning-replay: 全部通过（告警落库 / 终态订阅补发 / 去重与上限 / 实时接线在位）");
-rmSync(tmpDir, { recursive: true, force: true });
 process.exit(0);

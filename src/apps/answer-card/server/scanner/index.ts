@@ -98,14 +98,27 @@ export function createScannerRouter(twainEnabled = true): Router {
   // Progress event emitters by sessionId (for WebSocket integration)
   const progressEmitters = new Map<string, Set<(event: ScanProgressEvent) => void>>();
 
-  function emitProgress(sessionId: string, event: ScanProgressEvent) {
-    if (event.type === "warning" && event.message?.trim()) {
-      const text = event.message.trim();
-      // 广播给当时的监听者，同时落会话行：客户端可能在 202 之后才订阅，或扫描途中断线重连，
-      // 只广播会让告警在横幅和「复制诊断」里永久缺席。写入走串行队列，避免与扫描写库抢连接。
-      void enqueuePersist(() => appendSessionWarning(sessionId, text)).catch((error) => {
+  // 告警落库只按会话串行，不进 enqueuePersist：那条队列承载「扫描 → 主库」的长任务，
+  // 把一条单行 UPDATE 排在它们后面，客户端此刻订阅时补发读到的仍是旧行，而实时事件已经错过。
+  // 会话内串行的必要之处在于 appendSessionWarning 是「读行 → 去重 → 写回」，并发写会互相覆盖。
+  const warningQueues = new Map<string, Promise<void>>();
+  function persistSessionWarning(sessionId: string, text: string): void {
+    const tail = (warningQueues.get(sessionId) ?? Promise.resolve())
+      .then(() => appendSessionWarning(sessionId, text))
+      .catch((error) => {
         console.error(`[Scanner] Failed to persist warning for ${sessionId}:`, error);
       });
+    warningQueues.set(sessionId, tail);
+    void tail.finally(() => {
+      if (warningQueues.get(sessionId) === tail) warningQueues.delete(sessionId);
+    });
+  }
+
+  function emitProgress(sessionId: string, event: ScanProgressEvent) {
+    if (event.type === "warning" && event.message?.trim()) {
+      // 广播给当时的监听者，同时落会话行：客户端可能在 202 之后才订阅，或扫描途中断线重连，
+      // 只广播会让告警在横幅和「复制诊断」里永久缺席。
+      persistSessionWarning(sessionId, event.message.trim());
     }
     const listeners = progressEmitters.get(sessionId);
     if (listeners) {

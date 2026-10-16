@@ -86,9 +86,9 @@ function main(): void {
 
   // 桥接已强制 ICAP_UNITS=TWUN_INCHES 才允许出图，所以 TW_IMAGEINFO 的 X/Y 就是 DPI，
   // 比按尺寸反查更直接；老 exe 不带这两个字段时才回落到几何反查。
-  const reported = verifyDeliveredScanDpi([{ width: 2480, height: 3508, dpi_x: 200, dpi_y: 200 }], { dpi: 300, paperSize: "A4" });
+  const reported = verifyDeliveredScanDpi([{ width: 1654, height: 2339, dpi_x: 200, dpi_y: 200 }], { dpi: 300, paperSize: "A4" });
   check(reported.status === "mismatch" && reported.deliveredDpi === 200 && reported.source === "device",
-    `驱动回报 200dpi 时以回报值为准，不再用尺寸反查 (delivered=${reported.deliveredDpi}, source=${reported.source})`);
+    `回报值与出图尺寸一致（都指向 200）时按回报值定档 (delivered=${reported.deliveredDpi}, source=${reported.source})`);
   const reportedMatch = verifyDeliveredScanDpi([{ width: 2480, height: 3508, dpi_x: 300.5, dpi_y: 299.5 }], { dpi: 300, paperSize: "A4" });
   check(reportedMatch.status === "match" && reportedMatch.source === "device", "回报值与设定一致即判生效");
   const geometryFallback = verifyDeliveredScanDpi([{ width: 1654, height: 2339 }], { dpi: 300, paperSize: "A4" });
@@ -96,6 +96,21 @@ function main(): void {
   const bogusReport = verifyDeliveredScanDpi([{ width: 2480, height: 3508, dpi_x: 12, dpi_y: 12 }], { dpi: 300, paperSize: "A4" });
   check(bogusReport.source === "geometry" && bogusReport.deliveredDpi === 300,
     "回报值明显不在合理区间（12）时退回尺寸反查，不拿坏数据下结论");
+
+  console.log("\n\x1b[36m== 回报值与像素尺寸交叉核对（driver 谎报要能抓到）==\x1b[0m");
+
+  // ① 最怕的一种失败：驱动把 300 标在图上，实际按 200 出图。只看回报值会判「生效」，
+  // 现在两侧都算，对不上就不给「已生效」的结论。
+  const liedUpward = verifyDeliveredScanDpi([{ width: 1654, height: 2339, dpi_x: 300, dpi_y: 300 }], { dpi: 300, paperSize: "A4" });
+  check(liedUpward.status === "mismatch" && liedUpward.deliveredDpi === 200 && liedUpward.source === "geometry",
+    `回报 300 但像素只够 200 → 判为无法确认生效 (status=${liedUpward.status}, delivered=${liedUpward.deliveredDpi})`);
+  check(Boolean(liedUpward.message?.includes("对不上")), "矛盾结论要在提示里直说两个来源对不上");
+  check(Boolean(liedUpward.message?.includes("纸型")), "同比例纸张分不清，提示里必须让操作者核对纸型");
+  const liedDownward = verifyDeliveredScanDpi([{ width: 2480, height: 3508, dpi_x: 200, dpi_y: 200 }], { dpi: 300, paperSize: "A4" });
+  check(liedDownward.status === "mismatch" && liedDownward.deliveredDpi === 300,
+    `反方向矛盾（回报 200、像素 300）同样不作「已生效」结论 (delivered=${liedDownward.deliveredDpi})`);
+  const tinyGap = verifyDeliveredScanDpi([{ width: 2472, height: 3496, dpi_x: 300, dpi_y: 300 }], { dpi: 300, paperSize: "A4" });
+  check(tinyGap.status === "match" && tinyGap.source === "device", "留边裁剪带来的 ~1% 偏差不被当成矛盾");
 
   // 几何反查分不清「密度被替代」与「进了同比例的不同纸张」，提示必须同时点出纸型这一侧
   check(Boolean(downgraded.message?.includes("纸")), "尺寸反查的提示要提醒核对进纸纸张与纸型");

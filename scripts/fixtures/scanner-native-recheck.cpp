@@ -400,6 +400,14 @@ int main() {
     reset({0, 0}, {1, 0}); endXferCodes = {TWRC_ENDOFLIST, TWRC_ENDOFLIST};
     result = run(false, 2);
     assert(result.success && result.errorMessage.empty() && result.pages.size() == 2 && clockMs == 0);
+    // 双面 + 7 + Count==0 钉在「作业结束」：正面收尾的 break 早于双面分支，背面不再等待。
+    // 这是按规范取的口径——DAT_PENDINGXFERS.Count==0 且驱动给出收尾码就认为再无交付，
+    // 而现场也见过 Count=0 之后背面才到的驱动（见 shouldWaitForTransfer 的 ADF 续等）。
+    // 两者冲突时以「不谎报成功」为底线：这里必须只留正面一张且批次结束，不能挂着超时硬等背面。
+    reset({0}, {0}); endXferCodes = {TWRC_ENDOFLIST};
+    result = run(true, 1);
+    assert(result.success && result.errorMessage.empty() && result.pages.size() == 1 && frameIndex == 1 && clockMs == 0);
+    assert(result.pages[0].side == "front" && result.errorMessage.find("back side") == std::string::npos);
     // Flatbed / rejected ADF does not add an ADF continuation wait.
     reset({0, 1000}, {0, 0}); feederSetAccepted = false; feederReadSupported = false;
     assert(run().pages.size() == 1 && clockMs == 0);
