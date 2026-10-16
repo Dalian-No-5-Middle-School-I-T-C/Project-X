@@ -20,7 +20,7 @@ struct ScanConfig {
     int dpi = 300;
     bool duplex = false;
     bool showUi = false;     // Show scanner's native UI
-    std::string colorMode = "gray";  // "gray", "color", "bw"
+    std::string colorMode = "color";  // "color", "gray", "bw"
     std::string paperSize = "A4";    // "A4", "Letter"
     std::string outputDir;
     std::string filePrefix = "scan";
@@ -41,6 +41,8 @@ struct PageResult {
     std::string side;  // "front" or "back"
     int width;
     int height;
+    double dpiX = 0;
+    double dpiY = 0;
 };
 
 struct ScanResult {
@@ -91,6 +93,7 @@ public:
     void cancel();
 
     TW_UINT16 processTwainEvent(MSG& msg);
+    TW_UINT16 processWindowEvent(MSG& msg);
     static TwainController* current();
 
     // WndProc 守卫：仅当源已打开（m_state >= 2）才把窗口消息转发给 DSM，
@@ -115,11 +118,18 @@ private:
     // Capability negotiation
     bool setCapability(TW_UINT16 cap, TW_UINT16 type, void* value);
     bool setPixelType();
+    TW_UINT16 requestedPixelType() const;
     bool setResolution(int dpi);
     bool setDuplex(bool duplex);
+    bool verifyDuplexMode(bool duplex, const char* setStatus);
     bool setPaperSize(const std::string& size);
     bool enableADF();
     bool setXferCount();
+    bool readCurrentUInt16Capability(TW_UINT16 cap, TW_UINT16 type, TW_UINT16* effective, bool* unsupported = nullptr);
+    bool readCurrentResolution(TW_UINT16 cap, double* effective);
+    bool validateImageSettings(const TW_IMAGEINFO& info);
+    // 启用 ADF 后 Count=0 仍等待在途帧；正反面共用状态 5 事件等待。
+    bool shouldWaitForTransfer(TW_UINT16 pendingCount);
     
     // Image saving
     bool saveDIBToFile(HANDLE hbitmap, const std::string& filePath, PageResult& result);
@@ -134,20 +144,28 @@ private:
     TW_IDENTITY m_sourceId;
     
     // State
-    int m_state;  // 1=DSM open, 2=DS open, 3=DS enabled, 4=transferring, 5=transfer done
+    int m_state;  // 1=DSM open, 2=DS open, 3/5=DS enabled, 6=transfer ready, 7=transfer needs ENDXFER
     bool m_cancelRequested;
+    bool m_sourceCloseRequested = false;
     HWND m_hwnd;
+    // 仅在本程序 DispatchMessage 调用期间标记已提交 DSM 的消息；WndProc 匹配后消费。
+    const MSG* m_dispatchedMessage = nullptr;
 
     // 最近一次 OPENDSM 失败的真实返回码与条件码（诊断用，避免只报「失败」）
     TW_UINT16 m_lastOpenDsmRc;
     TW_UINT16 m_lastConditionCode;
     bool m_hasOpenDsmAttempt;
+
+    // 送纸器（ADF）是否实际启用：由 enableADF 回读 CAP_FEEDERENABLED 得到。
+    // 平板/未启用时不做 ADF 续扫等待，避免「Count=0 还多等一轮」。
+    bool m_feederEnabled = false;
     
     // Callbacks
     ProgressCallback m_progressCallback;
     
     // Current scan config
     ScanConfig m_config;
+    std::string m_transferError;
     
     // Single instance for callback
     static TwainController* s_instance;

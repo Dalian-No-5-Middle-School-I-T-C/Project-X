@@ -49,6 +49,22 @@ for (const rel of ["resources/native/win-x64/scanner-bridge.exe", "resources/nat
   assert.ok(existsSync(file), `④: 缺少随包二进制 ${rel}`);
   const bytes = readFileSync(file);
   assert.ok(bytes.includes("--page-timeout-ms"), `④: ${rel} 不支持 --page-timeout-ms，默认值改不动现场`);
+  assert.ok(bytes.includes("pending=0 ADF enabled; waiting up to %dms for next transfer event"),
+    `④: ${rel} 缺少在途帧复核逻辑，请重建随包桥接程序`);
+  assert.ok(!bytes.includes("CAP_FEEDERLOADED unsupported; trusting pending count"),
+    `④: ${rel} 仍会在状态 5 读送纸器失败时提前结束，请重建随包桥接程序`);
+  assert.ok(bytes.includes("ICAP_PIXELTYPE requested=%u set=%s effective=%d"),
+    `④: ${rel} 缺少色彩协商诊断`);
+  assert.ok(bytes.includes("CAP_DUPLEXENABLED requested=%d set=%s effective=%d"),
+    `④: ${rel} 缺少双面模式回读检查，请重建随包桥接程序`);
+  assert.ok(bytes.includes("DPI requested=%d X(set=%s effective=%.4f) Y(set=%s effective=%.4f)"),
+    `④: ${rel} 缺少 X/Y 分辨率回读检查，请重建随包桥接程序`);
+  assert.ok(bytes.includes("image DPI requested=%d actualX=%.4f actualY=%.4f"),
+    `④: ${rel} 缺少实际图像分辨率检查，请重建随包桥接程序`);
+  assert.ok(bytes.includes("image pixel mode requested=%u actual=%d"),
+    `④: ${rel} 缺少实际图像色彩模式检查，请重建随包桥接程序`);
+  assert.ok(bytes.includes("transfer duplex contract requested=%d state=%d verified=%d"),
+    `④: ${rel} 缺少取图前单双面模式复核，请重建随包桥接程序`);
 }
 
 // ⑤ 头文件默认值与服务端默认值保持一致（防止两处各写一套：源码 60s、实际跑的 exe 15s）

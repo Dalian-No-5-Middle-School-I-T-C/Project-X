@@ -235,6 +235,10 @@ try {
   compatible[0].identity_mode = "legacy";
   assert.equal((await collectSessionResults(card, compatible, [])).failures.length, 0);
   assert.equal((await store.createSession(card.id, "strict default")).identity_mode, "strict");
+  assert.equal((await store.createSession(card.id, "color default")).color_mode, "color");
+  for (const colorMode of ["gray", "bw", "color"]) {
+    assert.equal((await store.createSession(card.id, `${colorMode} explicit`, { colorMode })).color_mode, colorMode);
+  }
   assert.equal((await store.createSession(card.id, "legacy explicit", { identityMode: "legacy" })).identity_mode, "legacy");
   const missing = structuredClone(raw);
   missing[1].recognition = null; missing[1].student_id = null; missing[1].ocr_status = "failed";

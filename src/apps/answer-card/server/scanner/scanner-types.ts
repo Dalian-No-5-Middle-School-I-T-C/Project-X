@@ -54,6 +54,8 @@ export interface ScanPage {
   side: "front" | "back";
   width: number;
   height: number;
+  dpi_x?: number;
+  dpi_y?: number;
 }
 
 export interface BridgeScanResult {
