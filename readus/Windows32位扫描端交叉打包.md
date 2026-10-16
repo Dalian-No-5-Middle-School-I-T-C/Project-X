@@ -20,6 +20,8 @@ npm run native:build:mingw:ia32
 
 脚本下载并校验 OpenCV 4.13.0 与 nlohmann/json 3.12.0，缓存、安装前缀和原生产物位于 `ignored/native-mingw/`。OpenCV 启用 `core`、`imgproc`、`imgcodecs`、`objdetect` 及其依赖，包含 JPEG、PNG、TIFF、WebP，并显式启用答题卡身份校验需要的 quirc 二维码解码器。C++ 运行库和 OpenCV 静态链接；TWAIN DSM 沿用仓库内的 32 位 DLL。依赖许可证随原生组件一起打包。
 
+没有本机构建机时可以用 CI 出这两颗原生件：`.github/workflows/native-ia32.yml` 在 ubuntu runner 上装 `mingw-w64`、`binutils-mingw-w64-i686`、`cmake`、`ripgrep`、`nasm` 后执行同一个 `scripts/build-native-mingw.sh`，产物以 `native-win-ia32` 工件上传。该 job 只在提交信息含 `[build-native]` 时运行，约 40 分钟（OpenCV 从源码编）。注意条件是**整条提交信息**做子串匹配，正文里顺手写出这个字串同样会触发一次构建，所以正文请用「重编 ia32」这类描述。下载后先核对工件（PE i386、`--help` 能启动、`resources/native/win-ia32/` 覆盖），入库后由 `scripts/verify-scanner-page-timeout.ts` 的 ⑥ 长期检查两颗 exe 里的关键字串，避免源码已改而包内件仍是旧产物。`win-x64` 不在这条路上，仍由 MSVC 工序（`npm run native:build:x64`）出。
+
 桌面应用依赖安装到 `ignored/scanner-package/`。Electron、better-sqlite3 和 sharp 的版本读取根目录锁文件；better-sqlite3 使用对应 Electron ABI 的官方 Windows ia32 预编译包，并校验 GitHub 发布资产的 SHA256。sharp 显式补齐 Windows ia32 二进制。当前 sharp ia32 包的 npm engines 限制为 Node 20，因此安装时使用 `--force`；实际 Electron 中的加载及图片处理仍须在目标 Windows 上验收。
 
 该流程符合 [electron-builder 的跨平台构建说明](https://www.electron.build/docs/features/multi-platform-build/)：具有官方预编译包的 Node 原生模块可以用于交叉打包；本项目两个 C++ 程序由独立 MinGW 工具链生成。
