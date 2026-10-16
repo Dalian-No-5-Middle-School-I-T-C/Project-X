@@ -583,7 +583,10 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     
     // 4. Configure capabilities
     if (!setPixelType()) {
-        // Continue anyway - some scanners don't support all caps
+        result.errorMessage = "扫描仪未应用所设置的色彩模式，请检查驱动支持的模式后重试";
+        closeSource();
+        closeDSM();
+        return result;
     }
     if (!setPaperSize(config.paperSize)) {
         result.errorMessage = config.paperSize == "A3"
@@ -979,22 +982,24 @@ bool TwainController::setCapability(TW_UINT16 cap, TW_UINT16 type, void* value) 
     return rc == TWRC_SUCCESS;
 }
 
-bool TwainController::setPixelType() {
-    TW_UINT16 pixelType;
+TW_UINT16 TwainController::requestedPixelType() const {
     if (m_config.colorMode == "bw") {
-        pixelType = TWPT_BW;
+        return TWPT_BW;
     } else if (m_config.colorMode == "color") {
-        pixelType = TWPT_RGB;
-    } else {
-        pixelType = TWPT_GRAY;
+        return TWPT_RGB;
     }
+    return TWPT_GRAY;
+}
+
+bool TwainController::setPixelType() {
+    TW_UINT16 pixelType = requestedPixelType();
     const bool accepted = setCapability(ICAP_PIXELTYPE, TWTY_UINT16, &pixelType);
     TW_UINT16 effective = 0;
     const bool readable = readCurrentUInt16Capability(ICAP_PIXELTYPE, TWTY_UINT16, &effective);
     fprintf(stderr, "[ScannerBridge] ICAP_PIXELTYPE requested=%u set=%s effective=%d\n",
         static_cast<unsigned>(pixelType), accepted ? "ok" : "rejected",
         readable ? static_cast<int>(effective) : -1);
-    return accepted;
+    return readable && effective == pixelType;
 }
 
 bool TwainController::setResolution(int dpi) {
@@ -1161,12 +1166,19 @@ bool TwainController::readCurrentResolution(TW_UINT16 cap, double* effective) {
     return readable;
 }
 
-bool TwainController::validateImageResolution(const TW_IMAGEINFO& info) {
+bool TwainController::validateImageSettings(const TW_IMAGEINFO& info) {
     const double x = info.XResolution.Whole + info.XResolution.Frac / 65536.0;
     const double y = info.YResolution.Whole + info.YResolution.Frac / 65536.0;
     fprintf(stderr, "[ScannerBridge] image DPI requested=%d actualX=%.4f actualY=%.4f pixels=%ldx%ld pixelType=%d bitsPerPixel=%d\n",
         m_config.dpi, x, y, static_cast<long>(info.ImageWidth), static_cast<long>(info.ImageLength),
         static_cast<int>(info.PixelType), static_cast<int>(info.BitsPerPixel));
+    const TW_UINT16 pixelType = requestedPixelType();
+    fprintf(stderr, "[ScannerBridge] image pixel mode requested=%u actual=%d\n",
+        static_cast<unsigned>(pixelType), static_cast<int>(info.PixelType));
+    if (info.PixelType != pixelType) {
+        m_transferError = "扫描仪实际输出色彩模式与设置不一致，请检查驱动设置后重试";
+        return false;
+    }
     if (std::abs(x - m_config.dpi) < 0.01 && std::abs(y - m_config.dpi) < 0.01) return true;
     m_transferError = "扫描仪实际输出分辨率与所设置的 " + std::to_string(m_config.dpi) +
         " DPI 不一致，请检查驱动设置后重试";
@@ -1232,7 +1244,7 @@ bool TwainController::captureNativeTransfer(
         logError("Failed to get image info: " + twainResultToString(rc));
         return false;
     }
-    if (!validateImageResolution(imageInfo)) return false;
+    if (!validateImageSettings(imageInfo)) return false;
     result.dpiX = imageInfo.XResolution.Whole + imageInfo.XResolution.Frac / 65536.0;
     result.dpiY = imageInfo.YResolution.Whole + imageInfo.YResolution.Frac / 65536.0;
     

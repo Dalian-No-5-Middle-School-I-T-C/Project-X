@@ -12,7 +12,7 @@ try {
   const source = readFileSync(path.join(root, "native/ScannerBridge/scanner-bridge/twain_controller.cpp"), "utf8");
   const methods = ["scan", "shouldWaitForTransfer", "readCurrentUInt16Capability",
     "enableADF", "enableSource", "setPixelType", "setDuplex", "setResolution", "readCurrentResolution",
-    "validateImageResolution", "disableSource", "waitForState", "processTwainEvent"];
+    "requestedPixelType", "validateImageSettings", "disableSource", "waitForState", "processTwainEvent"];
   const implementations = methods.map((name) => {
     const match = source.match(new RegExp(`^(?:ScanResult|bool|TW_UINT16) TwainController::${name}\\([\\s\\S]*?^}`, "m"));
     assert.ok(match, `Missing production method ${name}`);

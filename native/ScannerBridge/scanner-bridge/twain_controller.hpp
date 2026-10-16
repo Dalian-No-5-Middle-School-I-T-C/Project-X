@@ -117,6 +117,7 @@ private:
     // Capability negotiation
     bool setCapability(TW_UINT16 cap, TW_UINT16 type, void* value);
     bool setPixelType();
+    TW_UINT16 requestedPixelType() const;
     bool setResolution(int dpi);
     bool setDuplex(bool duplex);
     bool setPaperSize(const std::string& size);
@@ -124,7 +125,7 @@ private:
     bool setXferCount();
     bool readCurrentUInt16Capability(TW_UINT16 cap, TW_UINT16 type, TW_UINT16* effective, bool* unsupported = nullptr);
     bool readCurrentResolution(TW_UINT16 cap, double* effective);
-    bool validateImageResolution(const TW_IMAGEINFO& info);
+    bool validateImageSettings(const TW_IMAGEINFO& info);
     // 启用 ADF 后 Count=0 仍等待在途帧；正反面共用状态 5 事件等待。
     bool shouldWaitForTransfer(TW_UINT16 pendingCount);
     

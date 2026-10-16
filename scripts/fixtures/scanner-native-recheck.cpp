@@ -29,6 +29,8 @@ static bool synchronousReady;
 static bool duplexReadUnsupported, duplexCapabilityUnsupported, lastCapUnsupported;
 static bool unitsAccepted, xResolutionAccepted, yResolutionAccepted, resolutionSubstitute, resolutionReadable;
 static bool resolutionChangesOnEnable;
+static bool pixelSetAccepted, pixelReadable, pixelSubstitute, pixelChangesOnEnable, pixelChangesAfterFirstFrame;
+static TW_UINT16 effectivePixelType;
 static TW_UINT16 effectiveUnits;
 static int effectiveX, effectiveY;
 static std::vector<TW_UINT16> configuredCaps;
@@ -83,6 +85,7 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(pTW_IDENTITY, pTW_IDENTITY,
     if (dat == DAT_USERINTERFACE && msg == MSG_ENABLEDS) {
         sourceEnabled = true;
         if (resolutionChangesOnEnable) effectiveX = effectiveY = 150;
+        if (pixelChangesOnEnable) effectivePixelType = TWPT_GRAY;
         if (synchronousReady) {
             normalMessagePending = false;
             MSG event;
@@ -110,6 +113,7 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(pTW_IDENTITY, pTW_IDENTITY,
         lastCapUnsupported = (cap->Cap == CAP_DUPLEXENABLED && duplexReadUnsupported)
             || (cap->Cap == CAP_DUPLEX && duplexCapabilityUnsupported);
         if ((cap->Cap == CAP_FEEDERENABLED && !feederReadSupported)
+            || (cap->Cap == ICAP_PIXELTYPE && !pixelReadable)
             || (cap->Cap == CAP_DUPLEXENABLED && !duplexReadSupported)
             || (cap->Cap == CAP_DUPLEX && !duplexCapabilitySupported)) return TWRC_FAILURE;
         if (cap->Cap == ICAP_XRESOLUTION || cap->Cap == ICAP_YRESOLUTION) {
@@ -126,7 +130,7 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(pTW_IDENTITY, pTW_IDENTITY,
         capabilityValue.ItemType = cap->Cap == ICAP_PIXELTYPE || cap->Cap == CAP_DUPLEX || cap->Cap == ICAP_UNITS || (cap->Cap == CAP_FEEDERENABLED && badFeederType)
             ? TWTY_UINT16 : TWTY_BOOL;
         capabilityValue.Item = cap->Cap == ICAP_UNITS ? effectiveUnits : cap->Cap == CAP_DUPLEXENABLED ? duplexEffective
-            : cap->Cap == CAP_DUPLEX ? duplexHardware : cap->Cap == CAP_FEEDERENABLED ? feederEnabled : TWPT_RGB;
+            : cap->Cap == CAP_DUPLEX ? duplexHardware : cap->Cap == CAP_FEEDERENABLED ? feederEnabled : effectivePixelType;
         cap->hContainer = &capabilityValue;
         return TWRC_SUCCESS;
     }
@@ -145,6 +149,10 @@ bool TwainController::openSource(const TW_IDENTITY&) { m_state = 2; return true;
 bool TwainController::closeSource() { m_state = 1; return true; }
 bool TwainController::setCapability(TW_UINT16 cap, TW_UINT16, void* value) {
     configuredCaps.push_back(cap);
+    if (cap == ICAP_PIXELTYPE) {
+        if (pixelSetAccepted && !pixelSubstitute) effectivePixelType = *static_cast<TW_UINT16*>(value);
+        return pixelSetAccepted;
+    }
     if (cap == ICAP_UNITS) { if (unitsAccepted) effectiveUnits = *static_cast<TW_UINT16*>(value); return unitsAccepted; }
     if (cap == ICAP_XRESOLUTION || cap == ICAP_YRESOLUTION) {
         const bool accepted = cap == ICAP_XRESOLUTION ? xResolutionAccepted : yResolutionAccepted;
@@ -170,8 +178,9 @@ bool TwainController::captureNativeTransfer(const std::string& output, int page,
     m_transferError.clear();
     assert(m_state == 6);
     TW_IMAGEINFO info{};
+    info.PixelType = pixelChangesAfterFirstFrame && frameIndex > 0 ? TWPT_GRAY : effectivePixelType;
     info.XResolution.Whole = effectiveX; info.YResolution.Whole = effectiveY;
-    if (!validateImageResolution(info)) return false;
+    if (!validateImageSettings(info)) return false;
     result = { output, page, side, 1, 1 };
     ++frameIndex;
     m_state = 7;
@@ -198,19 +207,45 @@ static void reset(std::vector<DWORD> frameDelays, std::vector<TW_UINT16> pending
     duplexReadUnsupported = duplexCapabilityUnsupported = true; lastCapUnsupported = false;
     unitsAccepted = xResolutionAccepted = yResolutionAccepted = resolutionReadable = true;
     resolutionSubstitute = resolutionChangesOnEnable = false;
+    pixelSetAccepted = pixelReadable = true;
+    pixelSubstitute = pixelChangesOnEnable = pixelChangesAfterFirstFrame = false;
+    effectivePixelType = TWPT_GRAY;
     effectiveUnits = TWUN_CENTIMETERS; effectiveX = effectiveY = 75; configuredCaps.clear();
     pendingTransfers = closeAfterFrames = closeDelivered = saveFails = false; resetCalls = disableCalls = 0;
 }
-static ScanResult run(bool duplex = false, int maxPages = 0) {
+static ScanResult run(bool duplex = false, int maxPages = 0, const std::string& mode = "color") {
     TwainController controller;
     ScanConfig config;
     config.sourceName = "fixture"; config.outputDir = "fixture";
     config.duplex = duplex; config.maxPages = maxPages;
+    config.colorMode = mode;
     auto result = controller.scan(config);
     assert(invalidFeederQueries == 0 && "Do not query FEEDERLOADED after enabling the source");
     return result;
 }
 int main() {
+    for (const auto& mode : {"color", "gray", "bw"}) {
+        reset({0}, {0});
+        assert(run(false, 1, mode).success && frameIndex == 1);
+    }
+    reset({0}, {0}); pixelSubstitute = true;
+    auto rejectedPixel = run(false, 1);
+    assert(!rejectedPixel.success && rejectedPixel.pages.empty() && !sourceEnabled && frameIndex == 0 && disableCalls == 0);
+    assert(rejectedPixel.errorMessage.find("色彩模式") != std::string::npos);
+    reset({0}, {0}); pixelSetAccepted = false;
+    assert(!run(false, 1).success && frameIndex == 0 && disableCalls == 0);
+    reset({0}, {0}); pixelReadable = false;
+    assert(!run(false, 1).success && frameIndex == 0 && disableCalls == 0);
+    reset({0}, {0}); pixelSetAccepted = false; effectivePixelType = TWPT_RGB;
+    assert(run(false, 1).success && frameIndex == 1); // Redundant SET rejected, verified current value matches.
+    reset({0}, {0}); pixelChangesOnEnable = true;
+    rejectedPixel = run(false, 1);
+    assert(!rejectedPixel.success && rejectedPixel.pages.empty() && frameIndex == 0);
+    assert(rejectedPixel.errorMessage.find("色彩模式") != std::string::npos && resetCalls == 1 && disableCalls == 1);
+    reset({0, 0}, {1, 0}); pixelChangesAfterFirstFrame = true;
+    rejectedPixel = run(false, 2);
+    assert(!rejectedPixel.success && rejectedPixel.pages.size() == 1 && frameIndex == 1);
+    assert(rejectedPixel.errorMessage.find("色彩模式") != std::string::npos && resetCalls == 1 && disableCalls == 1);
     // The last sheet is already past the tray sensor and needs 25 seconds before XFERREADY.
     reset({0, 25000}, {0, 0});
     auto result = run();
@@ -297,5 +332,5 @@ int main() {
     reset({0}, {0}); closeAfterFrames = true;
     result = run();
     assert(result.success && result.pages.size() == 1 && clockMs == 0 && disableCalls == 1);
-    std::puts("PASS production scan loop: State 5 event wait without feeder queries, in-flight final sheet, duplex pairing, timeout, CLOSEDSREQ, capability fallbacks and page limit");
+    std::puts("PASS production scan loop: verified color/gray/BW, rejected pixel substitutions/unreadable modes, UI and later-frame overrides preserve prior pages; State 5, duplex, DPI, cleanup and limits");
 }

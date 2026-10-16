@@ -61,6 +61,8 @@ for (const rel of ["resources/native/win-x64/scanner-bridge.exe", "resources/nat
     `④: ${rel} 缺少 X/Y 分辨率回读检查，请重建随包桥接程序`);
   assert.ok(bytes.includes("image DPI requested=%d actualX=%.4f actualY=%.4f"),
     `④: ${rel} 缺少实际图像分辨率检查，请重建随包桥接程序`);
+  assert.ok(bytes.includes("image pixel mode requested=%u actual=%d"),
+    `④: ${rel} 缺少实际图像色彩模式检查，请重建随包桥接程序`);
 }
 
 // ⑤ 头文件默认值与服务端默认值保持一致（防止两处各写一套：源码 60s、实际跑的 exe 15s）
