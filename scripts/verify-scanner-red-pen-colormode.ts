@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import {
   colorModeUpgradeNotice,
   layoutNeedsRedPenScoring,
+  pageNeedsRedPenScoring,
   redPenMissNotice,
   resolveScanColorMode,
 } from "../src/shared/scanRedPenScore";
@@ -60,6 +61,24 @@ const colorNotice = redPenMissNotice({ needsRedPen: true, colorMode: "color", pa
 assert.match(colorNotice, /已用彩色扫描/, "③: 已是彩色时不能再让用户去改模式");
 assert.match(colorNotice, /手工改分/, "③: 兜底路径要写清楚");
 
+// ③b 分母只能数「这一页自己生成过分数格」的页：第 1 页客观题、第 2 页分数格的卡若这批只扫到第 1 页，
+// subjectiveQuestions 恒为空，按整卡计数就会报成「12 张一张都没读到」，而分数页根本不在这批里。
+assert.equal(pageNeedsRedPenScoring(page(["objective_option", "student_digit"])), false, "③b: 纯客观题页不进分母");
+assert.equal(pageNeedsRedPenScoring(page(["score_cell"])), true, "③b: 分数格页进分母");
+assert.equal(pageNeedsRedPenScoring(undefined), false, "③b: 页号越界按无分数格处理，不得抛错");
+
+// ③c 识别器只把「看到红笔但未采纳」的格子放进 invalidCells（打「×」走 multiple_red_components）。
+// 这类批次彩色是可用的，问题在画线方式，文案不能再把老师带去改色彩模式。
+const rejectedNotice = redPenMissNotice({ needsRedPen: true, colorMode: "color", pageCount: 12, pagesWithRedMark: 0, pagesWithRejectedRed: 9 })!;
+assert.match(rejectedNotice, /读到了红笔只是未采信/, "③c: 读到过红笔要说成未采信，不是没读到");
+assert.match(rejectedNotice, /9 张/, "③c: 未采纳的张数要给出");
+assert.doesNotMatch(rejectedNotice, /改用彩色|改为「彩色」/, "③c: 已读到红笔时不得再建议改色彩模式");
+assert.match(rejectedNotice, /手工改分/, "③c: 未采纳的兜底路径要写清楚");
+assert.equal(redPenMissNotice({ needsRedPen: true, colorMode: "gray", pageCount: 12, pagesWithRedMark: 2, pagesWithRejectedRed: 9 }), null,
+  "③c: 采纳过一张就不告警，未采纳数不得压过已采纳");
+assert.equal(redPenMissNotice({ needsRedPen: true, colorMode: "color", pageCount: 12, pagesWithRedMark: 0, pagesWithRejectedRed: 0 })!, colorNotice,
+  "③c: 完全没有红笔时仍是原来的色彩/笔迹结论");
+
 // ④ 接线：会话行、送进桥接的参数、告警出口三处都要走同一个判定，不能各写一套
 {
   const service = readFileSync(fileURLToPath(new URL("../src/apps/answer-card/server/scanner/scanner-service.ts", import.meta.url)), "utf8");
@@ -75,8 +94,11 @@ assert.match(colorNotice, /手工改分/, "③: 兜底路径要写清楚");
   assert.match(service, /const missNotice = redPenMissNotice\(\{[\s\S]{0,200}colorMode: session\?\.color_mode,/,
     "④: 识别阶段按会话记录的模式给结论");
   assert.match(service, /type: "warning", message: missNotice/, "④: 全批零红笔要走 SSE 告警，不能只写日志");
-  assert.match(service, /redPenPages \+= 1;[\s\S]{0,160}validCells\?\.length \?\? 0\) > 0/,
-    "④: 统计的是「读到过有效分数格」，不是识别状态");
+  assert.match(service, /if \(needsRedPen && pageNeedsRedPenScoring\(layout\.pages\[layoutPage - 1\]\)\) \{\s*redPenPages \+= 1;[\s\S]{0,160}validCells\?\.length \?\? 0\) > 0/,
+    "④: 分母只数本页有分数格的记录，且统计的是「读到过有效分数格」，不是识别状态");
+  assert.match(service, /invalidCells\?\.length \?\? 0\) > 0\)\)\s*\{[\s\S]{0,160}redRejectedPages \+= 1;/,
+    "④: 「读到红笔但未采纳」单独计数，不能和「完全没有红笔」混成一条");
+  assert.match(service, /pagesWithRejectedRed: redRejectedPages/, "④: 未采纳计数必须进告警判定");
 }
 
 // ⑤ 升级判定只有一处：路由与桥接都只传值，不能再各写一套色彩模式默认
@@ -98,4 +120,4 @@ assert.match(colorNotice, /手工改分/, "③: 兜底路径要写清楚");
   assert.match(native, /sample\.reason = "no_red_line";/, "⑥: 读不到红笔必须留下可归因的 reason");
 }
 
-console.log("verify-scanner-red-pen-colormode: 全部通过（分数格⇒彩色 / 会话与桥接同源 / 零红笔告警 / 门控依据仍在）");
+console.log("verify-scanner-red-pen-colormode: 全部通过（分数格⇒彩色 / 会话与桥接同源 / 零红笔告警按页统计且区分未采纳 / 门控依据仍在）");

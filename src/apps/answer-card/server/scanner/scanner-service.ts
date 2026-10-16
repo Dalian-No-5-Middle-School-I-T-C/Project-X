@@ -19,7 +19,7 @@ import { prepareCardLayoutById } from "../card-layout";
 import { parseRecognitionDpi } from "../helpers";
 import { mapScanPageToLayout, applyScanStudentId, assignScanRecordPageNums } from "../../../../shared/scanPages";
 import { verifyDeliveredScanDpi } from "../../../../shared/scanDeliveredDpi";
-import { layoutNeedsRedPenScoring, resolveScanColorMode, colorModeUpgradeNotice, redPenMissNotice } from "../../../../shared/scanRedPenScore";
+import { layoutNeedsRedPenScoring, pageNeedsRedPenScoring, resolveScanColorMode, colorModeUpgradeNotice, redPenMissNotice } from "../../../../shared/scanRedPenScore";
 
 export { listSources };
 
@@ -251,6 +251,7 @@ async function runOcrOnSessionInQueue(
   const needsRedPen = layoutNeedsRedPenScoring(layout.pages);
   let redPenPages = 0;
   let redMarkPages = 0;
+  let redRejectedPages = 0;
 
   for (const record of records) {
     if (!record.image_path) continue;
@@ -290,10 +291,16 @@ async function runOcrOnSessionInQueue(
         cropsDir: await createRecognitionCropTempDir(cardId, record.id)
       })) as CombinedRecognitionResult;
 
-      if (needsRedPen) {
+      // 只统计本页自己有分数格的记录：needsRedPen 是整卡判定，纯客观题页的
+      // subjectiveQuestions 恒为空，跟着整卡计数会把「分数页不在这批里」说成「一张都没读到」。
+      if (needsRedPen && pageNeedsRedPenScoring(layout.pages[layoutPage - 1])) {
         redPenPages += 1;
-        if ((recognition.subjectiveQuestions ?? []).some((question) => (question.validCells?.length ?? 0) > 0)) {
+        const questions = recognition.subjectiveQuestions ?? [];
+        if (questions.some((question) => (question.validCells?.length ?? 0) > 0)) {
           redMarkPages += 1;
+        } else if (questions.some((question) => (question.invalidCells?.length ?? 0) > 0)) {
+          // invalidCells 只在识别器真的看到红笔时填写：读到但未采纳，与「全是灰线」不是一回事。
+          redRejectedPages += 1;
         }
       }
 
@@ -392,10 +399,11 @@ async function runOcrOnSessionInQueue(
     needsRedPen,
     colorMode: session?.color_mode,
     pageCount: redPenPages,
-    pagesWithRedMark: redMarkPages
+    pagesWithRedMark: redMarkPages,
+    pagesWithRejectedRed: redRejectedPages
   });
   if (missNotice) {
-    console.warn(`[checkpoint] ocr session=${sessionId} card=${cardId} redScoreCells=0/${redPenPages} colorMode=${session?.color_mode ?? "unknown"}`);
+    console.warn(`[checkpoint] ocr session=${sessionId} card=${cardId} redScoreCells=0/${redPenPages} rejected=${redRejectedPages} colorMode=${session?.color_mode ?? "unknown"}`);
     onProgress({ sessionId, type: "warning", message: missNotice });
   }
 

@@ -3,10 +3,11 @@
  *
  * 卡面的 `manual_score_grid` 分数格由识别器在**彩色像素**里做红笔门控
  * （native/AnswerCardRecognizer/answer_recognition.cpp 的 HSV 0–12 / 165–180 区间），
- * 而扫描端、服务端与桥接三处的 colorMode 缺省都是 `gray`：灰度图里红笔与印刷边框、
+ * 灰度图（含修复前的灰度缺省、以及操作员显式选了灰度/黑白的会话）里红笔与印刷边框、
  * 铅笔痕迹同为灰色，红笔掩码全空，每格都判为 `no_red_line`，整题落到
  * `no_valid_subjective_score` → 分数按 0 计。于是「换了操作员/忘了改模式的批次读不到，
- * 其它批次正常」——现场感受就是「有时读不到、无规律」。
+ * 其它批次正常」——现场感受就是「有时读不到、无规律」。路由缺省已由 #330 改成彩色，
+ * 本模块负责的是剩下的：卡面事实判定、历史会话与显式灰度的升级、零红笔告警。
  *
  * 这里只做一件事：把「含分数格 ⇒ 必须彩色」这条卡面事实变成扫描前的确定行为，
  * 并把「一张都没读到红笔」从静默 0 分变成一条能照着做的提示。
@@ -23,7 +24,16 @@ const COLOR_MODE_LABELS: Record<ScanColorMode, string> = {
 
 /** 版面里是否存在必须由红笔读取的手写分数格。 */
 export function layoutNeedsRedPenScoring(pages: Pick<PageLayout, "elements">[]): boolean {
-  return pages.some((page) => page.elements.some((element) => element.type === "score_cell"));
+  return pages.some((page) => pageNeedsRedPenScoring(page));
+}
+
+/**
+ * 单个布局页是否有分数格。整卡判定只决定「要不要彩色」，
+ * 批后统计必须逐页问这一句：纯客观题页的 subjectiveQuestions 恒为空，
+ * 把它们算进分母就会出现「分数页根本不在这批里，却报一张都没读到」。
+ */
+export function pageNeedsRedPenScoring(page: Pick<PageLayout, "elements"> | undefined): boolean {
+  return Boolean(page?.elements.some((element) => element.type === "score_cell"));
 }
 
 /**
@@ -46,17 +56,25 @@ export function colorModeUpgradeNotice(from: ScanColorMode | string | undefined)
 }
 
 /**
- * 整批一张红笔分数都没读到时的提示。只在「全部页面都没有有效分数格笔迹」时给出：
+ * 整批一张红笔分数都没读到时的提示。只在「全部含分数格的页面都没有有效分数格笔迹」时给出：
  * 个别卷子空白属正常（缺考、未打分），全批为零才说明色彩模式或笔迹本身出了问题。
+ *
+ * 两种零红笔要分开说：识别器只把「看到红笔但没采纳」的格子放进 invalidCells，
+ * 所以 invalidCells 有、validCells 全空 ⇒ 彩色可用、是画线方式不对；
+ * 建议改彩色只会把老师引向一个不是原因的原因。
  */
 export function redPenMissNotice(input: {
   needsRedPen: boolean;
   colorMode: ScanColorMode | string | undefined;
   pageCount: number;
   pagesWithRedMark: number;
+  pagesWithRejectedRed?: number;
 }): string | null {
   if (!input.needsRedPen || input.pageCount <= 0 || input.pagesWithRedMark > 0) return null;
-  const counted = `本次 ${input.pageCount} 张卷子的红笔分数格一张都没读到`;
+  const counted = `本次 ${input.pageCount} 张含分数格的答卷页里，红笔分数格一张都没采纳`;
+  if ((input.pagesWithRejectedRed ?? 0) > 0) {
+    return `${counted}，但其中 ${input.pagesWithRejectedRed} 张读到了红笔只是未采信（多为斜线没有贯穿整格、格里有多处红迹如打「×」，或分数写在格外）。这与色彩模式无关，请对照原卷确认画线方式，判不了的在异常卷手工改分。`;
+  }
   if (input.colorMode === "color") {
     return `${counted}。已用彩色扫描，请确认教师用的是红笔、斜线是否贯穿整个分数格；确属未打分的卷子按 0 分处理，可在异常卷手工改分。`;
   }
