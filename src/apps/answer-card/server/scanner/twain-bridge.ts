@@ -1,5 +1,6 @@
 import { spawn, execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import path from "node:path";
 import { rootDir } from "../storage";
 import type { BridgeScanResult, ScannerSourcesResult } from "./scanner-types";
@@ -208,7 +209,7 @@ function bridgeFailure(message: string, fields: Omit<BridgeFailure, keyof Error>
   return Object.assign(new Error(message), fields);
 }
 
-function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string, env?: NodeJS.ProcessEnv): Promise<{ stdout: string; stderr: string; code: number | null }> {
+function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string, env?: NodeJS.ProcessEnv, refreshOnProgress = false): Promise<{ stdout: string; stderr: string; code: number | null }> {
   const exePath = resolveScannerBridgeExe();
 
   // 取消检查：用户已请求取消（可能早于本函数执行），直接拒绝启动扫描
@@ -237,6 +238,15 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string, env?
 
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
+    const stderrDecoder = new StringDecoder("utf8");
+    let stderrLine = "";
+    let stderrEnded = false;
+    const flushStderr = () => {
+      if (stderrEnded) return;
+      stderrEnded = true;
+      logBridgeStderr(stderrLine + stderrDecoder.end());
+      stderrLine = "";
+    };
     let timedOut = false;
 
     const timeout = setTimeout(() => {
@@ -245,7 +255,19 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string, env?
     }, timeoutMs);
 
     child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrChunks.push(chunk);
+      const lines = (stderrLine + stderrDecoder.write(chunk)).split("\n");
+      stderrLine = lines.pop() ?? "";
+      for (const line of lines) {
+        // 不限页数时按实际帧进度续期，避免运行超过一小时的正常批次被总时长截断。
+        if (refreshOnProgress && /^\[ScannerBridge\] (?:Page \d+ (?:front|back): capturing|page \d+ done, pending=)/.test(line)) {
+          timeout.refresh();
+        }
+        logBridgeStderr(line);
+      }
+    });
+    child.stderr.on("end", flushStderr);
 
     child.on("error", (error) => {
       clearTimeout(timeout);
@@ -262,6 +284,7 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string, env?
 
     child.on("close", (code) => {
       clearTimeout(timeout);
+      flushStderr();
       if (sessionId) {
         retireActiveScan(sessionId);
       }
@@ -300,15 +323,16 @@ function parseBridgeJson(stdout: string): Record<string, unknown> {
 }
 
 /**
- * 桥接 stderr 里带 [ScannerBridge] 标记的诊断行（CAP_XFERCOUNT 实际生效值、密度回读、
- * 批次结束原因）。scan() 原本只取 stdout 的 JSON，成功时这些行被整段丢弃，现场「只扫进
- * 一张」就无从区分「驱动只交 1 张」与「我们提前收了尾」。
+ * 把桥接进程的 stderr 逐行写进服务端日志（Electron 下即 main.log）。
+ * native 侧的关键诊断（CAP_XFERCOUNT 协商结果、每页 pending 张数、FEEDERLOADED 复核、
+ * 等纸超时退出原因）只打在 stderr；此前 runBridge 捕获后无人读取，
+ * 「只扫一张」这类现场问题完全没有取证手段。行级原文照搬，不做裁剪。
  */
-export function extractBridgeDiagnostics(stderr: string): string[] {
-  return stderr
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.includes("[ScannerBridge]"));
+function logBridgeStderr(stderr: string): void {
+  for (const line of stderr.split(/\r?\n/)) {
+    const text = line.trim();
+    if (text) console.log(`[scanner-bridge] ${text}`);
+  }
 }
 
 /** 把桥接进程的常见 Windows 退出码翻译成可操作的中文提示（探测/扫描共用）。 */
@@ -473,10 +497,11 @@ export async function listSources(): Promise<ScannerSourcesResult> {
   };
 }
 
-/** 扫描子进程超时：按预期页数估算（5s/页 + 5 分钟缓冲，不低于旧默认 10 分钟）。
- *  不限张数时给 1 小时兜底——native 侧 ADF 无纸 60s 空闲自退，长超时只是防驱动死锁的保险。 */
-export function scanTimeoutMs(maxPages: number): number {
-  if (maxPages > 0) return Math.max(600_000, maxPages * 5_000 + 300_000);
+/** 每帧预算含完整等纸超时与 5s 传输余量，另留最终等纸及 5 分钟配置/收尾余量。
+ * 不限页数时用一小时看门狗，并由真实帧进度续期。maxPages 按图像帧计数。 */
+export function scanTimeoutMs(maxPages: number, pageTimeoutMs = 60_000): number {
+  const pageWaitMs = Number.isFinite(pageTimeoutMs) && pageTimeoutMs > 0 ? Math.ceil(pageTimeoutMs) : 60_000;
+  if (maxPages > 0) return Math.max(600_000, (maxPages + 1) * pageWaitMs + maxPages * 5_000 + 300_000);
   return 3_600_000;
 }
 
@@ -519,17 +544,14 @@ export async function scan(config: {
     args.push("--show-ui");
   }
 
-  const timeoutMs = scanTimeoutMs(config.maxPages);
+  const frameLimit = config.duplex ? Math.ceil(config.maxPages / 2) * 2 : config.maxPages;
+  const timeoutMs = scanTimeoutMs(frameLimit, config.pageTimeoutMs);
   // 单次尝试：设备无响应/零页失败在 native 侧以「结构化 JSON + 非零退出码」返回，
   // runBridge 只要 stdout 有内容就 resolve（不抛错），因此这类目标场景必须在这里
   // 把零页设备失败转成抛错，才能进入下面的双 DSM 重试。
   // 已有部分页（page_count>0）属中途失败，重试会重复扫描同一批纸，不重试。
   const attempt = async (env?: NodeJS.ProcessEnv): Promise<BridgeScanResult> => {
-    const { stdout, stderr } = await runBridge(args, timeoutMs, sessionId, env);
-    // 成功路径也要留痕：为什么只交了这些页、密度与张数上限实际生效成什么样，桥接只写在 stderr
-    for (const line of extractBridgeDiagnostics(stderr)) {
-      console.warn(`[scanner] ${line}`);
-    }
+    const { stdout } = await runBridge(args, timeoutMs, sessionId, env, config.maxPages === 0);
     const result = parseBridgeJson(stdout) as unknown as BridgeScanResult;
     if (result.status === "error" && result.page_count === 0) {
       const message = result.message || "扫描未产生任何页面";

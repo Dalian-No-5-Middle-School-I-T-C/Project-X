@@ -177,7 +177,6 @@ export async function runScanSession(
     if (dpiVerdict.status === "mismatch" && dpiVerdict.message) {
       onProgress({ sessionId, type: "warning", message: dpiVerdict.message });
     }
-
     // 页面落库后不置 completed：OCR 是流水线的一部分，全部完成才算终态。
     // 否则 OCR 阶段取消会被"已 completed"拒绝、SSE 补发也会提前发 done
     onProgress({
@@ -191,6 +190,9 @@ export async function runScanSession(
     const postScan = await getSession(sessionId);
     if (postScan?.status === "cancelled") {
       return sessionId;
+    }
+    if (result.status === "error") {
+      throw new Error(result.message || "扫描中途失败，已扫描的页面已保留");
     }
     await updateSessionStatus(sessionId, "completed");
 

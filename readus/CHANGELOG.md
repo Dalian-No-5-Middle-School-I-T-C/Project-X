@@ -1,35 +1,50 @@
 # Project-X CHANGELOG
 
-## 2026-10-16：扫描端分辨率、进纸器批次续等与红笔分数格强制彩色（issue #331 ①②③）
+## 2026-10-16：issue #331 剩余项——批次收尾判定、红笔分数格强制彩色（②③，并定位④）
 
-### ① 设定分辨率真正生效
+### ② 「仍旧只能扫描一张」的最后一处：`TWRC_ENDOFLJOB` 被当成 ENDXFER 失败
 
-- TWAIN 的 `ICAP_XRESOLUTION/YRESOLUTION` 是「每 `ICAP_UNITS` 的点数」，不是每英寸。设置密度前先把单位钉成 `TWUN_INCHES`，钉不上时按驱动实际单位换算；纸型协商（`ICAP_SUPPORTEDSIZES`）会连带刷新成像参数，因此纸型谈完再设一次密度。
-- 设值后用 `MSG_GETCURRENT` 回读实际生效密度并在 stderr 标注 `accepted:` / `SUBSTITUTED BY DRIVER:`；`TWRC_CHECKSTATUS` 不再当作物已成功，也不因密度设不上中止扫描会话。
-- 扫描端不依赖 exe 是否重编译：用桥接本来就回报的页面像素尺寸反查出图密度，写入 `[checkpoint] scan ... deliveredDpi=`，被驱动替代时在扫描端显示常驻「扫描告警」并进入「复制诊断」。
-- 新增 `verify:scanner-delivered-dpi` 并接入 CI。
+- 主线（#330）已覆盖 `CAP_XFERCOUNT=-1`、`Count=0` 的状态 5 续等、送纸器回读与双面配对，本条只补批次边界的最后一处：驱动用 `TWRC_ENDOFLJOB`（0x0007，随包 `twain.h` 里同值的 `TWRC_ENDOFLIST`）告知「这就是最后一张」，而正面、背面两处 `MSG_ENDXFER` 都按 `!= TWRC_SUCCESS` 判失败——已经到手的页面被报成「ENDXFER failed」，整批判为失败。现在两处（含 `disableSource` 收尾的 ENDXFER）按正常结束处理，日志留 `end of job after sheet N`。
+- `scripts/fixtures/scanner-native-recheck.cpp` 的假 DSM 增加可控的 ENDXFER 返回码：单张 ENDOFLJOB 批次成功且不再空等一个 `pageTimeoutMs`；双面背面后的 ENDOFLJOB 正常结束；保存失败收尾时 ENDOFLJOB 不再报「会话未正常关闭」。这三条由 `npm run verify:scanner-adf-recheck` 编译真实扫描循环执行（需要 C++ 编译器，CI 在 ubuntu 用 g++）。
+- **仍要重编译 `scanner-bridge.exe` 才能作用于现场**（`npm run native:build:x64` / `npm run native:build:ia32`，或 ia32 交叉工序 `npm run native:build:mingw:ia32`）：随包 exe 是 #330 的产物，不含这一段。
 
-### ② 「仍旧只能扫描一张」：批次续等不再只认 pending.Count
+### ③ 「大题分数有时读不到」：含红笔分数格的卡强制彩色，零红笔批次必须告警
 
-- `CAP_XFERCOUNT=-1`（不限张数）时多数驱动恒报 `DAT_PENDINGXFERS.Count=0`，旧循环 `hasMorePages = pending.Count > 0` 因此第一张就收尾。续等改由 `shouldWaitForTransfer` 判定：状态机已就绪或 `Count>0`（含 0xFFFF）继续；`Count=0` 时只有送纸器确实没开才结束批次，`CAP_FEEDERLOADED` 问不到则宁可多等一个超时（少收一张不可恢复，多等只是慢）。
-- 驱动用 `TWRC_ENDOFLJOB`（0x0007）表示「这就是最后一张」，属正常收尾；旧实现按 ENDXFER 失败处理，连已经到手的那张都报成扫描失败。正反两面两处都补上，并把 `Count>0` 显式推进到状态 6（此时驱动不会再发一次 XFERREADY）。
-- 双面背面不再由 `pending.Count > 0` 决定是否等待；混合批次里某张确实只有正面时只结束批次，不再把整批判为失败。
-- `enableADF` 回读 `CAP_FEEDERENABLED` 的实际生效值（SET 被静默拒绝的平板机型必须按未开处理，否则每张之间白等超时）；`enableSource` 改为 `if (m_state < 3)`，不再抹掉 `MSG_ENABLEDS` 内部就已到达的第一帧 XFERREADY。
-- 桥接 stderr 的 `[ScannerBridge]` 诊断行（送纸器生效状态、密度回读、批次结束原因）逐行转发到服务端日志：现场要能区分「驱动只交 1 张」与「软件提前收了尾」。
-- 新增 `verify:scanner-adf-continuation` 并接入 CI。**以上判定全在原生桥内，必须用 `npm run native:build:x64` / `native:build:ia32`（或 ia32 交叉工序）重编译 `scanner-bridge.exe` 才会作用于现场。**
-
-### ③ 「大题分数有时读不到」：含红笔分数格的卡强制彩色
-
-- 识别器只在彩色像素里做红笔门控（`COLOR_BGR2HSV` + 饱和度 ≥55），灰度图被补成 B=G=R、饱和度恒为 0，红笔斜线整题落到 `no_valid_subjective_score` 并按 0 分计；而扫描端、服务端路由与 TWAIN 桥三处 `colorMode` 缺省都是 `gray`——「谁忘了切彩色」的批次整批读不到，现场表现为「有时读不到、无规律」。
-- 版面里存在 `score_cell` 时色彩模式由服务端定：会话行记录实际生效值，送进桥接的是升级后的模式，自动改写当场给操作员提示，`[checkpoint]` 日志记 `colorMode=...(forced)`。不含分数格的卡保持原选择，黑白/灰度照常可用。
-- 一批卷子里一张红笔分数都没读到时给出可执行告警（按当前模式分别提示改彩色重扫 / 核对笔迹与斜线是否贯穿分数格），不再静默按 0 分入库。个别卷子空白属缺考或未打分，不触发告警。
-- 新增 `verify:recognizer-red-pen`（同一张卡同一条斜线：彩色读到 10 分，灰度 0 分且 `no_valid_subjective_score`，定位/学号/客观题不受影响）与 `verify:scanner-red-pen-colormode`，均接入 CI。
+- 识别器只在彩色像素里做红笔门控（`COLOR_BGR2HSV` + 饱和度 ≥55），灰度图被补成 B=G=R、饱和度恒为 0，红笔斜线整题落到 `no_valid_subjective_score` 并按 0 分计。主线已把色彩模式缺省改成彩色，但历史会话与显式选择仍可能是 `gray`，因此版面含 `score_cell` 时色彩模式由服务端定：会话行记录实际生效值，送进桥接的是升级后的模式，自动改写当场提示操作员，`[checkpoint]` 记 `colorMode=...(forced)`。不含分数格的卡保持原选择，灰度/黑白照常可用。
+- 一批卷子里一张红笔分数都没读到时给出可执行告警（按当前模式分别提示改彩色重扫 / 核对笔迹与斜线是否贯穿分数格），不再静默按 0 分入库；个别卷子空白属缺考或未打分，不触发告警。
+- 新增 `verify:recognizer-red-pen`（同一张卡、同一条斜线：彩色读到 10 分，灰度读 0 分且 `no_valid_subjective_score`，定位/学号/客观题不受影响；走 Linux x86_64 识别器）与 `verify:scanner-red-pen-colormode`，均接入 CI。判定全在服务端与共享层，不依赖原生重编译。
+- **没有动的部分**：斜线判定的原生阈值（贯穿比例 0.52、要求单一直线）不改。红笔打「X」会落到 `multiple_red_components` 而读不出分数，是否放宽需要现场样本再定，不在这里猜。
 
 ### ④ 异常卷「完全不好用」的定位（未在本条修复）
 
-- 随包 `resources/native/win-x64|win-ia32/answer-card-recognizer.exe` 仍是 2026-10-06 的产物，早于 10-15 引入的坐标映射（`geometry`/`layoutToImage`）：Windows 扫描端识别出的每一页都没有坐标，`storeCorrectionPage` 因此删掉订正快照，整卡改分退化成不可点击的原图，成绩修改侧直接抛「此卷缺少坐标映射」。
+- 随包 `resources/native/win-x64|win-ia32/answer-card-recognizer.exe` 仍是 2026-10-06 的产物，早于 10-15 引入的坐标映射（`geometry`/`layoutToImage`）：Windows 扫描端识别出的每一页都没有坐标，`storeCorrectionPage` 因此删掉订正快照，整卡改分退化成不可点击的原图，成绩修改侧直接抛「此卷缺少坐标映射」。本机 `npm run verify:recognizer-geometry` 即复现（把 `ANSWER_CARD_RECOGNIZER_EXE` 指向随包 ia32 识别器，报 `ZodError: geometry invalid_type`；x64 那颗在本机缺 `opencv_world4130.dll`，连启动都是 0xC0000135）。
 - 唯一可用的补救是 Ubuntu 服务端包里的独立识别器显式补识别（Linux x86_64、单次串行、结果不落库，每次打开重算）；扫描端本地与 Windows 服务端没有这条路。
 - 结论同 ②：需要按打包工序重编译两个 Windows 识别器并重出安装包，之后再用真机异常卷核对。
+
+## 2026-10-16：扫描 DPI 同步、单面设备兼容与失败批次恢复
+
+- 修复普通队列消息先经扫描消息泵、后经隐藏窗口回调而重复提交 DSM 的问题：派发期间标记已检查的消息，窗口回调匹配后仅跳过一次重复提交；驱动直接通知、驱动内部消息泵、嵌套通知及字段相同的新同步消息继续正常处理。回归编译实际 `WndProc` 与扫描循环，覆盖窗口、线程及其他窗口消息路径。
+- 修复驱动窗口覆盖单双面设置后仍按旧设置配对的问题：每帧就绪后、原生取图前回读确认单双面模式，复用启用前的确认及合法单面设备回退逻辑；不匹配或无法确认时停止并保留已扫页面。回归覆盖显式窗口、无界面启动失败后弹窗、`CHECKSTATUS` 隐式窗口、同步或延迟就绪、后续帧模式变化，并检查启用后不再写入单双面设置。
+- 修复驱动替换色彩模式后仍继续扫描的问题：`ICAP_PIXELTYPE` 回读必须与请求匹配，否则在启用扫描前报错；每帧取图前再核对 `DAT_IMAGEINFO.PixelType`，驱动窗口或后续帧覆盖模式时停止并保留此前已扫页面。回归覆盖彩色、灰度、黑白、设置被拒、替代、回读失败及取图时模式变化。
+- 修复 ADF 在 `ENDXFER Count=0` 后读取送纸器状态失败就立即结束的问题：状态 5 直接等待 `XFERREADY` / `CLOSEDSREQ`，沿用配置的等纸超时；移除启用扫描后对 `CAP_FEEDERLOADED` 的查询。原生回归使用拒绝该查询的严格驱动，覆盖延迟下一页、双面背面、超时、关闭与上限。
+- 修复进度连接晚到或断线重连后只收到终态错误时，已有页面被误判为零页的问题：终态错误及手动刷新先读取会话持久化页面，恢复页数、查看、订正和显式保存入口；读取失败可重试，切换会话后忽略旧响应。回归覆盖仅终态回放、丢失部分页面事件、状态读取失败、真实状态 API 与 SSE 回放。
+- 补齐中途失败批次的结果页：保留页面后显示查看、订正、重新识别及显式保存入口，并持续展示原始设备错误。刷新和订正后的汇总沿用失败会话状态，成功卡仅在点击保存时上传；零页错误继续显示扫描设置。React / SSE 回归覆盖结果可见性、原图预览、汇总失败恢复、本地与远端手动保存及下一会话状态重置。
+- 修复 PR #330 的 P2：单面设备明确报告 `CAP_DUPLEXENABLED` 与 `CAP_DUPLEX` 都不支持时允许单面扫描；设备通信失败、异常容器及请求双面时仍要求可确认的模式。
+- 纸型、色彩、ADF 与双面配置完成后，最后设置 `ICAP_UNITS=TWUN_INCHES` 和 X/Y 分辨率，回读确认请求 DPI 已生效。能力设置被拒或替代时停止走纸并报告错误；两轴独立设置，避免 X 轴失败后漏设 Y 轴。
+- 每帧在传输前核对 `DAT_IMAGEINFO` 的实际 X/Y DPI，发现驱动窗口覆盖设置时报告失败。JPEG 保存显式写入图像 DPI，修复 150 DPI 图像被 GDI+ 标成 192 DPI 的问题；桥接 JSON 新增 `dpi_x` / `dpi_y`，日志同时记录请求、生效与实际输出值。
+- 达到张数上限、保存失败或关闭驱动窗口时，按 `ENDXFER → RESET → DISABLEDS` 所需状态收尾，保留错误和已扫图像。扫描部分失败时会话及 SSE 终态为 error；识别完成的已有页面支持查看、订正和重试，界面保留原始设备错误并等待显式保存或上传。
+- Windows 11 官方虚拟扫描仪在 ia32 / x64 各通过 23 个场景，覆盖 5 档 DPI × 3 种色彩、批量、上限、默认设备及不支持设置的拒绝；显示驱动窗口时已观察到请求的 300 DPI。完整记录见 [虚拟扫描仪验证](虚拟扫描仪验证.md)。柯达 i3000 现场驱动与机械走纸需使用更新扫描端复测。
+
+## 2026-10-15：2.7.1 默认彩色扫描与 ADF 续扫复核
+
+- 扫描端色彩模式默认改为彩色，四处同源：面板初始选项、本机 TWAIN 路由兜底值、会话入库默认值、原生桥 `ScanConfig`。显式传入的色彩模式仍优先于默认值；`ScannerPanel` 不持久化该项，每次打开面板取默认彩色。README 版本徽章此前停在 2.6.0（2.6.1 漏同步），一并校正到 2.7.1。
+- 「连 TWAIN 只扫一张」增加 ADF 续扫等待：送纸器启用且 `MSG_ENDXFER` 报 `pending.Count=0` 时，继续等待下一帧 `XFERREADY`，等待上限为 `pageTimeoutMs`（默认 60s）。托盘空可能是纸已进入走纸通道；驱动未发出结束通知时，正常批次结束也会等待这段超时。达到最大张数后直接结束。最初实现依赖 `CAP_FEEDERLOADED` 读取，现由 10 月 16 日修复改为直接等待状态 5 事件。
+- 双面模式在当前物理张内等待背面，背面到达后再进入下一张正面；`Count=0` 后送来的背面沿用当前张号。等背面超时保留已扫页面并报告失败。`enableADF` 回读失败或容器格式异常时，统一以 SET 是否成功决定是否复核，并记录回读/回退原因。色彩设置新增 `ICAP_PIXELTYPE` 请求值、生效值与协商结果日志。
+- 双面配对前回读 `CAP_DUPLEXENABLED`，设置被拒、替代或无法确认时在走纸前报错；单面扫描也显式关闭设备残留双面设置，硬件仅支持单面时可通过 `CAP_DUPLEX=TWDX_NONE` 确认。父进程超时预算覆盖每帧完整的 `pageTimeoutMs`、传输余量及收尾等待；双面奇数页上限按完整物理张估算，不限页数时用实际帧进度续期看门狗。
+- 等帧消息泵在普通窗口派发前将每条消息交给 DSM，并保留 `ENABLEDS` 内同步送达的 `XFERREADY` 状态。`ENDXFER` 返回非零剩余数（含 `0xffff` 未知数量）时直接保持就绪并接收下一帧，遵循 TWAIN 状态 6 契约。官方软件扫描仪复现了旧实现覆盖首帧就绪状态，以及第一张后误等新就绪事件而结束批次的问题。
+- 桥接进程 stderr 随进程运行按行写入服务端日志（Electron 下即 `main.log`，前缀 `[scanner-bridge]`），覆盖成功、失败、超时和取消，支持跨数据块的 UTF-8 文本与末尾未换行内容。扫描检查点日志补 `color=` 字段。新增原生扫描循环模拟回归与真实子进程日志回归，覆盖在途最后一张、双面配对、能力回退及取消/超时日志。
+- 数据库列的历史默认值保留为 `gray`；应用创建会话时显式写入配置，缺省写入 `color`，显式灰度/黑白设置仍生效。
+- 验证边界：已通过 x64 / ia32 桥接构建（staged exe 含全部新诊断串）、`npm run typecheck`、20 个扫描端回归脚本全绿。**未覆盖实机验收**：`CAP_FEEDERLOADED` 复核能否真正解决柯达 i3000「只扫一张」需真机确认；现场可据新增的 `[scanner-bridge]` 日志判断驱动究竟有没有接受 `CAP_XFERCOUNT=-1`，据此决定下一步。
 
 ## 2026-10-14：2.7.0 整卡改分与旧卷补识别
 

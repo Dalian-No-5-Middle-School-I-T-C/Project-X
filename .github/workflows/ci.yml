@@ -93,16 +93,15 @@ jobs:
 
       - name: Scanner page timeout default regression
         run: npm run verify:scanner-page-timeout
+      # issue #331 ②：进纸器批次为什么只收到一张——编译真实扫描循环跑假 DSM，
+      # 覆盖在途帧续等、ENDOFLJOB 正常收尾、双面配对与能力回退。
+      - name: Scanner in-flight frames and bridge diagnostics
+        run: npm run verify:scanner-adf-recheck
 
       # issue #331 ①：设定 DPI 是否真的生效——用桥接回报的像素尺寸反查实际密度，
       # 并要求结论走到 [checkpoint] 日志与扫描端告警。
       - name: Scanner delivered DPI cross-check
         run: npm run verify:scanner-delivered-dpi
-
-      # issue #331 ②：进纸器批次为什么只收到一张——锁住「续等不能只认 pending.Count」
-      # 及 ENDOFLJOB 收尾、双面背面、送纸器回读与桥接诊断回传。
-      - name: Scanner ADF batch continuation regression
-        run: npm run verify:scanner-adf-continuation
 
       # issue #331 ③：含红笔分数格的卡色彩模式由服务端定，全批零红笔必须告警而不是静默 0 分
       - name: Scanner red pen score color mode regression
@@ -112,6 +111,8 @@ jobs:
         run: npm run verify:scanner-upload-manager
       - name: Scanner panel React and SSE session metadata
         run: npm run verify:scanner-panel-session
+      - name: Scanner partial transfer failure persistence
+        run: npm run verify:scanner-partial-failure
 
       - name: Scanner batch results smoke
         run: npm run verify:scanner-batch-results
@@ -239,6 +240,7 @@ jobs:
           CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_review_ci CHARACTER SET utf8mb4;
           CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_version_ci CHARACTER SET utf8mb4;
           CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_duplex_ci CHARACTER SET utf8mb4;
+          CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_partial_ci CHARACTER SET utf8mb4;
           CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_correction_ci CHARACTER SET utf8mb4;
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_dup_ci.* TO 'projectx_ci'@'%';
@@ -246,6 +248,7 @@ jobs:
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_review_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_version_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_duplex_ci.* TO 'projectx_ci'@'%';
+          GRANT ALL PRIVILEGES ON projectx_scanner_batch_partial_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_correction_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_exam_classes_test.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_migration_test.* TO 'projectx_ci'@'%';
@@ -297,6 +300,11 @@ jobs:
           SCANNER_BATCH_MARIADB: "1"
           PROJECTX_MARIADB_DATABASE: projectx_scanner_batch_retry_ci
         run: npm run verify:scanner-retry-concurrency
+      - name: Scanner partial transfer failure on MariaDB
+        env:
+          SCANNER_BATCH_MARIADB: "1"
+          PROJECTX_MARIADB_DATABASE: projectx_scanner_batch_partial_ci
+        run: npm run verify:scanner-partial-failure
       - name: Student ladder soft-deleted group members (MariaDB)
         env:
           SCANNER_BATCH_MARIADB: "1"

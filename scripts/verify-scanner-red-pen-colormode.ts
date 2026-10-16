@@ -2,11 +2,11 @@
  * issue #331 ③「红笔在分数方框画斜线打分，有时读不到」的第一道防线：含分数格的卡必须彩色扫描。
  *
  * 复盘：识别器只在彩色像素里做红笔门控（HSV 饱和度下限 55），而扫描端、服务端路由与 TWAIN 桥
- * 三处 colorMode 缺省都是 `gray`。灰度图里红笔与印刷边框同为灰色，红笔掩码恒空，每格判为
+ * 三处 colorMode 缺省都曾落到 `gray`。灰度图里红笔与印刷边框同为灰色，红笔掩码恒空，每格判为
  * `no_red_line`，整题落到 `no_valid_subjective_score`，分数按 0 计——「谁忘了切彩色」的批次整批
- * 读不到，其它批次正常，现场就成了「有时读不到、无规律」。
- * 这里锁三件事：卡面有分数格时色彩模式由服务端定（不再留给现场）、会话行记的是实际生效值、
- * 「全批零红笔」必须变成一条可执行的告警，而不是静默 0 分。
+ * 读不到，其它批次正常，现场就成了「有时读不到、无规律」。缺省值已由 #330 统一改成彩色，
+ * 这里锁的是剩下的三件事：卡面有分数格时色彩模式由服务端定（历史会话与显式灰度也升级为彩色）、
+ * 会话行记的是实际生效值、「全批零红笔」必须变成一条可执行的告警，而不是静默 0 分。
  * 真实红笔/灰度成像的行为差异在 `npm run verify:recognizer-red-pen` 里用同一个识别器验证。
  */
 import assert from "node:assert/strict";
@@ -79,10 +79,11 @@ assert.match(colorNotice, /手工改分/, "③: 兜底路径要写清楚");
     "④: 统计的是「读到过有效分数格」，不是识别状态");
 }
 
-// ⑤ 服务端与桥接的缺省仍是 gray（老卡没有分数格时不该被连带改彩色），升级只能由上面的判定完成
+// ⑤ 升级判定只有一处：路由与桥接都只传值，不能再各写一套色彩模式默认
 {
   const route = readFileSync(fileURLToPath(new URL("../src/apps/answer-card/server/scanner/index.ts", import.meta.url)), "utf8");
-  assert.match(route, /colorMode: body\.colorMode \|\| "gray"/, "⑤: 路由层保持原样，升级只在 scanner-service 一处发生");
+  assert.match(route, /colorMode: body\.colorMode \|\| "color"/, "⑤: 路由层沿用 #330 的彩色缺省，不自己做分数格判定");
+  assert.doesNotMatch(route, /resolveScanColorMode|layoutNeedsRedPenScoring/, "⑤: 色彩模式判定只能落在 scanner-service，路由不许复制一份");
   const bridge = readFileSync(fileURLToPath(new URL("../src/apps/answer-card/server/scanner/twain-bridge.ts", import.meta.url)), "utf8");
   assert.match(bridge, /"--mode", config\.colorMode,/, "⑤: 桥接必须照传解析后的模式，不能再自己兜一次默认");
 }

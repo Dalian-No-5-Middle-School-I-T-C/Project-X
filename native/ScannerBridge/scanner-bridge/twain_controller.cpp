@@ -14,6 +14,10 @@
 #include <string>
 #include <vector>
 
+// TWAIN 2.x 用 TWRC_ENDOFLJOB 表示「本次作业再无待传输图像」，与随包 twain.h 里的
+// TWRC_ENDOFLIST 同值（0x0007）但语义相反于失败。MSG_ENDXFER 返回它属正常收尾。
+static constexpr TW_UINT16 TWRC_ENDOFLJOB = TWRC_ENDOFLIST;
+
 using DsmEntryProc = TW_UINT16(TW_CALLINGSTYLE*)(
     pTW_IDENTITY,
     pTW_IDENTITY,
@@ -299,22 +303,17 @@ TwainController* TwainController::s_instance = nullptr;
 
 static const char* WINDOW_CLASS = "ScannerBridgeTwainClass";
 
-// DAT_PENDINGXFERS / MSG_ENDXFER 用返回值 0x0007 表示「本次逻辑作业结束，不会再有下一帧」。
-// TWAIN 2.x 规范把这个上下文里的 0x0007 称作 TWRC_ENDOFLJOB，而随包的 twain.h 只按枚举
-// 场景定义了同值的 TWRC_ENDOFLIST，所以这里按规范语义起个名字，避免误当失败处理。
-static constexpr TW_UINT16 TWRC_ENDOFLJOB = TWRC_ENDOFLIST;
-
 // ── Window Procedure ──────────────────────────────────
 
 // TWAIN DSM 通过注册窗口消息把 MSG_XFERREADY 等状态投递到本窗口，
-// 因此 WndProc 必须把每一条消息都转发给 DAT_EVENT/MSG_PROCESSEVENT，
-// 并传入真实 MSG 结构（pEvent），DSM 回填 TWMessage 后驱动状态机。
+// WndProc 转发驱动直接发送或其内部消息泵派发的消息；本程序消息泵已交给 DSM
+// 检查过的队列消息由 processWindowEvent 跳过，避免同一消息被提交两次。
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     // 仅当源已打开（m_state >= 2）才转发：pDest 传 &m_sourceId，
     // DSM 的 AppValidateIds 对 NULL pDest 直接返回失败，事件永远不会被处理
     if (TwainController::current() && TwainController::current()->canProcessEvents()) {
         MSG m = { hwnd, msg, wParam, lParam, 0, { 0, 0 } };
-        TW_UINT16 rc = TwainController::current()->processTwainEvent(m);
+        TW_UINT16 rc = TwainController::current()->processWindowEvent(m);
         if (rc == TWRC_DSEVENT) {
             return 0;   // DSM 已消费该消息
         }
@@ -390,6 +389,18 @@ TwainController* TwainController::current() {
     return s_instance;
 }
 
+TW_UINT16 TwainController::processWindowEvent(MSG& msg) {
+    if (m_dispatchedMessage && m_dispatchedMessage->hwnd == msg.hwnd &&
+        m_dispatchedMessage->message == msg.message &&
+        m_dispatchedMessage->wParam == msg.wParam && m_dispatchedMessage->lParam == msg.lParam) {
+        // 仅跳过这一次 DispatchMessage 对应的窗口回调。后续同步消息即使字段
+        // 相同也是新消息，仍需提交 DSM；不能用覆盖整个派发期间的布尔开关。
+        m_dispatchedMessage = nullptr;
+        return TWRC_NOTDSEVENT;
+    }
+    return processTwainEvent(msg);
+}
+
 TW_UINT16 TwainController::processTwainEvent(MSG& msg) {
     TW_EVENT event;
     memset(&event, 0, sizeof(event));
@@ -409,9 +420,10 @@ TW_UINT16 TwainController::processTwainEvent(MSG& msg) {
 
     if (rc == TWRC_DSEVENT) {
         if (event.TWMessage == MSG_XFERREADY) {
+            fprintf(stderr, "[ScannerBridge] MSG_XFERREADY received (state=%d)\n", m_state);
             m_state = 6;
         } else if (event.TWMessage == MSG_CLOSEDSREQ || event.TWMessage == MSG_CLOSEDSOK) {
-            m_state = 0;
+            m_sourceCloseRequested = true;
         }
     }
 
@@ -507,6 +519,7 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     result.success = false;
     m_config = config;
     m_cancelRequested = false;
+    m_sourceCloseRequested = false;
     
     // 1. Open DSM（幂等：已打开则直接复用，避免二次 OPENDSM 导致 SEQERROR）
     if (!openDSM()) {
@@ -586,14 +599,10 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     
     // 4. Configure capabilities
     if (!setPixelType()) {
-        // Continue anyway - some scanners don't support all caps
-    }
-    if (!setResolution(config.dpi)) {
-        // 密度设不上不等于不能扫：部分 DS 只认自己的固定档位。继续扫，实际生效密度由
-        // setResolution 的 stderr 回读行给出结论，扫描端再用出图像素尺寸反查（issue #331 ①）。
-    }
-    if (config.duplex) {
-        setDuplex(true);
+        result.errorMessage = "扫描仪未应用所设置的色彩模式，请检查驱动支持的模式后重试";
+        closeSource();
+        closeDSM();
+        return result;
     }
     if (!setPaperSize(config.paperSize)) {
         result.errorMessage = config.paperSize == "A3"
@@ -604,12 +613,25 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         closeDSM();
         return result;
     }
-    // TWAIN 允许数据源在纸型（ICAP_SUPPORTEDSIZES）协商时刷新整套成像参数，部分 DS 会
-    // 连带把 ICAP_UNITS / X/YRESOLUTION 打回默认值。纸型谈完再设一次密度，前面按英寸
-    // 谈好的档位才守得住。
-    setResolution(config.dpi);
     enableADF();
+    // 送纸器配置可能改变单双面状态；在所有配置完成后确认配对契约，再启动走纸。
+    if (!setDuplex(config.duplex)) {
+        result.errorMessage = config.duplex
+            ? "扫描仪未确认启用双面扫描，请检查设备双面能力或改用单面扫描"
+            : "扫描仪未确认关闭双面扫描，请在驱动中关闭双面后重试";
+        closeSource();
+        closeDSM();
+        return result;
+    }
     setXferCount();   // 必须在 ENABLEDS 之前；不设时驱动默认只交付 1 页
+    // 纸型、色彩、ADF 等能力可能重置分辨率；最后设置英寸单位及 X/Y DPI 并回读确认。
+    if (!setResolution(config.dpi)) {
+        result.errorMessage = "扫描仪未应用所设置的 " + std::to_string(config.dpi) +
+            " DPI，请检查驱动支持的分辨率及扫描设置";
+        closeSource();
+        closeDSM();
+        return result;
+    }
     
     // 5. Enable source (shows scanner UI or goes to ready state)
     if (!enableSource(m_config.showUi)) {
@@ -622,11 +644,8 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     
     // 6. Capture loop - handle ADF multi-page
     // 状态机约定：waitForState(6) 等 MSG_XFERREADY（processTwainEvent 置 m_state=6）；
-    // captureNativeTransfer 收到 XFERDONE 后把 m_state 复位为 5，使下一轮 waitForState(6)
-    // 真正等待新一页的 XFERREADY；XFERDONE 后必须立即 ENDXFER 才能推进 TWAIN 状态机。
-    // ②（issue #331「仍旧只能扫描一张」）：批次边界只认 ENDXFER 的返回码 + 送纸器状态，
-    // 不能只认 pending.Count —— 请求不限张数（CAP_XFERCOUNT=-1）时多数驱动恒报 Count=0，
-    // 旧循环 `hasMorePages = pending.Count > 0` 因此第一张就退出。
+    // XFERDONE 后立即 ENDXFER；剩余数非零则回状态 6 直接继续传输，
+    // 剩余数为零才回状态 5 等待新的 XFERREADY。
     int pageNum = 0;
     bool hasMorePages = true;
     
@@ -635,9 +654,13 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         
         // Check if transfer is ready
         if (!waitForState(6, config.pageTimeoutMs)) {
-            // ADF 无纸或空闲超时：立即结束，不再干等固定 60s
-            fprintf(stderr, "[ScannerBridge] Scan ended: no more pages after %dms idle (pages=%d)\n",
-                config.pageTimeoutMs, pageNum);
+            if (m_cancelRequested || m_sourceCloseRequested) {
+                fprintf(stderr, "[ScannerBridge] Scan ended: %s (pages=%d)\n",
+                    m_cancelRequested ? "cancel requested" : "source close requested", pageNum);
+            } else {
+                fprintf(stderr, "[ScannerBridge] Scan ended: no more pages after %dms idle (pages=%d)\n",
+                    config.pageTimeoutMs, pageNum);
+            }
             hasMorePages = false;
             break;
         }
@@ -660,7 +683,8 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             }
             
             if (!captureNativeTransfer(filePath, pageNum, "front", pageResult)) {
-                result.errorMessage = "Failed to capture page " + std::to_string(pageNum) + " (front)";
+                result.errorMessage = m_transferError.empty()
+                    ? "Failed to capture page " + std::to_string(pageNum) + " (front)" : m_transferError;
                 break;
             }
             result.pages.push_back(pageResult);
@@ -672,11 +696,11 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         TW_UINT16 endRc = DSM_Entry(&m_appId, &m_sourceId,
             DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER,
             (TW_MEMREF)&pending);
-        // ENDOFLJOB 是驱动给的「这就是最后一张」，属正常收尾；旧实现把它当 ENDXFER 失败，
-        // 于是「一张进纸器批次」连已经到手的那张都报成扫描失败。
         if (endRc == TWRC_ENDOFLJOB) {
             fprintf(stderr, "[ScannerBridge] ENDXFER: end of job after sheet %d (pending=%u)\n",
                 pageNum, static_cast<unsigned>(pending.Count));
+            // 已交付的帧已经结束，按 Count 复位状态，收尾时不再重复发 ENDXFER
+            m_state = pending.Count > 0 ? 6 : 5;
             hasMorePages = false;
             break;
         }
@@ -686,21 +710,14 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             hasMorePages = false;
             break;
         }
-        // Count 非零表示 DS 已把下一帧挂在状态 6 等我们取，它不会再发一次 XFERREADY
-        if (pending.Count > 0) m_state = 6;
-
-        // Back side (duplex) — 背面会不会到不能只问 Count：不回报剩余张数的驱动恒报 0，
-        // 旧代码据此跳过背面，双面批次于是只剩正面。
+        // 非零（含 0xffff 未知数量）表示 DS 已在状态 6，可直接取下一帧，不会再发 XFERREADY。
+        m_state = pending.Count > 0 ? 6 : 5;
+        
+        // 背面也可能在 Count=0 后到达；必须在当前物理张内等待，不能交给下轮正面。
         if (config.duplex) {
-            if (!shouldWaitForTransfer(pending.Count)) {
-                hasMorePages = false;
-                break;
-            }
+            if (!shouldWaitForTransfer(pending.Count)) break;
             if (!waitForState(6, config.pageTimeoutMs)) {
-                // 混合批次里某一张确实只有正面，等不到背面不该把已经到手的一整批判失败
-                fprintf(stderr, "[ScannerBridge] no back side for sheet %d after %dms; ending batch\n",
-                    pageNum, config.pageTimeoutMs);
-                hasMorePages = false;
+                result.errorMessage = "Timeout waiting for back side of page " + std::to_string(pageNum);
                 break;
             }
             
@@ -718,7 +735,8 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             }
             
             if (!captureNativeTransfer(filePath, pageNum, "back", pageResult)) {
-                result.errorMessage = "Failed to capture page " + std::to_string(pageNum) + " (back)";
+                result.errorMessage = m_transferError.empty()
+                    ? "Failed to capture page " + std::to_string(pageNum) + " (back)" : m_transferError;
                 break;
             }
             result.pages.push_back(pageResult);
@@ -731,6 +749,7 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             if (endRc == TWRC_ENDOFLJOB) {
                 fprintf(stderr, "[ScannerBridge] ENDXFER: end of job after back of sheet %d (pending=%u)\n",
                     pageNum, static_cast<unsigned>(pending.Count));
+                m_state = pending.Count > 0 ? 6 : 5;
                 hasMorePages = false;
                 break;
             }
@@ -740,16 +759,22 @@ ScanResult TwainController::scan(const ScanConfig& config) {
                 hasMorePages = false;
                 break;
             }
-            if (pending.Count > 0) m_state = 6;
+            m_state = pending.Count > 0 ? 6 : 5;
         }
-
+        
+        fprintf(stderr, "[ScannerBridge] page %d done, pending=%d\n",
+            pageNum, static_cast<int>(pending.Count));
+        if (config.maxPages > 0 && pageNum >= config.maxPages) break;
         hasMorePages = shouldWaitForTransfer(pending.Count);
     }
     
     // 7. Cleanup
-    disableSource();
-    closeSource();
-    closeDSM();
+    const bool disabled = disableSource();
+    const bool sourceClosed = closeSource();
+    const bool dsmClosed = closeDSM();
+    if ((!disabled || !sourceClosed || !dsmClosed) && result.errorMessage.empty()) {
+        result.errorMessage = "扫描图像已保留，但扫描仪会话未正常关闭，请检查驱动后重试";
+    }
     
     // 成功 = 无中途失败且至少捕获到一页（部分失败的批次不再被当作成功）
     result.success = result.errorMessage.empty() && result.pages.size() > 0;
@@ -854,9 +879,9 @@ bool TwainController::enableSource(bool showUi) {
                 DG_CONTROL, DAT_STATUS, MSG_GET,
                 (TW_MEMREF)&status);
         }
-        // 驱动可能在 MSG_ENABLEDS 内部就泵出第一帧的 MSG_XFERREADY（进纸器已装纸时常见），
-        // 无条件写回 3 会把已经到达的就绪状态抹掉，随后 waitForState(6) 干等一个不会再来的事件。
-        if (m_state < 3) m_state = 3;
+        // 驱动可在 ENABLEDS 内泵消息并同步送达 XFERREADY；保留已经到达的就绪状态。
+        fprintf(stderr, "[ScannerBridge] source enabled (state=%d)\n", m_state);
+        m_state = std::max(m_state, 3);
         return true;
     }
     
@@ -878,7 +903,8 @@ bool TwainController::enableSource(bool showUi) {
                     DG_CONTROL, DAT_STATUS, MSG_GET,
                     (TW_MEMREF)&status);
             }
-            if (m_state < 3) m_state = 3;
+            fprintf(stderr, "[ScannerBridge] source enabled with UI (state=%d)\n", m_state);
+            m_state = std::max(m_state, 3);
             return true;
         }
     }
@@ -889,6 +915,23 @@ bool TwainController::enableSource(bool showUi) {
 
 bool TwainController::disableSource() {
     if (m_state < 3) return true;
+    if (m_state >= 7) {
+        TW_PENDINGXFERS pending{};
+        const TW_UINT16 endRc = DSM_Entry(&m_appId, &m_sourceId,
+            DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER, &pending);
+        fprintf(stderr, "[ScannerBridge] end unfinished transfer before disable rc=%u\n", static_cast<unsigned>(endRc));
+        // ENDOFLJOB 同样出现在收尾的 ENDXFER 上，此时作业已无待传图像，可继续 DISABLEDS
+        if (endRc != TWRC_SUCCESS && endRc != TWRC_ENDOFLJOB) return false;
+        m_state = pending.Count > 0 ? 6 : 5;
+    }
+    if (m_state >= 6) {
+        TW_PENDINGXFERS pending{};
+        const TW_UINT16 resetRc = DSM_Entry(&m_appId, &m_sourceId,
+            DG_CONTROL, DAT_PENDINGXFERS, MSG_RESET, &pending);
+        fprintf(stderr, "[ScannerBridge] reset pending transfers before disable rc=%u\n", static_cast<unsigned>(resetRc));
+        if (resetRc != TWRC_SUCCESS) return false;
+        m_state = 5;
+    }
     TW_USERINTERFACE ui;
     memset(&ui, 0, sizeof(ui));
     ui.ShowUI = FALSE;
@@ -900,69 +943,8 @@ bool TwainController::disableSource() {
         DG_CONTROL, DAT_USERINTERFACE, MSG_DISABLEDS,
         (TW_MEMREF)&ui
     );
-    m_state = 2;
+    if (rc == TWRC_SUCCESS) m_state = 2;
     return rc == TWRC_SUCCESS;
-}
-
-// ── Capability readback helpers ───────────────────────
-//
-// TWAIN 里 MSG_SET 返回 TWRC_SUCCESS 只说明「请求被接受」，返回 TWRC_CHECKSTATUS 更是
-// 明确等于「接受，但驱动改用了它自己的取值」。两者都不代表驱动最终按请求值出图，
-// 所以凡「设了就必须生效」的能力都要用 MSG_GETCURRENT 回读，否则上层永远拿不到被替代的事实。
-
-/**
- * 回读单值能力容器。
- * 返回 false 表示驱动没按 ONEVALUE 回（ENUM/RANGE 容器）或读取失败；调用方据此放行，
- * 不能当失败——旧驱动上 GETCURRENT 不可用是常态，误判会把整场扫描中止。
- */
-static bool readCurrentOneValueCap(TW_IDENTITY* appId, TW_IDENTITY* sourceId, TW_UINT16 cap,
-                                   TW_UINT32& rawItem, TW_UINT16& itemType) {
-    TW_CAPABILITY current;
-    memset(&current, 0, sizeof(current));
-    current.Cap = cap;
-    current.ConType = TWON_ONEVALUE;
-    TW_UINT16 rc = DSM_Entry(appId, sourceId, DG_CONTROL, DAT_CAPABILITY, MSG_GETCURRENT, (TW_MEMREF)&current);
-    if (rc != TWRC_SUCCESS || !current.hContainer) return false;
-
-    bool ok = false;
-    if (current.ConType == TWON_ONEVALUE) {
-        // 非合规驱动可能回一个比 TW_ONEVALUE 还短的容器，先量长度再解引用
-        const SIZE_T containerSize = GlobalSize(current.hContainer);
-        pTW_ONEVALUE value = containerSize >= sizeof(TW_ONEVALUE)
-            ? static_cast<pTW_ONEVALUE>(GlobalLock(current.hContainer)) : nullptr;
-        if (value) {
-            itemType = value->ItemType;
-            rawItem = value->Item;
-            ok = true;
-            GlobalUnlock(current.hContainer);
-        }
-    }
-    GlobalFree(current.hContainer);
-    return ok;
-}
-
-/**
- * TWTY_FIX32 时 TW_ONEVALUE::Item 就是 FIX32 的位模式：Whole 占低 16 位、Frac 占高 16 位。
- * 按位取而不是 memcpy(&TW_FIX32, &Item, sizeof(TW_FIX32))——不同 twain.h 版本里 TW_FIX32
- * 可能带 pad 字段，sizeof 会超出 4 字节的 Item。
- */
-static double fix32FromItem(TW_UINT32 rawItem) {
-    const TW_INT16 whole = static_cast<TW_INT16>(rawItem & 0xFFFF);
-    const TW_UINT16 frac = static_cast<TW_UINT16>((rawItem >> 16) & 0xFFFF);
-    return static_cast<double>(whole) + static_cast<double>(frac) / 65536.0;
-}
-
-/** ICAP_UNITS 的一个单位等于多少英寸；TWUN_PIXELS 等无长度含义的单位按英寸处理（等价于不换算）。 */
-static double inchesPerTwainUnit(TW_UINT16 units) {
-    switch (units) {
-        case TWUN_CENTIMETERS: return 1.0 / 2.54;
-        case TWUN_MILLIMETERS: return 1.0 / 25.4;
-        case TWUN_POINTS:      return 1.0 / 72.0;
-        case TWUN_PICAS:       return 1.0 / 6.0;
-        case TWUN_TWIPS:       return 1.0 / 1440.0;
-        case TWUN_INCHES:
-        default:               return 1.0;
-    }
 }
 
 // ── Capability Setting ────────────────────────────────
@@ -1029,98 +1011,77 @@ bool TwainController::setCapability(TW_UINT16 cap, TW_UINT16 type, void* value) 
         return true;
     }
 
-    if (rc != TWRC_SUCCESS) {
-        // Try MSG_RESET to check if cap is settable
-        TW_CAPABILITY checkCap;
-        memset(&checkCap, 0, sizeof(checkCap));
-        checkCap.Cap = cap;
-        TW_UINT16 rc2 = DSM_Entry(
-            &m_appId, &m_sourceId,
-            DG_CONTROL, DAT_CAPABILITY, MSG_GETCURRENT,
-            (TW_MEMREF)&checkCap
-        );
-        // Ignore - scanner may not support this cap
-    }
-    
     return rc == TWRC_SUCCESS;
 }
 
-bool TwainController::setPixelType() {
-    TW_UINT16 pixelType;
+TW_UINT16 TwainController::requestedPixelType() const {
     if (m_config.colorMode == "bw") {
-        pixelType = TWPT_BW;
+        return TWPT_BW;
     } else if (m_config.colorMode == "color") {
-        pixelType = TWPT_RGB;
-    } else {
-        pixelType = TWPT_GRAY;
+        return TWPT_RGB;
     }
-    return setCapability(ICAP_PIXELTYPE, TWTY_UINT16, &pixelType);
+    return TWPT_GRAY;
+}
+
+bool TwainController::setPixelType() {
+    TW_UINT16 pixelType = requestedPixelType();
+    const bool accepted = setCapability(ICAP_PIXELTYPE, TWTY_UINT16, &pixelType);
+    TW_UINT16 effective = 0;
+    const bool readable = readCurrentUInt16Capability(ICAP_PIXELTYPE, TWTY_UINT16, &effective);
+    fprintf(stderr, "[ScannerBridge] ICAP_PIXELTYPE requested=%u set=%s effective=%d\n",
+        static_cast<unsigned>(pixelType), accepted ? "ok" : "rejected",
+        readable ? static_cast<int>(effective) : -1);
+    return readable && effective == pixelType;
 }
 
 bool TwainController::setResolution(int dpi) {
-    // ICAP_XRESOLUTION / ICAP_YRESOLUTION 的密度是「每 ICAP_UNITS」而不是「每英寸」。
-    // 欧系、日系驱动默认单位常为 TWUN_CENTIMETERS，此时直接写 FIX32=300 等于请求
-    // 「300 点/厘米」（≈762dpi），驱动要么用 TWRC_CHECKSTATUS 替代成自己的上限，要么
-    // 干脆保持原密度不变——现场表现就是「扫描端改了 DPI，出图分辨率却没变」（issue #331 ①）。
-    // 因此先把单位钉成 TWUN_INCHES；钉不上（单位只读的 DS）时按驱动实际单位换算，绝不写裸值。
-    TW_UINT16 inches = TWUN_INCHES;
-    setCapability(ICAP_UNITS, TWTY_UINT16, &inches);
-
-    TW_UINT32 rawUnits = 0;
-    TW_UINT16 unitsType = 0;
-    TW_UINT16 effectiveUnits = TWUN_INCHES;
-    if (readCurrentOneValueCap(&m_appId, &m_sourceId, ICAP_UNITS, rawUnits, unitsType) && unitsType == TWTY_UINT16) {
-        effectiveUnits = static_cast<TW_UINT16>(rawUnits & 0xFFFF);
-    }
-    const double inchesPerUnit = inchesPerTwainUnit(effectiveUnits);
-    double density = static_cast<double>(dpi) * inchesPerUnit;
-    if (!(density > 0.0)) {
-        fprintf(stderr, "[ScannerBridge] ignoring invalid dpi=%d\n", dpi);
-        return false;
-    }
-    // TW_FIX32::Whole 是 TW_INT16（上限 32767）。路由层已把 dpi 夹到 [50,1200]，这里再兜一层，
-    // 避免直接调用桥接时异常值经单位换算后写成负密度。
-    if (density > 32000.0) {
-        fprintf(stderr, "[ScannerBridge] dpi=%d clamped to 32000 for TW_FIX32\n", dpi);
-        density = 32000.0;
-    }
-
+    TW_UINT16 units = TWUN_INCHES;
+    const bool unitsSet = setCapability(ICAP_UNITS, TWTY_UINT16, &units);
+    TW_UINT16 effectiveUnits = 0;
+    const bool unitsRead = readCurrentUInt16Capability(ICAP_UNITS, TWTY_UINT16, &effectiveUnits);
+    fprintf(stderr, "[ScannerBridge] ICAP_UNITS requested=inches set=%s effective=%d\n",
+        unitsSet ? "ok" : "rejected", unitsRead ? static_cast<int>(effectiveUnits) : -1);
+    if (!unitsRead || effectiveUnits != TWUN_INCHES) return false;
     TW_FIX32 res;
-    res.Whole = static_cast<TW_INT16>(std::floor(density));
-    res.Frac = static_cast<TW_UINT16>(std::round((density - std::floor(density)) * 65536.0));
-    // 小数部分进位到 65536 时会回绕成 0，整数字段要跟着加一，否则密度掉 1
-    if (res.Frac == 0 && density - std::floor(density) >= 0.5) {
-        res.Whole = static_cast<TW_INT16>(res.Whole + 1);
-    }
-
-    bool ok = setCapability(ICAP_XRESOLUTION, TWTY_FIX32, &res);
-    ok = setCapability(ICAP_YRESOLUTION, TWTY_FIX32, &res) && ok;
-
-    // 回读实际生效密度。这里不中止会话：驱动把请求值夹到自己支持的最高档是正常协商，
-    // 但「设定值 ≠ 生效值」必须留下可核对的证据（扫描端日志 + 实际像素尺寸反查）。
-    TW_UINT32 rawX = 0, rawY = 0;
-    TW_UINT16 typeX = 0, typeY = 0;
-    const bool readX = readCurrentOneValueCap(&m_appId, &m_sourceId, ICAP_XRESOLUTION, rawX, typeX) && typeX == TWTY_FIX32;
-    const bool readY = readCurrentOneValueCap(&m_appId, &m_sourceId, ICAP_YRESOLUTION, rawY, typeY) && typeY == TWTY_FIX32;
-    if (!readX && !readY) {
-        fprintf(stderr, "[ScannerBridge] resolution requested=%d dpi (ICAP_UNITS=%u), driver gave no readable X/YRESOLUTION\n",
-                dpi, static_cast<unsigned>(effectiveUnits));
-        return ok;
-    }
-    const double effectiveXDpi = readX ? fix32FromItem(rawX) / inchesPerUnit : 0.0;
-    const double effectiveYDpi = readY ? fix32FromItem(rawY) / inchesPerUnit : 0.0;
-    const double tolerance = std::max(1.0, dpi * 0.02);
-    const bool substituted = (readX && std::fabs(effectiveXDpi - dpi) > tolerance)
-                          || (readY && std::fabs(effectiveYDpi - dpi) > tolerance);
-    fprintf(stderr, "[ScannerBridge] resolution %s requested=%d dpi effective X=%g Y=%g dpi (ICAP_UNITS=%u)\n",
-            substituted ? "SUBSTITUTED BY DRIVER:" : "accepted:",
-            dpi, effectiveXDpi, effectiveYDpi, static_cast<unsigned>(effectiveUnits));
-    return ok;
+    res.Whole = (TW_INT16)dpi;
+    res.Frac = 0;
+    const bool xSet = setCapability(ICAP_XRESOLUTION, TWTY_FIX32, &res);
+    const bool ySet = setCapability(ICAP_YRESOLUTION, TWTY_FIX32, &res);
+    double x = 0, y = 0;
+    const bool xRead = readCurrentResolution(ICAP_XRESOLUTION, &x);
+    const bool yRead = readCurrentResolution(ICAP_YRESOLUTION, &y);
+    fprintf(stderr, "[ScannerBridge] DPI requested=%d X(set=%s effective=%.4f) Y(set=%s effective=%.4f)\n",
+        dpi, xSet ? "ok" : "rejected", xRead ? x : -1, ySet ? "ok" : "rejected", yRead ? y : -1);
+    return xRead && yRead && std::abs(x - dpi) < 0.01 && std::abs(y - dpi) < 0.01;
 }
 
 bool TwainController::setDuplex(bool duplex) {
     TW_BOOL val = duplex ? TRUE : FALSE;
-    return setCapability(CAP_DUPLEXENABLED, TWTY_BOOL, &val);
+    const bool accepted = setCapability(CAP_DUPLEXENABLED, TWTY_BOOL, &val);
+    return verifyDuplexMode(duplex, accepted ? "ok" : "rejected");
+}
+
+bool TwainController::verifyDuplexMode(bool duplex, const char* setStatus) {
+    TW_UINT16 effective = 0;
+    bool enabledUnsupported = false;
+    const bool readable = readCurrentUInt16Capability(CAP_DUPLEXENABLED, TWTY_BOOL, &effective, &enabledUnsupported);
+    fprintf(stderr, "[ScannerBridge] CAP_DUPLEXENABLED requested=%d set=%s effective=%d\n",
+        duplex ? 1 : 0, setStatus, readable ? (effective != 0 ? 1 : 0) : -1);
+    if (readable) return (effective != 0) == duplex;
+    // 单面设备可完全不支持 CAP_DUPLEXENABLED；用 CAP_DUPLEX 确认其硬件为单面。
+    if (!duplex) {
+        TW_UINT16 capability = 0;
+        bool capabilityUnsupported = false;
+        if (readCurrentUInt16Capability(CAP_DUPLEX, TWTY_UINT16, &capability, &capabilityUnsupported)) {
+            return capability == TWDX_NONE;
+        }
+        // 两项可选能力均明确不支持是合法的单面设备；通信失败和容器异常不走此回退。
+        if (enabledUnsupported && capabilityUnsupported) {
+            fprintf(stderr, "[ScannerBridge] duplex capabilities unsupported; using simplex source\n");
+            return true;
+        }
+    }
+    return false;
 }
 
 bool TwainController::setPaperSize(const std::string& size) {
@@ -1173,51 +1134,113 @@ bool TwainController::enableADF() {
     TW_BOOL autoFeed = TRUE;
     setCapability(CAP_AUTOFEED, TWTY_BOOL, &autoFeed);
 
-    // SET 成功不等于走纸器真的开了（平板/驱动差异会静默回 FALSE）。批量续等的判定
-    // 依赖这个事实，所以必须回读；回读不可用时只能退回 SET 的返回值。
-    TW_UINT32 rawItem = 0;
-    TW_UINT16 itemType = 0;
-    const bool readable = readCurrentOneValueCap(&m_appId, &m_sourceId, CAP_FEEDERENABLED, rawItem, itemType)
-        && itemType == TWTY_BOOL;
-    m_feederEnabled = readable ? rawItem != 0 : accepted;
-    fprintf(stderr, "[ScannerBridge] CAP_FEEDERENABLED set=%s effective=%d (%s) CAP_AUTOFEED requested=1\n",
+    // 回读确认送纸器真的启用了：SET 可能被静默拒绝（平板机型、驱动差异），
+    // 后续 Count=0 后的 ADF 事件等待只在送纸器启用时才有意义。
+    TW_UINT16 effective = 0;
+    const bool readable = readCurrentUInt16Capability(CAP_FEEDERENABLED, TWTY_BOOL, &effective);
+    // 读回失败（含容器格式不符）时仅信任成功的 SET；SET 也失败的平板机不续等。
+    m_feederEnabled = readable ? effective != 0 : accepted;
+    fprintf(stderr, "[ScannerBridge] CAP_FEEDERENABLED set=%s effective=%d source=%s CAP_AUTOFEED requested=1\n",
         accepted ? "ok" : "rejected", m_feederEnabled ? 1 : 0,
-        readable ? "GETCURRENT" : "SET result");
+        readable ? "GETCURRENT" : "SET fallback");
     return true;  // Best effort
 }
 
-bool TwainController::queryFeederLoaded(bool* loaded) {
-    if (!loaded) return false;
-    TW_UINT32 rawItem = 0;
-    TW_UINT16 itemType = 0;
-    const bool readable = readCurrentOneValueCap(&m_appId, &m_sourceId, CAP_FEEDERLOADED, rawItem, itemType)
-        && itemType == TWTY_BOOL;
-    *loaded = readable && rawItem != 0;
+bool TwainController::readCurrentUInt16Capability(TW_UINT16 cap, TW_UINT16 type, TW_UINT16* effective, bool* unsupported) {
+    if (unsupported) *unsupported = false;
+    TW_CAPABILITY current;
+    memset(&current, 0, sizeof(current));
+    current.Cap = cap;
+    TW_UINT16 rc = DSM_Entry(&m_appId, &m_sourceId,
+        DG_CONTROL, DAT_CAPABILITY, MSG_GETCURRENT,
+        (TW_MEMREF)&current);
+    if (rc != TWRC_SUCCESS || !current.hContainer) {
+        if (unsupported && rc == TWRC_FAILURE) {
+            TW_STATUS status{};
+            if (DSM_Entry(&m_appId, &m_sourceId, DG_CONTROL, DAT_STATUS, MSG_GET, &status) == TWRC_SUCCESS) {
+                *unsupported = status.ConditionCode == TWCC_CAPUNSUPPORTED || status.ConditionCode == TWCC_BADCAP;
+            }
+        }
+        fprintf(stderr, "[ScannerBridge] GETCURRENT cap=%u failed rc=%u container=%s\n",
+            static_cast<unsigned>(cap), static_cast<unsigned>(rc), current.hContainer ? "present" : "missing");
+        if (current.hContainer) GlobalFree(current.hContainer);
+        return false;
+    }
+    bool readable = false;
+    pTW_ONEVALUE value = current.ConType == TWON_ONEVALUE
+        ? static_cast<pTW_ONEVALUE>(GlobalLock(current.hContainer)) : nullptr;
+    if (value && value->ItemType == type) {
+        *effective = static_cast<TW_UINT16>(value->Item);
+        readable = true;
+    }
+    if (!readable) {
+        fprintf(stderr, "[ScannerBridge] GETCURRENT cap=%u unreadable containerType=%u itemType=%d expected=%u\n",
+            static_cast<unsigned>(cap), static_cast<unsigned>(current.ConType),
+            value ? static_cast<int>(value->ItemType) : -1, static_cast<unsigned>(type));
+    }
+    if (value) GlobalUnlock(current.hContainer);
+    GlobalFree(current.hContainer);
     return readable;
 }
 
-bool TwainController::shouldWaitForTransfer(TW_UINT16 pendingCount) {
-    // DS 已经把下一帧挂在状态 6（或驱动直接送来了新的 MSG_XFERREADY），不用等事件再来。
-    if (m_state >= 6) return true;
-    // Count>0 含 0xFFFF（规范里表示「驱动不知道还剩几张」），都是明确的继续信号。
-    if (pendingCount > 0) return true;
-    // Count=0 不等于「没有了」：请求 CAP_XFERCOUNT=-1（不限张数）时大量驱动恒报 0。
-    // 旧循环把 Count>0 当循环条件，第一张之后就直接收尾——issue #331 ②「只能扫描一张」。
-    // 托盘状态是这里唯一可靠的否决证据：没开送纸器（平板/单张）时 Count=0 才可信。
-    if (!m_feederEnabled) {
-        fprintf(stderr, "[ScannerBridge] pending=0 and feeder not enabled; ending batch\n");
+bool TwainController::readCurrentResolution(TW_UINT16 cap, double* effective) {
+    TW_CAPABILITY current{};
+    current.Cap = cap;
+    const TW_UINT16 rc = DSM_Entry(&m_appId, &m_sourceId, DG_CONTROL, DAT_CAPABILITY, MSG_GETCURRENT, &current);
+    bool readable = false;
+    if (rc == TWRC_SUCCESS && current.hContainer && current.ConType == TWON_ONEVALUE) {
+        const auto* value = static_cast<pTW_ONEVALUE>(GlobalLock(current.hContainer));
+        if (value && value->ItemType == TWTY_FIX32) {
+            TW_FIX32 resolution{};
+            memcpy(&resolution, &value->Item, sizeof(resolution));
+            *effective = resolution.Whole + resolution.Frac / 65536.0;
+            readable = true;
+        }
+        if (value) GlobalUnlock(current.hContainer);
+    }
+    if (current.hContainer) GlobalFree(current.hContainer);
+    return readable;
+}
+
+bool TwainController::validateImageSettings(const TW_IMAGEINFO& info) {
+    const double x = info.XResolution.Whole + info.XResolution.Frac / 65536.0;
+    const double y = info.YResolution.Whole + info.YResolution.Frac / 65536.0;
+    fprintf(stderr, "[ScannerBridge] image DPI requested=%d actualX=%.4f actualY=%.4f pixels=%ldx%ld pixelType=%d bitsPerPixel=%d\n",
+        m_config.dpi, x, y, static_cast<long>(info.ImageWidth), static_cast<long>(info.ImageLength),
+        static_cast<int>(info.PixelType), static_cast<int>(info.BitsPerPixel));
+    const TW_UINT16 pixelType = requestedPixelType();
+    fprintf(stderr, "[ScannerBridge] image pixel mode requested=%u actual=%d\n",
+        static_cast<unsigned>(pixelType), static_cast<int>(info.PixelType));
+    if (info.PixelType != pixelType) {
+        m_transferError = "扫描仪实际输出色彩模式与设置不一致，请检查驱动设置后重试";
         return false;
     }
-    bool loaded = false;
-    if (!queryFeederLoaded(&loaded)) {
-        // 驱动不答 CAP_FEEDERLOADED：宁可多等一个超时，也不能少收一张（少收不可恢复，
-        // 多等只是慢）。真正的作业结束由 ENDXFER 的 ENDOFLJOB 提前判定，不走到这里。
-        fprintf(stderr, "[ScannerBridge] pending=0 and CAP_FEEDERLOADED unreadable; waiting up to %dms\n",
-            m_config.pageTimeoutMs);
-        return true;
+    if (std::abs(x - m_config.dpi) >= 0.01 || std::abs(y - m_config.dpi) >= 0.01) {
+        m_transferError = "扫描仪实际输出分辨率与所设置的 " + std::to_string(m_config.dpi) +
+            " DPI 不一致，请检查驱动设置后重试";
+        return false;
     }
-    fprintf(stderr, "[ScannerBridge] pending=0 feederLoaded=%d; waiting up to %dms for next transfer\n",
-        loaded ? 1 : 0, m_config.pageTimeoutMs);
+    // 驱动界面（含 ENABLEDS 回退或 CHECKSTATUS 隐式显示）可在启动后改变单双面。
+    // 每帧在状态 6 回读、只校验不 SET，防止背面被按下一张正面入库。
+    const bool duplexVerified = verifyDuplexMode(m_config.duplex, "not-requested");
+    fprintf(stderr, "[ScannerBridge] transfer duplex contract requested=%d state=%d verified=%d\n",
+        m_config.duplex ? 1 : 0, m_state, duplexVerified ? 1 : 0);
+    if (!duplexVerified) {
+        m_transferError = "扫描仪实际单双面模式与设置不一致或无法确认，请检查驱动设置后重试";
+        return false;
+    }
+    return true;
+}
+
+bool TwainController::shouldWaitForTransfer(TW_UINT16 pendingCount) {
+    if (m_state >= 6) return true;
+    if (pendingCount > 0) return true;
+    if (!m_feederEnabled) return false;
+    // ENDXFER 的 Count=0 使 DS 回到状态 5，后续仍可发送 XFERREADY / CLOSEDSREQ。
+    // CAP_FEEDERLOADED 应在状态 4 查询，且托盘空也可能是纸已在通道内；
+    // 因此续扫仅依赖启用前确认的 ADF 状态，在事件循环中等满配置的空闲超时。
+    fprintf(stderr, "[ScannerBridge] pending=0 ADF enabled; waiting up to %dms for next transfer event\n",
+        m_config.pageTimeoutMs);
     return true;
 }
 
@@ -1254,6 +1277,7 @@ bool TwainController::captureNativeTransfer(
     const std::string& outputPath, int pageNum,
     const std::string& side, PageResult& result)
 {
+    m_transferError.clear();
     TW_IMAGEINFO imageInfo;
     memset(&imageInfo, 0, sizeof(imageInfo));
     
@@ -1267,10 +1291,14 @@ bool TwainController::captureNativeTransfer(
         logError("Failed to get image info: " + twainResultToString(rc));
         return false;
     }
+    if (!validateImageSettings(imageInfo)) return false;
+    result.dpiX = imageInfo.XResolution.Whole + imageInfo.XResolution.Frac / 65536.0;
+    result.dpiY = imageInfo.YResolution.Whole + imageInfo.YResolution.Frac / 65536.0;
     
     // Use native transfer — DAT_IMAGENATIVEXFER 返回的句柄是指针宽（x64 下 8 字节），
     // 必须用 TW_HANDLE（=HANDLE）接收，否则会截断句柄并污染栈
     TW_HANDLE handle = nullptr;
+    m_state = 7; // 原生传输成功、取消或失败后均需 ENDXFER，再按 Count 复位。
     rc = DSM_Entry(
         &m_appId, &m_sourceId,
         DG_IMAGE, DAT_IMAGENATIVEXFER, MSG_GET,
@@ -1282,10 +1310,7 @@ bool TwainController::captureNativeTransfer(
         return false;
     }
     
-    // 复位状态机：XFERDONE 表示当前帧已取走，下一帧的 MSG_XFERREADY
-    // 会在 ENDXFER 后重新到达，waitForState(6) 必须重新等待
-    m_state = 5;
-    
+    // 当前帧已取走；调用方立即 ENDXFER，并依据剩余数恢复就绪或等待新事件。
     // Convert DIB handle to file
     bool saved = saveDIBToFile((HANDLE)(uintptr_t)handle, outputPath, result);
     
@@ -1383,6 +1408,10 @@ bool TwainController::saveDIBToFile(HANDLE hDib, const std::string& filePath, Pa
     GlobalUnlock(hDib);
     
     if (!bitmap) return false;
+    if (bitmap->SetResolution(static_cast<Gdiplus::REAL>(result.dpiX), static_cast<Gdiplus::REAL>(result.dpiY)) != Gdiplus::Ok) {
+        delete bitmap;
+        return false;
+    }
     
     // Save as JPEG
     CLSID jpegClsid;
@@ -1441,12 +1470,23 @@ bool TwainController::waitForState(int targetState, DWORD timeoutMs) {
     
     while (GetTickCount() - start < timeoutMs) {
         // Check cancel
-        if (m_cancelRequested) return false;
+        if (m_cancelRequested || m_sourceCloseRequested) return false;
+        if (m_state >= targetState) return true;
+        if (m_state == 0) return false;
         
         // Peek messages for TWAIN
         while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
+            // DSM 通知可能使用线程消息或其它窗口；在普通派发前将每条消息交给 DSM。
+            // 仅靠本程序 WndProc 转发无法覆盖所有 XFERREADY 投递方式。
+            const TW_UINT16 eventRc = processTwainEvent(msg);
+            if (m_cancelRequested || m_sourceCloseRequested) return false;
+            if (eventRc != TWRC_DSEVENT) {
+                TranslateMessage(&msg);
+                const MSG* previous = m_dispatchedMessage;
+                m_dispatchedMessage = &msg;
+                DispatchMessage(&msg);
+                m_dispatchedMessage = previous;
+            }
             
             // Check if TWAIN event processing advanced our state
             if (m_state >= targetState) return true;
@@ -1562,7 +1602,9 @@ std::string scanResultToJson(const ScanResult& result) {
         json += "      \"page\": " + std::to_string(page.pageNumber) + ",\n";
         json += "      \"side\": \"" + page.side + "\",\n";
         json += "      \"width\": " + std::to_string(page.width) + ",\n";
-        json += "      \"height\": " + std::to_string(page.height) + "\n";
+        json += "      \"height\": " + std::to_string(page.height) + ",\n";
+        json += "      \"dpi_x\": " + std::to_string(page.dpiX) + ",\n";
+        json += "      \"dpi_y\": " + std::to_string(page.dpiY) + "\n";
         json += "    }";
         if (i < result.pages.size() - 1) json += ",";
         json += "\n";
