@@ -103,6 +103,7 @@
     "verify:scanner-page-timeout": "tsx scripts/verify-scanner-page-timeout.ts",
     "verify:scanner-adf-recheck": "tsx scripts/scanner-native-recheck-smoke.ts && tsx scripts/scanner-bridge-diagnostics-smoke.ts",
     "verify:scanner-red-pen-colormode": "tsx scripts/verify-scanner-red-pen-colormode.ts",
+    "verify:scanner-warning-replay": "tsx scripts/verify-scanner-warning-replay.ts",
     "verify:stage-vc-runtime": "tsx scripts/verify-stage-vc-runtime.ts",
     "verify:grading-published-exam": "tsx scripts/verify-grading-published-exam.ts",
     "verify:scanner-upload-manager": "tsx scripts/scanner-upload-manager-smoke.ts",

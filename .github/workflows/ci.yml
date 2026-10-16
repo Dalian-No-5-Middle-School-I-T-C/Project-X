@@ -107,6 +107,10 @@ jobs:
       - name: Scanner red pen score color mode regression
         run: npm run verify:scanner-red-pen-colormode
 
+      # 复核 P2：告警只发给当时的 SSE 监听者会永久缺席——落会话行并在订阅时补发
+      - name: Scanner warning persistence and SSE replay
+        run: npm run verify:scanner-warning-replay
+
       - name: Scanner upload manager recovery
         run: npm run verify:scanner-upload-manager
       - name: Scanner panel React and SSE session metadata

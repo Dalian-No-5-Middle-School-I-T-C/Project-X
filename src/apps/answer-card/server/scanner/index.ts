@@ -23,6 +23,8 @@ import {
   deleteScanRecord,
   getSession,
   updateSessionStatus,
+  appendSessionWarning,
+  parseSessionWarnings,
   listSessions,
   deleteSession,
   listScanRecordsGroupedByStudent
@@ -97,6 +99,14 @@ export function createScannerRouter(twainEnabled = true): Router {
   const progressEmitters = new Map<string, Set<(event: ScanProgressEvent) => void>>();
 
   function emitProgress(sessionId: string, event: ScanProgressEvent) {
+    if (event.type === "warning" && event.message?.trim()) {
+      const text = event.message.trim();
+      // 广播给当时的监听者，同时落会话行：客户端可能在 202 之后才订阅，或扫描途中断线重连，
+      // 只广播会让告警在横幅和「复制诊断」里永久缺席。写入走串行队列，避免与扫描写库抢连接。
+      void enqueuePersist(() => appendSessionWarning(sessionId, text)).catch((error) => {
+        console.error(`[Scanner] Failed to persist warning for ${sessionId}:`, error);
+      });
+    }
     const listeners = progressEmitters.get(sessionId);
     if (listeners) {
       for (const fn of listeners) fn(event);
@@ -208,8 +218,20 @@ export function createScannerRouter(twainEnabled = true): Router {
           }
         };
 
+        // 同一连接内一条告警只发一次：监听器先注册，实时告警可能早于下面的补发到达。
+        const sentWarnings = new Set<string>();
+        const writeWarning = (text: string) => {
+          if (!text || sentWarnings.has(text)) return;
+          sentWarnings.add(text);
+          res.write(`data: ${JSON.stringify({ sessionId, type: "warning", message: text })}\n\n`);
+        };
+
         const handler = (event: ScanProgressEvent) => {
           if (res.writableEnded || res.destroyed) return;
+          if (event.type === "warning") {
+            writeWarning(event.message?.trim() ?? "");
+            return;
+          }
           res.write(`data: ${JSON.stringify(event)}\n\n`);
           if (event.type === "done" || event.type === "error" || event.type === "cancelled") {
             // 终态即移除自己（不依赖 close 事件的延迟清理），缩小竞态窗口
@@ -231,6 +253,9 @@ export function createScannerRouter(twainEnabled = true): Router {
         // 订阅时若会话已终态（扫描可能在订阅前就完成/失败/被取消），补发终态事件
         const session = await getSession(sessionId);
         if (res.writableEnded || res.destroyed) return;
+        // 断线重连或订阅过晚时，先把落在会话行上的告警补回来，再补终态；
+        // 否则「本次批次一张红笔都没采纳」这类结论只在断开前那一瞬存在过。
+        for (const text of parseSessionWarnings(session?.warnings_json)) writeWarning(text);
         if (session && (session.status === "completed" || session.status === "error" || session.status === "cancelled")) {
           removeHandler();
           if (session.status === "completed") {
