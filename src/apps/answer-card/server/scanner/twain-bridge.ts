@@ -209,7 +209,7 @@ function bridgeFailure(message: string, fields: Omit<BridgeFailure, keyof Error>
   return Object.assign(new Error(message), fields);
 }
 
-function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string, env?: NodeJS.ProcessEnv): Promise<{ stdout: string; stderr: string; code: number | null }> {
+function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string, env?: NodeJS.ProcessEnv, refreshOnProgress = false): Promise<{ stdout: string; stderr: string; code: number | null }> {
   const exePath = resolveScannerBridgeExe();
 
   // 取消检查：用户已请求取消（可能早于本函数执行），直接拒绝启动扫描
@@ -259,7 +259,13 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string, env?
       stderrChunks.push(chunk);
       const lines = (stderrLine + stderrDecoder.write(chunk)).split("\n");
       stderrLine = lines.pop() ?? "";
-      for (const line of lines) logBridgeStderr(line);
+      for (const line of lines) {
+        // 不限页数时按实际帧进度续期，避免运行超过一小时的正常批次被总时长截断。
+        if (refreshOnProgress && /^\[ScannerBridge\] (?:Page \d+ (?:front|back): capturing|page \d+ done, pending=)/.test(line)) {
+          timeout.refresh();
+        }
+        logBridgeStderr(line);
+      }
     });
     child.stderr.on("end", flushStderr);
 
@@ -491,10 +497,11 @@ export async function listSources(): Promise<ScannerSourcesResult> {
   };
 }
 
-/** 扫描子进程超时：按预期页数估算（5s/页 + 5 分钟缓冲，不低于旧默认 10 分钟）。
- *  不限张数时给 1 小时兜底——native 侧 ADF 无纸 60s 空闲自退，长超时只是防驱动死锁的保险。 */
-export function scanTimeoutMs(maxPages: number): number {
-  if (maxPages > 0) return Math.max(600_000, maxPages * 5_000 + 300_000);
+/** 每帧预算含完整等纸超时与 5s 传输余量，另留最终等纸及 5 分钟配置/收尾余量。
+ * 不限页数时用一小时看门狗，并由真实帧进度续期。maxPages 按图像帧计数。 */
+export function scanTimeoutMs(maxPages: number, pageTimeoutMs = 60_000): number {
+  const pageWaitMs = Number.isFinite(pageTimeoutMs) && pageTimeoutMs > 0 ? Math.ceil(pageTimeoutMs) : 60_000;
+  if (maxPages > 0) return Math.max(600_000, (maxPages + 1) * pageWaitMs + maxPages * 5_000 + 300_000);
   return 3_600_000;
 }
 
@@ -537,13 +544,14 @@ export async function scan(config: {
     args.push("--show-ui");
   }
 
-  const timeoutMs = scanTimeoutMs(config.maxPages);
+  const frameLimit = config.duplex ? Math.ceil(config.maxPages / 2) * 2 : config.maxPages;
+  const timeoutMs = scanTimeoutMs(frameLimit, config.pageTimeoutMs);
   // 单次尝试：设备无响应/零页失败在 native 侧以「结构化 JSON + 非零退出码」返回，
   // runBridge 只要 stdout 有内容就 resolve（不抛错），因此这类目标场景必须在这里
   // 把零页设备失败转成抛错，才能进入下面的双 DSM 重试。
   // 已有部分页（page_count>0）属中途失败，重试会重复扫描同一批纸，不重试。
   const attempt = async (env?: NodeJS.ProcessEnv): Promise<BridgeScanResult> => {
-    const { stdout } = await runBridge(args, timeoutMs, sessionId, env);
+    const { stdout } = await runBridge(args, timeoutMs, sessionId, env, config.maxPages === 0);
     const result = parseBridgeJson(stdout) as unknown as BridgeScanResult;
     if (result.status === "error" && result.page_count === 0) {
       const message = result.message || "扫描未产生任何页面";

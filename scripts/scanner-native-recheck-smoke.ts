@@ -11,7 +11,7 @@ const dir = mkdtempSync(path.join(tmpdir(), "scanner-native-recheck-"));
 try {
   const source = readFileSync(path.join(root, "native/ScannerBridge/scanner-bridge/twain_controller.cpp"), "utf8");
   const methods = ["scan", "shouldWaitForTransfer", "queryFeederLoaded", "readCurrentUInt16Capability",
-    "enableADF", "setPixelType", "waitForState", "processTwainEvent"];
+    "enableADF", "enableSource", "setPixelType", "setDuplex", "waitForState", "processTwainEvent"];
   const implementations = methods.map((name) => {
     const match = source.match(new RegExp(`^(?:ScanResult|bool|TW_UINT16) TwainController::${name}\\([\\s\\S]*?^}`, "m"));
     assert.ok(match, `Missing production method ${name}`);

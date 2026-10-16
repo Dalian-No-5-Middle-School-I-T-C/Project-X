@@ -11,7 +11,7 @@ if (process.platform === "win32") {
   const exe = path.join(dir, "bridge");
   const previousExe = process.env.SCANNER_BRIDGE_EXE;
   process.env.SCANNER_BRIDGE_EXE = exe;
-  const { scan, cancelScan, liveBridgeCount } = await import("../src/apps/answer-card/server/scanner/twain-bridge");
+  const { scan, scanTimeoutMs, cancelScan, liveBridgeCount } = await import("../src/apps/answer-card/server/scanner/twain-bridge");
   const config = { sourceName: "fixture", dpi: 300, duplex: false, colorMode: "color",
     paperSize: "A4", outputDir: dir, filePrefix: "fixture", maxPages: 1 };
   const logs: string[] = [];
@@ -77,6 +77,37 @@ setTimeout(() => process.exit(2), 3000).unref();`);
       assert.deepEqual(logs, ["[scanner-bridge] timeout diagnostic"]);
       assert.equal(liveBridgeCount(), 0);
     } finally { timeoutMock.mock.restore(); }
+
+    // Exercise the actual watchdog wiring: 100 valid ten-second intervals outlast the old total budget.
+    let watchdogMs = 0;
+    const boundedTimerMock = mock.method(globalThis, "setTimeout", (callback: () => void, ms: number) => {
+      watchdogMs = ms;
+      timeoutNow = callback;
+      return originalTimeout(callback, 5000);
+    });
+    try {
+      onLine = () => { if (watchdogMs <= 1_000_000) timeoutNow(); };
+      await fixture("process.stderr.write('slow batch ready\\n'); process.stdout.write(JSON.stringify({status:'success',page_count:100,pages:[]}));");
+      assert.equal((await scan({ ...config, maxPages: 100, pageTimeoutMs: 120_000 })).page_count, 100);
+      assert.equal(watchdogMs, scanTimeoutMs(100, 120_000));
+      onLine = () => {};
+      await scan({ ...config, maxPages: 101, duplex: true, pageTimeoutMs: 120_000 });
+      assert.equal(watchdogMs, scanTimeoutMs(102, 120_000), "Odd duplex limits must cover both frames of the final sheet");
+    } finally { boundedTimerMock.mock.restore(); }
+
+    let refreshes = 0;
+    const unlimitedTimerMock = mock.method(globalThis, "setTimeout", (callback: () => void, ms: number) => {
+      assert.equal(ms, 3_600_000);
+      const timer = originalTimeout(callback, 5000);
+      const refresh = timer.refresh.bind(timer);
+      timer.refresh = () => { refreshes++; return refresh(); };
+      return timer;
+    });
+    try {
+      await fixture("process.stderr.write('[ScannerBridge] Page 1 front: capturing\\n[ScannerBridge] page 1 done, pending=0\\nordinary diagnostic\\n'); process.stdout.write(JSON.stringify({status:'success',page_count:1,pages:[]}));");
+      await scan({ ...config, maxPages: 0 });
+      assert.equal(refreshes, 2, "Only frame progress renews an unlimited batch watchdog");
+    } finally { unlimitedTimerMock.mock.restore(); }
   } finally {
     logMock.mock.restore();
     if (previousExe === undefined) delete process.env.SCANNER_BRIDGE_EXE;

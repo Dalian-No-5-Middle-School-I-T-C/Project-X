@@ -403,6 +403,7 @@ TW_UINT16 TwainController::processTwainEvent(MSG& msg) {
 
     if (rc == TWRC_DSEVENT) {
         if (event.TWMessage == MSG_XFERREADY) {
+            fprintf(stderr, "[ScannerBridge] MSG_XFERREADY received (state=%d)\n", m_state);
             m_state = 6;
         } else if (event.TWMessage == MSG_CLOSEDSREQ || event.TWMessage == MSG_CLOSEDSOK) {
             m_state = 0;
@@ -585,9 +586,6 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     if (!setResolution(config.dpi)) {
         // Continue
     }
-    if (config.duplex) {
-        setDuplex(true);
-    }
     if (!setPaperSize(config.paperSize)) {
         result.errorMessage = config.paperSize == "A3"
             ? "该扫描仪不支持 A3 原稿（请在扫描设置中改选 A4）"
@@ -598,6 +596,15 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         return result;
     }
     enableADF();
+    // 送纸器配置可能改变单双面状态；在所有配置完成后确认配对契约，再启动走纸。
+    if (!setDuplex(config.duplex)) {
+        result.errorMessage = config.duplex
+            ? "扫描仪未确认启用双面扫描，请检查设备双面能力或改用单面扫描"
+            : "扫描仪未确认关闭双面扫描，请在驱动中关闭双面后重试";
+        closeSource();
+        closeDSM();
+        return result;
+    }
     setXferCount();   // 必须在 ENABLEDS 之前；不设时驱动默认只交付 1 页
     
     // 5. Enable source (shows scanner UI or goes to ready state)
@@ -611,8 +618,8 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     
     // 6. Capture loop - handle ADF multi-page
     // 状态机约定：waitForState(6) 等 MSG_XFERREADY（processTwainEvent 置 m_state=6）；
-    // captureNativeTransfer 收到 XFERDONE 后把 m_state 复位为 5，使下一轮 waitForState(6)
-    // 真正等待新一页的 XFERREADY；XFERDONE 后必须立即 ENDXFER 才能推进 TWAIN 状态机。
+    // XFERDONE 后立即 ENDXFER；剩余数非零则回状态 6 直接继续传输，
+    // 剩余数为零才回状态 5 等待新的 XFERREADY。
     int pageNum = 0;
     bool hasMorePages = true;
     
@@ -664,6 +671,8 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             hasMorePages = false;
             break;
         }
+        // 非零（含 0xffff 未知数量）表示 DS 已在状态 6，可直接取下一帧，不会再发 XFERREADY。
+        if (pending.Count > 0) m_state = 6;
         
         // 背面也可能在 Count=0 后到达；必须在当前物理张内等待，不能交给下轮正面。
         if (config.duplex) {
@@ -703,6 +712,7 @@ ScanResult TwainController::scan(const ScanConfig& config) {
                 hasMorePages = false;
                 break;
             }
+            if (pending.Count > 0) m_state = 6;
         }
         
         fprintf(stderr, "[ScannerBridge] page %d done, pending=%d\n",
@@ -819,7 +829,9 @@ bool TwainController::enableSource(bool showUi) {
                 DG_CONTROL, DAT_STATUS, MSG_GET,
                 (TW_MEMREF)&status);
         }
-        m_state = 3;
+        // 驱动可在 ENABLEDS 内泵消息并同步送达 XFERREADY；保留已经到达的就绪状态。
+        fprintf(stderr, "[ScannerBridge] source enabled (state=%d)\n", m_state);
+        m_state = std::max(m_state, 3);
         return true;
     }
     
@@ -841,7 +853,8 @@ bool TwainController::enableSource(bool showUi) {
                     DG_CONTROL, DAT_STATUS, MSG_GET,
                     (TW_MEMREF)&status);
             }
-            m_state = 3;
+            fprintf(stderr, "[ScannerBridge] source enabled with UI (state=%d)\n", m_state);
+            m_state = std::max(m_state, 3);
             return true;
         }
     }
@@ -975,7 +988,20 @@ bool TwainController::setResolution(int dpi) {
 
 bool TwainController::setDuplex(bool duplex) {
     TW_BOOL val = duplex ? TRUE : FALSE;
-    return setCapability(CAP_DUPLEXENABLED, TWTY_BOOL, &val);
+    const bool accepted = setCapability(CAP_DUPLEXENABLED, TWTY_BOOL, &val);
+    TW_UINT16 effective = 0;
+    const bool readable = readCurrentUInt16Capability(CAP_DUPLEXENABLED, TWTY_BOOL, &effective);
+    fprintf(stderr, "[ScannerBridge] CAP_DUPLEXENABLED requested=%d set=%s effective=%d\n",
+        duplex ? 1 : 0, accepted ? "ok" : "rejected", readable ? (effective != 0 ? 1 : 0) : -1);
+    if (readable) return (effective != 0) == duplex;
+    // 单面设备可完全不支持 CAP_DUPLEXENABLED；用 CAP_DUPLEX 确认其硬件为单面。
+    if (!duplex) {
+        TW_UINT16 capability = 0;
+        if (readCurrentUInt16Capability(CAP_DUPLEX, TWTY_UINT16, &capability)) {
+            return capability == TWDX_NONE;
+        }
+    }
+    return false;
 }
 
 bool TwainController::setPaperSize(const std::string& size) {
@@ -1079,6 +1105,7 @@ bool TwainController::readCurrentUInt16Capability(TW_UINT16 cap, TW_UINT16 type,
 }
 
 bool TwainController::shouldWaitForTransfer(TW_UINT16 pendingCount) {
+    if (m_state >= 6) return true;
     if (pendingCount > 0) return true;
     if (!m_feederEnabled) return false;
     bool loaded = false;
@@ -1153,8 +1180,7 @@ bool TwainController::captureNativeTransfer(
         return false;
     }
     
-    // 复位状态机：XFERDONE 表示当前帧已取走，下一帧的 MSG_XFERREADY
-    // 会在 ENDXFER 后重新到达，waitForState(6) 必须重新等待
+    // 当前帧已取走；调用方立即 ENDXFER，并依据剩余数恢复就绪或等待新事件。
     m_state = 5;
     
     // Convert DIB handle to file
@@ -1318,8 +1344,13 @@ bool TwainController::waitForState(int targetState, DWORD timeoutMs) {
         
         // Peek messages for TWAIN
         while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
+            // DSM 通知可能使用线程消息或其它窗口；在普通派发前将每条消息交给 DSM。
+            // 仅靠本程序 WndProc 转发无法覆盖所有 XFERREADY 投递方式。
+            const TW_UINT16 eventRc = processTwainEvent(msg);
+            if (eventRc != TWRC_DSEVENT) {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+            }
             
             // Check if TWAIN event processing advanced our state
             if (m_state >= targetState) return true;
