@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <cmath>
 #include <cwctype>
 #include <iterator>
 #include <string>
@@ -583,7 +584,8 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         // Continue anyway - some scanners don't support all caps
     }
     if (!setResolution(config.dpi)) {
-        // Continue
+        // 密度设不上不等于不能扫：部分 DS 只认自己的固定档位。继续扫，实际生效密度由
+        // setResolution 的 stderr 回读行给出结论，扫描端再用出图像素尺寸反查（issue #331 ①）。
     }
     if (config.duplex) {
         setDuplex(true);
@@ -597,6 +599,10 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         closeDSM();
         return result;
     }
+    // TWAIN 允许数据源在纸型（ICAP_SUPPORTEDSIZES）协商时刷新整套成像参数，部分 DS 会
+    // 连带把 ICAP_UNITS / X/YRESOLUTION 打回默认值。纸型谈完再设一次密度，前面按英寸
+    // 谈好的档位才守得住。
+    setResolution(config.dpi);
     enableADF();
     setXferCount();   // 必须在 ENABLEDS 之前；不设时驱动默认只交付 1 页
     
@@ -863,6 +869,67 @@ bool TwainController::disableSource() {
     return rc == TWRC_SUCCESS;
 }
 
+// ── Capability readback helpers ───────────────────────
+//
+// TWAIN 里 MSG_SET 返回 TWRC_SUCCESS 只说明「请求被接受」，返回 TWRC_CHECKSTATUS 更是
+// 明确等于「接受，但驱动改用了它自己的取值」。两者都不代表驱动最终按请求值出图，
+// 所以凡「设了就必须生效」的能力都要用 MSG_GETCURRENT 回读，否则上层永远拿不到被替代的事实。
+
+/**
+ * 回读单值能力容器。
+ * 返回 false 表示驱动没按 ONEVALUE 回（ENUM/RANGE 容器）或读取失败；调用方据此放行，
+ * 不能当失败——旧驱动上 GETCURRENT 不可用是常态，误判会把整场扫描中止。
+ */
+static bool readCurrentOneValueCap(TW_IDENTITY* appId, TW_IDENTITY* sourceId, TW_UINT16 cap,
+                                   TW_UINT32& rawItem, TW_UINT16& itemType) {
+    TW_CAPABILITY current;
+    memset(&current, 0, sizeof(current));
+    current.Cap = cap;
+    current.ConType = TWON_ONEVALUE;
+    TW_UINT16 rc = DSM_Entry(appId, sourceId, DG_CONTROL, DAT_CAPABILITY, MSG_GETCURRENT, (TW_MEMREF)&current);
+    if (rc != TWRC_SUCCESS || !current.hContainer) return false;
+
+    bool ok = false;
+    if (current.ConType == TWON_ONEVALUE) {
+        // 非合规驱动可能回一个比 TW_ONEVALUE 还短的容器，先量长度再解引用
+        const SIZE_T containerSize = GlobalSize(current.hContainer);
+        pTW_ONEVALUE value = containerSize >= sizeof(TW_ONEVALUE)
+            ? static_cast<pTW_ONEVALUE>(GlobalLock(current.hContainer)) : nullptr;
+        if (value) {
+            itemType = value->ItemType;
+            rawItem = value->Item;
+            ok = true;
+            GlobalUnlock(current.hContainer);
+        }
+    }
+    GlobalFree(current.hContainer);
+    return ok;
+}
+
+/**
+ * TWTY_FIX32 时 TW_ONEVALUE::Item 就是 FIX32 的位模式：Whole 占低 16 位、Frac 占高 16 位。
+ * 按位取而不是 memcpy(&TW_FIX32, &Item, sizeof(TW_FIX32))——不同 twain.h 版本里 TW_FIX32
+ * 可能带 pad 字段，sizeof 会超出 4 字节的 Item。
+ */
+static double fix32FromItem(TW_UINT32 rawItem) {
+    const TW_INT16 whole = static_cast<TW_INT16>(rawItem & 0xFFFF);
+    const TW_UINT16 frac = static_cast<TW_UINT16>((rawItem >> 16) & 0xFFFF);
+    return static_cast<double>(whole) + static_cast<double>(frac) / 65536.0;
+}
+
+/** ICAP_UNITS 的一个单位等于多少英寸；TWUN_PIXELS 等无长度含义的单位按英寸处理（等价于不换算）。 */
+static double inchesPerTwainUnit(TW_UINT16 units) {
+    switch (units) {
+        case TWUN_CENTIMETERS: return 1.0 / 2.54;
+        case TWUN_MILLIMETERS: return 1.0 / 25.4;
+        case TWUN_POINTS:      return 1.0 / 72.0;
+        case TWUN_PICAS:       return 1.0 / 6.0;
+        case TWUN_TWIPS:       return 1.0 / 1440.0;
+        case TWUN_INCHES:
+        default:               return 1.0;
+    }
+}
+
 // ── Capability Setting ────────────────────────────────
 
 bool TwainController::setCapability(TW_UINT16 cap, TW_UINT16 type, void* value) {
@@ -956,11 +1023,64 @@ bool TwainController::setPixelType() {
 }
 
 bool TwainController::setResolution(int dpi) {
+    // ICAP_XRESOLUTION / ICAP_YRESOLUTION 的密度是「每 ICAP_UNITS」而不是「每英寸」。
+    // 欧系、日系驱动默认单位常为 TWUN_CENTIMETERS，此时直接写 FIX32=300 等于请求
+    // 「300 点/厘米」（≈762dpi），驱动要么用 TWRC_CHECKSTATUS 替代成自己的上限，要么
+    // 干脆保持原密度不变——现场表现就是「扫描端改了 DPI，出图分辨率却没变」（issue #331 ①）。
+    // 因此先把单位钉成 TWUN_INCHES；钉不上（单位只读的 DS）时按驱动实际单位换算，绝不写裸值。
+    TW_UINT16 inches = TWUN_INCHES;
+    setCapability(ICAP_UNITS, TWTY_UINT16, &inches);
+
+    TW_UINT32 rawUnits = 0;
+    TW_UINT16 unitsType = 0;
+    TW_UINT16 effectiveUnits = TWUN_INCHES;
+    if (readCurrentOneValueCap(&m_appId, &m_sourceId, ICAP_UNITS, rawUnits, unitsType) && unitsType == TWTY_UINT16) {
+        effectiveUnits = static_cast<TW_UINT16>(rawUnits & 0xFFFF);
+    }
+    const double inchesPerUnit = inchesPerTwainUnit(effectiveUnits);
+    double density = static_cast<double>(dpi) * inchesPerUnit;
+    if (!(density > 0.0)) {
+        fprintf(stderr, "[ScannerBridge] ignoring invalid dpi=%d\n", dpi);
+        return false;
+    }
+    // TW_FIX32::Whole 是 TW_INT16（上限 32767）。路由层已把 dpi 夹到 [50,1200]，这里再兜一层，
+    // 避免直接调用桥接时异常值经单位换算后写成负密度。
+    if (density > 32000.0) {
+        fprintf(stderr, "[ScannerBridge] dpi=%d clamped to 32000 for TW_FIX32\n", dpi);
+        density = 32000.0;
+    }
+
     TW_FIX32 res;
-    res.Whole = (TW_INT16)dpi;
-    res.Frac = 0;
-    return setCapability(ICAP_XRESOLUTION, TWTY_FIX32, &res) &&
-           setCapability(ICAP_YRESOLUTION, TWTY_FIX32, &res);
+    res.Whole = static_cast<TW_INT16>(std::floor(density));
+    res.Frac = static_cast<TW_UINT16>(std::round((density - std::floor(density)) * 65536.0));
+    // 小数部分进位到 65536 时会回绕成 0，整数字段要跟着加一，否则密度掉 1
+    if (res.Frac == 0 && density - std::floor(density) >= 0.5) {
+        res.Whole = static_cast<TW_INT16>(res.Whole + 1);
+    }
+
+    bool ok = setCapability(ICAP_XRESOLUTION, TWTY_FIX32, &res);
+    ok = setCapability(ICAP_YRESOLUTION, TWTY_FIX32, &res) && ok;
+
+    // 回读实际生效密度。这里不中止会话：驱动把请求值夹到自己支持的最高档是正常协商，
+    // 但「设定值 ≠ 生效值」必须留下可核对的证据（扫描端日志 + 实际像素尺寸反查）。
+    TW_UINT32 rawX = 0, rawY = 0;
+    TW_UINT16 typeX = 0, typeY = 0;
+    const bool readX = readCurrentOneValueCap(&m_appId, &m_sourceId, ICAP_XRESOLUTION, rawX, typeX) && typeX == TWTY_FIX32;
+    const bool readY = readCurrentOneValueCap(&m_appId, &m_sourceId, ICAP_YRESOLUTION, rawY, typeY) && typeY == TWTY_FIX32;
+    if (!readX && !readY) {
+        fprintf(stderr, "[ScannerBridge] resolution requested=%d dpi (ICAP_UNITS=%u), driver gave no readable X/YRESOLUTION\n",
+                dpi, static_cast<unsigned>(effectiveUnits));
+        return ok;
+    }
+    const double effectiveXDpi = readX ? fix32FromItem(rawX) / inchesPerUnit : 0.0;
+    const double effectiveYDpi = readY ? fix32FromItem(rawY) / inchesPerUnit : 0.0;
+    const double tolerance = std::max(1.0, dpi * 0.02);
+    const bool substituted = (readX && std::fabs(effectiveXDpi - dpi) > tolerance)
+                          || (readY && std::fabs(effectiveYDpi - dpi) > tolerance);
+    fprintf(stderr, "[ScannerBridge] resolution %s requested=%d dpi effective X=%g Y=%g dpi (ICAP_UNITS=%u)\n",
+            substituted ? "SUBSTITUTED BY DRIVER:" : "accepted:",
+            dpi, effectiveXDpi, effectiveYDpi, static_cast<unsigned>(effectiveUnits));
+    return ok;
 }
 
 bool TwainController::setDuplex(bool duplex) {

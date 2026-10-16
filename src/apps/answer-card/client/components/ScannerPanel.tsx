@@ -109,6 +109,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const [resultsBusy, setResultsBusy] = useState(false);
   const resultsBusyRef = useRef(false);
   const [resultMessage, setResultMessage] = useState("");
+  // 扫描阶段告警（type: "warning"）：流程继续但结果与设定不符，例如驱动替代了分辨率
+  const [scanWarnings, setScanWarnings] = useState<string[]>([]);
   const [uploadJobs, setUploadJobs] = useState<Record<string, string>>({});
   const uploadJobsRef = useRef<Record<string, string>>({});
   const sessionUploadRef = useRef<{ sessionId: string; cardId: string;
@@ -228,6 +230,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       `Project-X 扫描端诊断 @ ${new Date().toLocaleString("zh-CN")}`,
       `答题卡 ID：${cardId}`,
       `错误信息：${errorMessage || "（无）"}`,
+      `扫描告警：${scanWarnings.join("；") || "（无）"}`,
       ...(sourcesDiag ? diagnosticLines(sourcesDiag) : ["（无检测诊断数据）"]),
     ].join("\n");
   }
@@ -301,6 +304,12 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
             setState("scanning");
             setProgressMessage(data.message || "正在扫描...");
             break;
+          case "warning": {
+            // 不能并进 progressMessage：紧随其后的 ocr_start 会把它冲掉，老师根本看不到
+            const text = data.message?.trim();
+            if (text) setScanWarnings((prev) => (prev.includes(text) ? prev : [...prev, text]));
+            break;
+          }
           case "page_done": {
             // v2.5.1 审查修复：同步推进 ref（原仅靠 effect 提交后同步，终态早到时存在空窗）
             const page: ScanPage = {
@@ -504,6 +513,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     uploadJobsRef.current = {};
     sessionUploadRef.current = null;
     setResultMessage("");
+    setScanWarnings([]);
     reconnectAttemptsRef.current = 0;
     completedRef.current = false;
     setDisconnected(false);
@@ -597,6 +607,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     uploadJobsRef.current = {};
     sessionUploadRef.current = null;
     setResultMessage("");
+    setScanWarnings([]);
     setActiveStudent(null);
     setProgressMessage("");
     setErrorMessage("");
@@ -611,6 +622,18 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   return (
     <div className="flex flex-col gap-4">
       {sessionLegacyIdentity && <p role="status" className="m-0 rounded-md bg-warning-soft p-3 text-sm text-foreground">本次会话兼容旧卡：无可读二维码的页面未校验卡 ID，请人工核对。</p>}
+      {/* 扫描告警（例如驱动把设定分辨率替代成了别的档位）：与错误态分开——纸已经扫出来、
+          流程继续，但结果与设定不符，必须在出分前让老师看得见，而不是只留在日志里。 */}
+      {scanWarnings.length > 0 && (
+        <div role="status" className="flex flex-col gap-2 rounded-md border border-warning-border bg-warning-soft px-3 py-3 text-sm text-foreground">
+          {scanWarnings.map((warning) => (
+            <div key={warning} className="flex items-start gap-2">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+              <span className="min-w-0 flex-1 break-words">{warning}</span>
+            </div>
+          ))}
+        </div>
+      )}
       {/* UI-5: SSE 断开重连提示横幅（顶部，红色） */}
       {disconnected && (
         <div className="flex items-center gap-2 rounded-md border border-destructive-border bg-destructive-soft px-3 py-2 text-sm text-destructive-fg">

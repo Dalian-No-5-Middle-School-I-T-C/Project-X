@@ -91,6 +91,18 @@ jobs:
       - name: Scanner page timeout default regression
         run: npm run verify:scanner-page-timeout
 
+      # issue #331 ①：设定 DPI 是否真的生效——用桥接回报的像素尺寸反查实际密度，
+      # 并要求结论走到 [checkpoint] 日志与扫描端告警。
+      - name: Scanner delivered DPI cross-check
+        run: npm run verify:scanner-delivered-dpi
+
+      - name: Scanner block crop audit
+        run: npm run verify:scanner-block-crops
+
+      # issue #331 ④：整卡改分/异常卷弹层用 vh 定高，移动端底部按钮落在可视视口外
+      - name: Correction dialog viewport fit
+        run: npm run verify:correction-viewport-fit
+
       - name: Scanner upload manager recovery
         run: npm run verify:scanner-upload-manager
       - name: Scanner panel React and SSE session metadata

@@ -22,13 +22,22 @@ import { Tip } from "./tooltip";
 
 /* ── AppShell 骨架 ───────────────────────────────────────────────── */
 
+/**
+ * 根容器：`overflow-hidden` 让超出可视高度的内容一律滚不出来，所以高度必须钉在可视视口上。
+ * vh 在移动端含浏览器工具栏，dvh 才是看到的高度；兼容目标 safari15 还没有 dvh（15.4+ 起支持），
+ * 故保留 vh 兜底、仅在支持时升级（issue #331 ④）。
+ */
 export function AppShell({
   className,
   ...props
 }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn("paper-grid flex h-screen w-full overflow-hidden bg-background", className)}
+      className={cn(
+        "paper-grid flex h-screen w-full overflow-hidden bg-background",
+        "supports-[height:100dvh]:h-[100dvh]",
+        className,
+      )}
       {...props}
     />
   );

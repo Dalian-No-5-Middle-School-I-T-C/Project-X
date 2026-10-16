@@ -1,5 +1,15 @@
 # Project-X CHANGELOG
 
+## 2026-10-16：扫描端分辨率生效、大题切块核对与异常卷弹层高度（issue #331）
+
+- TWAIN 的 `ICAP_XRESOLUTION/YRESOLUTION` 是「每 `ICAP_UNITS` 的点数」，不是每英寸。设置密度前先把单位钉成 `TWUN_INCHES`，钉不上时按驱动实际单位换算；纸型协商（`ICAP_SUPPORTEDSIZES`）会连带刷新成像参数，因此纸型谈完再设一次密度。
+- 设值后用 `MSG_GETCURRENT` 回读实际生效密度并在 stderr 标注 `accepted:` / `SUBSTITUTED BY DRIVER:`；`TWRC_CHECKSTATUS` 不再当作物已成功，也不因密度设不上中止扫描会话。
+- 扫描端不依赖 exe 是否重编译：用桥接本来就回报的页面像素尺寸反查出图密度，写入 `[checkpoint] scan ... deliveredDpi=`，被驱动替代时在扫描端显示常驻「扫描告警」并进入「复制诊断」。
+- 大题切块逐页以布局声明的大题为基准核对，区分「识别漏块」「识别器不支持 `--crops-dir`（整页没有切块字段）」「识别报出切块但一个都没入库」三类，会话汇总进 `[checkpoint] blocks` 日志与界面告警；native `build_block_crops` 的两处静默 `continue` 改为 `[recognizer-crops]` 输出，识别成功时由扫描端转发到日志。
+- 整卡改分（异常卷）弹层与 `AppShell` 的视口高度改用可视视口 `dvh`，`fixed` 弹层的取消/保存按钮不再落在移动端工具栏下面；兼容目标是 safari15 而 dvh 要 15.4+，因此保留 `100vh` 兜底、仅在 `@supports (height:100dvh)` 时升级。翻页/缩放工具条补 `shrink-0`，弹层定高与 `DialogContent` 上限对齐。
+- 新增 `verify:scanner-delivered-dpi`、`verify:scanner-block-crops`、`verify:correction-viewport-fit` 并接入 CI。
+- 尚未覆盖：issue #331 ②「只能扫描一张」属于未合并的 PR #330（ADF 与 `CAP_XFERCOUNT`）；本机无 cmake/MSVC，两个 Windows 原生组件只改源码未重编译，需在打包环境编译后以真实扫描仪与原卷验收；④ 的「滚动」描述不明确，本轮按「可视视口高度导致内容滚不出来」这一类可复现缺陷修复。
+
 ## 2026-10-14：2.7.0 整卡改分与旧卷补识别
 
 - 异常卷处理和成绩修改支持在完整原卷上点击学号、客观题与手阅分数格，按正确/合法与错误/异常显示蓝红框，修改显式保存。

@@ -69,7 +69,10 @@ export const DialogContent = React.forwardRef<
         ref={ref}
         className={cn(
           "fixed top-1/2 left-1/2 z-(--px-z-modal) -translate-x-1/2 -translate-y-1/2",
-          "flex max-h-[calc(100vh-64px)] w-[calc(100vw-32px)] flex-col",
+          // 高度上限取可视视口：vh 含移动端工具栏高度，而 fixed 对话框不跟随视觉视口，
+          // 底部的确认/取消按钮就永远滚不出来（issue #331 ④）。兼容目标是 safari15，
+          // dvh 要 15.4+，因此保留 vh 兜底，只在浏览器支持 dvh 时升级。
+          "flex max-h-[calc(100vh-64px)] supports-[height:100dvh]:max-h-[calc(100dvh-64px)] w-[calc(100vw-32px)] flex-col",
           "rounded-lg border border-border bg-overlay text-foreground shadow-4",
           // §4.4 弹层进出 240ms fade + scale 0.98→1
           "duration-(--px-dur-3) ease-standard",

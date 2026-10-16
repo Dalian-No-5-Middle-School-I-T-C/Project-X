@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -635,6 +636,10 @@ json build_block_crops(const cv::Mat& warped, const LayoutPage& layout_page, int
         const auto& spec = layout_page.block_crops[index];
         const Rect crop_rect = clamp_padded_rect(spec.rect, layout_page.width_mm, layout_page.height_mm);
         if (crop_rect.width <= 0 || crop_rect.height <= 0) {
+            // issue #331 ③：丢一个大题在 JSON 里只是"少一项"，界面上什么都看不出来，
+            // 现场只能描述成"大题划分有时读不到，无规律"。降级原因必须自己报出来。
+            std::fprintf(stderr, "[recognizer-crops] dropped blockId=%s reason=degenerate_rect x=%.2f y=%.2f w=%.2f h=%.2f\n",
+                spec.block_id.c_str(), spec.rect.x, spec.rect.y, spec.rect.width, spec.rect.height);
             continue;
         }
         const auto [left, top, right, bottom] = rect_to_crop_bounds(crop_rect, output_dpi, warped.cols, warped.rows);
@@ -648,6 +653,8 @@ json build_block_crops(const cv::Mat& warped, const LayoutPage& layout_page, int
         try {
             write_image(crop_path, crop);
         } catch (...) {
+            std::fprintf(stderr, "[recognizer-crops] dropped blockId=%s reason=write_failed file=%s\n",
+                spec.block_id.c_str(), path_to_utf8(crop_path).c_str());
             continue;
         }
 

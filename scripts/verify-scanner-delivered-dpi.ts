@@ -1,0 +1,115 @@
+/**
+ * 扫描出图密度反查 —— 自动化验证脚本（issue #331 ①「软件里设的 DPI 没生效」）
+ * ----------------------------------------------------------------
+ * 运行方式：npx tsx scripts/verify-scanner-delivered-dpi.ts
+ *
+ * 背景：TWAIN 的 MSG_SET 返回成功只代表「请求被接受」，驱动完全可能替代成自己的档位
+ *   （或因为 ICAP_UNITS 是厘米而把 300 读成 300 点/厘米）。native 已加 MSG_GETCURRENT
+ *   回读，但随包 exe 未必重编译，所以扫描端还要能用桥接**已经回报**的 width/height
+ *   反查实际密度，并把结论显示给操作者。
+ *
+ * 断言方式：① 纯函数正反例（含不能误报的纸型替代、横放交付）；② 接线检查——服务层确实
+ *   调用了反查并以 type:"warning" 上报，客户端确实有对应分支（防止日后被改掉而无声失效）。
+ *
+ * 全部用例通过则进程退出码为 0，否则为 1。
+ */
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { nearestScanDpiStep, paperInchesFor, verifyDeliveredScanDpi } from "../src/shared/scanDeliveredDpi";
+
+let passed = 0;
+const failures: string[] = [];
+
+function check(condition: unknown, label: string): void {
+  if (condition) {
+    passed += 1;
+    console.log(`  \x1b[32m✓\x1b[0m ${label}`);
+  } else {
+    failures.push(label);
+    console.log(`  \x1b[31m✗\x1b[0m ${label}`);
+  }
+}
+
+const root = process.cwd();
+
+function main(): void {
+  console.log("\n\x1b[36m== 反查：设定 DPI 与实际出图密度 ==\x1b[0m");
+
+  const a4_300 = verifyDeliveredScanDpi([{ width: 2480, height: 3508 }], { dpi: 300, paperSize: "A4" });
+  check(a4_300.status === "match" && a4_300.deliveredDpi === 300,
+    `A4 @300dpi 标准出图（2480×3508）判为生效 (delivered=${a4_300.deliveredDpi}, status=${a4_300.status})`);
+
+  const downgraded = verifyDeliveredScanDpi([{ width: 1654, height: 2339 }], { dpi: 300, paperSize: "A4" });
+  check(downgraded.status === "mismatch" && downgraded.deliveredDpi === 200 && Boolean(downgraded.message),
+    `设定 300 但驱动按 200 出图（1654×2339）报为未生效 (delivered=${downgraded.deliveredDpi}, status=${downgraded.status})`);
+  check(Boolean(downgraded.message?.includes("200")), "提示里带出实际密度数值，便于现场核对");
+  check(Boolean(downgraded.message?.includes(String(nearestScanDpiStep(200)))), "提示里给出可改的 DPI 档位建议");
+
+  const icapUnitsBug = verifyDeliveredScanDpi([{ width: 4961, height: 7017 }], { dpi: 300, paperSize: "A4" });
+  check(icapUnitsBug.status === "mismatch" && icapUnitsBug.deliveredDpi === 600,
+    `ICAP_UNITS 当成厘米时的典型结果（实际 600dpi）也会被抓到 (delivered=${icapUnitsBug.deliveredDpi})`);
+
+  const raised = verifyDeliveredScanDpi([{ width: 3307, height: 4677 }], { dpi: 300, paperSize: "A4" });
+  check(raised.status === "mismatch" && raised.deliveredDpi === 400,
+    `驱动把 300 抬成 400（3307×4677）同样算「设定未生效」 (delivered=${raised.deliveredDpi}, status=${raised.status})`);
+
+  const letterAsA4 = verifyDeliveredScanDpi([{ width: 2550, height: 3300 }], { dpi: 300, paperSize: "A4" });
+  check(letterAsA4.status === "match",
+    `A4 档设了、驱动按 Letter 交付（2550×3300，密度仍为 300）不误报 (delivered=${letterAsA4.deliveredDpi})`);
+
+  const landscape = verifyDeliveredScanDpi([{ width: 3508, height: 2480 }], { dpi: 300, paperSize: "A4" });
+  check(landscape.status === "match", "驱动横放交付（长宽互换）不影响判定，按短边对短边匹配");
+
+  const duplex = verifyDeliveredScanDpi(
+    [{ width: 2480, height: 3508 }, { width: 2480, height: 3508 }, { width: 1654, height: 2339 }],
+    { dpi: 300, paperSize: "A4" }
+  );
+  check(duplex.samplePages === 3 && duplex.status === "match",
+    `多页取样不被个别异常页带偏（取中位数，samples=${duplex.samplePages}, delivered=${duplex.deliveredDpi}）`);
+
+  const a3 = verifyDeliveredScanDpi([{ width: 3508, height: 4961 }], { dpi: 300, paperSize: "A3" });
+  check(a3.status === "match", `A3 @300dpi（3508×4961）判为生效 (status=${a3.status})`);
+
+  const letterSize = verifyDeliveredScanDpi([{ width: 2550, height: 3300 }], { dpi: 300, paperSize: "Letter" });
+  check(letterSize.status === "match", "按所选纸型（Letter）换算，A4/Letter 常量取对档");
+
+  const trimmed = verifyDeliveredScanDpi([{ width: 2472, height: 3496 }], { dpi: 300, paperSize: "A4" });
+  check(trimmed.status === "match", "驱动留边裁剪（2472×3496，差 ~1%）不误报");
+
+  console.log("\n\x1b[36m== 数据不可用时不下结论 ==\x1b[0m");
+
+  const noDims = verifyDeliveredScanDpi([{ }, { width: 0, height: 0 }], { dpi: 300, paperSize: "A4" });
+  check(noDims.status === "unknown" && noDims.deliveredDpi === undefined, "旧桥不回报尺寸 → unknown（不猜）");
+
+  const oddAspect = verifyDeliveredScanDpi([{ width: 2480, height: 1000 }], { dpi: 300, paperSize: "A4" });
+  check(oddAspect.status === "unknown", "长宽比与纸型对不上（2480×1000 这类异常尺寸）→ unknown，不把尺寸问题报成 DPI 问题");
+
+  const badDpi = verifyDeliveredScanDpi([{ width: 2480, height: 3508 }], { dpi: 0, paperSize: "A4" });
+  check(badDpi.status === "unknown", "设定 DPI 非法（0）→ unknown");
+
+  check(paperInchesFor("letter")[0] === 8.5 && paperInchesFor(undefined)[1] === 11.69,
+    "纸型英寸表：Letter 短边 8.5，未指定回落 A4 长边 11.69");
+
+  console.log("\n\x1b[36m== 接线检查：结论要走到日志与界面 ==\x1b[0m");
+
+  const serviceSource = readFileSync(path.join(root, "src/apps/answer-card/server/scanner/scanner-service.ts"), "utf8");
+  check(serviceSource.includes("verifyDeliveredScanDpi(result.pages"), "扫描完成后按桥接回报尺寸反查");
+  check(/type:\s*"warning"/.test(serviceSource), "反查结论以 type:\"warning\" 上报（不是会被 ocr_start 冲掉的进度文案）");
+  check(serviceSource.includes("deliveredDpi="), "反查结果写进 [checkpoint] 扫描检查点日志");
+
+  const typesSource = readFileSync(path.join(root, "src/apps/answer-card/server/scanner/scanner-types.ts"), "utf8");
+  check(typesSource.includes('"warning"'), "ScanProgressEvent 类型里有 warning");
+
+  const panelSource = readFileSync(path.join(root, "src/apps/answer-card/client/components/ScannerPanel.tsx"), "utf8");
+  check(/case "warning":/.test(panelSource), "扫描端面板处理 warning 事件");
+  check(panelSource.includes("scanWarnings"), "扫描端面板把告警显示出来（并计入「复制诊断」）");
+
+  console.log(`\n结果: ${passed} 通过, ${failures.length} 失败`);
+  if (failures.length > 0) {
+    for (const failure of failures) console.log(`  - ${failure}`);
+    process.exit(1);
+  }
+  console.log("verify-scanner-delivered-dpi: ALL PASS");
+}
+
+main();

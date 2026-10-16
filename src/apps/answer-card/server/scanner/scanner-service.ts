@@ -14,10 +14,12 @@ import { enqueueScannerSubmission, invalidateScanRecognitionInQueue } from "../.
 import { gradeCombinedRecognition } from "../../../../shared/grading";
 import type { CombinedRecognitionResult } from "../../../../shared/types";
 import { getMysqlDb } from "../../../../server/db";
-import { persistAnswerBlockCrops } from "../../../../server/services/AnswerBlockCropService";
+import { persistAnswerBlockCrops, type CropPersistenceStats } from "../../../../server/services/AnswerBlockCropService";
 import { prepareCardLayoutById } from "../card-layout";
 import { parseRecognitionDpi } from "../helpers";
 import { mapScanPageToLayout, applyScanStudentId, assignScanRecordPageNums } from "../../../../shared/scanPages";
+import { verifyDeliveredScanDpi } from "../../../../shared/scanDeliveredDpi";
+import { auditBlockCrops, summarizeBlockCropAudits, type BlockCropAudit } from "../../../../shared/scanBlockCrops";
 
 export { listSources };
 
@@ -157,7 +159,13 @@ export async function runScanSession(
     }
 
     // 诊断检查点：本会话扫描结束的权威记录（页数/DPI/纸型），进 main.log 便于实机取证
-    console.log(`[checkpoint] scan session=${sessionId} card=${config.cardId} pages=${filteredPages.length} dpi=${config.dpi} duplex=${config.duplex} size=${config.paperSize}`);
+    // ①（issue #331）设定 DPI 是否真生效，用桥接已回报的像素尺寸反查——不依赖 exe 是否
+    // 带 MSG_GETCURRENT 回读，现网随包 exe 也能给出「实际约 200dpi」的可核对结论。
+    const dpiVerdict = verifyDeliveredScanDpi(result.pages, { dpi: config.dpi, paperSize: config.paperSize });
+    console.log(`[checkpoint] scan session=${sessionId} card=${config.cardId} pages=${filteredPages.length} dpi=${config.dpi} deliveredDpi=${dpiVerdict.deliveredDpi ?? "unknown"}(${dpiVerdict.status}, samples=${dpiVerdict.samplePages}) duplex=${config.duplex} size=${config.paperSize}`);
+    if (dpiVerdict.status === "mismatch" && dpiVerdict.message) {
+      onProgress({ sessionId, type: "warning", message: dpiVerdict.message });
+    }
 
     // 页面落库后不置 completed：OCR 是流水线的一部分，全部完成才算终态。
     // 否则 OCR 阶段取消会被"已 completed"拒绝、SSE 补发也会提前发 done
@@ -225,6 +233,7 @@ async function runOcrOnSessionInQueue(
   const { card, layout, layoutPath: currentLayoutPath } = prepared;
   const session = await getSession(sessionId);
   const studentIdsByGroup = new Map<number, string>();
+  const blockCropAudits: BlockCropAudit[] = [];
 
   for (const record of records) {
     if (!record.image_path) continue;
@@ -322,8 +331,9 @@ async function runOcrOnSessionInQueue(
         }
       }
 
+      let cropStats: CropPersistenceStats | undefined;
       try {
-        await persistAnswerBlockCrops({
+        cropStats = await persistAnswerBlockCrops({
           cardId,
           studentNumber: studentId,
           sourceType: "twain_scan_record",
@@ -332,6 +342,27 @@ async function runOcrOnSessionInQueue(
         }, getMysqlDb());
       } catch (cropError) {
         console.error(`[Scanner] Block crop persistence failed for record ${record.id}:`, cropError);
+      }
+
+      // ③（issue #331「大题划分有时读不到，无规律」）：识别成功不等于切块可用——旧 exe 降级、
+      // 识别漏块、切块图片丢失都会让网阅队列少题，而界面只看学号和分数就全看不出来。
+      // 这里用布局声明的大题当基准逐页核对，缺哪个、缺几次、属于哪一类都变成可数的证据。
+      if (recognition.status !== "failed") {
+        const audit = auditBlockCrops(
+          record.page_num,
+          layout.pages[layoutPage - 1]?.blocks ?? [],
+          recognition.blockCrops,
+          cropStats?.persisted
+        );
+        blockCropAudits.push(audit);
+        if (audit.status !== "ok") {
+          console.warn(
+            `[checkpoint] blocks session=${sessionId} record=${record.id} page=${record.page_num} side=${record.side} ` +
+              `status=${audit.status} expected=${audit.expected} crops=${recognition.blockCrops?.length ?? "none"} ` +
+              `persisted=${cropStats?.persisted ?? "db-error"} skipped=${cropStats?.skipped ?? "-"} ` +
+              `missing=${audit.missingBlockIds.join("|")}`
+          );
+        }
       }
 
       if (recognition.quality?.overallScore !== undefined) {
@@ -353,6 +384,15 @@ async function runOcrOnSessionInQueue(
         studentId: null, ocrStatus: "failed", message: msg
       });
     }
+  }
+
+  const blockSummary = summarizeBlockCropAudits(blockCropAudits);
+  console.log(
+    `[checkpoint] blocks session=${sessionId} pages=${blockSummary.auditedPages} ` +
+      `partial=${blockSummary.partialPages} unsupported=${blockSummary.unsupportedPages} notPersisted=${blockSummary.notPersistedPages}`
+  );
+  if (blockSummary.message) {
+    onProgress({ sessionId, type: "warning", message: blockSummary.message });
   }
 
   onProgress({ sessionId, type: "ocr_done", message: "识别完成" });
