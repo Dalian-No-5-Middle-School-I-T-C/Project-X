@@ -342,15 +342,11 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           case "error":
             completedRef.current = true;
             es.close();
-            partialSessionRef.current = pagesRef.current.length > 0;
-            if (partialSessionRef.current) {
-              setState("partial");
-              setScanErrorMessage(data.message || "扫描出错");
-              void fetchCombinedResults(sid);
-            } else {
-              setState("error");
-              setErrorMessage(data.message || "扫描出错");
-            }
+            // 首次订阅或重连可能只收到终态，页面以持久化记录为准。
+            partialSessionRef.current = true;
+            setState("partial");
+            setScanErrorMessage(data.message || "扫描出错");
+            void fetchCombinedResults(sid);
             break;
           case "cancelled":
             completedRef.current = true;
@@ -411,12 +407,31 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     if (resultsBusyRef.current) return;
     // SSE 回调及订正后的刷新都必须沿用本会话的失败状态，避免刷新触发自动上传。
     const partial = partialSessionRef.current;
+    const attempt = scanAttemptRef.current;
+    const current = () => sid === sessionIdRef.current && attempt === scanAttemptRef.current;
     resultsBusyRef.current = true;
     setResultsBusy(true);
     setErrorMessage("");
     try {
+      if (partial) {
+        const response = await authFetch(`/api/scanner/scan/${sid}`);
+        const snapshot = await response.json();
+        if (!current()) return;
+        if (!response.ok) throw new Error(snapshot.message || `读取保留页面失败（HTTP ${response.status}）`);
+        const records = snapshot.records as Array<Omit<ScanPage, "recordId"> & { id: string }>;
+        const retainedPages = records.map(({ id, ...page }) => ({ ...page, recordId: id }));
+        pagesRef.current = retainedPages;
+        setPages(retainedPages);
+        if (retainedPages.length === 0) {
+          partialSessionRef.current = false;
+          setState("error");
+          setScanErrorMessage("");
+          setErrorMessage(snapshot.session.error_msg || "扫描出错");
+          return;
+        }
+      }
       const data = await readResults(sid);
-      if (sid !== sessionIdRef.current) return;
+      if (!current()) return;
       applyResults(data);
       // 远端模式：成绩汇总一完成即自动后台上传（先出分、图片续传，进度见右上角进度条）
       if (!partial && getScannerMode() === "remote" && isRemoteServerConfigured()) {
@@ -424,10 +439,11 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       }
     }
     catch (err) {
+      if (!current()) return;
       const message = err instanceof Error ? err.message : "汇总失败，请重试";
       setErrorMessage(message);
     }
-    finally { resultsBusyRef.current = false; setResultsBusy(false); }
+    finally { if (current()) { resultsBusyRef.current = false; setResultsBusy(false); } }
   }
 
   /** 把成功答题卡加入后台上传队列（自动与手动共用；已入队的组自动跳过） */
@@ -517,6 +533,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     setErrorMessage("");
     setScanErrorMessage("");
     partialSessionRef.current = false;
+    resultsBusyRef.current = false;
+    setResultsBusy(false);
     setPages([]);
     pagesRef.current = [];
     setStudentResults([]);
@@ -607,6 +625,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     setDisconnected(false);
     reconnectAttemptsRef.current = 0;
     completedRef.current = false;
+    resultsBusyRef.current = false;
+    setResultsBusy(false);
     setState("idle");
     setSessionId("");
     sessionIdRef.current = "";
@@ -925,7 +945,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           <div className={`flex items-center gap-2 rounded-md border px-3 py-3 text-sm ${state === "partial" ? "border-warning-border bg-warning-soft text-warning-foreground" : "border-success-border bg-success-soft text-success-foreground"}`}>
             {state === "partial" ? <AlertTriangle size={20} className="shrink-0" /> : <Check size={20} className="shrink-0" />}
             <span>
-              {state === "partial" ? `扫描中断，已保留 ${pages.length} 页` : "扫描完成"} — {resultsBusy ? "正在汇总…" : `${studentResults.length} 份成功，${failures.length} 份失败`}
+              {state === "partial" ? pages.length > 0 ? `扫描中断，已保留 ${pages.length} 页` : "扫描中断，保留页面待确认" : "扫描完成"} — {resultsBusy ? "正在汇总…" : `${studentResults.length} 份成功，${failures.length} 份失败`}
             </span>
           </div>
 

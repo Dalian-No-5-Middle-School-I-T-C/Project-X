@@ -33,6 +33,9 @@ class FakeEventSource {
   done() { this.onmessage?.({ data: JSON.stringify({ type: "done" }) }); }
 }
 install("EventSource", FakeEventSource);
+const realSetTimeout = globalThis.setTimeout;
+install("setTimeout", ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) =>
+  realSetTimeout(callback, delay === 5000 ? 0 : delay, ...args)) as typeof setTimeout);
 let releaseCard!: () => void;
 const cardReady = new Promise<void>(resolve => { releaseCard = resolve; });
 const card = createDefaultCard("panel-review");
@@ -40,6 +43,9 @@ const version = cardFingerprint(card);
 let cardRequests = 0;
 let includeFailure = false;
 let failNextSummary = false;
+let failNextSnapshot = false;
+let retainedPageCount = 2;
+const snapshotRequests: string[] = [];
 const summaryRequests: string[] = [];
 const retryRequests: unknown[] = [];
 const summary = () => ({ failures: includeFailure ? [{ groupId: "1", studentId: null, stage: "recognition",
@@ -54,6 +60,13 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   if (url.endsWith("/scan")) {
     scans.push(JSON.parse(String(init?.body)));
     return Response.json({ sessionId: `scan-${scans.length}` });
+  }
+  if (/\/scan\/scan-\d+$/.test(url)) {
+    snapshotRequests.push(url);
+    if (failNextSnapshot) { failNextSnapshot = false; return Response.json({ message: "临时读取页面失败" }, { status: 503 }); }
+    return Response.json({ session: { status: "error", error_msg: "未扫描到页面" }, records:
+      Array.from({ length: retainedPageCount }, (_, index) => ({ id: `page-${index + 1}`, pageNum: index + 1,
+        side: "front", studentId: index === 0 ? "91001" : null, studentConf: null, ocrStatus: "done" })) });
   }
   if (url.includes("/results") || url.endsWith("/validate")) {
     summaryRequests.push(`${init?.method ?? "GET"} ${url}`);
@@ -159,11 +172,13 @@ try {
   await click("开始新扫描"); await settle();
   await click("开始扫描"); await settle();
   const summariesBeforeEmpty = summaryRequests.length;
+  retainedPageCount = 0;
   await act(async () => { streams[4].emit({ type: "error", message: "未扫描到页面" }); }); await settle();
   assert(document.body.textContent?.includes("未扫描到页面"));
   assert(!hasAction("保存成功部分到服务器") && !hasAction("刷新汇总"), "A zero-page error keeps the scanner settings instead of an empty result panel");
   assert.equal(summaryRequests.length, summariesBeforeEmpty);
   assert(hasAction("开始扫描"));
+  retainedPageCount = 1;
   await click("本地存储"); await settle();
   await click("开始扫描"); await settle();
   await act(async () => {
@@ -176,7 +191,39 @@ try {
   assert.match(summaryRequests.at(-1)!, /^POST .*\/results$/);
   assert.equal(uploads.length, 4, "Local partial results are saved locally");
   assert(document.body.textContent?.includes("走纸中断，本机已保留页面"));
-  console.log("PASS scanner panel React/SSE: session metadata; partial results visible/viewable/retryable; explicit save only; error retained; next-session and zero-page recovery");
+  await click("开始新扫描"); await settle();
+  await click("上传服务器"); await settle();
+  await click("开始扫描"); await settle();
+  retainedPageCount = 2;
+  includeFailure = true;
+  // A late initial connection receives only the terminal error, with no page events.
+  await act(async () => { streams[6].emit({ type: "error", message: "迟到的终态错误" }); }); await settle();
+  assert(document.body.textContent?.includes("扫描中断，已保留 2 页"));
+  assert(document.body.textContent?.includes("91001") && hasAction("整卡改分") && hasAction("重新识别此卡"));
+  assert.equal(uploads.length, 4, "Terminal replay hydrates persisted pages without uploading");
+  await click("保存成功部分到服务器"); await settle();
+  assert.equal(uploads.length, 5);
+  await click("开始新扫描"); await settle();
+  await click("开始扫描"); await settle();
+  // Missing page events during a disconnect must also recover from persisted records.
+  await act(async () => { streams[7].emit({ type: "page_done", recordId: "page-1", pageNum: 1, side: "front" }); });
+  await act(async () => { streams[7].onerror?.(); }); await settle();
+  assert.equal(streams.length, 9, "A disconnected progress stream is re-established");
+  failNextSnapshot = true;
+  await act(async () => { streams[8].emit({ type: "error", message: "重连后扫描中断" }); }); await settle();
+  assert(document.body.textContent?.includes("临时读取页面失败") && hasAction("刷新汇总"));
+  await click("刷新汇总"); await settle();
+  assert(document.body.textContent?.includes("扫描中断，已保留 2 页"), "Persisted count replaces the incomplete SSE page list");
+  assert(document.body.textContent?.includes("重连后扫描中断"));
+  assert.equal(uploads.length, 5);
+  await click("开始新扫描"); await settle();
+  await click("开始扫描"); await settle();
+  await act(async () => { streams[9].done(); }); await settle();
+  assert.equal(uploads.length, 6, "The next completed session still uploads normally after terminal recovery");
+  assert(!document.body.textContent?.includes("重连后扫描中断"));
+  assert(document.body.textContent?.includes("扫描完成"));
+  assert(snapshotRequests.length >= 7, "Error classification reads persisted pages, including zero-page errors and refreshes");
+  console.log("PASS scanner panel React/SSE: session metadata; partial view/correction/save; terminal replay and reconnect hydrate persisted pages; hydration retry, zero-page and next-session recovery");
 } finally {
   releaseCard();
   await act(async () => { root.unmount(); });

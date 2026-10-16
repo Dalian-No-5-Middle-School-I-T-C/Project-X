@@ -60,6 +60,17 @@ try {
     const summary = await request("results?previewOnly=1");
     assert.equal(summary.status, 200, await summary.text());
     if (status === "error") {
+      const replay = await fetch(`${api}/progress/${sid}`, { headers: { "X-Api-Key": info.key } });
+      assert.equal(replay.status, 200);
+      const replayEvents = (await replay.text()).split("\n").filter(line => line.startsWith("data: "))
+        .map(line => JSON.parse(line.slice(6)));
+      assert.deepEqual(replayEvents.map(event => event.type), ["error"], "Late subscribers receive only the terminal error");
+      assert.equal(replayEvents[0].message, message);
+      const snapshot = await fetch(`${api}/scan/${sid}`, { headers: { "X-Api-Key": info.key } });
+      assert.equal(snapshot.status, 200);
+      const hydrated = await snapshot.json();
+      assert.equal(hydrated.session.error_msg, message);
+      assert.deepEqual(hydrated.records.map((record: { id: string }) => record.id), records.map(record => record.id), "Terminal replay recovery can hydrate persisted pages through the status API");
       const retry = await request("retry", "POST");
       assert.equal(retry.status, 200, await retry.text());
       assert.equal((await getSession(sid))?.status, "error", "Retry retains the original device error state");
