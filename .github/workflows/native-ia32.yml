@@ -3,7 +3,7 @@ name: Native ia32 build
 # 随包 Windows 32 位原生件（扫描桥 + 识别器）的仓库工序见 readus/Windows32位扫描端交叉打包.md：
 # 由 Linux/macOS 构建机交叉编译，OpenCV 4.13 源码构建、静态链接。CI 平时不编 C++，
 # 只有提交信息含 [build-native] 时才跑这里；产物下载后由维护者核对再入库 resources/native/win-ia32/。
-# 门槛匹配的是整条提交信息（正文里写出这个字串同样会触发一次约 40 分钟的构建）。
+# 门槛匹配的是整条提交信息（正文里写出这个字串同样会触发一次约 7 分钟的构建）。
 on:
   push:
     branches: [main, "fix/**", "chore/**"]
