@@ -390,6 +390,16 @@ int main() {
     assert(!result.success && result.pages.empty() && resetCalls == 0 && disableCalls == 1);
     assert(result.errorMessage.find("Failed to capture") != std::string::npos
         && result.errorMessage.find("未正常关闭") == std::string::npos);
+    // 7 只有配上 Count==0 才是作业结束：双面时正面 ENDXFER 返回 7 但 Count=1（背面还在），
+    // 必须继续把背面取回来。旧写法在这里直接 break，背面丢帧却整批报成功（现场即「双面只出一面」）。
+    reset({0, 0}, {1, 0}); endXferCodes = {TWRC_ENDOFLIST};
+    result = run(true, 1);
+    assert(result.success && result.errorMessage.empty() && result.pages.size() == 2 && frameIndex == 2 && clockMs == 0);
+    assert(result.pages[0].side == "front" && result.pages[1].side == "back");
+    // 单面同理：7 + Count>0（含 0xffff 未知数量）继续取下一帧，7 + Count==0 才收批且不空等
+    reset({0, 0}, {1, 0}); endXferCodes = {TWRC_ENDOFLIST, TWRC_ENDOFLIST};
+    result = run(false, 2);
+    assert(result.success && result.errorMessage.empty() && result.pages.size() == 2 && clockMs == 0);
     // Flatbed / rejected ADF does not add an ADF continuation wait.
     reset({0, 1000}, {0, 0}); feederSetAccepted = false; feederReadSupported = false;
     assert(run().pages.size() == 1 && clockMs == 0);

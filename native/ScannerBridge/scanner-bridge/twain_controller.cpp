@@ -692,21 +692,25 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         TW_UINT16 endRc = DSM_Entry(&m_appId, &m_sourceId,
             DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER,
             (TW_MEMREF)&pending);
-        if (endRc == TWRC_ENDOFLIST) {
-            // TWAIN 2.x 里这个码叫 TWRC_ENDOFLJOB（随包 twain.h 只有同值的 TWRC_ENDOFLIST）：
-            // 「本次作业再无待传输图像」，MSG_ENDXFER 返回它属正常收尾，不是失败。
-            fprintf(stderr, "[ScannerBridge] ENDXFER: end of job after sheet %d (pending=%u)\n",
-                pageNum, static_cast<unsigned>(pending.Count));
-            // 已交付的帧已经结束，按 Count 复位状态，收尾时不再重复发 ENDXFER
-            m_state = pending.Count > 0 ? 6 : 5;
+        // MSG_ENDXFER 的返回码不参与作业结束判定：随包 twain.h（2.5.1）只有 TWRC_ENDOFLIST(7)，
+        // 没有 TWRC_ENDOFLJOB；DAT_PENDINGXFERS 的剩余张数只看 Count。所以 7 只代表「不是失败」，
+        // 只有 7 且 Count==0 才是作业结束；7 且 Count>0 必须继续取帧，否则双面的背面会被当成
+        // 「整批成功」丢掉（errorMessage 为空、正面已入库 → result.success 为真）。
+        if (endRc == TWRC_ENDOFLIST && pending.Count == 0) {
+            fprintf(stderr, "[ScannerBridge] ENDXFER: end of job after sheet %d (pending=0)\n", pageNum);
+            m_state = 5;
             hasMorePages = false;
             break;
         }
-        if (endRc != TWRC_SUCCESS) {
+        if (endRc != TWRC_SUCCESS && endRc != TWRC_ENDOFLIST) {
             logError("ENDXFER failed: " + twainResultToString(endRc));
             result.errorMessage = "ENDXFER failed: " + twainResultToString(endRc);
             hasMorePages = false;
             break;
+        }
+        if (endRc == TWRC_ENDOFLIST) {
+            fprintf(stderr, "[ScannerBridge] ENDXFER: rc=ENDOFLIST but pending=%u after sheet %d, continuing\n",
+                static_cast<unsigned>(pending.Count), pageNum);
         }
         // 非零（含 0xffff 未知数量）表示 DS 已在状态 6，可直接取下一帧，不会再发 XFERREADY。
         m_state = pending.Count > 0 ? 6 : 5;
@@ -744,19 +748,22 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             endRc = DSM_Entry(&m_appId, &m_sourceId,
                 DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER,
                 (TW_MEMREF)&pending);
-            if (endRc == TWRC_ENDOFLIST) {
-                // 同上：ENDOFLIST 即 TWAIN 2.x 的 TWRC_ENDOFLJOB，正常收尾
-                fprintf(stderr, "[ScannerBridge] ENDXFER: end of job after back of sheet %d (pending=%u)\n",
-                    pageNum, static_cast<unsigned>(pending.Count));
-                m_state = pending.Count > 0 ? 6 : 5;
+            // 同上：7 只在 Count==0 时是作业结束，否则继续等下一页
+            if (endRc == TWRC_ENDOFLIST && pending.Count == 0) {
+                fprintf(stderr, "[ScannerBridge] ENDXFER: end of job after back of sheet %d (pending=0)\n", pageNum);
+                m_state = 5;
                 hasMorePages = false;
                 break;
             }
-            if (endRc != TWRC_SUCCESS) {
+            if (endRc != TWRC_SUCCESS && endRc != TWRC_ENDOFLIST) {
                 logError("ENDXFER (back) failed: " + twainResultToString(endRc));
                 result.errorMessage = "ENDXFER (back) failed: " + twainResultToString(endRc);
                 hasMorePages = false;
                 break;
+            }
+            if (endRc == TWRC_ENDOFLIST) {
+                fprintf(stderr, "[ScannerBridge] ENDXFER: rc=ENDOFLIST but pending=%u after back of sheet %d, continuing\n",
+                    static_cast<unsigned>(pending.Count), pageNum);
             }
             m_state = pending.Count > 0 ? 6 : 5;
         }
@@ -919,7 +926,8 @@ bool TwainController::disableSource() {
         const TW_UINT16 endRc = DSM_Entry(&m_appId, &m_sourceId,
             DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER, &pending);
         fprintf(stderr, "[ScannerBridge] end unfinished transfer before disable rc=%u\n", static_cast<unsigned>(endRc));
-        // ENDOFLIST 即 TWAIN 2.x 的 ENDOFLJOB，同样出现在收尾的 ENDXFER 上，此时作业已无待传图像，可继续 DISABLEDS
+        // 收尾的 ENDXFER 返回 7（随包头文件里的 TWRC_ENDOFLIST）不是失败，可以继续 DISABLEDS；
+        // 是否还有在途帧由 Count 决定，交给下面的 MSG_RESET 清掉。
         if (endRc != TWRC_SUCCESS && endRc != TWRC_ENDOFLIST) return false;
         m_state = pending.Count > 0 ? 6 : 5;
     }
