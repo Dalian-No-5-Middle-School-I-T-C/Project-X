@@ -120,6 +120,7 @@ private:
     TW_UINT16 requestedPixelType() const;
     bool setResolution(int dpi);
     bool setDuplex(bool duplex);
+    bool verifyDuplexMode(bool duplex, const char* setStatus);
     bool setPaperSize(const std::string& size);
     bool enableADF();
     bool setXferCount();

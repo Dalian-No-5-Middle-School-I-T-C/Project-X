@@ -1026,11 +1026,15 @@ bool TwainController::setResolution(int dpi) {
 bool TwainController::setDuplex(bool duplex) {
     TW_BOOL val = duplex ? TRUE : FALSE;
     const bool accepted = setCapability(CAP_DUPLEXENABLED, TWTY_BOOL, &val);
+    return verifyDuplexMode(duplex, accepted ? "ok" : "rejected");
+}
+
+bool TwainController::verifyDuplexMode(bool duplex, const char* setStatus) {
     TW_UINT16 effective = 0;
     bool enabledUnsupported = false;
     const bool readable = readCurrentUInt16Capability(CAP_DUPLEXENABLED, TWTY_BOOL, &effective, &enabledUnsupported);
     fprintf(stderr, "[ScannerBridge] CAP_DUPLEXENABLED requested=%d set=%s effective=%d\n",
-        duplex ? 1 : 0, accepted ? "ok" : "rejected", readable ? (effective != 0 ? 1 : 0) : -1);
+        duplex ? 1 : 0, setStatus, readable ? (effective != 0 ? 1 : 0) : -1);
     if (readable) return (effective != 0) == duplex;
     // 单面设备可完全不支持 CAP_DUPLEXENABLED；用 CAP_DUPLEX 确认其硬件为单面。
     if (!duplex) {
@@ -1179,10 +1183,21 @@ bool TwainController::validateImageSettings(const TW_IMAGEINFO& info) {
         m_transferError = "扫描仪实际输出色彩模式与设置不一致，请检查驱动设置后重试";
         return false;
     }
-    if (std::abs(x - m_config.dpi) < 0.01 && std::abs(y - m_config.dpi) < 0.01) return true;
-    m_transferError = "扫描仪实际输出分辨率与所设置的 " + std::to_string(m_config.dpi) +
-        " DPI 不一致，请检查驱动设置后重试";
-    return false;
+    if (std::abs(x - m_config.dpi) >= 0.01 || std::abs(y - m_config.dpi) >= 0.01) {
+        m_transferError = "扫描仪实际输出分辨率与所设置的 " + std::to_string(m_config.dpi) +
+            " DPI 不一致，请检查驱动设置后重试";
+        return false;
+    }
+    // 驱动界面（含 ENABLEDS 回退或 CHECKSTATUS 隐式显示）可在启动后改变单双面。
+    // 每帧在状态 6 回读、只校验不 SET，防止背面被按下一张正面入库。
+    const bool duplexVerified = verifyDuplexMode(m_config.duplex, "not-requested");
+    fprintf(stderr, "[ScannerBridge] transfer duplex contract requested=%d state=%d verified=%d\n",
+        m_config.duplex ? 1 : 0, m_state, duplexVerified ? 1 : 0);
+    if (!duplexVerified) {
+        m_transferError = "扫描仪实际单双面模式与设置不一致或无法确认，请检查驱动设置后重试";
+        return false;
+    }
+    return true;
 }
 
 bool TwainController::shouldWaitForTransfer(TW_UINT16 pendingCount) {

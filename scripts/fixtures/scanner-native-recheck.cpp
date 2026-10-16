@@ -24,6 +24,9 @@ static bool sourceEnabled;
 static int invalidFeederQueries;
 static bool duplexSetAccepted, duplexReadSupported, duplexEffective, duplexSubstitute;
 static bool duplexCapabilitySupported;
+static bool duplexChangesOnEnable, duplexChangesOnReady, duplexChangesAfterFirstFrame, duplexReadFailsAfterEnable;
+static bool failNoUiEnable, forceUiCheckStatus;
+static int enableCalls;
 static TW_UINT16 duplexHardware;
 static bool synchronousReady;
 static bool duplexReadUnsupported, duplexCapabilityUnsupported, lastCapUnsupported;
@@ -78,12 +81,16 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(pTW_IDENTITY, pTW_IDENTITY,
         }
         announced = true;
         pendingTransfers = true;
+        if (duplexChangesOnReady && frameIndex == 0) duplexEffective = !duplexEffective;
         ++readyEvents;
         static_cast<pTW_EVENT>(data)->TWMessage = MSG_XFERREADY;
         return TWRC_DSEVENT;
     }
     if (dat == DAT_USERINTERFACE && msg == MSG_ENABLEDS) {
+        ++enableCalls;
+        if (failNoUiEnable && !static_cast<pTW_USERINTERFACE>(data)->ShowUI) return TWRC_FAILURE;
         sourceEnabled = true;
+        if (duplexChangesOnEnable) duplexEffective = !duplexEffective;
         if (resolutionChangesOnEnable) effectiveX = effectiveY = 150;
         if (pixelChangesOnEnable) effectivePixelType = TWPT_GRAY;
         if (synchronousReady) {
@@ -91,7 +98,7 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(pTW_IDENTITY, pTW_IDENTITY,
             MSG event;
             TwainController::current()->processTwainEvent(event);
         }
-        return TWRC_SUCCESS;
+        return forceUiCheckStatus ? TWRC_CHECKSTATUS : TWRC_SUCCESS;
     }
     if (dat == DAT_USERINTERFACE && msg == MSG_DISABLEDS) {
         sourceEnabled = false;
@@ -112,6 +119,10 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(pTW_IDENTITY, pTW_IDENTITY,
         }
         lastCapUnsupported = (cap->Cap == CAP_DUPLEXENABLED && duplexReadUnsupported)
             || (cap->Cap == CAP_DUPLEX && duplexCapabilityUnsupported);
+        if (cap->Cap == CAP_DUPLEXENABLED && sourceEnabled && duplexReadFailsAfterEnable) {
+            lastCapUnsupported = false;
+            return TWRC_FAILURE;
+        }
         if ((cap->Cap == CAP_FEEDERENABLED && !feederReadSupported)
             || (cap->Cap == ICAP_PIXELTYPE && !pixelReadable)
             || (cap->Cap == CAP_DUPLEXENABLED && !duplexReadSupported)
@@ -163,6 +174,7 @@ bool TwainController::setCapability(TW_UINT16 cap, TW_UINT16, void* value) {
     }
     if (cap == CAP_FEEDERENABLED) effectiveX = effectiveY = 75; // Simulate a driver's capability dependency reset.
     if (cap == CAP_DUPLEXENABLED) {
+        assert(!sourceEnabled && "Duplex validation after ENABLEDS must be read-only");
         if (duplexSetAccepted && !duplexSubstitute) duplexEffective = *static_cast<TW_BOOL*>(value) != 0;
         return duplexSetAccepted;
     }
@@ -178,6 +190,7 @@ bool TwainController::captureNativeTransfer(const std::string& output, int page,
     m_transferError.clear();
     assert(m_state == 6);
     TW_IMAGEINFO info{};
+    if (duplexChangesAfterFirstFrame && frameIndex > 0) duplexEffective = false;
     info.PixelType = pixelChangesAfterFirstFrame && frameIndex > 0 ? TWPT_GRAY : effectivePixelType;
     info.XResolution.Whole = effectiveX; info.YResolution.Whole = effectiveY;
     if (!validateImageSettings(info)) return false;
@@ -203,6 +216,8 @@ static void reset(std::vector<DWORD> frameDelays, std::vector<TW_UINT16> pending
     sourceEnabled = false; invalidFeederQueries = 0;
     duplexSetAccepted = true; duplexReadSupported = true; duplexEffective = false;
     duplexSubstitute = false; duplexCapabilitySupported = true; duplexHardware = TWDX_1PASSDUPLEX;
+    duplexChangesOnEnable = duplexChangesOnReady = duplexChangesAfterFirstFrame = duplexReadFailsAfterEnable = false;
+    failNoUiEnable = forceUiCheckStatus = false; enableCalls = 0;
     synchronousReady = false;
     duplexReadUnsupported = duplexCapabilityUnsupported = true; lastCapUnsupported = false;
     unitsAccepted = xResolutionAccepted = yResolutionAccepted = resolutionReadable = true;
@@ -213,17 +228,42 @@ static void reset(std::vector<DWORD> frameDelays, std::vector<TW_UINT16> pending
     effectiveUnits = TWUN_CENTIMETERS; effectiveX = effectiveY = 75; configuredCaps.clear();
     pendingTransfers = closeAfterFrames = closeDelivered = saveFails = false; resetCalls = disableCalls = 0;
 }
-static ScanResult run(bool duplex = false, int maxPages = 0, const std::string& mode = "color") {
+static ScanResult run(bool duplex = false, int maxPages = 0, const std::string& mode = "color", bool showUi = false) {
     TwainController controller;
     ScanConfig config;
     config.sourceName = "fixture"; config.outputDir = "fixture";
     config.duplex = duplex; config.maxPages = maxPages;
     config.colorMode = mode;
+    config.showUi = showUi;
     auto result = controller.scan(config);
     assert(invalidFeederQueries == 0 && "Do not query FEEDERLOADED after enabling the source");
     return result;
 }
 int main() {
+    reset({0, 0}, {1, 0}); duplexChangesOnEnable = true;
+    auto overriddenDuplex = run(false, 2, "color", true);
+    assert(!overriddenDuplex.success && overriddenDuplex.pages.empty() && frameIndex == 0);
+    assert(overriddenDuplex.errorMessage.find("单双面") != std::string::npos && resetCalls == 1 && disableCalls == 1);
+    reset({0, 0}, {1, 0}); duplexChangesOnEnable = true; failNoUiEnable = true;
+    overriddenDuplex = run(false, 2);
+    assert(!overriddenDuplex.success && overriddenDuplex.pages.empty() && frameIndex == 0 && enableCalls == 2);
+    reset({0, 0}, {1, 0}); duplexChangesOnEnable = true; forceUiCheckStatus = true;
+    assert(!run(false, 2).success && frameIndex == 0 && enableCalls == 1);
+    // Nonmodal UI changes may arrive with XFERREADY, after ENABLEDS already returned.
+    reset({0, 0}, {1, 0}); duplexChangesOnReady = true;
+    assert(!run(false, 2, "color", true).success && frameIndex == 0 && readyEvents == 1);
+    reset({0, 0}, {1, 0}); duplexChangesOnEnable = true; synchronousReady = true;
+    assert(!run(true, 1, "color", true).success && frameIndex == 0 && readyEvents == 1);
+    reset({0}, {0}); duplexReadFailsAfterEnable = true;
+    assert(!run(false, 1).success && frameIndex == 0);
+    reset({0, 0}, {1, 0}); duplexChangesAfterFirstFrame = true;
+    overriddenDuplex = run(true, 1);
+    assert(!overriddenDuplex.success && overriddenDuplex.pages.size() == 1 && frameIndex == 1);
+    assert(overriddenDuplex.errorMessage.find("单双面") != std::string::npos && resetCalls == 1 && disableCalls == 1);
+    reset({0, 0}, {1, 0}); failNoUiEnable = true;
+    assert(run(true, 1).success && frameIndex == 2 && enableCalls == 2);
+    reset({0, 0}, {1, 0});
+    assert(run(true, 1, "color", true).success && frameIndex == 2);
     for (const auto& mode : {"color", "gray", "bw"}) {
         reset({0}, {0});
         assert(run(false, 1, mode).success && frameIndex == 1);
@@ -332,5 +372,5 @@ int main() {
     reset({0}, {0}); closeAfterFrames = true;
     result = run();
     assert(result.success && result.pages.size() == 1 && clockMs == 0 && disableCalls == 1);
-    std::puts("PASS production scan loop: verified color/gray/BW, rejected pixel substitutions/unreadable modes, UI and later-frame overrides preserve prior pages; State 5, duplex, DPI, cleanup and limits");
+    std::puts("PASS production scan loop: read-only duplex verification per frame after explicit/fallback/CHECKSTATUS UI, delayed/synchronous ready, later-frame changes; pixel/DPI, State 5, cleanup and limits");
 }
