@@ -90,6 +90,8 @@ jobs:
 
       - name: Scanner page timeout default regression
         run: npm run verify:scanner-page-timeout
+      - name: Scanner in-flight frames and bridge diagnostics
+        run: npm run verify:scanner-adf-recheck
 
       - name: Scanner upload manager recovery
         run: npm run verify:scanner-upload-manager

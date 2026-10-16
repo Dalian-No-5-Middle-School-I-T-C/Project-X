@@ -120,9 +120,9 @@ private:
     bool setPaperSize(const std::string& size);
     bool enableADF();
     bool setXferCount();
-    // CAP_FEEDERLOADED 复核：pending.Count=0 但送纸器里还有纸时继续等下一页，
-    // 不信「Count=0 即结束」这一条（部分 ADF 驱动在还有纸时就报 0）。
-    // 返回 false = 驱动不支持该能力，调用方退回「信 Count」的旧行为。
+    bool readCurrentUInt16Capability(TW_UINT16 cap, TW_UINT16 type, TW_UINT16* effective);
+    // 送纸器启用且支持复核时，托盘空仍需等待在途帧；正反面共用此规则。
+    bool shouldWaitForTransfer(TW_UINT16 pendingCount);
     bool queryFeederLoaded(bool* loaded);
     
     // Image saving

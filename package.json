@@ -100,6 +100,7 @@
     "verify:exam-class-memberships:mariadb": "tsx scripts/verify-exam-class-memberships.ts --mariadb",
     "verify:scan-page-numbering": "tsx scripts/verify-scan-page-numbering.ts",
     "verify:scanner-page-timeout": "tsx scripts/verify-scanner-page-timeout.ts",
+    "verify:scanner-adf-recheck": "tsx scripts/scanner-native-recheck-smoke.ts && tsx scripts/scanner-bridge-diagnostics-smoke.ts",
     "verify:stage-vc-runtime": "tsx scripts/verify-stage-vc-runtime.ts",
     "verify:grading-published-exam": "tsx scripts/verify-grading-published-exam.ts",
     "verify:scanner-upload-manager": "tsx scripts/scanner-upload-manager-smoke.ts",

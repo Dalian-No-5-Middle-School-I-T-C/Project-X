@@ -1,5 +1,6 @@
 import { spawn, execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import path from "node:path";
 import { rootDir } from "../storage";
 import type { BridgeScanResult, ScannerSourcesResult } from "./scanner-types";
@@ -237,6 +238,15 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string, env?
 
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
+    const stderrDecoder = new StringDecoder("utf8");
+    let stderrLine = "";
+    let stderrEnded = false;
+    const flushStderr = () => {
+      if (stderrEnded) return;
+      stderrEnded = true;
+      logBridgeStderr(stderrLine + stderrDecoder.end());
+      stderrLine = "";
+    };
     let timedOut = false;
 
     const timeout = setTimeout(() => {
@@ -245,7 +255,13 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string, env?
     }, timeoutMs);
 
     child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrChunks.push(chunk);
+      const lines = (stderrLine + stderrDecoder.write(chunk)).split("\n");
+      stderrLine = lines.pop() ?? "";
+      for (const line of lines) logBridgeStderr(line);
+    });
+    child.stderr.on("end", flushStderr);
 
     child.on("error", (error) => {
       clearTimeout(timeout);
@@ -262,6 +278,7 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string, env?
 
     child.on("close", (code) => {
       clearTimeout(timeout);
+      flushStderr();
       if (sessionId) {
         retireActiveScan(sessionId);
       }
@@ -526,8 +543,7 @@ export async function scan(config: {
   // 把零页设备失败转成抛错，才能进入下面的双 DSM 重试。
   // 已有部分页（page_count>0）属中途失败，重试会重复扫描同一批纸，不重试。
   const attempt = async (env?: NodeJS.ProcessEnv): Promise<BridgeScanResult> => {
-    const { stdout, stderr } = await runBridge(args, timeoutMs, sessionId, env);
-    logBridgeStderr(stderr);
+    const { stdout } = await runBridge(args, timeoutMs, sessionId, env);
     const result = parseBridgeJson(stdout) as unknown as BridgeScanResult;
     if (result.status === "error" && result.page_count === 0) {
       const message = result.message || "扫描未产生任何页面";

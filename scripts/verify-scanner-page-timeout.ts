@@ -49,6 +49,10 @@ for (const rel of ["resources/native/win-x64/scanner-bridge.exe", "resources/nat
   assert.ok(existsSync(file), `④: 缺少随包二进制 ${rel}`);
   const bytes = readFileSync(file);
   assert.ok(bytes.includes("--page-timeout-ms"), `④: ${rel} 不支持 --page-timeout-ms，默认值改不动现场`);
+  assert.ok(bytes.includes("pending=0 feederLoaded=%d; waiting up to %dms for next transfer"),
+    `④: ${rel} 缺少在途帧复核逻辑，请重建随包桥接程序`);
+  assert.ok(bytes.includes("ICAP_PIXELTYPE requested=%u set=%s effective=%d"),
+    `④: ${rel} 缺少色彩协商诊断`);
 }
 
 // ⑤ 头文件默认值与服务端默认值保持一致（防止两处各写一套：源码 60s、实际跑的 exe 15s）

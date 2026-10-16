@@ -665,8 +665,9 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             break;
         }
         
-        // Back side (duplex) — 由 pending.Count 决定是否还有背面，避免干等 30 秒
-        if (config.duplex && pending.Count > 0) {
+        // 背面也可能在 Count=0 后到达；必须在当前物理张内等待，不能交给下轮正面。
+        if (config.duplex) {
+            if (!shouldWaitForTransfer(pending.Count)) break;
             if (!waitForState(6, config.pageTimeoutMs)) {
                 result.errorMessage = "Timeout waiting for back side of page " + std::to_string(pageNum);
                 break;
@@ -704,35 +705,10 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             }
         }
         
-        hasMorePages = pending.Count > 0;
         fprintf(stderr, "[ScannerBridge] page %d done, pending=%d\n",
             pageNum, static_cast<int>(pending.Count));
-        if (!hasMorePages && m_feederEnabled) {
-            // 部分 ADF 驱动在送纸器还有纸时就报 pending.Count=0（柯达 i3000 实测：
-            // 即使设了 CAP_XFERCOUNT=-1 也只交付 1 页）。规范上 Count=0 时 DS 回状态 5，
-            // 但只要送纸器里还有纸，下一页就绪后它会再次发 MSG_XFERREADY（状态 5→6）。
-            // 因此用 CAP_FEEDERLOADED 复核：还有纸就继续等，不提前收尾；
-            // 驱动不支持该能力时退回「信 Count」的旧行为，并留日志便于现场取证。
-            bool loaded = false;
-            if (queryFeederLoaded(&loaded)) {
-                if (loaded) {
-                    // 复核通过后按原有耐心等满 pageTimeoutMs，不做提前收尾：
-                    // 送纸器从「有纸」变「无纸」只说明纸已被取走进入走纸/扫描，
-                    // MSG_XFERREADY 尚未到达（TWAIN 规范里 CAP_FEEDERLOADED 是进纸器
-                    // 装载状态，不代表没有采集在进行），此时提前结束会静默丢掉在途
-                    // 的最后一张（Codex P1）。正常扫完的批次送纸器本就已空、不会进入
-                    // 本分支，因此这里不引入额外等待。
-                    fprintf(stderr, "[ScannerBridge] pending=0 but feeder still loaded; keep waiting for next page\n");
-                    hasMorePages = true;
-                } else {
-                    fprintf(stderr, "[ScannerBridge] pending=0 and feeder empty; batch finished (pages=%d)\n",
-                        pageNum);
-                }
-            } else {
-                fprintf(stderr, "[ScannerBridge] pending=0 and CAP_FEEDERLOADED unsupported; trusting pending count (pages=%d)\n",
-                    pageNum);
-            }
-        }
+        if (config.maxPages > 0 && pageNum >= config.maxPages) break;
+        hasMorePages = shouldWaitForTransfer(pending.Count);
     }
     
     // 7. Cleanup
@@ -980,7 +956,13 @@ bool TwainController::setPixelType() {
     } else {
         pixelType = TWPT_GRAY;
     }
-    return setCapability(ICAP_PIXELTYPE, TWTY_UINT16, &pixelType);
+    const bool accepted = setCapability(ICAP_PIXELTYPE, TWTY_UINT16, &pixelType);
+    TW_UINT16 effective = 0;
+    const bool readable = readCurrentUInt16Capability(ICAP_PIXELTYPE, TWTY_UINT16, &effective);
+    fprintf(stderr, "[ScannerBridge] ICAP_PIXELTYPE requested=%u set=%s effective=%d\n",
+        static_cast<unsigned>(pixelType), accepted ? "ok" : "rejected",
+        readable ? static_cast<int>(effective) : -1);
+    return accepted;
 }
 
 bool TwainController::setResolution(int dpi) {
@@ -1041,59 +1023,73 @@ bool TwainController::setPaperSize(const std::string& size) {
 
 bool TwainController::enableADF() {
     TW_BOOL adf = TRUE;
-    setCapability(CAP_FEEDERENABLED, TWTY_BOOL, &adf);
+    const bool accepted = setCapability(CAP_FEEDERENABLED, TWTY_BOOL, &adf);
 
     TW_BOOL autoFeed = TRUE;
     setCapability(CAP_AUTOFEED, TWTY_BOOL, &autoFeed);
 
     // 回读确认送纸器真的启用了：SET 可能被静默拒绝（平板机型、驱动差异），
     // 后续「Count=0 是否可信」的 FEEDERLOADED 复核只在送纸器启用时才有意义。
-    TW_CAPABILITY current;
-    memset(&current, 0, sizeof(current));
-    current.Cap = CAP_FEEDERENABLED;
-    m_feederEnabled = false;
-    TW_UINT16 rc = DSM_Entry(&m_appId, &m_sourceId,
-        DG_CONTROL, DAT_CAPABILITY, MSG_GETCURRENT,
-        (TW_MEMREF)&current);
-    if (rc == TWRC_SUCCESS && current.hContainer) {
-        pTW_ONEVALUE value = static_cast<pTW_ONEVALUE>(GlobalLock(current.hContainer));
-        if (value && value->ItemType == TWTY_BOOL) {
-            m_feederEnabled = (value->Item != 0);
-        }
-        if (value) GlobalUnlock(current.hContainer);
-        GlobalFree(current.hContainer);
-    } else {
-        // 读不回时按「已请求启用」处理：宁可多做一次 FEEDERLOADED 复核，
-        // 也不要因为一次读回失败就跳过它、退回「只扫一张」。
-        m_feederEnabled = true;
-    }
-    fprintf(stderr, "[ScannerBridge] CAP_FEEDERENABLED effective=%d CAP_AUTOFEED requested=1\n",
-        m_feederEnabled ? 1 : 0);
+    TW_UINT16 effective = 0;
+    const bool readable = readCurrentUInt16Capability(CAP_FEEDERENABLED, TWTY_BOOL, &effective);
+    // 读回失败（含容器格式不符）时仅信任成功的 SET；SET 也失败的平板机不续等。
+    m_feederEnabled = readable ? effective != 0 : accepted;
+    fprintf(stderr, "[ScannerBridge] CAP_FEEDERENABLED set=%s effective=%d source=%s CAP_AUTOFEED requested=1\n",
+        accepted ? "ok" : "rejected", m_feederEnabled ? 1 : 0,
+        readable ? "GETCURRENT" : "SET fallback");
     return true;  // Best effort
 }
 
 bool TwainController::queryFeederLoaded(bool* loaded) {
     if (!loaded) return false;
-    *loaded = false;
+    TW_UINT16 effective = 0;
+    const bool readable = readCurrentUInt16Capability(CAP_FEEDERLOADED, TWTY_BOOL, &effective);
+    *loaded = readable && effective != 0;
+    return readable;
+}
+
+bool TwainController::readCurrentUInt16Capability(TW_UINT16 cap, TW_UINT16 type, TW_UINT16* effective) {
     TW_CAPABILITY current;
     memset(&current, 0, sizeof(current));
-    current.Cap = CAP_FEEDERLOADED;
+    current.Cap = cap;
     TW_UINT16 rc = DSM_Entry(&m_appId, &m_sourceId,
         DG_CONTROL, DAT_CAPABILITY, MSG_GETCURRENT,
         (TW_MEMREF)&current);
     if (rc != TWRC_SUCCESS || !current.hContainer) {
+        fprintf(stderr, "[ScannerBridge] GETCURRENT cap=%u failed rc=%u container=%s\n",
+            static_cast<unsigned>(cap), static_cast<unsigned>(rc), current.hContainer ? "present" : "missing");
         if (current.hContainer) GlobalFree(current.hContainer);
         return false;
     }
     bool readable = false;
-    pTW_ONEVALUE value = static_cast<pTW_ONEVALUE>(GlobalLock(current.hContainer));
-    if (value && value->ItemType == TWTY_BOOL) {
-        *loaded = (value->Item != 0);
+    pTW_ONEVALUE value = current.ConType == TWON_ONEVALUE
+        ? static_cast<pTW_ONEVALUE>(GlobalLock(current.hContainer)) : nullptr;
+    if (value && value->ItemType == type) {
+        *effective = static_cast<TW_UINT16>(value->Item);
         readable = true;
+    }
+    if (!readable) {
+        fprintf(stderr, "[ScannerBridge] GETCURRENT cap=%u unreadable containerType=%u itemType=%d expected=%u\n",
+            static_cast<unsigned>(cap), static_cast<unsigned>(current.ConType),
+            value ? static_cast<int>(value->ItemType) : -1, static_cast<unsigned>(type));
     }
     if (value) GlobalUnlock(current.hContainer);
     GlobalFree(current.hContainer);
     return readable;
+}
+
+bool TwainController::shouldWaitForTransfer(TW_UINT16 pendingCount) {
+    if (pendingCount > 0) return true;
+    if (!m_feederEnabled) return false;
+    bool loaded = false;
+    if (!queryFeederLoaded(&loaded)) {
+        fprintf(stderr, "[ScannerBridge] pending=0 and CAP_FEEDERLOADED unsupported; trusting pending count\n");
+        return false;
+    }
+    // 托盘空也可能是纸已进入走纸通道；沿用完整等纸超时，背面与下一张共用此规则。
+    fprintf(stderr, "[ScannerBridge] pending=0 feederLoaded=%d; waiting up to %dms for next transfer\n",
+        loaded ? 1 : 0, m_config.pageTimeoutMs);
+    return true;
 }
 
 bool TwainController::setXferCount() {
@@ -1317,6 +1313,8 @@ bool TwainController::waitForState(int targetState, DWORD timeoutMs) {
     while (GetTickCount() - start < timeoutMs) {
         // Check cancel
         if (m_cancelRequested) return false;
+        if (m_state >= targetState) return true;
+        if (m_state == 0) return false; // MSG_CLOSEDSREQ / MSG_CLOSEDSOK
         
         // Peek messages for TWAIN
         while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {

@@ -1,0 +1,145 @@
+#include <cassert>
+#include <cstdio>
+#include <cstring>
+#include <algorithm>
+#include <string>
+#include <vector>
+#include "twain_controller.hpp"
+
+using namespace ScannerBridge;
+static std::string g_dsmLoadedPath = "fixture";
+static DWORD clockMs;
+static int frameIndex;
+static bool announced;
+static DWORD nextReady;
+static std::vector<DWORD> delays;
+static std::vector<TW_UINT16> counts;
+static bool feederLoaded, feederSupported, feederSetAccepted, feederReadSupported, feederEnabled;
+static bool badFeederType;
+static TW_ONEVALUE capabilityValue;
+
+DWORD GetTickCount() { return clockMs; }
+void Sleep(DWORD ms) { clockMs += ms; }
+bool PeekMessage(MSG*, void*, int, int, int) {
+    return !announced && frameIndex < static_cast<int>(delays.size()) && clockMs >= nextReady;
+}
+void TranslateMessage(MSG*) {}
+void DispatchMessage(MSG* msg) { TwainController::current()->processTwainEvent(*msg); announced = true; }
+void* GlobalLock(void* p) { return p; }
+void GlobalUnlock(void*) {}
+void GlobalFree(void*) {}
+
+extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(pTW_IDENTITY, pTW_IDENTITY,
+    TW_UINT32, TW_UINT16 dat, TW_UINT16 msg, TW_MEMREF data) {
+    if (dat == DAT_IDENTITY && msg == MSG_GETFIRST) {
+        std::strcpy(static_cast<pTW_IDENTITY>(data)->ProductName, "fixture");
+        return TWRC_SUCCESS;
+    }
+    if (dat == DAT_IDENTITY && msg == MSG_GETNEXT) return TWRC_ENDOFLIST;
+    if (dat == DAT_PENDINGXFERS && msg == MSG_ENDXFER) {
+        static_cast<pTW_PENDINGXFERS>(data)->Count = counts.at(frameIndex - 1);
+        return TWRC_SUCCESS;
+    }
+    if (dat == DAT_EVENT) {
+        static_cast<pTW_EVENT>(data)->TWMessage = MSG_XFERREADY;
+        return TWRC_DSEVENT;
+    }
+    if (dat == DAT_CAPABILITY && msg == MSG_GETCURRENT) {
+        auto cap = static_cast<pTW_CAPABILITY>(data);
+        if ((cap->Cap == CAP_FEEDERLOADED && !feederSupported)
+            || (cap->Cap == CAP_FEEDERENABLED && !feederReadSupported)) return TWRC_FAILURE;
+        cap->ConType = TWON_ONEVALUE;
+        capabilityValue.ItemType = cap->Cap == ICAP_PIXELTYPE || (cap->Cap == CAP_FEEDERENABLED && badFeederType)
+            ? TWTY_UINT16 : TWTY_BOOL;
+        capabilityValue.Item = cap->Cap == CAP_FEEDERENABLED ? feederEnabled
+            : cap->Cap == CAP_FEEDERLOADED ? feederLoaded : TWPT_RGB;
+        cap->hContainer = &capabilityValue;
+        return TWRC_SUCCESS;
+    }
+    assert(false && "Unexpected DSM request");
+    return TWRC_FAILURE;
+}
+
+namespace ScannerBridge {
+TwainController* TwainController::s_instance = nullptr;
+TwainController::TwainController() : m_state(0), m_cancelRequested(false) { s_instance = this; }
+TwainController::~TwainController() { s_instance = nullptr; }
+TwainController* TwainController::current() { return s_instance; }
+bool TwainController::openDSM() { m_state = 1; return true; }
+bool TwainController::closeDSM() { m_state = 0; return true; }
+bool TwainController::openSource(const TW_IDENTITY&) { m_state = 2; return true; }
+bool TwainController::closeSource() { m_state = 1; return true; }
+bool TwainController::enableSource(bool) { m_state = 3; return true; }
+bool TwainController::disableSource() { m_state = 2; return true; }
+bool TwainController::setCapability(TW_UINT16 cap, TW_UINT16, void*) {
+    return cap == CAP_FEEDERENABLED ? feederSetAccepted : true;
+}
+bool TwainController::setResolution(int) { return true; }
+bool TwainController::setDuplex(bool) { return true; }
+bool TwainController::setPaperSize(const std::string&) { return true; }
+bool TwainController::setXferCount() { return true; }
+std::string TwainController::twainResultToString(TW_UINT16) { return "fixture failure"; }
+void TwainController::logError(const std::string&) {}
+std::string archHint() { return "fixture"; }
+std::string dsmDiagnosticSuffix() { return "fixture"; }
+bool TwainController::captureNativeTransfer(const std::string& output, int page, const std::string& side, PageResult& result) {
+    assert(m_state == 6);
+    result = { output, page, side, 1, 1 };
+    ++frameIndex;
+    m_state = 5;
+    announced = false;
+    if (frameIndex < static_cast<int>(delays.size())) nextReady = clockMs + delays[frameIndex];
+    return true;
+}
+}
+
+#include "production.inc"
+
+static void reset(std::vector<DWORD> frameDelays, std::vector<TW_UINT16> pending) {
+    clockMs = 0; frameIndex = 0; announced = false;
+    delays = frameDelays; counts = pending; nextReady = delays.at(0);
+    feederLoaded = false; feederSupported = true; feederSetAccepted = true;
+    feederReadSupported = true; feederEnabled = true; badFeederType = false;
+}
+static ScanResult run(bool duplex = false, int maxPages = 0) {
+    TwainController controller;
+    ScanConfig config;
+    config.sourceName = "fixture"; config.outputDir = "fixture";
+    config.duplex = duplex; config.maxPages = maxPages;
+    return controller.scan(config);
+}
+int main() {
+    // The last sheet is already past the tray sensor and needs 25 seconds before XFERREADY.
+    reset({0, 25000}, {0, 0});
+    auto result = run();
+    assert(result.success && result.pages.size() == 2);
+    assert(clockMs == 85000); // full 60-second end-of-batch wait, no short grace cutoff
+    // Count=0 before every side; a 45-second back must stay paired with its original front.
+    reset({0, 45000, 1000, 30000}, {0, 0, 0, 0});
+    result = run(true, 2);
+    assert(result.success && result.pages.size() == 4);
+    for (int i = 0; i < 4; ++i) {
+        assert(result.pages[i].pageNumber == i / 2 + 1);
+        assert(result.pages[i].side == (i % 2 ? "back" : "front"));
+    }
+    assert(clockMs == 76000); // maxPages stops after the complete final physical sheet
+    reset({0, 65000}, {0, 0});
+    result = run(true);
+    assert(!result.success && result.pages.size() == 1);
+    assert(result.errorMessage.find("back side of page 1") != std::string::npos);
+    // Unsupported feeder capability and flatbed fall back to the reported count.
+    reset({0, 1000}, {0, 0}); feederSupported = false;
+    assert(run().pages.size() == 1 && clockMs == 0);
+    reset({0, 1000}, {0, 0}); feederSetAccepted = false; feederReadSupported = false;
+    assert(run().pages.size() == 1 && clockMs == 0);
+    reset({0, 1000}, {0, 0}); feederEnabled = false;
+    assert(run().pages.size() == 1 && clockMs == 0);
+    // Unreadable GETCURRENT consistently falls back to a successful SET.
+    reset({0, 1000}, {0, 0}); badFeederType = true;
+    assert(run(false, 2).pages.size() == 2);
+    reset({0, 1000}, {0, 0}); feederReadSupported = false; feederLoaded = true;
+    assert(run(false, 2).pages.size() == 2);
+    reset({0, 1000}, {1, 0}); feederSupported = false;
+    assert(run(false, 2).pages.size() == 2);
+    std::puts("PASS production scan loop: in-flight final sheet, duplex pairing, timeout, capability fallbacks and page limit");
+}

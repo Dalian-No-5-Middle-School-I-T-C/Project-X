@@ -20,7 +20,7 @@ static void printUsage() {
     fprintf(stderr, "  --output <dir>      Output directory (required for scan)\n");
     fprintf(stderr, "  --prefix <str>      File name prefix (default: scan)\n");
     fprintf(stderr, "  --max-pages <num>   Max pages to scan (default: unlimited)\n");
-    fprintf(stderr, "  --page-timeout-ms <num>  Idle timeout waiting for next page (default: 15000)\n");
+    fprintf(stderr, "  --page-timeout-ms <num>  Idle timeout waiting for next page (default: 60000)\n");
     fprintf(stderr, "  --show-ui           Show scanner's native UI\n");
 }
 
