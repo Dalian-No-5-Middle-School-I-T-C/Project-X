@@ -5,8 +5,8 @@
  *
  * 背景：TWAIN 的 MSG_SET 返回成功只代表「请求被接受」，驱动完全可能替代成自己的档位
  *   （或因为 ICAP_UNITS 是厘米而把 300 读成 300 点/厘米）。native 已加 MSG_GETCURRENT
- *   回读，但随包 exe 未必重编译，所以扫描端还要能用桥接**已经回报**的 width/height
- *   反查实际密度，并把结论显示给操作者。
+ *   回读并在 JSON 里回报 `dpi_x`/`dpi_y`，那是首选来源；但随包 exe 未必重编译，所以
+ *   扫描端还要能用它**已经回报**的 width/height 反查实际密度，并把结论显示给操作者。
  *
  * 断言方式：① 纯函数正反例（含不能误报的纸型替代、横放交付）；② 接线检查——服务层确实
  *   调用了反查并以 type:"warning" 上报，客户端确实有对应分支（防止日后被改掉而无声失效）。
@@ -70,11 +70,36 @@ function main(): void {
   const a3 = verifyDeliveredScanDpi([{ width: 3508, height: 4961 }], { dpi: 300, paperSize: "A3" });
   check(a3.status === "match", `A3 @300dpi（3508×4961）判为生效 (status=${a3.status})`);
 
+  // A4 与 A3 长宽比相同：按 A3 反查时，A4 原尺寸会被算成「约 212dpi」。
+  // 这条不是 bug，而是几何反查的固有歧义，所以 mismatch 提示必须让操作者核对纸型（见上面的用例）。
+  const a4SheetOnA3Setting = verifyDeliveredScanDpi([{ width: 2480, height: 3508 }], { dpi: 300, paperSize: "A3" });
+  check(a4SheetOnA3Setting.status === "mismatch" && a4SheetOnA3Setting.deliveredDpi === 212,
+    `同比例纸张歧义：A4 出图按 A3 档反查出 ${a4SheetOnA3Setting.deliveredDpi}（提示里须同时提纸型）`);
+
   const letterSize = verifyDeliveredScanDpi([{ width: 2550, height: 3300 }], { dpi: 300, paperSize: "Letter" });
   check(letterSize.status === "match", "按所选纸型（Letter）换算，A4/Letter 常量取对档");
 
   const trimmed = verifyDeliveredScanDpi([{ width: 2472, height: 3496 }], { dpi: 300, paperSize: "A4" });
   check(trimmed.status === "match", "驱动留边裁剪（2472×3496，差 ~1%）不误报");
+
+  console.log("\n\x1b[36m== 优先用桥接回报的 dpi_x/dpi_y ==\x1b[0m");
+
+  // 桥接已强制 ICAP_UNITS=TWUN_INCHES 才允许出图，所以 TW_IMAGEINFO 的 X/Y 就是 DPI，
+  // 比按尺寸反查更直接；老 exe 不带这两个字段时才回落到几何反查。
+  const reported = verifyDeliveredScanDpi([{ width: 2480, height: 3508, dpi_x: 200, dpi_y: 200 }], { dpi: 300, paperSize: "A4" });
+  check(reported.status === "mismatch" && reported.deliveredDpi === 200 && reported.source === "device",
+    `驱动回报 200dpi 时以回报值为准，不再用尺寸反查 (delivered=${reported.deliveredDpi}, source=${reported.source})`);
+  const reportedMatch = verifyDeliveredScanDpi([{ width: 2480, height: 3508, dpi_x: 300.5, dpi_y: 299.5 }], { dpi: 300, paperSize: "A4" });
+  check(reportedMatch.status === "match" && reportedMatch.source === "device", "回报值与设定一致即判生效");
+  const geometryFallback = verifyDeliveredScanDpi([{ width: 1654, height: 2339 }], { dpi: 300, paperSize: "A4" });
+  check(geometryFallback.source === "geometry", "老 exe 不回报密度时仍走尺寸反查");
+  const bogusReport = verifyDeliveredScanDpi([{ width: 2480, height: 3508, dpi_x: 12, dpi_y: 12 }], { dpi: 300, paperSize: "A4" });
+  check(bogusReport.source === "geometry" && bogusReport.deliveredDpi === 300,
+    "回报值明显不在合理区间（12）时退回尺寸反查，不拿坏数据下结论");
+
+  // 几何反查分不清「密度被替代」与「进了同比例的不同纸张」，提示必须同时点出纸型这一侧
+  check(Boolean(downgraded.message?.includes("纸")), "尺寸反查的提示要提醒核对进纸纸张与纸型");
+  check(Boolean(reported.message?.includes("驱动回报的密度")), "两种来源要在提示里说清是哪一种");
 
   console.log("\n\x1b[36m== 数据不可用时不下结论 ==\x1b[0m");
 

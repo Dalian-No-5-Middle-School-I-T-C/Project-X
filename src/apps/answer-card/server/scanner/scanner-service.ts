@@ -170,10 +170,10 @@ export async function runScanSession(
     }
 
     // 诊断检查点：本会话扫描结束的权威记录（页数/DPI/纸型），进 main.log 便于实机取证
-    // ①（issue #331）设定 DPI 是否真生效，用桥接已回报的像素尺寸反查——不依赖 exe 是否
-    // 带 MSG_GETCURRENT 回读，现网随包 exe 也能给出「实际约 200dpi」的可核对结论。
+    // ①（issue #331）设定 DPI 是否真生效：优先用桥接回报的 dpi_x/dpi_y，老 exe 没有这两个
+    // 字段时退回按出图像素尺寸反查，两种来源都能在现网随包 exe 上给出「实际约 200dpi」的结论。
     const dpiVerdict = verifyDeliveredScanDpi(result.pages, { dpi: config.dpi, paperSize: config.paperSize });
-    console.log(`[checkpoint] scan session=${sessionId} card=${config.cardId} pages=${filteredPages.length} dpi=${config.dpi} deliveredDpi=${dpiVerdict.deliveredDpi ?? "unknown"}(${dpiVerdict.status}, samples=${dpiVerdict.samplePages}) duplex=${config.duplex} size=${config.paperSize} colorMode=${colorMode.colorMode}${colorMode.upgraded ? "(forced)" : ""}`);
+    console.log(`[checkpoint] scan session=${sessionId} card=${config.cardId} pages=${filteredPages.length} dpi=${config.dpi} deliveredDpi=${dpiVerdict.deliveredDpi ?? "unknown"}(${dpiVerdict.status},${dpiVerdict.source ?? "n/a"},samples=${dpiVerdict.samplePages}) duplex=${config.duplex} size=${config.paperSize} colorMode=${colorMode.colorMode}${colorMode.upgraded ? "(forced)" : ""}`);
     if (dpiVerdict.status === "mismatch" && dpiVerdict.message) {
       onProgress({ sessionId, type: "warning", message: dpiVerdict.message });
     }

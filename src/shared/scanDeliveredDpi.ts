@@ -1,7 +1,8 @@
 /**
- * 用扫描桥接已经回报的像素尺寸反查「实际出图密度」，用来核对软件里设定的 DPI 是否真的生效。
+ * 核对软件里设定的 DPI 是否真的生效：优先用桥接回报的 `dpi_x`/`dpi_y`（`TW_IMAGEINFO`），
+ * 老 exe 没有这两个字段时，退回到用出图像素尺寸反查实际密度。
  *
- * 为什么要在 TS 侧反查：TWAIN 的 MSG_SET 返回成功只代表「请求被接受」，驱动完全可能
+ * 为什么还要在 TS 侧反查：TWAIN 的 MSG_SET 返回成功只代表「请求被接受」，驱动完全可能
  * 按自己的档位替代（甚至因为 ICAP_UNITS 是厘米而把 300 读成 300 点/厘米）。native 侧
  * 已加 MSG_GETCURRENT 回读，但随包 exe 未必重编译，反查这一步对**现网正在用的 exe** 也成立。
  */
@@ -33,9 +34,11 @@ const DELIVERED_SANITY_RANGE: readonly [number, number] = [40, 2400];
 export interface DeliveredDpiVerdict {
   status: "match" | "mismatch" | "unknown";
   requestedDpi: number;
-  /** 反查出的实际密度（参与判定的各页取中位数）；反查不出时为 undefined */
+  /** 实际出图密度：优先用桥接回报的 `dpi_x`/`dpi_y`，没有才按像素尺寸反查（取中位数） */
   deliveredDpi?: number;
-  /** 参与反查的有效页数，用于判断结论强度 */
+  /** deliveredDpi 的来源：device=驱动自己报的，geometry=由尺寸反查的 */
+  source?: "device" | "geometry";
+  /** 参与判定的有效页数，用于判断结论强度 */
   samplePages: number;
   /** 面向操作者的中文提示，仅 mismatch 时给出 */
   message?: string;
@@ -60,16 +63,17 @@ function median(values: number[]): number {
 }
 
 /**
- * 像素尺寸 → 实际密度反查。
- * 按「短边对短边、长边对长边」匹配，因此横放/竖放、乃至驱动交付 landscape 都不影响结果；
- * 双面时正反两页尺寸相同，重复取样不会改变中位数。
+ * 实际出图密度的判定：先看桥接回报的 `dpi_x`/`dpi_y`（来自 `TW_IMAGEINFO`，且桥接已强制
+ * `ICAP_UNITS=TWUN_INCHES`，所以就是 DPI），再看像素尺寸反查——随包 exe 未必带这两个字段。
  *
- * 已知局限：几何只能反查密度，分不清「密度被驱动替代」与「实际进了更小的同比例纸张」
- * （例如选 A4 却喂 A5，两方向都会算出同一个偏低密度）。所以提示语只说「约 X DPI」并让
- * 操作者核对版面，不把反查值当作可直接写库的权威值。
+ * 几何反查按「短边对短边、长边对长边」匹配，因此横放/竖放、乃至驱动交付 landscape 都不影响结果。
+ *
+ * 已知局限：几何只能反查密度，分不清「密度被驱动替代」与「实际进了同比例的不同纸张」
+ * （A4 与 A3 长宽比相同；选 A4 却喂 A5 时两个方向都会算出同一个偏低密度）。所以尺寸反查出来的
+ * 偏低值必须同时提示「核对进纸纸张与纸型选择」，不能只让操作者去改 DPI 档位。
  */
 export function verifyDeliveredScanDpi(
-  pages: ReadonlyArray<{ width?: number; height?: number }>,
+  pages: ReadonlyArray<{ width?: number; height?: number; dpi_x?: number; dpi_y?: number }>,
   opts: { dpi: number; paperSize: string }
 ): DeliveredDpiVerdict {
   const requestedDpi = Number(opts.dpi);
@@ -78,16 +82,26 @@ export function verifyDeliveredScanDpi(
   }
   const [paperShort, paperLong] = paperInchesFor(opts.paperSize);
 
-  const estimates: number[] = [];
+  const deviceEstimates: number[] = [];
+  const geometryEstimates: number[] = [];
   for (const page of pages) {
+    const reportedX = Number(page?.dpi_x), reportedY = Number(page?.dpi_y);
+    if (Number.isFinite(reportedX) && Number.isFinite(reportedY)
+      && reportedX >= DELIVERED_SANITY_RANGE[0] && reportedX <= DELIVERED_SANITY_RANGE[1]
+      && reportedY >= DELIVERED_SANITY_RANGE[0] && reportedY <= DELIVERED_SANITY_RANGE[1]) {
+      deviceEstimates.push((reportedX + reportedY) / 2);
+      continue;
+    }
     const a = Number(page?.width), b = Number(page?.height);
     if (!Number.isFinite(a) || !Number.isFinite(b) || a < 100 || b < 100) continue;
     const shortEdge = Math.min(a, b), longEdge = Math.max(a, b);
     const dpiByShort = shortEdge / paperShort;
     const dpiByLong = longEdge / paperLong;
     if (Math.abs(dpiByShort / dpiByLong - 1) > ASPECT_TOLERANCE) continue;
-    estimates.push((dpiByShort + dpiByLong) / 2);
+    geometryEstimates.push((dpiByShort + dpiByLong) / 2);
   }
+  const estimates = deviceEstimates.length > 0 ? deviceEstimates : geometryEstimates;
+  const source: "device" | "geometry" = deviceEstimates.length > 0 ? "device" : "geometry";
   if (estimates.length === 0) {
     return { status: "unknown", requestedDpi, samplePages: 0 };
   }
@@ -97,14 +111,16 @@ export function verifyDeliveredScanDpi(
     return { status: "unknown", requestedDpi, samplePages: estimates.length };
   }
   if (Math.abs(deliveredDpi - requestedDpi) <= requestedDpi * DPI_TOLERANCE) {
-    return { status: "match", requestedDpi, deliveredDpi, samplePages: estimates.length };
+    return { status: "match", requestedDpi, deliveredDpi, source, samplePages: estimates.length };
   }
   return {
     status: "mismatch",
     requestedDpi,
     deliveredDpi,
+    source,
     samplePages: estimates.length,
-    message: `设定 ${requestedDpi} DPI，但扫描仪实际按约 ${deliveredDpi} DPI 出图（该档位未被驱动采用）。` +
-      `识别按 ${deliveredDpi} DPI 的分辨率核对版面即可解释偏差；如需与设定一致，请把 DPI 改为 ${nearestScanDpiStep(deliveredDpi)} 后重扫。`
+    message: `设定 ${requestedDpi} DPI，但扫描仪实际按约 ${deliveredDpi} DPI 出图（${source === "device" ? "驱动回报的密度" : "由出图像素尺寸反查"}）。`
+      + (source === "geometry" ? "同比例纸张（A4/A3、A4/A5）在尺寸上分不开，请先核对实际进纸的纸张与所选纸型；" : "")
+      + `识别按 ${deliveredDpi} DPI 的分辨率核对版面即可解释偏差；如需与设定一致，请把 DPI 改为 ${nearestScanDpiStep(deliveredDpi)} 后重扫。`
   };
 }
