@@ -18,8 +18,10 @@ static int readyEvents;
 static DWORD nextReady;
 static std::vector<DWORD> delays;
 static std::vector<TW_UINT16> counts;
-static bool feederLoaded, feederSupported, feederSetAccepted, feederReadSupported, feederEnabled;
+static bool feederSetAccepted, feederReadSupported, feederEnabled;
 static bool badFeederType;
+static bool sourceEnabled;
+static int invalidFeederQueries;
 static bool duplexSetAccepted, duplexReadSupported, duplexEffective, duplexSubstitute;
 static bool duplexCapabilitySupported;
 static TW_UINT16 duplexHardware;
@@ -79,6 +81,7 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(pTW_IDENTITY, pTW_IDENTITY,
         return TWRC_DSEVENT;
     }
     if (dat == DAT_USERINTERFACE && msg == MSG_ENABLEDS) {
+        sourceEnabled = true;
         if (resolutionChangesOnEnable) effectiveX = effectiveY = 150;
         if (synchronousReady) {
             normalMessagePending = false;
@@ -88,6 +91,7 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(pTW_IDENTITY, pTW_IDENTITY,
         return TWRC_SUCCESS;
     }
     if (dat == DAT_USERINTERFACE && msg == MSG_DISABLEDS) {
+        sourceEnabled = false;
         assert(!pendingTransfers && "Reset pending frames before disabling a source");
         ++disableCalls;
         return TWRC_SUCCESS;
@@ -98,10 +102,14 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(pTW_IDENTITY, pTW_IDENTITY,
     }
     if (dat == DAT_CAPABILITY && msg == MSG_GETCURRENT) {
         auto cap = static_cast<pTW_CAPABILITY>(data);
+        // A conforming source can reject FEEDERLOADED after ENABLEDS (including State 5).
+        if (cap->Cap == CAP_FEEDERLOADED) {
+            if (sourceEnabled) ++invalidFeederQueries;
+            return TWRC_FAILURE;
+        }
         lastCapUnsupported = (cap->Cap == CAP_DUPLEXENABLED && duplexReadUnsupported)
             || (cap->Cap == CAP_DUPLEX && duplexCapabilityUnsupported);
-        if ((cap->Cap == CAP_FEEDERLOADED && !feederSupported)
-            || (cap->Cap == CAP_FEEDERENABLED && !feederReadSupported)
+        if ((cap->Cap == CAP_FEEDERENABLED && !feederReadSupported)
             || (cap->Cap == CAP_DUPLEXENABLED && !duplexReadSupported)
             || (cap->Cap == CAP_DUPLEX && !duplexCapabilitySupported)) return TWRC_FAILURE;
         if (cap->Cap == ICAP_XRESOLUTION || cap->Cap == ICAP_YRESOLUTION) {
@@ -118,8 +126,7 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(pTW_IDENTITY, pTW_IDENTITY,
         capabilityValue.ItemType = cap->Cap == ICAP_PIXELTYPE || cap->Cap == CAP_DUPLEX || cap->Cap == ICAP_UNITS || (cap->Cap == CAP_FEEDERENABLED && badFeederType)
             ? TWTY_UINT16 : TWTY_BOOL;
         capabilityValue.Item = cap->Cap == ICAP_UNITS ? effectiveUnits : cap->Cap == CAP_DUPLEXENABLED ? duplexEffective
-            : cap->Cap == CAP_DUPLEX ? duplexHardware : cap->Cap == CAP_FEEDERENABLED ? feederEnabled
-            : cap->Cap == CAP_FEEDERLOADED ? feederLoaded : TWPT_RGB;
+            : cap->Cap == CAP_DUPLEX ? duplexHardware : cap->Cap == CAP_FEEDERENABLED ? feederEnabled : TWPT_RGB;
         cap->hContainer = &capabilityValue;
         return TWRC_SUCCESS;
     }
@@ -182,8 +189,9 @@ static void reset(std::vector<DWORD> frameDelays, std::vector<TW_UINT16> pending
     normalMessagePending = true; dispatchedMessages = 0;
     readyEvents = 0;
     delays = frameDelays; counts = pending; nextReady = delays.at(0);
-    feederLoaded = false; feederSupported = true; feederSetAccepted = true;
+    feederSetAccepted = true;
     feederReadSupported = true; feederEnabled = true; badFeederType = false;
+    sourceEnabled = false; invalidFeederQueries = 0;
     duplexSetAccepted = true; duplexReadSupported = true; duplexEffective = false;
     duplexSubstitute = false; duplexCapabilitySupported = true; duplexHardware = TWDX_1PASSDUPLEX;
     synchronousReady = false;
@@ -198,7 +206,9 @@ static ScanResult run(bool duplex = false, int maxPages = 0) {
     ScanConfig config;
     config.sourceName = "fixture"; config.outputDir = "fixture";
     config.duplex = duplex; config.maxPages = maxPages;
-    return controller.scan(config);
+    auto result = controller.scan(config);
+    assert(invalidFeederQueries == 0 && "Do not query FEEDERLOADED after enabling the source");
+    return result;
 }
 int main() {
     // The last sheet is already past the tray sensor and needs 25 seconds before XFERREADY.
@@ -220,9 +230,7 @@ int main() {
     result = run(true);
     assert(!result.success && result.pages.size() == 1);
     assert(result.errorMessage.find("back side of page 1") != std::string::npos);
-    // Unsupported feeder capability and flatbed fall back to the reported count.
-    reset({0, 1000}, {0, 0}); feederSupported = false;
-    assert(run().pages.size() == 1 && clockMs == 0);
+    // Flatbed / rejected ADF does not add an ADF continuation wait.
     reset({0, 1000}, {0, 0}); feederSetAccepted = false; feederReadSupported = false;
     assert(run().pages.size() == 1 && clockMs == 0);
     reset({0, 1000}, {0, 0}); feederEnabled = false;
@@ -230,9 +238,9 @@ int main() {
     // Unreadable GETCURRENT consistently falls back to a successful SET.
     reset({0, 1000}, {0, 0}); badFeederType = true;
     assert(run(false, 2).pages.size() == 2);
-    reset({0, 1000}, {0, 0}); feederReadSupported = false; feederLoaded = true;
+    reset({0, 1000}, {0, 0}); feederReadSupported = false;
     assert(run(false, 2).pages.size() == 2);
-    reset({0, 1000}, {1, 0}); feederSupported = false;
+    reset({0, 1000}, {1, 0});
     assert(run(false, 2).pages.size() == 2);
     // Refuse pairing before starting acquisition when the driver rejects/substitutes duplex.
     reset({0, 1000}, {0, 0}); duplexSetAccepted = false;
@@ -289,5 +297,5 @@ int main() {
     reset({0}, {0}); closeAfterFrames = true;
     result = run();
     assert(result.success && result.pages.size() == 1 && clockMs == 0 && disableCalls == 1);
-    std::puts("PASS production scan loop: in-flight final sheet, duplex pairing, timeout, capability fallbacks and page limit");
+    std::puts("PASS production scan loop: State 5 event wait without feeder queries, in-flight final sheet, duplex pairing, timeout, CLOSEDSREQ, capability fallbacks and page limit");
 }

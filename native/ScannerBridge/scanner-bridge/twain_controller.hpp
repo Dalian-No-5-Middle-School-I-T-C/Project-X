@@ -125,9 +125,8 @@ private:
     bool readCurrentUInt16Capability(TW_UINT16 cap, TW_UINT16 type, TW_UINT16* effective, bool* unsupported = nullptr);
     bool readCurrentResolution(TW_UINT16 cap, double* effective);
     bool validateImageResolution(const TW_IMAGEINFO& info);
-    // 送纸器启用且支持复核时，托盘空仍需等待在途帧；正反面共用此规则。
+    // 启用 ADF 后 Count=0 仍等待在途帧；正反面共用状态 5 事件等待。
     bool shouldWaitForTransfer(TW_UINT16 pendingCount);
-    bool queryFeederLoaded(bool* loaded);
     
     // Image saving
     bool saveDIBToFile(HANDLE hbitmap, const std::string& filePath, PageResult& result);

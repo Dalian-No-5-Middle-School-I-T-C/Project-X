@@ -10,7 +10,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const dir = mkdtempSync(path.join(tmpdir(), "scanner-native-recheck-"));
 try {
   const source = readFileSync(path.join(root, "native/ScannerBridge/scanner-bridge/twain_controller.cpp"), "utf8");
-  const methods = ["scan", "shouldWaitForTransfer", "queryFeederLoaded", "readCurrentUInt16Capability",
+  const methods = ["scan", "shouldWaitForTransfer", "readCurrentUInt16Capability",
     "enableADF", "enableSource", "setPixelType", "setDuplex", "setResolution", "readCurrentResolution",
     "validateImageResolution", "disableSource", "waitForState", "processTwainEvent"];
   const implementations = methods.map((name) => {

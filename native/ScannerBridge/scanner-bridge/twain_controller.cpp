@@ -1094,7 +1094,7 @@ bool TwainController::enableADF() {
     setCapability(CAP_AUTOFEED, TWTY_BOOL, &autoFeed);
 
     // 回读确认送纸器真的启用了：SET 可能被静默拒绝（平板机型、驱动差异），
-    // 后续「Count=0 是否可信」的 FEEDERLOADED 复核只在送纸器启用时才有意义。
+    // 后续 Count=0 后的 ADF 事件等待只在送纸器启用时才有意义。
     TW_UINT16 effective = 0;
     const bool readable = readCurrentUInt16Capability(CAP_FEEDERENABLED, TWTY_BOOL, &effective);
     // 读回失败（含容器格式不符）时仅信任成功的 SET；SET 也失败的平板机不续等。
@@ -1103,14 +1103,6 @@ bool TwainController::enableADF() {
         accepted ? "ok" : "rejected", m_feederEnabled ? 1 : 0,
         readable ? "GETCURRENT" : "SET fallback");
     return true;  // Best effort
-}
-
-bool TwainController::queryFeederLoaded(bool* loaded) {
-    if (!loaded) return false;
-    TW_UINT16 effective = 0;
-    const bool readable = readCurrentUInt16Capability(CAP_FEEDERLOADED, TWTY_BOOL, &effective);
-    *loaded = readable && effective != 0;
-    return readable;
 }
 
 bool TwainController::readCurrentUInt16Capability(TW_UINT16 cap, TW_UINT16 type, TW_UINT16* effective, bool* unsupported) {
@@ -1185,14 +1177,11 @@ bool TwainController::shouldWaitForTransfer(TW_UINT16 pendingCount) {
     if (m_state >= 6) return true;
     if (pendingCount > 0) return true;
     if (!m_feederEnabled) return false;
-    bool loaded = false;
-    if (!queryFeederLoaded(&loaded)) {
-        fprintf(stderr, "[ScannerBridge] pending=0 and CAP_FEEDERLOADED unsupported; trusting pending count\n");
-        return false;
-    }
-    // 托盘空也可能是纸已进入走纸通道；沿用完整等纸超时，背面与下一张共用此规则。
-    fprintf(stderr, "[ScannerBridge] pending=0 feederLoaded=%d; waiting up to %dms for next transfer\n",
-        loaded ? 1 : 0, m_config.pageTimeoutMs);
+    // ENDXFER 的 Count=0 使 DS 回到状态 5，后续仍可发送 XFERREADY / CLOSEDSREQ。
+    // CAP_FEEDERLOADED 应在状态 4 查询，且托盘空也可能是纸已在通道内；
+    // 因此续扫仅依赖启用前确认的 ADF 状态，在事件循环中等满配置的空闲超时。
+    fprintf(stderr, "[ScannerBridge] pending=0 ADF enabled; waiting up to %dms for next transfer event\n",
+        m_config.pageTimeoutMs);
     return true;
 }
 

@@ -49,8 +49,10 @@ for (const rel of ["resources/native/win-x64/scanner-bridge.exe", "resources/nat
   assert.ok(existsSync(file), `④: 缺少随包二进制 ${rel}`);
   const bytes = readFileSync(file);
   assert.ok(bytes.includes("--page-timeout-ms"), `④: ${rel} 不支持 --page-timeout-ms，默认值改不动现场`);
-  assert.ok(bytes.includes("pending=0 feederLoaded=%d; waiting up to %dms for next transfer"),
+  assert.ok(bytes.includes("pending=0 ADF enabled; waiting up to %dms for next transfer event"),
     `④: ${rel} 缺少在途帧复核逻辑，请重建随包桥接程序`);
+  assert.ok(!bytes.includes("CAP_FEEDERLOADED unsupported; trusting pending count"),
+    `④: ${rel} 仍会在状态 5 读送纸器失败时提前结束，请重建随包桥接程序`);
   assert.ok(bytes.includes("ICAP_PIXELTYPE requested=%u set=%s effective=%d"),
     `④: ${rel} 缺少色彩协商诊断`);
   assert.ok(bytes.includes("CAP_DUPLEXENABLED requested=%d set=%s effective=%d"),
