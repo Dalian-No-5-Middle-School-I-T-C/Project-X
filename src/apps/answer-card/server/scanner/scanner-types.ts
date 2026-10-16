@@ -89,8 +89,8 @@ export interface ScanProgressEvent {
   sessionId: string;
   /**
    * "warning" 表示「流程继续，但结果与设定不符」——目前用于扫描分辨率被驱动替代
-   * （issue #331 ①）与整页大题切块缺失（issue #331 ③）。它不是 "error"：纸已经扫出来
-   * 了，只是密度或切块不是软件里设/期望的那一份，必须让老师在出分前看见而不是只留日志。
+   * （issue #331 ①）与整批一张红笔分数都没读到（issue #331 ③）。它不是 "error"：纸已经扫出来
+   * 了，只是密度不是软件里设的那一份，或分数格里根本没读到笔迹，必须让老师在出分前看见而不是只留日志。
    */
   type: "scanning" | "page_done" | "ocr_start" | "ocr_page_done" | "ocr_done" | "error" | "warning" | "done" | "cancelled";
   recordId?: string;
