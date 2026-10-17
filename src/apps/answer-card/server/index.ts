@@ -903,10 +903,14 @@ export async function createApp(): Promise<express.Express> {
       const uiStyle = uiStyleRaw && uiStyleRaw.length > 0
         ? uiStyleRaw
         : (themeSkinRaw === "flat" ? "clarity" : "paper_edge");
+      // 学生网页端始终无背景图：即使库里留有历史透明度，也不下发给客户端。
+      const backgroundOpacity = _req.user?.role_name === "student"
+        ? 0
+        : ((user as any).background_opacity ?? 0);
       res.json({
         scoreDisplayMode: (user as any).score_display_mode ?? "zscore",
         reviewConfidenceThreshold: (user as any).review_confidence_threshold ?? 0.12,
-        backgroundOpacity: (user as any).background_opacity ?? 0,
+        backgroundOpacity,
         showTabBar: (user as any).show_tab_bar ?? 0,
         themeSkin: themeSkinRaw,
         uiStyle,
@@ -930,6 +934,15 @@ export async function createApp(): Promise<express.Express> {
         ? prev.ui_style
         : (prevSkin === "flat" ? "clarity" : "paper_edge");
       const prevScheme = prev?.color_scheme ?? "light";
+
+      // 学生账号不能改阅卷阈值、成绩指标或背景图（前端隐藏不等于授权）。
+      if (_req.user?.role_name === "student") {
+        const locked = ["scoreDisplayMode", "reviewConfidenceThreshold", "backgroundOpacity"] as const;
+        if (locked.some((key) => body[key] !== undefined)) {
+          res.status(403).json({ message: "学生账号不能修改阅卷、评分或背景图设置" });
+          return;
+        }
+      }
 
       const setClauses: string[] = [];
       const values: unknown[] = [];
@@ -993,6 +1006,11 @@ export async function createApp(): Promise<express.Express> {
   const backgroundsDir = path.join(dataDir, "backgrounds");
 
   app.get("/api/app/background", optionalAuth, (req, res) => {
+    // 学生账号网页端始终不提供背景图（自定义图与默认图都不下发）。
+    if (req.user?.role_name === "student") {
+      res.status(404).json({ error: "background image not found" });
+      return;
+    }
     // 用户自定义背景优先
     if (req.user) {
       const customBg = path.join(backgroundsDir, `${req.user?.id}.jpg`);
@@ -1040,7 +1058,13 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/users/me/background", authMiddleware, bgUpload.single("file"), async (req, res, next) => {
+  app.post("/api/users/me/background", authMiddleware, (req, res, next) => {
+    if (req.user?.role_name === "student") {
+      res.status(403).json({ error: "学生账号不能上传背景图" });
+      return;
+    }
+    next();
+  }, bgUpload.single("file"), async (req, res, next) => {
     try {
       if (!req.file) {
         res.status(400).json({ error: "请选择图片文件" });

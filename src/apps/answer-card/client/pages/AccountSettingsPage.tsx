@@ -135,6 +135,7 @@ function AiProviderForm({
 
 /**
  * /account-settings 路由页：个人「账号设置」（阅卷/客户端/AI/数据存储）。
+ * 学生账号不提供阅卷/评分设置，也不能调节或上传背景图。
  * 由 AccountMenu 的设置 Dialog 迁移为独立页面（v2 UI 重构 P6）。
  *
  * P6 重写：放弃 vertical Tabs 左栏列布局（v2 Tabs 对 vertical 支持不佳时内容列塌缩），
@@ -142,7 +143,7 @@ function AiProviderForm({
  * 功能零丢失，仅重排布局与样式。
  */
 export function AccountSettingsPage() {
-  const { isAdmin, refreshUser } = useAuth();
+  const { isAdmin, isStudent, refreshUser } = useAuth();
   // v2.1.0: 皮肤/明暗状态由 App 顶层持有（WorkspaceContext 下发），此处直接读改即时生效
   const { theme, setTheme, skin, setSkin } = useWorkspace();
   // v1.6.0: 非 Electron 环境（WEB 端）不显示扫描端选项和数据库设置
@@ -163,7 +164,7 @@ export function AccountSettingsPage() {
     editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: ""
   });
   const [showHelpCard, setShowHelpCard] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("grading");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>(isStudent ? "client" : "grading");
   // 五轮C1：侧边栏自动展开（客户端级 localStorage 设置，原误放系统级配置页，迁至此「外观/皮肤」区）
   const [railAutoExpand, setRailAutoExpand] = useState(() => {
     try { return localStorage.getItem("projectx-rail-auto-expand") === "true"; } catch { return false; }
@@ -238,15 +239,17 @@ export function AccountSettingsPage() {
   async function saveSettings() {
     setSettingsMsg("");
     try {
+      const body: Record<string, unknown> = { showTabBar };
+      // 学生账号的阅卷、评分和背景图由服务端拒绝；这里也不提交这些字段。
+      if (!isStudent) {
+        body.scoreDisplayMode = displayMode;
+        body.reviewConfidenceThreshold = reviewThreshold;
+        body.backgroundOpacity = bgOpacity;
+      }
       await fetchJson("/api/users/me/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scoreDisplayMode: displayMode,
-          reviewConfidenceThreshold: reviewThreshold,
-          backgroundOpacity: bgOpacity,
-          showTabBar: showTabBar,
-        })
+        body: JSON.stringify(body)
       });
       setSettingsMsg("已保存");
       // v1.9.0: 刷新用户状态使 Tab 栏开关即时生效
@@ -259,6 +262,7 @@ export function AccountSettingsPage() {
 
   // v1.9.5: 滑动背景图透明度时防抖持久化，避免刷新后被重置为 0
   const persistBgOpacity = (v: number) => {
+    if (isStudent) return;
     if (bgSaveTimer.current) window.clearTimeout(bgSaveTimer.current);
     bgSaveTimer.current = window.setTimeout(() => {
       fetchJson("/api/users/me/settings", {
@@ -271,7 +275,7 @@ export function AccountSettingsPage() {
 
   async function handleBgUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || isStudent) return;
     setBgMsg("");
     try {
       const form = new FormData();
@@ -369,7 +373,9 @@ export function AccountSettingsPage() {
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-5 py-4">
           <div className="min-w-0">
             <h1 className="mb-0 text-lg font-semibold text-foreground">账号设置</h1>
-            <p className="m-0 mt-1.5 text-xs text-muted-foreground">阅卷 · 客户端 · AI 服务商 · 数据存储</p>
+            <p className="m-0 mt-1.5 text-xs text-muted-foreground">
+              {isStudent ? "客户端 · AI 服务商" : "阅卷 · 客户端 · AI 服务商 · 数据存储"}
+            </p>
           </div>
         </div>
 
@@ -379,9 +385,11 @@ export function AccountSettingsPage() {
           onValueChange={(v) => setSettingsTab(v as SettingsTab)}
         >
           <TabsList className="px-5">
-            <TabsTrigger value="grading">
-              <Gauge size={15} /> 阅卷设置
-            </TabsTrigger>
+            {!isStudent && (
+              <TabsTrigger value="grading">
+                <Gauge size={15} /> 阅卷设置
+              </TabsTrigger>
+            )}
             <TabsTrigger value="client">
               <Monitor size={15} /> 客户端设置
             </TabsTrigger>
@@ -395,7 +403,7 @@ export function AccountSettingsPage() {
             )}
           </TabsList>
 
-          <TabsContent value="grading" className="flex flex-col gap-4 px-5 py-5">
+          {!isStudent && <TabsContent value="grading" className="flex flex-col gap-4 px-5 py-5">
             <div className="flex max-w-xl flex-col gap-4">
               <section className="flex flex-col gap-2">
                 <h4 className="m-0 text-base font-semibold text-foreground">成绩指标显示</h4>
@@ -448,7 +456,7 @@ export function AccountSettingsPage() {
             <Button variant="primary" type="button" onClick={() => void saveSettings()} className="self-start">
               保存设置
             </Button>
-          </TabsContent>
+          </TabsContent>}
 
           <TabsContent value="client" className="flex flex-col gap-4 px-5 py-5">
             <div className="flex max-w-xl flex-col gap-4">
@@ -502,6 +510,7 @@ export function AccountSettingsPage() {
                 />
               </section>
 
+              {!isStudent && (
               <section className="flex flex-col gap-2">
                 <h4 className="m-0 text-base font-semibold text-foreground">背景图透明度</h4>
                 <div className="flex items-center justify-between text-xs">
@@ -536,6 +545,7 @@ export function AccountSettingsPage() {
                   )}
                 </div>
               </section>
+              )}
             </div>
 
             {settingsMsg && (

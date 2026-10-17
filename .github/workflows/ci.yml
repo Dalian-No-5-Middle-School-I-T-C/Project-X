@@ -50,6 +50,10 @@ jobs:
       - name: Student score full-score / examTime regression
         run: npm run verify:student-score-display
 
+      # Issue #322：学生网页端不能改阅卷/评分设置，也不能看到或上传背景图
+      - name: Student web settings and background regression
+        run: npm run verify:student-web-settings
+
       - name: Class archive / student link regression
         run: npm run verify:class-archive
 
