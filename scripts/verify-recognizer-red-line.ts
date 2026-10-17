@@ -12,7 +12,7 @@ import type { CombinedRecognitionResult, Rect } from "../src/shared/types";
 
 // Synthetic cards exercise the real native recognizer and grading consumer.
 // Real server scans remain local investigation data, outside the repository.
-type Stroke = "line" | "broken" | "thin" | "horizontal" | "black" | "short" | "one-ended" | "cross" | "parallel" | "dots";
+type Stroke = "line" | "broken" | "thin" | "horizontal" | "black" | "short" | "one-ended" | "grazing" | "cross" | "parallel" | "dots";
 const cases: Array<{ name: string; marks: Array<[number, Stroke]>; expected: number | null; max?: number }> = [
   { name: "tens plus ones", marks: [[20, "line"], [8, "line"]], expected: 28 },
   { name: "printed digit interrupts pen", marks: [[20, "line"], [8, "broken"]], expected: 28 },
@@ -24,6 +24,7 @@ const cases: Array<{ name: string; marks: Array<[number, Stroke]>; expected: num
   { name: "black pen", marks: [[20, "black"], [8, "black"]], expected: null },
   { name: "short ones cannot disappear", marks: [[20, "line"], [8, "short"]], expected: null },
   { name: "stroke stops inside cell", marks: [[20, "line"], [8, "one-ended"]], expected: null },
+  { name: "stroke only grazes cell edge", marks: [[20, "line"], [8, "grazing"]], expected: null },
   { name: "cross cannot disappear", marks: [[20, "line"], [8, "cross"]], expected: null },
   { name: "parallel strokes", marks: [[20, "line"], [8, "parallel"]], expected: null },
   { name: "distant dots", marks: [[20, "line"], [8, "dots"]], expected: null },
@@ -46,6 +47,7 @@ function stroke(r: Rect, kind: Stroke): string {
     case "broken": return slash() + box({ x: r.x, y: cy - .35, width: r.width, height: .7 }, "#111");
     case "short": return line(cx - .2, cy + .45, cx + .2, cy - .45, .4);
     case "one-ended": return line(r.x + r.width * .31, cy, r.x + r.width + .3, cy);
+    case "grazing": return line(r.x - 1.2, r.y + r.height + .3, r.x + 1.3, r.y - .3);
     case "cross": return slash() + line(cx - .8, r.y - .3, cx + .8, r.y + r.height + .3);
     case "parallel": return slash(-.65) + slash(.65);
     case "dots": return [r.y + .25, r.y + r.height - .25].map(y => `<circle cx="${cx}" cy="${y}" r=".32" fill="#d02040"/>`).join("");
@@ -75,7 +77,12 @@ try {
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${page.width} ${page.height}">${box({ x: 0, y: 0, width: page.width, height: page.height }, "#fff")}${page.markers.map(m => box(m.rect, "#111")).join("")}${qrDarkRects(page.header.qrCode).map(r => box(r, "#111")).join("")}${digits}${grids}</svg>`;
       const imagePath = path.join(dir, `red-${dpi}-${page.pageNumber}.jpg`);
       await sharp(Buffer.from(svg)).resize(Math.round(page.width / 25.4 * dpi), Math.round(page.height / 25.4 * dpi)).jpeg({ quality: 85 }).toFile(imagePath);
-      const result = await recognizeAnswerCard({ imagePath, layoutPath, pageNumber: page.pageNumber, dpi: 300 }) as CombinedRecognitionResult;
+      const result = await recognizeAnswerCard({ imagePath, layoutPath, pageNumber: page.pageNumber, dpi }) as CombinedRecognitionResult & {
+        output?: { dpi: number; widthPx: number; heightPx: number };
+      };
+      assert.equal(result.output?.dpi, dpi, "native output must use the requested scan DPI");
+      assert.equal(result.output?.widthPx, Math.round(page.width / 25.4 * dpi));
+      assert.equal(result.output?.heightPx, Math.round(page.height / 25.4 * dpi));
       assert.notEqual(result.status, "failed", result.message);
       assert.equal(result.subjectiveQuestions.length, questions.length);
       for (const recognition of result.subjectiveQuestions) {

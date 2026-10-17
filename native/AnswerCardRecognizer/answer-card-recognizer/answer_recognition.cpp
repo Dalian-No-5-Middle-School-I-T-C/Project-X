@@ -308,7 +308,10 @@ ScoreCellSample sample_score_cell(const cv::Mat& warped, const SubjectiveScoreCe
         const double directional_span = std::min(
             roi.cols / std::max(std::abs(vx), 1e-9),
             roi.rows / std::max(std::abs(vy), 1e-9));
-        crossing_ratio = span / directional_span;
+        // Projections locate pixel centres. Include each endpoint pixel's
+        // footprint along the fitted line; losing a fraction of a pixel at
+        // either end is significant for thin strokes in a 150 DPI score cell.
+        const double pixel_span = std::abs(vx) + std::abs(vy);
         double entry = std::numeric_limits<double>::lowest();
         double exit = std::numeric_limits<double>::max();
         const auto clip_axis = [&](double origin, double velocity, int size) {
@@ -320,9 +323,15 @@ ScoreCellSample sample_score_cell(const cv::Mat& warped, const SubjectiveScoreCe
         };
         clip_axis(x0, vx, roi.cols);
         clip_axis(y0, vy, roi.rows);
+        // Only extend into the unobserved part of the line's clipped path.
+        // Existing pixels can exceed that path because of pen thickness, but
+        // a corner-grazing stroke must not gain extra crossing length there.
+        const double endpoint_support = std::min(pixel_span, std::max(0.0, exit - entry - span));
+        crossing_ratio = (span + endpoint_support) / directional_span;
         // Length alone can admit a mark that stops inside one side of the cell.
         // Require support near both ends of its clipped path through the ROI.
-        end_gap_ratio = std::max({0.0, min_projection - entry, exit - max_projection}) / directional_span;
+        end_gap_ratio = std::max({0.0, min_projection - pixel_span / 2.0 - entry,
+            exit - max_projection - pixel_span / 2.0}) / directional_span;
         std::vector<bool> occupied(static_cast<size_t>(std::ceil(span)) + 1, false);
         struct ComponentExtent {
             double low = std::numeric_limits<double>::max();

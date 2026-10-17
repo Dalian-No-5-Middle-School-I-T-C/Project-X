@@ -79,6 +79,10 @@ jobs:
 
       - name: Linux x86_64 correction recognizer geometry
         run: npm run verify:recognizer-geometry
+      - name: Native red pen recognition at 150 and 300 DPI
+        env:
+          ANSWER_CARD_RECOGNIZER_EXE: resources/native/correction-linux-x64/answer-card-recognizer
+        run: npm run verify:recognizer-red-line
       - name: Full-card correction and legacy recognition drafts (SQLite)
         run: npm run verify:scan-correction && npm run verify:scan-correction-security && npm run verify:scanner-pending && npm run verify:scanner-retry-concurrency && npm run verify:ladder-options-soft-delete
       # v57 空置 + 「阅卷中已公布」考试不被强制结考，并检查两套方言迁移版本号不撞号
