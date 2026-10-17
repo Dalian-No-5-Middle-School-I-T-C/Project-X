@@ -46,6 +46,9 @@ static int effectiveX, effectiveY;
 static std::vector<TW_UINT16> configuredCaps;
 static bool pendingTransfers, closeAfterFrames, closeDelivered, saveFails;
 static int resetCalls, disableCalls;
+// 每次 MSG_ENDXFER 的返回码（按帧序），缺省 TWRC_SUCCESS；驱动可用同值的
+// TWRC_ENDOFLIST/TWRC_ENDOFLJOB 表示「本次作业再无待传输图像」，属正常收尾。
+static std::vector<TW_UINT16> endXferCodes;
 static TW_ONEVALUE capabilityValue;
 
 DWORD GetTickCount() { return clockMs; }
@@ -103,7 +106,8 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(pTW_IDENTITY, pTW_IDENTITY,
     if (dat == DAT_PENDINGXFERS && msg == MSG_ENDXFER) {
         static_cast<pTW_PENDINGXFERS>(data)->Count = counts.at(frameIndex - 1);
         pendingTransfers = counts.at(frameIndex - 1) > 0;
-        return TWRC_SUCCESS;
+        return endXferCodes.size() > static_cast<size_t>(frameIndex - 1)
+            ? endXferCodes[frameIndex - 1] : TWRC_SUCCESS;
     }
     if (dat == DAT_PENDINGXFERS && msg == MSG_RESET) {
         ++resetCalls; pendingTransfers = false;
@@ -272,6 +276,7 @@ static void reset(std::vector<DWORD> frameDelays, std::vector<TW_UINT16> pending
     effectivePixelType = TWPT_GRAY;
     effectiveUnits = TWUN_CENTIMETERS; effectiveX = effectiveY = 75; configuredCaps.clear();
     pendingTransfers = closeAfterFrames = closeDelivered = saveFails = false; resetCalls = disableCalls = 0;
+    endXferCodes.clear();
 }
 static ScanResult run(bool duplex = false, int maxPages = 0, const std::string& mode = "color", bool showUi = false) {
     TwainController controller;
@@ -366,6 +371,45 @@ int main() {
     result = run(true);
     assert(!result.success && result.pages.size() == 1);
     assert(result.errorMessage.find("back side of page 1") != std::string::npos);
+    // TWAIN 2.x 驱动用 ENDOFLJOB(=TWRC_ENDOFLIST) 告知「最后一张已给完」，属正常收尾：
+    // 曾经被当作 ENDXFER 失败，于是整批报「ENDXFER failed」，现场表现为「只能扫描一张」还全部失败。
+    reset({0, 0, 0}, {0, 0, 0}); endXferCodes = {TWRC_SUCCESS, TWRC_SUCCESS, TWRC_ENDOFLIST};
+    result = run();
+    assert(result.success && result.errorMessage.empty() && result.pages.size() == 3 && clockMs == 0);
+    // 单张批次同理：收尾码不能把已经到手的一张判成失败，也不该再空等一个空闲超时
+    reset({0}, {0}); endXferCodes = {TWRC_ENDOFLIST};
+    result = run();
+    assert(result.success && result.pages.size() == 1 && clockMs == 0);
+    // 双面在第 1 张的背面后结束作业
+    reset({0, 0}, {1, 0}); endXferCodes = {TWRC_SUCCESS, TWRC_ENDOFLIST};
+    result = run(true, 2);
+    assert(result.success && result.errorMessage.empty() && result.pages.size() == 2 && frameIndex == 2 && clockMs == 0);
+    // 收尾路径上的 ENDOFLJOB 也不能谎报「会话未正常关闭」，且必须真的走到 DISABLEDS
+    reset({0}, {0}); saveFails = true; endXferCodes = {TWRC_ENDOFLIST};
+    result = run(false, 1);
+    assert(!result.success && result.pages.empty() && resetCalls == 0 && disableCalls == 1);
+    assert(result.errorMessage.find("Failed to capture") != std::string::npos
+        && result.errorMessage.find("未正常关闭") == std::string::npos);
+    // 7 只有配上 Count==0 才是作业结束：双面时正面 ENDXFER 返回 7 但 Count=1（背面还在），
+    // 必须继续把背面取回来。旧写法在这里直接 break，背面丢帧却整批报成功（现场即「双面只出一面」）。
+    reset({0, 0}, {1, 0}); endXferCodes = {TWRC_ENDOFLIST};
+    result = run(true, 1);
+    assert(result.success && result.errorMessage.empty() && result.pages.size() == 2 && frameIndex == 2 && clockMs == 0);
+    assert(result.pages[0].side == "front" && result.pages[1].side == "back");
+    // 单面同理：7 + Count>0（含 0xffff 未知数量）继续取下一帧，7 + Count==0 才收批且不空等
+    reset({0, 0}, {1, 0}); endXferCodes = {TWRC_ENDOFLIST, TWRC_ENDOFLIST};
+    result = run(false, 2);
+    assert(result.success && result.errorMessage.empty() && result.pages.size() == 2 && clockMs == 0);
+    // 双面正面回 7 + Count==0 后，背面仍可能在状态 5 的等待窗口内到达，必须继续取背面。
+    reset({0, 1000}, {0, 0}); endXferCodes = {TWRC_ENDOFLIST};
+    result = run(true, 1);
+    assert(result.success && result.errorMessage.empty() && result.pages.size() == 2 && frameIndex == 2 && clockMs == 1000);
+    assert(result.pages[0].side == "front" && result.pages[1].side == "back");
+    // 背面始终不来时必须保留正面并报部分失败，不能静默 success。
+    reset({0}, {0}); endXferCodes = {TWRC_ENDOFLIST};
+    result = run(true, 1);
+    assert(!result.success && result.pages.size() == 1 && frameIndex == 1);
+    assert(result.errorMessage.find("back side of page 1") != std::string::npos);
     // Flatbed / rejected ADF does not add an ADF continuation wait.
     reset({0, 1000}, {0, 0}); feederSetAccepted = false; feederReadSupported = false;
     assert(run().pages.size() == 1 && clockMs == 0);
@@ -433,5 +477,5 @@ int main() {
     reset({0}, {0}); closeAfterFrames = true;
     result = run();
     assert(result.success && result.pages.size() == 1 && clockMs == 0 && disableCalls == 1);
-    std::puts("PASS production scan loop/WndProc: one DSM offer per queued message, synchronous/nested notifications preserved; duplex/pixel/DPI, State 5, cleanup and limits");
+    std::puts("PASS production scan loop/WndProc: one DSM offer per queued message, synchronous/nested notifications preserved; duplex/pixel/DPI, State 5, end-of-job closing, cleanup and limits");
 }
