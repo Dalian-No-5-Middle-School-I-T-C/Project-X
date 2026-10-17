@@ -16,6 +16,7 @@ export interface ScanSession {
   page_count: number;
   status: "pending" | "scanning" | "completed" | "cancelled" | "error";
   error_msg: string | null;
+  warnings_json?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -74,6 +75,8 @@ function generateId(): string {
   return randomUUID();
 }
 
+const MAX_SESSION_WARNINGS = 20;
+
 // ── Session CRUD ──────────────────────────────────────
 
 export async function createSession(
@@ -86,7 +89,7 @@ export async function createSession(
     INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, identity_mode, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
   `, id, cardId, name, config.dpi ?? 300, config.duplex ? 1 : 0,
-    config.colorMode ?? "gray", config.paperSize ?? "A4", config.identityMode ?? "strict");
+    config.colorMode ?? "color", config.paperSize ?? "A4", config.identityMode ?? "strict");
   return (await getSession(id))!;
 }
 
@@ -113,6 +116,21 @@ export async function updateSessionStatus(
   );
 }
 
+/** 只允许从非终态进入终态，避免完成/错误覆盖已经落库的取消或其他终态。 */
+export async function transitionSessionStatus(
+  id: string,
+  status: Extract<ScanSession["status"], "completed" | "error" | "cancelled">,
+  errorMsg?: string
+): Promise<boolean> {
+  const result = await db().run(
+    `UPDATE twain_scan_sessions
+     SET status = ?, error_msg = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND status NOT IN ('completed', 'error', 'cancelled')`,
+    status, errorMsg ?? null, id
+  );
+  return result.changes > 0;
+}
+
 export async function incrementPageCount(id: string): Promise<void> {
   await db().run(
     "UPDATE twain_scan_sessions SET page_count = page_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -120,8 +138,43 @@ export async function incrementPageCount(id: string): Promise<void> {
   );
 }
 
+/**
+ * 扫描阶段告警（色彩升级、DPI 被替代、全批零红笔）必须跟着会话留下：
+ * SSE 只发给当时的监听者，客户端在 202 之后才订阅、或扫描中途断线重连时，
+ * 告警已经发完，横幅和「复制诊断」里都不会再出现。
+ */
+export async function appendSessionWarning(id: string, message: string): Promise<void> {
+  const text = message.trim();
+  if (!text) return;
+  const row = await db().get("SELECT warnings_json FROM twain_scan_sessions WHERE id = ?", id) as
+    { warnings_json: string | null } | undefined;
+  if (!row) return;
+  const stored = parseSessionWarnings(row.warnings_json);
+  if (stored.includes(text)) return;
+  // 只留最近若干条：告警文案含逐页细节，异常批次不能把会话行撑大。
+  const next = [...stored, text].slice(-MAX_SESSION_WARNINGS);
+  await db().run(
+    "UPDATE twain_scan_sessions SET warnings_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    JSON.stringify(next), id
+  );
+}
+
+export function parseSessionWarnings(raw: string | null | undefined): string[] {
+  try {
+    const parsed = JSON.parse(raw ?? "[]") as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function deleteSession(id: string): Promise<void> {
-  await db().run("DELETE FROM twain_scan_sessions WHERE id = ?", id);
+  await db().transaction(async tx => {
+    await tx.run("DELETE FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id IN (SELECT id FROM twain_scan_records WHERE session_id=?)", id);
+    await tx.run("DELETE FROM twain_scan_sessions WHERE id = ?", id);
+  });
 }
 
 // ── Scan Record CRUD ───────────────────────────────────
@@ -188,7 +241,10 @@ export async function updateScanQuality(id: string, quality: number): Promise<vo
 }
 
 export async function deleteScanRecord(id: string): Promise<void> {
-  await db().run("DELETE FROM twain_scan_records WHERE id = ?", id);
+  await db().transaction(async tx => {
+    await tx.run("DELETE FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?", id);
+    await tx.run("DELETE FROM twain_scan_records WHERE id = ?", id);
+  });
 }
 
 // ── Recognition Result CRUD ────────────────────────────
@@ -200,8 +256,7 @@ export async function upsertRecognitionResult(params: {
   totalScore?: number | null;
   maxScore?: number | null;
   gradeStatus?: string;
-}): Promise<RecognitionResultRow> {
-  const d = db();
+}, d = db()): Promise<RecognitionResultRow> {
   const existing = await d.get(
     "SELECT id FROM twain_recognition_results WHERE scan_record_id = ?",
     params.scanRecordId

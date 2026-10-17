@@ -736,6 +736,16 @@ export async function requireWholeExamGradingAccess(
   res: express.Response,
   next: express.NextFunction
 ): Promise<void> {
+  return requireWholeExamGradingAccessForExam(req, res, next, Number(req.params.examId));
+}
+
+/** Apply the same whole-exam authority to each member of a batch before any writes. */
+export async function requireWholeExamGradingAccessForExam(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+  examId: number
+): Promise<void> {
   if (!req.user) {
     if (authEnforced) {
       res.status(401).json({ message: "未提供认证令牌" });
@@ -760,7 +770,6 @@ export async function requireWholeExamGradingAccess(
     res.status(403).json({ message: "权限不足：整卷成绩与答案仅限教师或管理员修改" });
     return;
   }
-  const examId = Number(req.params.examId);
   if (!Number.isFinite(examId) || examId <= 0) {
     res.status(400).json({ message: "缺少 examId" });
     return;
@@ -979,7 +988,7 @@ export async function isTeacherPermittedForExam(
  * 整卷级授权校验（PR #280 第五轮评审 P1）。
  *
  * 与 isTeacherPermittedForExam 的区别：整卷上传会一次性写入本场考试的全部客观题
- * 与主观题成绩并撤回已公布状态，因此只接受「不限题块」的授权（block_id IS NULL）。
+ * 与主观题成绩，并可能按管理员策略撤回已公布状态，因此只接受「不限题块」的授权（block_id IS NULL）。
  * 仅有单个题块授权（block_id 非空）的教师改走题块级网阅接口，不得借整卷接口
  * 覆盖其它题块的成绩。
  *

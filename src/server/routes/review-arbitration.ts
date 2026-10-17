@@ -195,7 +195,7 @@ router.post(
            WHERE exam_id = ? AND student_id = ?`,
           totalObj, totalSubj, newTotal, userId, now, crop.exam_id, crop.student_id
         );
-        // 评审 P1：仲裁写入最终分属于成绩变更 → 已公布考试同一事务内自动撤回并写审计
+        // 评审 P1：仲裁写入最终分属于成绩变更 → 同一事务内按管理员策略处理公布状态
         await markScoreMutated(tx, Number(crop.exam_id), userId, "arbitration");
       });
 

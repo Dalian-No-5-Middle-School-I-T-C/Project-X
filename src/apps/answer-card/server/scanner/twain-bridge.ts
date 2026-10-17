@@ -1,5 +1,6 @@
 import { spawn, execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import path from "node:path";
 import { rootDir } from "../storage";
 import type { BridgeScanResult, ScannerSourcesResult } from "./scanner-types";
@@ -159,6 +160,11 @@ export function cancelScan(sessionId: string): boolean {
   return true;
 }
 
+/** 该会话是否处于已请求取消状态（scan() 重试前判断用，避免取消被当成设备失败重试） */
+export function isCancelRequested(sessionId: string): boolean {
+  return cancelRequested.has(sessionId);
+}
+
 
 function processResourcesPath(): string | undefined {
   return (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
@@ -203,7 +209,7 @@ function bridgeFailure(message: string, fields: Omit<BridgeFailure, keyof Error>
   return Object.assign(new Error(message), fields);
 }
 
-function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Promise<{ stdout: string; stderr: string; code: number | null }> {
+function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string, env?: NodeJS.ProcessEnv, refreshOnProgress = false): Promise<{ stdout: string; stderr: string; code: number | null }> {
   const exePath = resolveScannerBridgeExe();
 
   // 取消检查：用户已请求取消（可能早于本函数执行），直接拒绝启动扫描
@@ -214,7 +220,8 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Pro
   return new Promise((resolve, reject) => {
     const child = spawn(exePath, args, {
       windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      env: env ?? process.env
     });
 
     if (sessionId) {
@@ -231,6 +238,15 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Pro
 
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
+    const stderrDecoder = new StringDecoder("utf8");
+    let stderrLine = "";
+    let stderrEnded = false;
+    const flushStderr = () => {
+      if (stderrEnded) return;
+      stderrEnded = true;
+      logBridgeStderr(stderrLine + stderrDecoder.end());
+      stderrLine = "";
+    };
     let timedOut = false;
 
     const timeout = setTimeout(() => {
@@ -239,7 +255,19 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Pro
     }, timeoutMs);
 
     child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrChunks.push(chunk);
+      const lines = (stderrLine + stderrDecoder.write(chunk)).split("\n");
+      stderrLine = lines.pop() ?? "";
+      for (const line of lines) {
+        // 不限页数时按实际帧进度续期，避免运行超过一小时的正常批次被总时长截断。
+        if (refreshOnProgress && /^\[ScannerBridge\] (?:Page \d+ (?:front|back): capturing|page \d+ done, pending=)/.test(line)) {
+          timeout.refresh();
+        }
+        logBridgeStderr(line);
+      }
+    });
+    child.stderr.on("end", flushStderr);
 
     child.on("error", (error) => {
       clearTimeout(timeout);
@@ -256,6 +284,7 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Pro
 
     child.on("close", (code) => {
       clearTimeout(timeout);
+      flushStderr();
       if (sessionId) {
         retireActiveScan(sessionId);
       }
@@ -291,6 +320,19 @@ function parseBridgeJson(stdout: string): Record<string, unknown> {
   const text = stdout.trim();
   if (!text) throw new Error("扫描仪桥接程序返回空数据");
   return JSON.parse(text) as Record<string, unknown>;
+}
+
+/**
+ * 把桥接进程的 stderr 逐行写进服务端日志（Electron 下即 main.log）。
+ * native 侧的关键诊断（CAP_XFERCOUNT 协商结果、每页 pending 张数、FEEDERLOADED 复核、
+ * 等纸超时退出原因）只打在 stderr；此前 runBridge 捕获后无人读取，
+ * 「只扫一张」这类现场问题完全没有取证手段。行级原文照搬，不做裁剪。
+ */
+function logBridgeStderr(stderr: string): void {
+  for (const line of stderr.split(/\r?\n/)) {
+    const text = line.trim();
+    if (text) console.log(`[scanner-bridge] ${text}`);
+  }
 }
 
 /** 把桥接进程的常见 Windows 退出码翻译成可操作的中文提示（探测/扫描共用）。 */
@@ -455,6 +497,14 @@ export async function listSources(): Promise<ScannerSourcesResult> {
   };
 }
 
+/** 每帧预算含完整等纸超时与 5s 传输余量，另留最终等纸及 5 分钟配置/收尾余量。
+ * 不限页数时用一小时看门狗，并由真实帧进度续期。maxPages 按图像帧计数。 */
+export function scanTimeoutMs(maxPages: number, pageTimeoutMs = 60_000): number {
+  const pageWaitMs = Number.isFinite(pageTimeoutMs) && pageTimeoutMs > 0 ? Math.ceil(pageTimeoutMs) : 60_000;
+  if (maxPages > 0) return Math.max(600_000, (maxPages + 1) * pageWaitMs + maxPages * 5_000 + 300_000);
+  return 3_600_000;
+}
+
 export async function scan(config: {
   sourceName: string;
   dpi: number;
@@ -476,7 +526,10 @@ export async function scan(config: {
     "--size", config.paperSize,
     "--output", config.outputDir,
     "--prefix", config.filePrefix,
-    "--max-pages", String(config.maxPages)   // 0 = 不限（native 侧 maxPages>0 才限制）
+    // native 的 --max-pages 按物理张计数（pageNum 每张 +1，双面时背面复用同一号），
+    // 而 config.maxPages 是「页」语义（双面=张×2）。直接透传会让双面一次扫到 2 倍张数，
+    // 故折算回张数再交给 native；超时与上传页容量仍按页（config.maxPages）估算。
+    "--max-pages", String(config.duplex ? Math.ceil(config.maxPages / 2) : config.maxPages)
   ];
 
   if (config.pageTimeoutMs && config.pageTimeoutMs > 0) {
@@ -491,6 +544,40 @@ export async function scan(config: {
     args.push("--show-ui");
   }
 
-  const { stdout } = await runBridge(args, 600_000, sessionId); // 10 min timeout for scanning
-  return parseBridgeJson(stdout) as unknown as BridgeScanResult;
+  const frameLimit = config.duplex ? Math.ceil(config.maxPages / 2) * 2 : config.maxPages;
+  const timeoutMs = scanTimeoutMs(frameLimit, config.pageTimeoutMs);
+  // 单次尝试：设备无响应/零页失败在 native 侧以「结构化 JSON + 非零退出码」返回，
+  // runBridge 只要 stdout 有内容就 resolve（不抛错），因此这类目标场景必须在这里
+  // 把零页设备失败转成抛错，才能进入下面的双 DSM 重试。
+  // 已有部分页（page_count>0）属中途失败，重试会重复扫描同一批纸，不重试。
+  const attempt = async (env?: NodeJS.ProcessEnv): Promise<BridgeScanResult> => {
+    const { stdout } = await runBridge(args, timeoutMs, sessionId, env, config.maxPages === 0);
+    const result = parseBridgeJson(stdout) as unknown as BridgeScanResult;
+    if (result.status === "error" && result.page_count === 0) {
+      const message = result.message || "扫描未产生任何页面";
+      // Configuration and empty-feeder results cannot improve by changing DSM.
+      if (!/DSM|未找到可用扫描仪|无法打开扫描仪|MSG_ENABLEDS/.test(message)) return result;
+      throw Object.assign(new Error(message), { retryDsm: true });
+    }
+    return result;
+  };
+  try {
+    return await attempt();
+  } catch (firstError) {
+    // 主动取消不重试；用户显式指定过 TWAIN_DSM_DLL 时尊重其配置，不自动切换
+    if ((sessionId && isCancelRequested(sessionId)) || process.env.TWAIN_DSM_DLL
+      || !(firstError as { retryDsm?: boolean }).retryDsm) throw firstError;
+    const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
+    console.warn(`[scanner] 首次扫描尝试失败（${firstMessage}），改用系统 twain_32.dll 重试一次`);
+    try {
+      return await attempt({ ...process.env, TWAIN_DSM_DLL: "C:\\Windows\\twain_32.dll" });
+    } catch (secondError) {
+      const secondMessage = secondError instanceof Error ? secondError.message : String(secondError);
+      throw new Error(
+        "扫描仪无响应（指示灯未转绿）。已先后尝试 TWAIN 2.x（TWAINDSM.dll）与系统兼容模式（twain_32.dll）均失败。\n" +
+          `模式一：${firstMessage}\n模式二：${secondMessage}\n` +
+          "建议：1) 关闭其它扫描软件（如柯达采集软件）后重试；2) 重启扫描仪；3) 重装/更新柯达 TWAIN 驱动。"
+      );
+    }
+  }
 }

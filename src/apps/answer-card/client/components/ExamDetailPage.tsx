@@ -1,3 +1,4 @@
+import { PendingScanBanner } from "./PendingScanBanner";
 import React, { useEffect, useState } from "react";
 import { ArrowLeft, ClipboardCheck, Users, AlertCircle, FileSearch, Settings } from "lucide-react";
 import { fetchJson } from "../auth/api";
@@ -106,6 +107,7 @@ export function ExamDetailPage({
         </div>
       </div>
 
+      <PendingScanBanner examId={examId} />
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ExamDetailTab)}>
         {/* Tab 栏 */}
         <TabsList className="mb-6">

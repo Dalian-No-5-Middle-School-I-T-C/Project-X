@@ -1,7 +1,7 @@
 # Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.6.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.7.1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20MariaDB-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20SQLite%20%7C%20MariaDB%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -14,7 +14,7 @@
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
 > **项目起点**：2026-06-07 建库（GitHub 仓库创建，`Initial commit` 同一分钟提交；v0.1.0 于 06-08 打包，v1.0.0 于 06-12 打标）。本仓库只记录建库之后的提交，建库之前的任何日期/版本均为误记。
-> **当前版本**：v2.6.0（版本历史见 [CHANGELOG.md](./readus/CHANGELOG.md)）
+> **当前版本**：v2.7.1（版本历史见 [CHANGELOG.md](./readus/CHANGELOG.md)）
 > **核心能力**：Home 仪表盘（快捷入口 + 模块卡片）→ 答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → 网上阅卷队列（2P/3P 多评 + 争议仲裁 + 断点续批 + PAD 优先 UI + 批注系统）→ 考试管理（含晨测/大考双模式）→ 大考组 → 成绩分析（难度 P / 区分度 D 双指标、总体分析、上次考试对比、学生学期成绩对比、知识点难度/区分度）→ 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → AI 知识点分析 → 知识点弱项诊断 → 并列排名 → 暗色主题 → 皮肤切换（明澈 Flat 2.0 + 纸锋 Paper Edge）→ MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → Web/Scanner 构建分离 → iOS 15 Safari Web 兼容 → 原卷上传 → 移动端响应式适配（480/768/1024 三档断点、底部导航 + 抽屉、表格卡片化、Home 页重构）→ 成绩发布微信订阅消息（小程序一次性订阅，配置见 [WECHAT-GRADE-RELEASE-部署与排错.md](./readus/WECHAT-GRADE-RELEASE-部署与排错.md)，服务器逐项上线动作与判据见 [WECHAT-GRADE-RELEASE-开发者上线清单.md](./readus/WECHAT-GRADE-RELEASE-开发者上线清单.md)；管理端入口：全局设置 → 微信订阅消息 → 开始自检）→ 原卷展示与逐题正确答案（教师按考试开关 + 上传/OCR 答案，学生先看卷再看作答，配置见 [原卷与逐题答案-使用说明.md](./readus/原卷与逐题答案-使用说明.md)）
 > **下个里程碑**：TBD
 
@@ -105,6 +105,8 @@
   客户端按卡内容算 96bit 指纹（`src/shared/cardVersion.ts`，不含 `updatedAt`、不用 Web Crypto），
   建会话与提交完成两处都上报，缺指纹按不可重试错误立即失败；服务端核验不通过返回
   400 `CARD_VERSION_REQUIRED` / 404 `CARD_NOT_FOUND` / 409 `CARD_VERSION_MISMATCH`，被拒时不建会话、不改状态、不入库。
+  上传会话在创建时保存版本；历史会话缺少可信原始记录（含此前请求补写的 `legacy_verified`）时，
+  完成接口返回 409 `SESSION_CARD_VERSION_UNKNOWN`，需同步答题卡后重新识别并创建上传会话。
   选卡改走同步拉取，命中离线缓存时先让老师确认，工作台常驻版本提示
 - **TWAIN DSM 加载路径**（安全 R40）：DSM 只从**规范化后的受信绝对路径**加载，顺序为
   「`TWAIN_DSM_DLL` 环境覆盖 > 安装包自带（exe 同目录）> Windows 目录」，不再退回裸名搜索
@@ -138,8 +140,8 @@
 - **并列排名**：全系统排名统一为同分并列（1, 2, 2, 4, 5...），覆盖跨考、大考、单科、导出等所有场景
 - **导出增强**：单科导出可选「客观题小分」「主观题小分」胶囊列；大考导出为 ZIP（总览表含跨科排名 + 各科详细小分 Excel）
 - **考试管理**：创建考试、关联答题卡（支持新建答题卡时同步创建/关联）、科目、赋分
-- **成绩公布门控**（#248）：批改完成后成绩默认**不公布**（`score_published=0`），教师结考后手动公布、可撤回（需填原因）；未公布时学生端列表不显示、单场详情 404、趋势/天梯/AI 分析分别过滤或 403。改分、改标准答案、仲裁、网阅、赋分重算等任一写分路径都会在**同一事务**内自动撤回公布并写审计
-- **公布完整性校验**（#248 P1-1/P1-2，2026-10-04 收紧）：公布前必须满足「**应考集合 ⊆ 已评分集合**」。应考集合来自管理员显式应考名单，否则按考试的年级/班级从名册**固化快照**（之后调班、转学不影响该场口径）；无范围且无名单、名单为空、缺任何一名应考学生的成绩，一律 409 拒绝公布，**没有「只要有成绩就能发」的退路**。快照之外的多余成绩（外班学生、误识别）不阻断发布。确有缺考学生时，出路是把缺考者从「应考名单」中剔除后再公布；批量公布单次上限 200 场，任一场不合格则整体拒绝且不产生部分写入
+- **成绩公布门控**（#248）：批改完成后成绩默认**不公布**（`score_published=0`），教师结考后手动公布、可撤回（需填原因）；未公布时学生端列表不显示、单场详情 404、趋势/天梯/AI 分析分别过滤或 403。改分、改标准答案、仲裁、网阅、赋分重算、扫描入库等任一写分路径都会在**同一事务**内按管理员策略处理公布状态（`system_settings.auto_unpublish_on_score_change`，全局开关）：**默认关闭**＝保持已公布、学生直接看到最新成绩，不写撤回审计；**开启**＝撤回整场公布并写 `exam_publish_events` 审计。排名/统计缓存失效与是否撤回无关，两条路径都会执行
+- **公布条件**（#248 P1-1/P1-2，2026-10-14 由 #326 放宽）：公布只要求**该场已有成绩记录**（`student_scores` 至少 1 条），`status` 为 `grading`/`closed`，否则 409。应考名单（管理员显式名单优先，否则按年级/班级从名册**固化快照**，之后调班、转学不影响该场口径）仍然维护，用于「应考名单」视图与扫描入库身份校验（名单外学号拒绝写入本场成绩），但**不再作为发布门槛**：缺考学生、异常卷未入库、无范围且无名单、名单为空都不阻塞公布已有成绩。批量公布单次上限 200 场，任一场不满足条件则整体拒绝且不产生部分写入
 - **成绩查看页**：6 子Tab（概况 / 成绩 / 题目分析 / 班级对比 / 总体分析 / AI 分析），班级选择器 + 指标切换 + 「分数有问题？」入口（教师/管理员）
 
 - **成绩修改**：支持个别改分（逐题下拉/输入）和批量修改答案（按钮组切换选项），修改后自动重算全部分数+排名；点击学生行进入逐题得分明细页（班级均分率 + 答题卡放大预览）
@@ -523,11 +525,11 @@ Web 端构建产物部署到服务器，教师和学生通过浏览器访问。
 | `npm run electron:msi` | 生成扫描端 MSI (x64) |
 | `npm run electron:msi:ia32` | 生成扫描端 MSI (ia32) |
 | `npm run verify:auth` | 账号权限自动化验证（137 项用例） |
-| `npm run verify:security-critical` | 安全/完整性关键用例（200 项） |
+| `npm run verify:security-critical` | 安全/完整性关键用例（515 项；`TEST_AUTO_UNPUBLISH=1` 下按开启自动撤回的口径再跑一遍） |
 | `npm run verify:permission-scope` | 权限边界（考试/班级/题块数据范围）用例（53 项） |
-| `npm run verify:p1-integrity` | 成绩公布完整性集合校验（15 项，含快照冻结与批量一致性） |
-| `npm run verify:p1-scope` | 应考范围与显式名单（19 项，含「无退路」拒绝与缺考剔除出路） |
-| `npm run verify:p1-readgate` | 学生端未公布不可见读门（15 项） |
+| `npm run verify:p1-integrity` | 部分成绩公布、应考快照与入库身份校验（15 项，含快照冻结与单场/批量一致性） |
+| `npm run verify:p1-scope` | 应考范围与显式名单（19 项，含缺考/空名单/无范围均可公布已有成绩） |
+| `npm run verify:p1-readgate` | 学生端未公布不可见读门 + 自动撤回策略（24 项） |
 | `npm run verify:mariadb` | MariaDB 真库集成回归（需空库 `projectx_ci`，CI 作业同款） |
 | `npm run verify:176-178` | 考试模式（晨测/大考）+ 知识点难度/区分度冒烟（10 项） |
 | `npx tsx testdata/demo-exams/scripts/verify.ts` | 演示数据完整性校验 |
@@ -791,7 +793,7 @@ Project-X/
 
 > **扫描/判分上传限制**（安全 R22/R28，单一来源 `src/shared/scanUploadLimits.ts`）
 >
-> 默认档位：单张原卷 50 MiB；单个会话 1–200 页；切块单次 50 张 / 单张 12 MiB / 累计 160 MiB；
+> 默认档位：单张原卷 50 MiB；单个会话 1–800 页；切块单次 50 张 / 单张 12 MiB / 累计 160 MiB；
 > 单页上传请求累计 64 MiB；批量判分与识别上传单次 300 张 / 累计 1 GiB。
 > 超限分别返回 400（数量、页码）或 413（单张体积、累计字节，累计字节超限的 `code` 为 `UPLOAD_BUDGET_EXCEEDED`）。
 >
@@ -801,7 +803,7 @@ Project-X/
 > | 环境变量 | 默认 | 天花板 |
 > |----------|------|--------|
 > | `PROJECTX_UPLOAD_MAX_SCAN_IMAGE_MIB` | 50 | 512 |
-> | `PROJECTX_UPLOAD_MAX_SESSION_PAGES` | 200 | 2000 |
+> | `PROJECTX_UPLOAD_MAX_SESSION_PAGES` | 800 | 2000 |
 > | `PROJECTX_UPLOAD_MAX_CROPS_PER_REQUEST` | 50 | 500 |
 > | `PROJECTX_UPLOAD_MAX_CROP_IMAGE_MIB` | 12 | 128 |
 > | `PROJECTX_UPLOAD_MAX_CROPS_TOTAL_MIB` | 160 | 2048 |

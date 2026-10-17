@@ -1,3 +1,4 @@
+import { scanCorrectionSchema } from "./scanCorrectionSchema";
 import mariadb from "mysql2/promise";
 import type { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from "mysql2/promise";
 import { existsSync, readFileSync } from "node:fs";
@@ -1141,6 +1142,20 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE answer_cards ADD COLUMN revision INT NOT NULL DEFAULT 0",
     // PR #312 previously used v59 for revision; recover its missing snapshot table too.
     examClassMembershipsSQL,
+  ] });
+
+  mariadbMigrations.push({ version: 61, name: "scanner-session-card-version", sqls: [
+    "ALTER TABLE twain_scan_sessions ADD COLUMN card_version VARCHAR(24)",
+    // A legacy default also makes an interrupted migration safe to rerun. Existing
+    // rows retain it; only sessions created after the migration default to upload.
+    "ALTER TABLE twain_scan_sessions ADD COLUMN version_source VARCHAR(24) NOT NULL DEFAULT 'legacy'",
+    "ALTER TABLE twain_scan_sessions ALTER COLUMN version_source SET DEFAULT 'upload'",
+  ] });
+
+  mariadbMigrations.push({ version: 62, name: "scan-correction-pages", sqls: [scanCorrectionSchema("mariadb")] });
+
+  mariadbMigrations.push({ version: 63, name: "scan-session-warnings", sqls: [
+    "ALTER TABLE twain_scan_sessions ADD COLUMN warnings_json TEXT",
   ] });
 
   for (const m of mariadbMigrations) {

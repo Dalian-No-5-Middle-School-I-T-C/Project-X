@@ -27,8 +27,8 @@ export class AssignedScoreService {
   /**
    * 获取考试的赋分公式配置
    */
-  async getFormula(examId: number): Promise<AssignedFormula | null> {
-    const exam = await this.db.get(
+  async getFormula(examId: number, db: DbAdapter = this.db): Promise<AssignedFormula | null> {
+    const exam = await db.get(
       "SELECT assigned_formula FROM exams WHERE id = ?",
       examId
     ) as { assigned_formula: string | null } | undefined;
@@ -105,7 +105,7 @@ export class AssignedScoreService {
    * 天然兼容 SQLite 与 MariaDB（不依赖 SAVEPOINT 的预处理差异）。
    */
   async recalculateAll(examId: number, db: DbAdapter = this.db): Promise<{ updated: number; skipped: number }> {
-    const formula = await this.getFormula(examId);
+    const formula = await this.getFormula(examId, db);
     if (!formula || !formula.enabled) {
       return { updated: 0, skipped: 0 };
     }

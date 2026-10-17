@@ -1,3 +1,4 @@
+import { scanCorrectionSchema } from "./scanCorrectionSchema";
 import type Database from "better-sqlite3";
 import { scannerSubmissionSchema } from "./scannerSubmissionSchema";
 
@@ -1323,6 +1324,27 @@ MIGRATIONS.push({ version: 60, name: "answer-card-revision", up(db) {
   // Earlier PR #312 builds recorded answer-card-revision as v59.
   // Those databases skip v59 above, so also recover the missing snapshot table.
   ensureExamClassMemberships(db);
+} });
+
+// Preserve the distinction between pre-upgrade sessions and new uploads. A current
+// fingerprint recovered later is never represented as the original scanner version.
+MIGRATIONS.push({ version: 61, name: "scanner-session-card-version", up(db) {
+  db.transaction(() => {
+    addColumnIfMissing(db, "twain_scan_sessions", "card_version", "VARCHAR(24)");
+    const historical = !hasColumn(db, "twain_scan_sessions", "version_source");
+    addColumnIfMissing(db, "twain_scan_sessions", "version_source", "VARCHAR(24) NOT NULL DEFAULT 'upload'");
+    if (historical && hasTable(db, "twain_scan_sessions")) {
+      db.exec("UPDATE twain_scan_sessions SET version_source = 'legacy'");
+    }
+  })();
+} });
+
+MIGRATIONS.push({ version: 62, name: "scan-correction-pages", up(db) { db.exec(scanCorrectionSchema("sqlite")); } });
+
+MIGRATIONS.push({ version: 63, name: "scan-session-warnings", up(db) {
+  db.transaction(() => {
+    addColumnIfMissing(db, "twain_scan_sessions", "warnings_json", "TEXT");
+  })();
 } });
 
 export function runMigrations(db: Database.Database): void {

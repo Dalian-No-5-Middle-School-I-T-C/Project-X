@@ -17,7 +17,7 @@ async function main(): Promise<void> {
   // 避免测试往仓库 data/ 里落真实的 bootstrap-admin.txt。
   const bootstrapTmpDir = mkdtempSync(path.join(tmpdir(), "projectx-mariadb-bootstrap-"));
   process.env.PROJECTX_DB_PATH = path.join(bootstrapTmpDir, "projectx.db");
-  const { getMysqlDb, initMariadbSchema, resetAdapter, buildUpsertSQL, buildInsertIgnore } =
+  const { getMysqlDb, initMariadbSchema, runMariadbMigrations, getMariadbConfig, resetAdapter, buildUpsertSQL, buildInsertIgnore } =
     await import("../src/server/db/mysql");
   const { ensureDefaultAdmin, getBootstrapAdminPath, hashPassword, verifyPassword } =
     await import("../src/server/db/index");
@@ -34,13 +34,27 @@ async function main(): Promise<void> {
 
     await initMariadbSchema();
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'identity_mode'"));
+    assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'warnings_json'"),
+      "含分数格告警必须能落到会话行");
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_records LIKE 'identity_json'"));
+    // Upgrade an existing v61 database without relying on fresh-schema CREATEs.
+    await db.exec("DROP TABLE scan_correction_pages");
+    await db.run("DELETE FROM schema_migrations WHERE version = 62");
+    assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version=49"));
+    const migrationConnection = await (await import("mysql2/promise")).createConnection(getMariadbConfig());
+    try { await runMariadbMigrations(migrationConnection); } finally { await migrationConnection.end(); }
+    assert.ok(await db.get("SHOW COLUMNS FROM scan_correction_pages LIKE 'recognition_json'"));
+    assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version=62"));
     // Simulate a pre-QR installation and exercise the incremental migration too.
     await db.exec("ALTER TABLE twain_scan_sessions DROP COLUMN identity_mode");
+    await db.exec("ALTER TABLE twain_scan_sessions DROP COLUMN warnings_json");
     await db.exec("ALTER TABLE twain_scan_records DROP COLUMN identity_json");
     await db.run("DELETE FROM schema_migrations WHERE version = 51");
+    await db.run("DELETE FROM schema_migrations WHERE version = 63");
     await initMariadbSchema();
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'identity_mode'"));
+    assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'warnings_json'"),
+      "已有库升级必须补上告警列，不能只靠新装建表");
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_records LIKE 'identity_json'"));
     const migrations = await db.all<{ version: number; name: string }>(
       "SELECT version, name FROM schema_migrations ORDER BY version",
@@ -208,39 +222,37 @@ async function main(): Promise<void> {
     await db.run("INSERT INTO answer_cards (id, title) VALUES ('receipt_ci', '回执测试')");
     const exam = await db.run("INSERT INTO exams (name, card_id) VALUES ('回执测试', 'receipt_ci')");
     await db.run("INSERT INTO student_scores (exam_id, student_id, total_score) VALUES (?, ?, 50)", exam.lastInsertRowid, student.lastInsertRowid);
+    const { markScoreMutated } = await import("../src/server/services/examPublishEvents");
+    await db.run("UPDATE exams SET score_published = 1 WHERE id = ?", exam.lastInsertRowid);
+    assert.equal(await markScoreMutated(db, Number(exam.lastInsertRowid), null, "score_edit"), false);
+    assert.equal(Number((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id = ?", exam.lastInsertRowid))!.score_published), 1);
+    await db.run("INSERT INTO system_settings (`key`, value) VALUES ('auto_unpublish_on_score_change', '1')");
+    await db.transaction(async tx => {
+      assert.equal(await markScoreMutated(tx, Number(exam.lastInsertRowid), null, "score_edit"), true);
+    });
+    assert.equal(Number((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id = ?", exam.lastInsertRowid))!.score_published), 0);
+    assert.equal((await db.all("SELECT id FROM exam_publish_events WHERE exam_id = ? AND action = 'unpublish'", exam.lastInsertRowid)).length, 1);
+    await db.run("DELETE FROM system_settings WHERE `key` = 'auto_unpublish_on_score_change'");
     const { assertScoresPublishable } = await import("../src/server/services/examPublication");
     const { listMissingParticipants } = await import("../src/server/services/examParticipants");
     const publicationExam = { id: Number(exam.lastInsertRowid) };
-    // 收紧后的发布校验（#248 P1-1/P1-2 口径）：无范围 + 无名单不得「仅校验非空」放行。
-    await assert.rejects(assertScoresPublishable(db, publicationExam), /完整性校验/);
+    await assertScoresPublishable(db, publicationExam); // 无名单也可公布已有成绩
     const absent = await db.run("INSERT INTO users (username, password_hash, name, role_id) VALUES ('absent_publish', 'test-only', '尚未出分', 3)");
     await db.run("INSERT INTO exam_participants (exam_id, student_id, source) VALUES (?, ?, 'explicit'), (?, ?, 'explicit')",
       publicationExam.id, student.lastInsertRowid, publicationExam.id, absent.lastInsertRowid);
-    // 应考集合 ⊄ 已评分集合 → 拒绝。评审 B6（与 CR12 同口径）：拒绝消息只给**人数**，
-    // 不再把缺考学生的姓名/学号拼进 409 文案——公布是高频批量操作，那相当于把「本场没出分」
-    // 这批学生的身份明细成批送到调用方屏幕上。
-    let publishRejection: unknown = null;
-    await assertScoresPublishable(db, publicationExam).catch((error: unknown) => { publishRejection = error; });
-    assert.ok(publishRejection instanceof Error && /不完整/.test(publishRejection.message),
-      `缺考时仍按「成绩记录不完整」拒绝公布（实际 ${String((publishRejection as Error)?.message)}）`);
-    const publishMessage = String((publishRejection as Error).message);
-    assert.match(publishMessage, /缺 1 名应考学生成绩/, "消息给出缺考人数，教师仍知道该去哪儿核对名单");
-    assert.ok(!publishMessage.includes("尚未出分") && !publishMessage.includes("absent_publish"),
-      "409 文案不含缺考学生的姓名与登录名（修复前会回显最多 5 人的「姓名(学号)」）");
-    assert.equal((publishRejection as { missingCount?: number }).missingCount, 1,
-      "人数以结构化字段给出，前端不必再从文案里解析");
+    await assertScoresPublishable(db, publicationExam); // 缺考不能阻塞已有成绩
     const missingRows = await listMissingParticipants(db, publicationExam.id);
     assert.equal(missingRows.length, 1);
     assert.equal(Number(missingRows[0].student_id), Number(absent.lastInsertRowid));
-    // 缺考者从名单剔除后，名单内学生已全部出分 → 可公布（名单外成绩不阻断）
+    // 显式名单变更同样不影响已有成绩公布
     await db.run("DELETE FROM exam_participants WHERE exam_id = ? AND student_id = ?", publicationExam.id, absent.lastInsertRowid);
     await assertScoresPublishable(db, publicationExam);
-    // 无显式名单、无年级/班级范围时，即便名单表里有 roster 残留也不得当成齐全
+    // 无名单且无成绩仍应明确拒绝
     await db.run("DELETE FROM exam_participants WHERE exam_id = ?", publicationExam.id);
     await db.run("DELETE FROM student_scores WHERE exam_id = ?", publicationExam.id);
     await assert.rejects(assertScoresPublishable(db, publicationExam), /尚无成绩/);
     await db.run("INSERT INTO student_scores (exam_id, student_id, total_score) VALUES (?, ?, 50)", publicationExam.id, student.lastInsertRowid);
-    console.log("PASS: strict publication integrity (scope required, missing participant, absent removal, empty-score rejection)");
+    console.log("PASS: partial publication (no scope, missing participant retained, empty-score rejection)");
     await db.run("INSERT INTO scanner_submissions (exam_id, session_id, group_id, student_number, state, pages_json) VALUES (?, 'session_ci', 'group_ci', '09210001', 'saved', '[]')", exam.lastInsertRowid);
     assert.deepEqual(await findSavedScannerOwners(db, "session_ci", "group_ci", "09210001", "receipt_ci"),
       [{ exam_id: exam.lastInsertRowid, student_id: student.lastInsertRowid }]);
@@ -251,8 +263,15 @@ async function main(): Promise<void> {
     await db.run("UPDATE scanner_submissions SET pages_json = ? WHERE session_id = 'session_ci' AND group_id = 'group_ci'",
       JSON.stringify([{ recordId: "page_ci", pageNum: 1, side: "front", layoutPage: 1 }]));
     assert.deepEqual(await savedReceiptOwnerOfPage("session_ci", "page_ci"),
-      { exam_id: Number(exam.lastInsertRowid), group_id: "group_ci", student_number: "09210001" });
+      { exam_id: Number(exam.lastInsertRowid), group_id: "group_ci", student_number: "09210001", state: "saved" });
     assert.equal(await savedReceiptOwnerOfPage("session_ci", "other_page"), null);
+    // 已归档的相同重传不再作为已入库卷，但上传入口仍须保护其页面，避免重试把它重新激活。
+    await db.run("UPDATE scanner_submissions SET state = 'discarded' WHERE session_id = 'session_ci' AND group_id = 'group_ci'");
+    assert.equal(await savedReceiptOwnerOfPage("session_ci", "page_ci"), null);
+    assert.deepEqual(await savedReceiptOwnerOfPage("session_ci", "page_ci", true),
+      { exam_id: Number(exam.lastInsertRowid), group_id: "group_ci", student_number: "09210001", state: "discarded" });
+    assert.equal(await savedReceiptOwnerOfPage("session_ci", "other_page", true), null);
+    await db.run("UPDATE scanner_submissions SET state = 'saved' WHERE session_id = 'session_ci' AND group_id = 'group_ci'");
     const { resolveScannerExam } = await import("../src/server/services/scannerExam");
     const unarchived = await resolveScannerExam("receipt_ci", "session_ci");
     assert.deepEqual(unarchived.exams.map(row => Number(row.id)), [Number(exam.lastInsertRowid)]);
@@ -358,6 +377,21 @@ async function main(): Promise<void> {
     assert.equal(Number(blockB2.reviewedCount), 1);
     assert.equal((await listReviewBlocks(blocksExamId, db, ["B2"])).length, 1, "题块级授权只列出被分配的题块（R03）");
     assert.deepEqual(await listReviewBlocks(blocksExamId, db, []), [], "题块授权为空集时不返回任何题块（R03）");
+    // MariaDB JSON columns can arrive as already-decoded arrays/objects. A
+    // one-item array must stay an array when student score details load crops.
+    const { listAnswerBlockCropsForStudent } = await import("../src/server/services/AnswerBlockCropService");
+    const cropRect = { x: 17, y: 108, width: 176, height: 55 };
+    await db.run("UPDATE answer_block_crops SET question_numbers=?,rect_json=? WHERE id='blocks_ci_1'",
+      JSON.stringify([21]), JSON.stringify(cropRect));
+    await db.run("UPDATE answer_block_crops SET question_numbers=?,rect_json=? WHERE id='blocks_ci_2'",
+      JSON.stringify([21, 22]), JSON.stringify(cropRect));
+    const studentCrops = await listAnswerBlockCropsForStudent(blocksExamId, blocksStudentId, db);
+    assert.deepEqual(studentCrops.find(crop => crop.id === "blocks_ci_1")?.questionNumbers, [21]);
+    assert.deepEqual(studentCrops.find(crop => crop.id === "blocks_ci_2")?.questionNumbers, [21, 22]);
+    assert.deepEqual(studentCrops.find(crop => crop.id === "blocks_ci_1")?.rect, cropRect);
+    assert.equal(studentCrops.find(crop => crop.id === "blocks_ci_1")?.maxScore, 10);
+    assert.equal(studentCrops.find(crop => crop.id === "blocks_ci_2")?.maxScore, 15);
+    console.log("PASS: MariaDB JSON crop arrays, coordinates and student-detail score aggregation");
     await db.run("DELETE FROM question_scores WHERE exam_id = ?", blocksExamId);
     await db.run("DELETE FROM block_grading_config WHERE exam_id = ?", blocksExamId);
     await db.run("DELETE FROM answer_block_crops WHERE exam_id = ?", blocksExamId);

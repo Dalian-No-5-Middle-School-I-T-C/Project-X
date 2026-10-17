@@ -1,22 +1,5 @@
-/**
- * P1-1 批改完整性集合校验回归验证（临时 SQLite 库 + HTTP）。
- *
- * 防回归目标：发布完整性不得退回「只数人数」——必须做集合校验
- * （应考集合 ⊆ 已评分集合），且应考名单在首次入库/公布时固化（调班不漂移）。
- *
- *  T1  单班名册 2 人全录 → publish 200
- *  T2  年级名册 A+B 4 人，只录 A 班 2 人 → publish 409（缺 B 班）
- *  T3  只录 A 班 + 外班 C 直写（凑数）→ publish 409（外班无法弥补缺人）
- *  T4  全录 4 人 + 外班 C 直写 → publish 200（P1-1 单向校验；C 不阻止发布）
- *  T4b 快照人数 = 4（外班 C 不在应考快照）
- *  T5  调班：全录 4 人 publish 200 → 移走 B 班某生 → 重新 publish 仍 200（快照冻结）
- *  T5b 快照仍 4 人（调班不影响历史口径）
- *  T6  单场与批量谓词一致：不完整均 409、完整均 200
- *  T7  空班级 → 409（名单为空不得发布）
- *  T8  无范围考试 + 1 条成绩 → 409（无退路）
- *  T9  isExamParticipant：应考学生 true / 外班 C false（写入端拦截语义）
- *
- * 用法: npx tsx scripts/verify-p1-integrity.ts（须用 Node 24 运行 tsx）
+/** 部分成绩公布、应考快照和入库身份校验回归（隔离 SQLite + HTTP）。
+ * 有成绩即可公布；缺人、空名单和无范围均不阻塞。名单固化由入库/名单服务负责。
  */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -67,6 +50,7 @@ async function loginAdmin(base: string, initial: string): Promise<string> {
 
 async function main() {
   console.log(`临时库: ${process.env.PROJECTX_DB_PATH}`);
+  const { ensureExamParticipants } = await import("../src/server/services/examParticipants");
   const { initializeDatabase, ensureDefaultAdmin, getDatabase, closeDatabase, getMysqlDb } = await import("../src/server/db/index");
   const { createApp } = await import("../src/apps/answer-card/server/index");
 
@@ -129,28 +113,29 @@ async function main() {
     ok(r.status === 200, `T1 单班名册全录 → 200 (实际 ${r.status})`);
   }
 
-  // ── T2: 年级名册只录 A → 409（缺 B）──
+  // ── T2: 年级名册只录 A → 200（缺 B）──
   {
     const examId = createExamDirect("IN-T2-只录A", { gradeId });
     insertScore(examId, sids["30001"]);
     insertScore(examId, sids["30002"]);
     const r = await publish(base, headers, examId);
-    ok(r.status === 409 && /不完整|缺/.test(r.body?.message ?? ""), `T2 只录 A 班缺 B 班 → 409 (实际 ${r.status})`);
+    ok(r.status === 200, `T2 只录 A 班缺 B 班 → 200 (实际 ${r.status})`);
   }
 
-  // ── T3: 只录 A + 外班 C（原绕过场景）→ 409（外班不能凑数）──
+  // ── T3: 只录 A + 外班 C（原绕过场景）→ 200（允许部分成绩）──
   {
     const examId = createExamDirect("IN-T3-外班凑数", { gradeId });
     insertScore(examId, sids["30001"]);
     insertScore(examId, sids["30002"]);
     insertScore(examId, sids["30005"]); // 外班 C 直写凑数
     const r = await publish(base, headers, examId);
-    ok(r.status === 409, `T3 外班 C 凑数无法弥补缺 B 班 → 409 (实际 ${r.status})`);
+    ok(r.status === 200, `T3 缺 B 班不阻塞已有成绩 → 200 (实际 ${r.status})`);
   }
 
   // ── T4/T4b: 全录 + 外班 C 直写 → 200，且 C 不在应考快照 ──
   {
     const examId = createExamDirect("IN-T4-全录加外班", { gradeId });
+    await ensureExamParticipants(getMysqlDb(), examId);
     for (const num of ["30001", "30002", "30003", "30004"]) insertScore(examId, sids[num]);
     insertScore(examId, sids["30005"]);
     const r = await publish(base, headers, examId);
@@ -162,6 +147,7 @@ async function main() {
   // ── T5/T5b: 调班后快照冻结 ──
   {
     const examId = createExamDirect("IN-T5-调班", { gradeId });
+    await ensureExamParticipants(getMysqlDb(), examId);
     for (const num of ["30001", "30002", "30003", "30004"]) insertScore(examId, sids[num]);
     const first = await publish(base, headers, examId);
     ok(first.status === 200, `T5 全录 4 人 → publish 200 (实际 ${first.status})`);
@@ -184,7 +170,7 @@ async function main() {
       method: "POST", headers: { ...headers, "Content-Type": "application/json" },
       body: JSON.stringify({ examIds: [incompleteId] }),
     });
-    ok(single.status === 409 && batch.status === 409, `T6a 不完整：单场 ${single.status} / 批量 ${batch.status} 均 409`);
+    ok(single.status === 200 && batch.status === 200, `T6a 不完整：单场 ${single.status} / 批量 ${batch.status} 均 200`);
 
     const completeId = createExamDirect("IN-T6-批量完整", { gradeId });
     for (const num of ["30001", "30002", "30003", "30004"]) insertScore(completeId, sids[num]);
@@ -192,27 +178,28 @@ async function main() {
     ok(single2.status === 200, `T6b 完整：单场 200 (实际 ${single2.status})`);
   }
 
-  // ── T7: 空班级 → 409 ──
+  // ── T7: 空班级 → 200 ──
   {
     const examId = createExamDirect("IN-T7-空班级", { classId: emptyClass });
     insertScore(examId, sids["30005"]);
     const r = await publish(base, headers, examId);
-    ok(r.status === 409, `T7 空班级 → 409 (实际 ${r.status})`);
+    ok(r.status === 200, `T7 空班级 → 200 (实际 ${r.status})`);
   }
 
-  // ── T8: 无范围考试 → 409（无退路）──
+  // ── T8: 无范围考试 → 200（已有成绩可公布）──
   {
     const examId = createExamDirect("IN-T8-无范围", {});
     insertScore(examId, sids["30001"]);
     const r = await publish(base, headers, examId);
-    ok(r.status === 409 && /完整性校验/.test(r.body?.message ?? ""), `T8 无范围 + 1 条成绩 → 409 (实际 ${r.status})`);
+    ok(r.status === 200, `T8 无范围 + 1 条成绩 → 200 (实际 ${r.status})`);
   }
 
   // ── T9: isExamParticipant 拦截语义 ──
   {
     const examId = createExamDirect("IN-T9-拦截", { gradeId });
+    await ensureExamParticipants(getMysqlDb(), examId);
     for (const num of ["30001", "30002", "30003", "30004"]) insertScore(examId, sids[num]);
-    await publish(base, headers, examId); // 触发快照固化
+    await publish(base, headers, examId); // 公布不改变已固化名单
     const { isExamParticipant } = await import("../src/server/services/examParticipants");
     const dbAdapter = getMysqlDb();
     const inRoster = await isExamParticipant(dbAdapter, examId, sids["30001"]);

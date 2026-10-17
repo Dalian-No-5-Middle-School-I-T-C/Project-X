@@ -1,4 +1,4 @@
-import type { CombinedRecognitionResult } from "./types";
+import type { CombinedRecognitionResult, CombinedGradingRow } from "./types";
 
 /** Resolve only the native recognizer's ID-only failure after a verified pairing
  * or an explicit teacher correction. Image/marker failures stay failed. */
@@ -99,8 +99,16 @@ export interface ScanConflictCard {
   groupId: string;
   studentId: string;
   previouslySaved: boolean;
+  formalScoreRetained?: boolean;
   totalScore?: number;
   pages: ScanBatchPage[];
+}
+
+/** One physical attempt can occur in several failure lists. */
+export function uniqueScanConflictCards(cards: readonly ScanConflictCard[]): ScanConflictCard[] {
+  const unique = new Map<string, ScanConflictCard>();
+  for (const card of cards) unique.set(JSON.stringify([card.sessionId, card.groupId]), card);
+  return [...unique.values()];
 }
 
 export interface ScanBatchResult {
@@ -116,6 +124,7 @@ export interface ScanBatchResult {
   pageCount: number;
   saved: boolean;
   pages: Array<ScanBatchPage & {
+    grading?: CombinedGradingRow;
     objectiveScore: number;
     subjectiveScore: number;
     totalScore: number;
@@ -124,7 +133,9 @@ export interface ScanBatchResult {
 }
 
 export interface ScanBatchResponse {
+  discardedGroups?: number;
   results: ScanBatchResult[];
   failures: ScanBatchFailure[];
   reviewCards?: ScanConflictCard[];
+  warnings?: string[];
 }

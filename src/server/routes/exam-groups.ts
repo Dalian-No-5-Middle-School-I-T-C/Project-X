@@ -14,6 +14,7 @@ import {
 } from "./exam-groups-helpers";
 import { EXAM_NOT_SOFT_DELETED_SQL, GROUP_MEMBER_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
 import { removeExamAnswerKeyFiles } from "../../apps/answer-card/server/helpers";
+import { deleteExamCorrectionPages } from "../services/scanCorrectionCleanup";
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -274,6 +275,7 @@ router.delete("/:groupId", requireGroupManager, async (req: Request, res: Respon
       // If deleting exams too, delete them (with cascade to scores etc.)
       if (deleteExams && memberExams.length > 0) {
         for (const exam of memberExams) {
+          await deleteExamCorrectionPages(tx, exam.id);
           await tx.run("DELETE FROM exams WHERE id = ?", exam.id);
           await recordLifecycleEvent({ entityType: "exam", entityId: exam.id, action: "delete", actorId: req.user?.id });
         }

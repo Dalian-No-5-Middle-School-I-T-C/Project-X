@@ -1,5 +1,5 @@
 import { buildLayout } from "../../../../shared/layout";
-import { gradeSessionStudentResults, type CombinedStudentResult } from "../../../../shared/grading";
+import { gradeCombinedRecognition, gradeSessionStudentResults, type CombinedStudentResult } from "../../../../shared/grading";
 import { mapScanPageToLayout, type ScanBatchResponse, type ScanBatchPage } from "../../../../shared/scanPages";
 import type { AnswerCard, CombinedRecognitionResult } from "../../../../shared/types";
 import type { ScanRecordWithResult, StudentGradingResultRow } from "../database/scan-store";
@@ -16,6 +16,42 @@ export function groupSessionPages(card: AnswerCard, records: ScanRecordWithResul
     groups.set(key, group);
   }
   return { pageCount, groups };
+}
+
+/** Check non-ID evidence before either grading or mutating submission receipts. */
+export function validateSessionGroupStructure(card: AnswerCard,
+  rows: ReadonlyArray<{ record: ScanRecordWithResult; page: ScanBatchPage }>, pageCount: number): void {
+  for (const { record, page } of rows) {
+    if (record.ocr_status === "failed") throw new Error(record.ocr_error || "页面识别失败");
+    const identity = record.identity_json ? JSON.parse(record.identity_json) : null;
+    const verified = identity?.status === "verified" && identity.cardId === card.id && identity.pageNumber === page.layoutPage;
+    const legacy = record.identity_mode === "legacy" && identity?.status === "unverified" && ["QR_MISSING", "QR_UNREADABLE"].includes(identity.code);
+    if (!verified && !legacy) throw new Error(`第 ${page.layoutPage} 页未通过二维码身份校验，请在 Windows 扫描端重新识别`);
+  }
+  const layoutPages = new Set(rows.map(row => row.page.layoutPage));
+  if (layoutPages.size !== pageCount || rows.length !== pageCount) throw new Error(`答题卡缺页或重复页：应有 ${pageCount} 面，实有 ${rows.length} 面，请补齐后重新扫描`);
+  for (const { record, page } of rows) {
+    if (!record.recognition || record.ocr_status === "pending" || record.ocr_status === "processing") {
+      throw new Error(`第 ${page.pageNum} 张${page.side === "front" ? "正面" : "背面"}识别失败：${record.ocr_error || "尚无有效识别结果"}`);
+    }
+    for (const value of [record.recognition.objective_json, record.recognition.subjective_json]) {
+      if (!Array.isArray(JSON.parse(value ?? "[]"))) throw new Error("识别结果格式无效，请重新识别");
+    }
+  }
+}
+
+/** Pure grading shared by receipt preflight and the result consumer. */
+export function gradeSessionGroup(card: AnswerCard,
+  rows: ReadonlyArray<{ record: ScanRecordWithResult; page: ScanBatchPage }>, studentId: string): CombinedStudentResult {
+  return gradeSessionStudentResults(card, rows.map(({ record }) => ({
+    recordId: record.id, pageNum: record.page_num, side: record.side, imagePath: record.image_path,
+    ocrStatus: record.ocr_status,
+    recognition: {
+      status: "ok", studentId: { status: "ok", value: studentId },
+      questions: JSON.parse(record.recognition!.objective_json ?? "[]"),
+      subjectiveQuestions: JSON.parse(record.recognition!.subjective_json ?? "[]"),
+    } as CombinedRecognitionResult,
+  })));
 }
 
 /**
@@ -122,7 +158,7 @@ export async function collectSessionResults(
   card: AnswerCard,
   records: ScanRecordWithResult[],
   cached: StudentGradingResultRow[],
-  save?: (result: CombinedStudentResult) => Promise<void>,
+  save?: (result: CombinedStudentResult) => Promise<void | boolean>,
 ): Promise<ScanBatchResponse> {
   const { pageCount, groups } = groupSessionPages(card, records);
   const response: ScanBatchResponse = { results: [], failures: [] };
@@ -143,36 +179,15 @@ export async function collectSessionResults(
     const studentId = studentIds.length === 1 ? studentIds[0] : null;
     let stage: "recognition" | "grading" | "saving" = "recognition";
     try {
-      for (const { record, page } of rows) {
-        if (record.ocr_status === "failed") throw new Error(record.ocr_error || "页面识别失败");
-        const identity = record.identity_json ? JSON.parse(record.identity_json) : null;
-        const verified = identity?.status === "verified" && identity.cardId === card.id && identity.pageNumber === page.layoutPage;
-        const legacy = record.identity_mode === "legacy" && identity?.status === "unverified" && ["QR_MISSING", "QR_UNREADABLE"].includes(identity.code);
-        if (!verified && !legacy) throw new Error(`第 ${page.layoutPage} 页未通过二维码身份校验，请在 Windows 扫描端重新识别`);
-      }
+      validateSessionGroupStructure(card, rows, pageCount);
       if (legacyBlock) throw new Error(legacyBlock);
       const identityProblems = legacyIdentityProblems(identityRows(rows));
       if (identityProblems.length > 0) throw new Error(identityProblems[0]);
       if (studentIds.length > 1) throw new Error("同一份答题卡的学号不一致，请核对正反面后订正");
       if (!studentId) throw new Error("未识别到学号，请核对图片并填写正确学号后重试");
       if ((studentGroups.get(studentId)?.size ?? 0) > 1) throw new Error("同一学号出现多份答题卡，请核对后重新扫描");
-      const layoutPages = new Set(pages.map(p => p.layoutPage));
-      if (layoutPages.size !== pageCount || pages.length !== pageCount) throw new Error(`答题卡缺页或重复页：应有 ${pageCount} 面，实有 ${pages.length} 面，请补齐后重新扫描`);
-      for (const { record, page } of rows) {
-        if (!record.recognition || record.ocr_status === "failed" || record.ocr_status === "pending" || record.ocr_status === "processing") {
-          throw new Error(`第 ${page.pageNum} 张${page.side === "front" ? "正面" : "背面"}识别失败：${record.ocr_error || "尚无有效识别结果"}`);
-        }
-      }
       stage = "grading";
-      const combined = gradeSessionStudentResults(card, rows.map(({ record }) => ({
-        recordId: record.id, pageNum: record.page_num, side: record.side, imagePath: record.image_path,
-        ocrStatus: record.ocr_status,
-        recognition: {
-          status: "ok", studentId: { status: "ok", value: studentId },
-          questions: JSON.parse(record.recognition!.objective_json ?? "[]"),
-          subjectiveQuestions: JSON.parse(record.recognition!.subjective_json ?? "[]"),
-        } as CombinedRecognitionResult,
-      })));
+      const combined = gradeSessionGroup(card, rows, studentId);
       const prior = cached.find(r => r.student_id === studentId);
       let saved = Boolean(prior && prior.objective_json === JSON.stringify(combined.objectiveQuestions)
         && prior.subjective_json === JSON.stringify(combined.subjectiveQuestions)
@@ -180,11 +195,16 @@ export async function collectSessionResults(
         && prior.page_count === combined.pageCount);
       if (save && !saved) {
         stage = "saving";
-        await save(combined);
-        saved = true;
+        saved = (await save(combined)) !== false;
       }
       response.results.push({
-        groupId, studentId, pages: pages.map((page, index) => ({ ...combined.pages[index], ...page })),
+        groupId, studentId, pages: pages.map((page, index) => ({ ...combined.pages[index], ...page,
+          grading: gradeCombinedRecognition(card, page.recordId, {
+            status: "ok", studentId: { status: "ok", value: studentId },
+            questions: JSON.parse(rows[index].record.recognition!.objective_json ?? "[]"),
+            subjectiveQuestions: JSON.parse(rows[index].record.recognition!.subjective_json ?? "[]"),
+          } as CombinedRecognitionResult),
+        })),
         saved, totalScore: combined.totalScore, maxScore: combined.totalMaxScore,
         objectiveScore: combined.objectiveScore, objectiveMaxScore: combined.objectiveMaxScore,
         subjectiveScore: combined.subjectiveScore, subjectiveMaxScore: combined.subjectiveMaxScore,

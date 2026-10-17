@@ -15,12 +15,12 @@ static void printUsage() {
     fprintf(stderr, "  --source <name>     Scanner name (default: first available)\n");
     fprintf(stderr, "  --dpi <number>      Resolution (default: 300)\n");
     fprintf(stderr, "  --duplex            Enable duplex scanning\n");
-    fprintf(stderr, "  --mode <mode>       Color mode: gray, color, bw (default: gray)\n");
+    fprintf(stderr, "  --mode <mode>       Color mode: color, gray, bw (default: color)\n");
     fprintf(stderr, "  --size <size>       Paper size: A4, Letter, A3 (default: A4)\n");
     fprintf(stderr, "  --output <dir>      Output directory (required for scan)\n");
     fprintf(stderr, "  --prefix <str>      File name prefix (default: scan)\n");
     fprintf(stderr, "  --max-pages <num>   Max pages to scan (default: unlimited)\n");
-    fprintf(stderr, "  --page-timeout-ms <num>  Idle timeout waiting for next page (default: 15000)\n");
+    fprintf(stderr, "  --page-timeout-ms <num>  Idle timeout waiting for next page (default: 60000)\n");
     fprintf(stderr, "  --show-ui           Show scanner's native UI\n");
 }
 

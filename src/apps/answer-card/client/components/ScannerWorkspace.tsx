@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useScannerResultRefresh } from "../hooks/useScannerResultRefresh";
 import {
   ArrowLeft,
   Camera,
@@ -75,6 +76,24 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
   // ── File import states ──
   const [gradingFiles, setGradingFiles] = useState<File[]>([]);
   const [gradingResult, setGradingResult] = useState<CombinedGradingBatchResult | null>(null);
+  const [gradingJobs, setGradingJobs] = useState<Array<{ id: string; pageNum: number; side: "front" | "back" }>>([]);
+  const remote = useScannerResultRefresh(gradingJobs.map(job => job.id));
+  useEffect(() => {
+    if (!gradingJobs.length) return;
+    setGradingResult(current => current && ({ ...current, rows: current.rows.map((row, index) => {
+      const source = gradingJobs[index];
+      const job = source && remote.jobs.find(job => job.id === source.id);
+      if (!job) return row;
+      const failure = job.failures?.find(f => f.pages.some(p => p.pageNum === source.pageNum && p.side === source.side));
+      if (failure) return { ...row, studentId: failure.studentId || row.studentId,
+        recognitionStatus: "待核对", issueCount: Math.max(1, row.issueCount), message: failure.message };
+      const updated = job.resultRows?.find(p => p.pageNum === source.pageNum && p.side === source.side)?.row;
+      if (!updated) return row;
+      const saved = job.results?.results.find(r => r.pages.some(p => p.pageNum === source.pageNum && p.side === source.side))?.saved;
+      return { ...updated, fileName: row.fileName, previewUrl: row.previewUrl,
+        recognitionStatus: saved ? updated.recognitionStatus : "待入库" };
+    }) }));
+  }, [remote.jobs, gradingJobs, gradingResult?.batchId]);
   const [isBusy, setIsBusy] = useState(false);
   const [legacyIdentity, setLegacyIdentity] = useState(false);
   const [lastLegacyIdentity, setLastLegacyIdentity] = useState(false);
@@ -104,6 +123,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
     if (gradingFiles.length === 0) return;
     setIsBusy(true);
     setLastLegacyIdentity(legacyIdentity);
+    setGradingJobs([]);
     // v2.5.1: remote 档位时图片同时后台排队上传（不阻塞判分）
     let uploadQueued = false;
     let serverUnconfigured = false;
@@ -112,19 +132,31 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
         if (isRemoteServerConfigured()) {
           const card = await fetchJson<AnswerCard>(`/api/cards/${encodeURIComponent(cardId)}`);
           const pages = mapImportedScanPages(gradingFiles.length, buildLayout(card).pages.length, card.sided);
-          scannerUploadManager.startUpload({
-            kind: "import",
-            identityMode: legacyIdentity ? "legacy" : "strict",
-            cardId,
-            // 安全 R35：本机识别用的就是这份卡，上传时把它的版本指纹交给服务器核验
-            cardVersion: cardFingerprint(card),
-            name: `导入_${cardTitle}_${new Date().toISOString().slice(0, 10)}`,
-            paperSize: card.paper.size,
-            pages: gradingFiles.map((file, i) => ({
-              ...pages[i],
-              getBlob: () => Promise.resolve(file),
-            })),
+          const groups = new Map<string, Array<{ file: File; page: typeof pages[number] }>>();
+          gradingFiles.forEach((file, i) => {
+            const group = groups.get(pages[i].groupId) ?? [];
+            group.push({ file, page: pages[i] });
+            groups.set(pages[i].groupId, group);
           });
+          const jobs: typeof gradingJobs = [];
+          for (const [groupId, group] of groups) {
+            const id = scannerUploadManager.startUpload({
+              trackResults: true,
+              kind: "import",
+              identityMode: legacyIdentity ? "legacy" : "strict",
+              cardId,
+              // 安全 R35：本机识别用的就是这份卡，上传时把它的版本指纹交给服务器核验
+              cardVersion: cardFingerprint(card),
+              name: `导入_${cardTitle}_第${Number(groupId) + 1}份`,
+              paperSize: card.paper.size,
+              pages: group.map(({ file, page }) => ({
+                ...page,
+                getBlob: () => Promise.resolve(file),
+              })),
+            });
+            for (const { page } of group) jobs.push({ id, pageNum: page.pageNum, side: page.side });
+          }
+          setGradingJobs(jobs);
           uploadQueued = true;
         } else {
           serverUnconfigured = true;
@@ -189,6 +221,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
         <div className="flex min-h-0 flex-1 flex-row-reverse">
           {/* ── Main area: ScannerPanel or GradingResults ── */}
           <section className="min-w-0 flex-1 overflow-auto bg-background p-6">
+            {remote.error && <p role="alert" className="text-sm text-destructive-fg">服务器成绩刷新失败：{remote.error}</p>}
             {!scanning && <ControlRow label="导入时兼容旧卡（无可读二维码时不校验卡 ID）" control={<Checkbox checked={legacyIdentity} disabled={isBusy} onCheckedChange={c => setLegacyIdentity(c === true)} />} />}
             {!scanning && lastLegacyIdentity && <p role="status" className="text-sm text-muted-foreground">本批次兼容旧卡：无可读二维码的页面未校验卡 ID，请人工核对。</p>}
             {scanning ? (
