@@ -153,7 +153,10 @@ import { Button, Card, CardContent, Badge, StatCard, Chart, paletteColor } from 
 </div>
 ```
 
-**铁律**：禁止硬编码 hex、禁止内联 `style={{}}`（仅允许带注释说明的动态值）、**禁止新建 CSS 文件**；要扩展主题只改 `design/tokens/tokens.css` + 跑同步（见第三节）。数字一律 `tabular-nums`，图标只用 lucide-react。
+**铁律**：禁止硬编码 hex、禁止内联 `style={{}}`（仅允许带注释说明的动态值）、**禁止新建 CSS 文件**；
+要扩展主题，改的是**生效副本** `src/apps/answer-card/client/theme/tokens.css`，同轮回写设计副本
+`design/tokens/tokens.css`，并人工核对 `app.css` 的 `@theme` 映射与 `client/theme.ts`——
+**没有同步脚本可跑**，流程见第 2 节。数字一律 `tabular-nums`，图标只用 lucide-react。
 
 ### 步骤 4 · 接路由（新页面四步接线）
 
@@ -236,9 +239,10 @@ import { Button, Card, CardContent, Badge, StatCard, Chart, paletteColor } from 
    --px-accent-bg-hover:  #4C8FFA;
    --px-accent-bg-active: #2563EB;
    ```
-5. 跑标准流程（§2）同步 + 验证。
+5. 走 §2 标准流程：两副本对写 + `diff` 自查 + `typecheck` + 构建 + 截图验证。
 
-> 另注意：`theme.ts` 里也镜像了品牌（`brand/brandDark/brandSoft/…`）与 chart 色板，同步脚本会自动更新，但 JS 侧个别 `rgba(192,15,40,…)` 需随同步核对。
+> 另注意：`theme.ts` 里也镜像了品牌（`brand/brandDark/brandSoft/…`）与 chart 色板，**没有任何脚本会自动更新它**——
+> 改完 CSS 必须人工同值改 `theme.ts`，并逐个核对 JS 里的 `rgba(192,15,40,…)` 硬编码。
 
 ### 4. 场景 B · 整套风格微调
 
@@ -264,17 +268,26 @@ import { Button, Card, CardContent, Badge, StatCard, Chart, paletteColor } from 
 
 - tokens.css 内已带**对比度注释**（如 `--px-fg-primary 15.8:1`、secondary 7.0:1、tertiary 4.9:1、暗色 accent-bg 白字 4.6:1），调整后保持 ≥ 4.5:1 的验收基线；
 - **换色残点清单**：`--px-chart-1`（L1 硬编码 `#C00F28`）+ L2 亮块 3 处 `rgba(192,15,40,…)`（`--px-accent-ring` / `--px-selection-bg` / `--px-shadow-accent`）必须一起改，否则残留旧品牌红；
-- **禁手改 `app.css`**（`@theme` 块是同步产物）；**Preflight 未启用**（P7 前新增样式要显式声明 bg/border/padding）；
+- **`app.css` 是手写文件，不是同步产物**：它是 Tailwind v4 分层入口 + `@theme` 语义映射块
+  （`--color-*: var(--px-*)`，映射表见 DESIGN-SYSTEM §3.4）。新增或改名 L2 令牌时要在 `@theme` 里补对应一行，
+  否则组件拿不到 `bg-*` / `text-*` 工具类；这一处同样只能人工维护。
+  **Preflight 未启用**（P7 前新增样式要显式声明 bg/border/padding）；
 - 全部改完跑 `ui-visual-verification`（Playwright 亮暗截图对照 demo）收尾。
 
 ### 7. 皮肤扩展机制（v2.1.0 预留）
 
-**皮肤（Skin）= 与明暗正交的风格维度**：`data-theme` 管明暗（light/dark），`data-skin` 管风格（当前仅默认 `flat` 一套）。完整功能说明与扩展步骤见 [SKIN-THEME.md](./SKIN-THEME.md)，此处只列前端接线点：
+**皮肤（Skin）= 与明暗正交的风格维度**：`data-theme` 管明暗（light/dark），`data-skin` 管风格
+——现有 **两套**：`paper-edge`（纸锋，**v2.3.0 起的默认皮肤**，`DEFAULT_SKIN`）与 `flat`（明澈 Flat 2.0，
+v2.3.0 之前的默认）。完整功能说明与扩展步骤见 [SKIN-THEME.md](./SKIN-THEME.md)，此处只列前端接线点：
 
-- **状态**：`App.tsx` 顶层 `skin` state（localStorage `projectx-skin` 初始化），经 `WorkspaceContext` 以 `skin` / `setSkin` 下发；`data-skin` 同步 effect 遵循「默认 `flat` 不设属性」约定（零污染、零迁移）。
+- **状态**：`App.tsx` 顶层 `skin` state（localStorage `projectx-skin` 初始化，缺省取 `DEFAULT_SKIN`），
+  经 `WorkspaceContext` 以 `skin` / `setSkin` 下发。**同步 effect 无条件写 `document.documentElement.dataset.skin`**：
+  「默认皮肤不设属性」的旧约定已废止——`paper-edge` 的 CSS 覆盖块本身就靠 `[data-skin="paper-edge"]`
+  选择器生效，不写属性等于没有皮肤；`main.tsx` 在首屏前按 localStorage 预置同一属性以防白闪。
+  「显式选择 vs 默认值落盘」的区分由 sessionStorage `projectx-skin-chosen` 承载，与属性写入无关。
 - **切换 UI**：`components/SkinSwitcher.tsx`（皮肤 + 明暗两组菜单，受控/自管双模式）挂在登录页、侧栏底部、页头；设置页「客户端设置」Tab 有「外观 / 皮肤」区。
 - **账号级持久化**：登录后「本地优先」应用本地选择并回写后端（`PATCH /api/users/me/settings { themeSkin }`）；新设备无本地记录时应用账号 `themeSkin`（`/api/auth/me` 下发，users 表 `theme_skin` 列，迁移 v33）。
-- **扩展路径**：新增一套皮肤 = tokens.css 追加 `[data-skin="xxx"]`（+ `[data-skin="xxx"][data-theme="dark"]` 暗色覆盖，注意 CSS 特异性顺序）→ `SkinSwitcher.tsx` `SKIN_OPTIONS` 注册一项；组件零改动，图表（MutationObserver 已监听 `data-skin`）与防白闪（main 预置）自动跟随。
+- **扩展路径**：新增一套皮肤 = tokens.css 追加 `[data-skin="xxx"]`（+ `[data-skin="xxx"][data-theme="dark"]` 暗色覆盖，注意 CSS 特异性顺序）——按 §2，**生效副本与设计副本两处都要改**，`diff` 应仍为零差异 → `SkinSwitcher.tsx` `SKIN_OPTIONS` 注册一项（`id` 与 `data-skin` 值一致）；组件零改动，图表（MutationObserver 已监听 `data-skin`）与防白闪（main 预置）自动跟随。
 
 ---
 

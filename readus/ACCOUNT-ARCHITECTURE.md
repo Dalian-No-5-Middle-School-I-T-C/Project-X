@@ -23,7 +23,7 @@ flowchart TB
 
     subgraph Client["React 前端 client/"]
         LP[LoginPage]
-        AC[AuthContext + localStorage Token]
+        AC[AuthContext + 内存 Token / HttpOnly Cookie]
         AM[AccountManagement]
         TM[TeacherManagement]
         SM[ClassManagement]
@@ -46,7 +46,7 @@ flowchart TB
 
     BW --> APP
     LP --> AC
-    AC -->|Bearer Token| AUTH
+    AC -->|同源 Cookie / 跨域 Bearer| AUTH
     AC --> UM & CM & SS & APP
     APP --> GATE
     UM --> USERS
@@ -58,8 +58,12 @@ flowchart TB
 
 **数据流要点：**
 
-1. 用户打开 Electron 应用 → 前端检查 `localStorage` 中的 Token → 调用 `GET /api/auth/me` 恢复会话。
-2. 未登录则展示 `LoginPage`；登录成功后 Token 写入本地，后续所有 `fetchJson` 自动附加 `Authorization: Bearer <token>`。
+1. 用户打开应用 → 前端调用 `GET /api/auth/me` 恢复会话：同源部署下浏览器自动带上 HttpOnly Cookie
+   `projectx_auth_token`，前端**不**从 `localStorage` 读登录令牌（`AuthContext` 里的 `localStorage` 只存
+   身份切换/教师角色覆盖这类界面偏好）。
+2. 未登录（`/me` 401）则展示 `LoginPage`；登录成功后服务端 `Set-Cookie` 下发会话，请求凭据按模式分流：
+   同源请求靠 Cookie，**只有跨域 API 模式**（`VITE_PROJECTX_API_BASE` 指向远端）才把 token 取到内存并
+   附加 `Authorization: Bearer <token>`——内存态，绝不落 `localStorage`（`client/auth/api.ts`）。
 3. 管理员通过「账号」模式操作 `/api/users` 与 `/api/classes`；学生通过「我的成绩」访问 `/api/scores/me`。
 4. 业务接口（答题卡、考试、阅卷、分析）经兼容门 `makeGate` / `requirePermissionCompat` 判定：默认（`PROJECTX_AUTH_ENFORCE` 未设置）**即强制**，只有显式 `0` / `false` 才允许匿名通过；管理类接口**始终强制鉴权**（见 §2.2）。
 
@@ -77,7 +81,7 @@ flowchart TB
 | **中间件** | `src/server/middleware/auth.ts` | `authMiddleware`、`optionalAuth`、`requireRole`、`requirePermission`、`requirePasswordChangeCompleted` |
 | **业务侧兼容门** | `src/apps/answer-card/server/middleware.ts` | `makeGate`、`requirePermissionCompat`、`requireExamAccess`、`hasViewPermission`（教师权限矩阵）——无身份时按 `PROJECTX_AUTH_ENFORCE` 决定放行还是 401，避免免登录的旧部署被 `requirePermission` 一律挡死 |
 | **数据访问** | `UserRepository` / `ClassRepository` / `ScoreRepository` | 用户、组织结构、成绩查询 |
-| **路由** | `routes/auth.ts` · `users.ts` · `classes.ts` · `scores.ts` · `admin-permissions.ts` | REST API；`admin-permissions.ts` 是「按角色编辑权限位」的入口 |
+| **路由** | `routes/auth.ts` · `users.ts` · `classes.ts` · `scores.ts` · `admin-permissions.ts` | REST API；`admin-permissions.ts` 管的是**教师权限矩阵** `teacher_permissions` 行（按人/学科/班级/题块收放五个开关），**不是**角色权限位编辑器，见 §2.1 |
 | **网关** | `apps/answer-card/server/index.ts` | 业务路由读写权限守卫；`optionalAuth` 记录 `created_by` |
 
 ### 2.1 三级角色与权限
@@ -148,33 +152,36 @@ src/apps/answer-card/client/
 ```mermaid
 sequenceDiagram
     participant UI as React UI
-    participant LS as localStorage
+    participant CK as HttpOnly Cookie（跨域模式：内存 Token）
     participant API as /api/auth
 
-    UI->>LS: 读取 projectx_auth_token
-    alt 有 Token
-        UI->>API: GET /me (Bearer)
+    UI->>API: GET /me（浏览器自动带 Cookie）
+    alt 会话有效
         API-->>UI: user + permissions
         UI->>UI: 渲染主界面（按权限显示 Tab）
-    else 无 Token 或 401
+    else 无会话或 401
         UI->>UI: 显示 LoginPage
     end
 
     Note over UI,API: 登录
     UI->>API: POST /login
-    API-->>UI: token + user + permissions
-    UI->>LS: 写入 Token
+    API-->>UI: Set-Cookie + user + permissions（跨域模式另返回 body token）
+    UI->>CK: 同源不落任何前端存储；跨域模式仅存内存
 
     Note over UI,API: 改密 / 禁用
-    API-->>UI: 吊销会话 → 401 → 自动清除 Token → 回登录页
+    API-->>UI: 吊销会话 → 401 → 清内存 token 与媒体票据 → 回登录页
 ```
 
 **关键实现：**
 
-- Token 键名：`projectx_auth_token`，存于 `localStorage`，Electron 重启后仍可恢复会话（直至 8 小时过期或服务重启）。
-- `fetchJson` 统一注入 `Authorization` 头；解析服务端 `{ message }` 错误体。
-- `urlWithToken()` 为 PDF 下载、坐标 JSON、扫描仪 SSE、扫描图片等**无法设请求头**的场景追加 `?token=`（与后端中间件兼容）。
-- 收到 401（除登录接口外）时触发 `projectx:unauthorized` 事件，自动清除本地 Token 并回到登录页。
+- 会话凭据：服务端 `~/.projectx/tokens.json` 存 **SHA-256 哈希**后的 token，普通会话 8 小时、
+  `isPersistent`（登录体里的持久标记，对应 Cookie `maxAge`）30 天；前端不持有可持久化的登录令牌副本。
+- `fetchJson` / `authFetch` 统一带 `credentials: "include"`；仅 `isCrossOriginApiMode()` 时注入
+  `Authorization` 头；错误体里的 `{ message }` 统一解析。
+- `<img>` / `<a>` / `EventSource` 这类**无法设请求头**的场景：同源直接依赖 Cookie；跨域优先用
+  `POST /api/auth/media-ticket` 换出的单次 `?mt=` 票据，未命中缓存时才临时回落 `?token=`
+  （`urlWithToken()` / `mediaUrl()` / `resignMediaTicketUrl()`，后端用媒体白名单限制 `?token=` 的可用路径）。
+- 收到 401（除登录接口外）时触发 `projectx:unauthorized` 事件，清内存 token 与票据缓存并回到登录页。
 
 ### 3.3 工作模式与权限映射
 
@@ -288,8 +295,8 @@ v1.1 当前
 
 | 议题 | 当前方案 | 说明 |
 |------|----------|------|
-| Token 存储 | 磁盘文件 `~/.projectx/tokens.json` | 服务器重启后 Token 存活（持久化 6 个月） |
-| 前端 Token | `localStorage` | 桌面单机场景可接受；改密/禁用时服务端吊销 |
+| Token 存储 | 磁盘文件 `~/.projectx/tokens.json`（只存 SHA-256 哈希） | 服务器重启后会话存活；普通 8 小时、持久会话 30 天 |
+| 前端 Token | 同源不落任何存储（HttpOnly Cookie），跨域模式仅内存 | 避免 XSS 拿到长期令牌；改密/禁用时服务端吊销 |
 | 密码 | bcryptjs 哈希（bcrypt 格式兼容） | 默认学生密码=学号，管理员应督促首次登录改密 |
 | 管理员保护 | 至少保留 1 名 admin | 后端拒绝降级/禁用最后一名管理员 |
 | 排名计算 | 查询时即时计算 | 不依赖 `student_scores.rank` 是否落库 |

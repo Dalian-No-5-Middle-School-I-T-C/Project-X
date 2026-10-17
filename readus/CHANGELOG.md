@@ -74,6 +74,26 @@
 - 另开两个 issue 跟进本轮不做的事：#335（背景图上传 5 MiB 硬编码改「默认值 + `PROJECTX_*` + 天花板」三档）、
   #336（学生历史背景图的清理口径与透明度是否纳入禁令，待拍板）。
 
+**PR #334 第二轮返修（bot inline 评审 5 条，同日）**
+
+- 第 1 条与上面 P2-1 同源（页签一刀切），已修。余下四条都是**我自己在 #283 里造成的新漂移**：
+  宣称某节「描述当前实现」，但该节正文没跟上一轮评审，属于「改了口径没改完全」，逐条对照代码补齐。
+- `ACCOUNT-ARCHITECTURE.md`：**凭据流向写反**——§1 数据流与 §3.2 时序图仍说前端从 `localStorage`
+  读 `projectx_auth_token`、所有请求带 Bearer，而 `client/auth/api.ts` 是同源 HttpOnly Cookie、
+  只有跨域 API 模式才把 token 放内存并加 `Authorization`（`localStorage` 在 `AuthContext` 里只剩界面偏好）。
+  据此改了架构图两处、数据流 1/2 两条、§3.2 整段时序与「关键实现」四条，§5 取舍表的
+  「前端 Token = localStorage」与「持久化 6 个月」两行（实为哈希存储、普通 8 小时 / 持久 30 天）。
+- `ACCOUNT-ARCHITECTURE.md`：§2 组件表把 `admin-permissions.ts` 称作「按角色编辑权限位的入口」，
+  与同文档 §2.1 的正确表述自相矛盾；改为「教师权限矩阵 `teacher_permissions` 行」。
+- `UI-ARCHITECTURE.md`：上一轮只改了 §2 的标准流程，**残留三处自动同步指令**——§1 铁律「只改设计副本 + 跑同步」、
+  §3 换色第 5 步「同步脚本会自动更新 `theme.ts`」、§6「禁手改 `app.css`（`@theme` 块是同步产物）」。
+  实际 `app.css` 是分层的入口与手写 `@theme` 映射（`--color-*: var(--px-*)`），改令牌要人工补一行。
+- `UI-ARCHITECTURE.md` §7 皮肤段过期：称「当前仅默认 `flat` 一套」「默认皮肤不设 `data-skin` 属性」，
+  实际 `SKIN_OPTIONS` 有 `paper-edge` / `flat` 两套、`DEFAULT_SKIN = "paper-edge"`，且 `App.tsx` 的
+  同步 effect **无条件**写 `dataset.skin`（纸锋覆盖块依赖该选择器），`main.tsx` 首屏前预置防白闪。
+  「显式选择 vs 默认落盘」由 sessionStorage `projectx-skin-chosen` 承载，与属性写入无关。
+  索引里两行的复核状态同步改写，避免「标记为已复核却仍是旧模型」把下一个人带走。
+
 ## 2026-10-06：PR #311 / #312 整合与匿名 AI 全局配额修复
 
 - 在 #312 分支合入 #311 的考试班级快照与多班统计修复。大考天梯同时保留历史班级、逐科去重，以及学生仅聚合本人参加考试的范围限制。

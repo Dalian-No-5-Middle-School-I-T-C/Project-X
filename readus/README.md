@@ -9,11 +9,11 @@
 | 文档 | 覆盖范围 | 2026-10-17 复核状态 |
 | --- | --- | --- |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | 系统总体架构、模块关系、构建产物 | 已复核，本轮更正默认皮肤、CSS/令牌事实源、mode 数量（12）与路由壳组件名 |
-| [ACCOUNT-ARCHITECTURE.md](./ACCOUNT-ARCHITECTURE.md) | 三级账号模型全栈视角、Token 与会话、UI 权限映射 | 已复核，本轮更正会话有效期、鉴权默认值、教师权限表述、角色权限位的可改性、构建命令 |
+| [ACCOUNT-ARCHITECTURE.md](./ACCOUNT-ARCHITECTURE.md) | 三级账号模型全栈视角、Token 与会话、UI 权限映射 | 已复核两轮，本轮更正会话有效期、鉴权默认值、教师权限表述、角色权限位的可改性、构建命令；返修补上 §1/§3.2 的凭据流向（Cookie 主通道 + 跨域内存 token，非 localStorage）与 `admin-permissions` 定性（教师矩阵而非角色权限位） |
 | [ACCOUNT-CONTROL.md](./ACCOUNT-CONTROL.md) | 后端认证/账号 API 清单与权限门 | 已复核，本轮补自助设置端点与 #322 学生边界、Cookie 主通道与媒体票据、鉴权默认值；§6 的开关作用范围按「挂了哪个门」逐条写清（PR #334 评审 P2） |
 | [DATABASE.md](./DATABASE.md) | 表结构、双方言、迁移与 SQL 兼容 | 迁移上界本轮由 v34 更正为 **v60**，新增 v35→v60 编号台账与 Token 口径；v41 以后的逐表说明仍未补 |
 | [双方言SQL函数安全清单.md](./双方言SQL函数安全清单.md) | SQLite / MariaDB 函数与日期比较红线 | 条目仍有效（含 2026-10-04 新 entries） |
-| [UI-ARCHITECTURE.md](./UI-ARCHITECTURE.md) | v2 组件体系、主题令牌、样式分层 | 已复核，本轮移除失效的令牌同步流程与外围文档引用 |
+| [UI-ARCHITECTURE.md](./UI-ARCHITECTURE.md) | v2 组件体系、主题令牌、样式分层 | 已复核两轮，本轮移除失效的令牌同步流程与外围文档引用；返修清掉残留的三处自动同步表述（§1 铁律、§3 换色第 5 步、§6 `app.css`）与 §7 皮肤段的过期默认值（现为 `paper-edge`，且始终写 `data-skin`） |
 | [SKIN-THEME.md](./SKIN-THEME.md) | 皮肤/明暗模型与账号级偏好持久化 | 已复核，与当前实现一致 |
 | [ADMIN-GUIDE.md](./ADMIN-GUIDE.md) | 管理员操作流程、角色与引导密码 | 已复核（版本号本轮对齐），新增 §8.6「学生账号能自己改什么」（#322） |
 | [ADMIN-BOOTSTRAP-PASSWORD.md](./ADMIN-BOOTSTRAP-PASSWORD.md) | 首次启动管理员引导密码机制 | 本轮未逐条复核；机制存在性由 `scripts/verify-auth.ts` 覆盖 |
