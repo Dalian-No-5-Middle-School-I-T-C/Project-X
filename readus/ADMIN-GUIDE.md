@@ -1,6 +1,6 @@
 # Project-X 管理员使用手册
 
-> **适用版本**: v2.6.0 及以上（v1.6.1 起账号管理迁至 Web 端）（2026-10-17 对照代码复核）
+> **适用版本**: v2.6.0 及以上（v1.6.1 起账号管理迁至 Web 端）（2026-10-17 对照 v2.7.1 代码复核）
 > **适用角色**: 系统管理员（`admin`）  
 > **关联文档**: [`ACCOUNT-ARCHITECTURE.md`](./ACCOUNT-ARCHITECTURE.md) · [`ACCOUNT-CONTROL.md`](./ACCOUNT-CONTROL.md)
 

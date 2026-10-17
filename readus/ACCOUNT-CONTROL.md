@@ -1,7 +1,7 @@
 # Project-X 三级账号控制系统技术说明
 
 > **性质**: 账号 / RBAC 后端权威说明（第 1、2 节保留 v1.1~v1.5 的建设记录，属历史快照）
-> **复核至**: v2.6.0（数据库迁移 v60）
+> **复核至**: v2.7.1（数据库迁移 v63）
 > **校订日期**: 2026-10-17（#322 学生网页端自助权限收敛；同步 Cookie 主通道、媒体票据与鉴权默认值）
 > **作者**: Project-X
 > **关联文档**: [`ACCOUNT-ARCHITECTURE.md`](./ACCOUNT-ARCHITECTURE.md)（全栈视角 + 多端） · [`ARCHITECTURE.md`](./ARCHITECTURE.md) · [`DATABASE.md`](./DATABASE.md) · [`ADMIN-GUIDE.md`](./ADMIN-GUIDE.md)

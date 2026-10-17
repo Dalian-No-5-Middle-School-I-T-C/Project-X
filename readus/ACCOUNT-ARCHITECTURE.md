@@ -1,6 +1,6 @@
 # Project-X 账号管理系统技术架构与版本说明
 
-> **性质**: 账号与权限体系的全栈说明（v1.1~v1.5 成文，2026-10-17 按 v2.6.0 代码校订现行事实）
+> **性质**: 账号与权限体系的全栈说明（v1.1~v1.5 成文，2026-10-17 按 v2.7.1 代码校订现行事实）
 > **关联文档**: [`README.md`](./README.md)（readus 索引）· [`ACCOUNT-CONTROL.md`](./ACCOUNT-CONTROL.md)（后端 API 详述）· [`ARCHITECTURE.md`](./ARCHITECTURE.md)（系统总览）· [`ADMIN-GUIDE.md`](./ADMIN-GUIDE.md)（管理员手册）
 
 > **校订说明**：第 4 节「v1.1 账号系统 vs 早期 main」是**历史对比**，保留原文不改；第 1、2、3、5、6 节描述当前实现，2026-10-17 逐项对照代码更正了会话有效期、强制鉴权默认值、教师权限表述、前端目录结构与构建命令。前端组件与样式分层的细节仍以 [ARCHITECTURE.md](./ARCHITECTURE.md) 与 [UI-ARCHITECTURE.md](./UI-ARCHITECTURE.md) 为准。

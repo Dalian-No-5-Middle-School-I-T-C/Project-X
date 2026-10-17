@@ -1,6 +1,6 @@
 # 双方言 SQL 函数安全清单（SQLite / MariaDB）
 
-> 最近复核：2026-10-17（迁移至 v60；本清单条目仍有效）
+> 最近复核：2026-10-17（迁移至 v63；本清单条目仍有效，v61~v63 为增列 / 建表类迁移，未引入本清单内的函数或日期比较风险点）
 
 > 来源：成绩分析系统优化建议清单 · 建议 9「索引补齐与双方言函数审计」
 > 审计范围：`src/server/repositories/AnalysisRepository.ts`、`src/server/routes/exam-groups-analysis.ts`、`src/server/repositories/KnowledgePointRepository.ts`、`src/server/repositories/ScoreRepository.ts`、`src/apps/answer-card/server/routes/analysis.ts`
