@@ -200,7 +200,7 @@ v1.9.2 从传统 `useState` 状态切换升级为 **URL 路由化**，使用 `re
 | **analysis** | `/analysis` | 考试统计、排名、题目分析 | `AnalysisRoutePage`（内含 `ExamSelectPage` / `ExamGroupDetailPage` / `ScoreDetailPage`） |
 | **scores** | `/scores` | 学生查看个人成绩 | `ScoresRoutePage` → `StudentScores` |
 | **account** | `/account` | 教师/学生/班级管理 | `AccountRoutePage` → `AccountManagement`、`TeacherManagement`、`ClassManagement` |
-| **account-settings** | `/account-settings` | 个人账号设置（v2.0.0 起独立路由页，横向 Tab；学生侧按 #322 隐藏阅卷设置与背景上传） | `AccountSettingsPage` |
+| **account-settings** | `/account-settings` | 个人账号设置（v2.0.0 起独立路由页，横向 Tab；学生侧按 #322 隐藏阅卷设置和整段背景，页面也不挂背景图） | `AccountSettingsPage` |
 | **global-settings** | `/global-settings` | 全局设置（仅管理员，v2.0.0 起独立路由页） | `GlobalSettingsRoutePage` |
 | **admin-console** | `/admin-console` | 管理员控制台（`system:manage`；消费 `/api/admin/console/*` 与数据留存策略接口） | `AdminConsoleRoutePage` → `AdminConsolePage` |
 | **sponsor** | `/sponsor` | 赞助页 | `SponsorRoutePage` → `SponsorPage` |

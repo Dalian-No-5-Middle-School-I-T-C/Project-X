@@ -115,13 +115,12 @@ issue #322「移除学生账号在网页端修改阅卷设置和上传背景图�
 
 | 能力 | 学生 | 教师 / 管理员 | 强制点 |
 |------|------|---------------|--------|
-| 账号设置页「阅卷设置」页签（成绩指标显示、复核置信度阈值） | **不可见、不可写** | 可用 | `PATCH /api/users/me/settings` 逐字段拒绝：请求体含 `scoreDisplayMode` / `reviewConfidenceThreshold` 且 `!roleHasPermission(role_id, grade:write)` → **403**（`canWriteGradingSelfSettings()`）。同请求里的皮肤/明暗等字段不受影响 |
+| 账号设置页「阅卷设置」页签（成绩指标显示、复核置信度阈值） | **不可见、不可写** | 可用 | `PATCH /api/users/me/settings`：请求体含 `scoreDisplayMode` / `reviewConfidenceThreshold` 且 `!roleHasPermission(role_id, grade:write)` → **整单 403**（`canWriteGradingSelfSettings()`）。不带这两项时，皮肤 / 明暗 / Tab 栏仍可写 |
+| 背景图显示与透明度 | **不显示、不可写** | 可用 | 学生身份（`isStudentAccount()`），不看 `grade:write`。`GET` 设置把 `backgroundOpacity` 改写成 0；`GET /api/app/background` 返回 404（自定义图和默认图都不下发）；PATCH 带 `backgroundOpacity` 则整单 403。库里的历史值和 `backgrounds/<userId>.jpg` 保留，只是不再发给学生 |
 | 上传自定义背景图 | **不可用** | 可用 | `POST /api/users/me/background` 在 multer **之前**挂 `requireBackgroundUploadAccess()`，学生直接 403，不产生落盘文件 |
-| 背景图透明度、皮肤、明暗、底部 Tab 栏 | 可用 | 可用 | 同一 PATCH 接口的其余字段，属于个人外观 |
+| 皮肤、明暗、底部 Tab 栏 | 可用 | 可用 | 同一 PATCH 接口里、且请求没有夹带上面被禁字段时 |
 | 本人 AI 服务商增删改 | 可用 | 可用 | `routes/ai-providers.ts` 按 `user_id` 归属自身行，密钥加密存储；不是跨用户写权限 |
 | 网页端模式 | 只有 `scores` 与 `account-settings` | 全部 | `src/shared/appVariant.ts` 的 `allowedModes` + `App.tsx` 路由收敛 |
-
-两点残留口径，需要产品决策而不是代码缺陷：学生**历史上**上传过的背景图仍会作为其本人默认浮层继续显示（文件按 `backgrounds/<userId>.jpg` 只影响自己，不扩散）；透明度也保留，因为它作用于服务端自带的 `resources/background.jpg`。要一并收回，得同时改 `GET /api/app/background` 的取文件分支并清理历史文件。
 
 ---
 

@@ -138,9 +138,9 @@ function AiProviderForm({
  * /account-settings 路由页：个人「账号设置」（阅卷/客户端/AI/数据存储）。
  * 由 AccountMenu 的设置 Dialog 迁移为独立页面（v2 UI 重构 P6）。
  *
- * #322: 「阅卷设置」页签只对持 grade:write 的账号渲染，「上传背景图」按钮对学生账号隐藏；
- * 后端（PATCH /api/users/me/settings 字段门 + POST /api/users/me/background 角色门）
- * 是同一规则的强制层，这里只是不再把不可用的控件摆出来。
+ * #322: 「阅卷设置」页签只对持 grade:write 的账号渲染。学生账号不提供背景图透明度，
+ * 也不能上传背景图；网页端始终不挂背景浮层。后端（阅卷字段门、背景透明度门、
+ * 上传门、背景 GET 404）是同一规则的强制层，这里只是不再把不可用的控件摆出来。
  *
  * P6 重写：放弃 vertical Tabs 左栏列布局（v2 Tabs 对 vertical 支持不佳时内容列塌缩），
  * 改为 v2 Tabs 默认「横向顶部 Tab 条 + 内容区全宽自然排布」，页面容器放宽为 max-w-5xl。
@@ -148,9 +148,8 @@ function AiProviderForm({
  */
 export function AccountSettingsPage() {
   const { user, isAdmin, isStudent, hasPermission, refreshUser } = useAuth();
-  // #322: 学生账号在网页端不再提供「阅卷设置」与「上传背景图」两个入口。
-  // 判据与后端同源：阅卷设置看 grade:write 权限位（canWriteGradingSelfSettings），
-  // 背景图上传看学生身份（requireBackgroundUploadAccess）。
+  // #322: 阅卷设置看 grade:write（canWriteGradingSelfSettings）。
+  // 背景图显示、透明度与上传看学生身份，不看权限位。
   // 无身份的单机免登录模式保持可用，与后端「无用户时不收敛」的口径一致。
   const canEditGradingSettings = !user || hasPermission(PERMISSIONS.GRADE_WRITE);
   const canUploadBackground = !isStudent;
@@ -175,9 +174,9 @@ export function AccountSettingsPage() {
   });
   const [showHelpCard, setShowHelpCard] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("grading");
-  // #322: 学生没有「阅卷设置」页签，默认落点回退到「客户端设置」，避免出现空白内容区。
+  // #322: 没有「阅卷设置」页签时，默认落点回退到「客户端设置」，避免出现空白内容区。
   // 只在请求的正是被隐藏的 grading 时回退——其余页签（客户端 / AI 服务商 / 数据存储）
-  // 本来就该保留：无脑回退会把学生的 AI 页签也锁死，而 #322 只收敛阅卷设置与背景图上传。
+  // 本来就该保留：无脑回退会把学生的 AI 页签也锁死。
   const activeSettingsTab: SettingsTab =
     !canEditGradingSettings && settingsTab === "grading" ? "client" : settingsTab;
   // 五轮C1：侧边栏自动展开（客户端级 localStorage 设置，原误放系统级配置页，迁至此「外观/皮肤」区）
@@ -254,12 +253,12 @@ export function AccountSettingsPage() {
   async function saveSettings() {
     setSettingsMsg("");
     try {
-      // #322: 学生提交时不带阅卷字段——后端对越权字段整条返回 403，
-      // 若继续全量提交，「客户端设置」的保存会被阅卷字段连坐失败。
-      const payload: Record<string, unknown> = {
-        backgroundOpacity: bgOpacity,
-        showTabBar: showTabBar,
-      };
+      // 越权字段一出现，后端整单 403。学生不提交阅卷字段和背景透明度，
+      // 否则「客户端设置」的保存会被连坐失败。
+      const payload: Record<string, unknown> = { showTabBar };
+      if (!isStudent) {
+        payload.backgroundOpacity = bgOpacity;
+      }
       if (canEditGradingSettings) {
         payload.scoreDisplayMode = displayMode;
         payload.reviewConfidenceThreshold = reviewThreshold;
@@ -280,6 +279,7 @@ export function AccountSettingsPage() {
 
   // v1.9.5: 滑动背景图透明度时防抖持久化，避免刷新后被重置为 0
   const persistBgOpacity = (v: number) => {
+    if (isStudent) return;
     if (bgSaveTimer.current) window.clearTimeout(bgSaveTimer.current);
     bgSaveTimer.current = window.setTimeout(() => {
       fetchJson("/api/users/me/settings", {
@@ -292,7 +292,7 @@ export function AccountSettingsPage() {
 
   async function handleBgUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || isStudent) return;
     setBgMsg("");
     try {
       const form = new FormData();
@@ -402,7 +402,7 @@ export function AccountSettingsPage() {
           onValueChange={(v) => setSettingsTab(v as SettingsTab)}
         >
           <TabsList className="px-5">
-            {/* #322: 学生账号不提供「阅卷设置」页签 */}
+            {/* #322: 没有 grade:write 的账号不提供「阅卷设置」页签 */}
             {canEditGradingSettings && (
               <TabsTrigger value="grading">
                 <Gauge size={15} /> 阅卷设置
@@ -421,7 +421,7 @@ export function AccountSettingsPage() {
             )}
           </TabsList>
 
-          {/* #322: 阅卷设置整块对学生账号不渲染（后端同时按字段拒绝越权写入） */}
+          {/* #322: 阅卷设置整块对无 grade:write 的账号不渲染（后端同时按字段拒绝越权写入） */}
           {canEditGradingSettings && (
             <TabsContent value="grading" className="flex flex-col gap-4 px-5 py-5">
               <div className="flex max-w-xl flex-col gap-4">
@@ -531,6 +531,7 @@ export function AccountSettingsPage() {
                 />
               </section>
 
+              {!isStudent && (
               <section className="flex flex-col gap-2">
                 <h4 className="m-0 text-base font-semibold text-foreground">背景图透明度</h4>
                 <div className="flex items-center justify-between text-xs">
@@ -556,7 +557,7 @@ export function AccountSettingsPage() {
                 />
                 <span className="text-xs text-muted-foreground">0% = 关闭，建议 5%~15%（浮层叠加，不影响阅读）</span>
                 <div className="flex items-center gap-1.5">
-                  {/* #322: 学生账号不提供「上传背景图」入口；透明度仍可调（作用于服务端默认背景） */}
+                  {/* 学生整段背景区不渲染。上传仍按学生身份单独判断，不看 grade:write。 */}
                   {canUploadBackground && (
                     <>
                       <Button variant="ghost" size="sm" onClick={() => bgFileRef.current?.click()}>
@@ -570,6 +571,7 @@ export function AccountSettingsPage() {
                   )}
                 </div>
               </section>
+              )}
             </div>
 
             {settingsMsg && (
