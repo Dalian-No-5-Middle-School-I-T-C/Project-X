@@ -22,6 +22,7 @@ if (process.env.SCANNER_POSTPROCESS_MARIADB === "1") {
 }
 
 const { initializeDatabase, getMysqlDb, closeDatabase, initMariadbSchema } = await import("../src/server/db");
+const { resetAdapter } = await import("../src/server/db/mysql");
 initializeDatabase();
 const db = getMysqlDb();
 if (process.env.SCANNER_POSTPROCESS_MARIADB === "1") await initMariadbSchema();
@@ -141,6 +142,9 @@ try {
   assert.deepEqual(phantom.body.missingGroups, ["9"]);
   console.log("PASS scanner-postprocess-delete-smoke");
 } finally {
-  server.close();
-  await closeDatabase();
+  // 必须等 close 回调：不等待时监听套接字仍开着；MariaDB 连接池也要 resetAdapter +
+  // closeDatabase 才会释放句柄，否则 SQLite 能退出、MariaDB 上进程挂住不退出（CI 卡在整步）
+  await new Promise<void>(resolve => server.close(() => resolve()));
+  resetAdapter();
+  closeDatabase();
 }
