@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | 系统总体架构、模块关系、构建产物 | 已复核，本轮更正默认皮肤、CSS/令牌事实源、mode 数量（12）与路由壳组件名 |
 | [ACCOUNT-ARCHITECTURE.md](./ACCOUNT-ARCHITECTURE.md) | 三级账号模型全栈视角、Token 与会话、UI 权限映射 | 已复核，本轮更正会话有效期、鉴权默认值、教师权限表述、角色权限位的可改性、构建命令 |
-| [ACCOUNT-CONTROL.md](./ACCOUNT-CONTROL.md) | 后端认证/账号 API 清单与权限门 | 已复核，本轮补自助设置端点与 #322 学生边界、Cookie 主通道与媒体票据、鉴权默认值 |
+| [ACCOUNT-CONTROL.md](./ACCOUNT-CONTROL.md) | 后端认证/账号 API 清单与权限门 | 已复核，本轮补自助设置端点与 #322 学生边界、Cookie 主通道与媒体票据、鉴权默认值；§6 的开关作用范围按「挂了哪个门」逐条写清（PR #334 评审 P2） |
 | [DATABASE.md](./DATABASE.md) | 表结构、双方言、迁移与 SQL 兼容 | 迁移上界本轮由 v34 更正为 **v60**，新增 v35→v60 编号台账与 Token 口径；v41 以后的逐表说明仍未补 |
 | [双方言SQL函数安全清单.md](./双方言SQL函数安全清单.md) | SQLite / MariaDB 函数与日期比较红线 | 条目仍有效（含 2026-10-04 新 entries） |
 | [UI-ARCHITECTURE.md](./UI-ARCHITECTURE.md) | v2 组件体系、主题令牌、样式分层 | 已复核，本轮移除失效的令牌同步流程与外围文档引用 |

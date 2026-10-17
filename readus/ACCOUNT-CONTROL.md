@@ -116,10 +116,10 @@ system:manage               系统维护（仅管理员）
 
 | 中间件 | 行为 |
 |--------|------|
-| `authMiddleware` | 强制认证，无/失效 token → 401，并挂载 `req.user` |
+| `authMiddleware` | 解析并挂载 `req.user`；令牌无效 → 401；**无令牌时看开关**：默认强制模式 401，`PROJECTX_AUTH_ENFORCE=0/false` 下放行（见 §6） |
 | `optionalAuth` | 有 token 则解析挂载，无 token 也放行（用于记录 `created_by`） |
-| `requireRole(...names)` | 要求属于指定角色之一，否则 403 |
-| `requirePermission(perm)` | 基于角色权限做细粒度判定（支持通配），否则 403 |
+| `requireRole(...names)` | 自己检查 `req.user`：未认证 401（**与开关无关**），角色不在名单 403 |
+| `requirePermission(perm)` | 基于角色权限做细粒度判定（支持通配）：未认证 401，权限不足 403；这两个门是管理路由在兼容模式下的下限 |
 | `requirePasswordChangeCompleted` | 一次性密码账号在改密前只放行认证自助端点，其余 428 |
 | `requirePermissionCompat` / `makeGate`（`apps/answer-card/server/middleware.ts`） | 业务路由的兼容版门：已登录按角色权限位判定；**匿名请求只在 `PROJECTX_AUTH_ENFORCE=0/false` 的免登录模式下放行**，默认强制模式下仍 401 |
 
@@ -160,6 +160,9 @@ system:manage               系统维护（仅管理员）
 背景时它作用于全局默认背景 `resources/background.jpg`；历史遗留的学生背景图仍只对本人可见。
 前端同步隐藏阅卷 Tab 与上传按钮（`AccountSettingsPage.tsx`），并在保存时只提交允许的字段，
 避免学生改外观时被阅卷字段的 403 连带打断——但**授权口径始终以上表的后端门为准**。
+页签回退只在「请求的正是被隐藏的阅卷设置」时发生（`!canEditGradingSettings && settingsTab === "grading"`），
+写成「无 `grade:write` 就一律回客户端设置」会把学生的 AI 页签一起锁死，那是越界；`verify:auth` 里有一条
+源码接线断言看着这一点。
 
 ---
 
@@ -256,9 +259,19 @@ v1.0 前端三模式 UI **未强制登录**。为保留「桌面单机免登录�
 | `0` / `false`（大小写敏感） | 关闭强制：`optionalAuth` 只解析身份（用于 `created_by`），匿名请求可通过兼容门——即「未登录即可使用」的兼容模式 |
 
 > ⚠️ 早期文档把这张表写反了（称「未设置 = 默认不拦截」）；以本表与 `isAuthEnforced()` 为准。
-> 管理类接口（用户 / 班级 / 改密 / 权限矩阵）与第 4 节的自助字段门**始终强制鉴权**，不受该开关影响；
-> 开关只影响「匿名请求能否通过兼容门」，而 `authMiddleware` 保护的路由任何取值下都要求登录。
-> 免登录模式仅供单机桌面端使用，Web 部署不要设置 `PROJECTX_AUTH_ENFORCE=0`。
+>
+> **开关的作用范围取决于具体挂的是哪个门**，不能笼统地说「`authMiddleware` 保护的路由一定要求登录」：
+>
+> | 挂载的门 | `PROJECTX_AUTH_ENFORCE=0` 时**无令牌**请求的结果 |
+> |----------|--------------------------------------------------|
+> | `authMiddleware` | **放行**。`authenticateRequest()` 返回 `none` 且未强制时直接 `next()`，与 `optionalAuth` / `makeGate` 口径一致；令牌「存在但无效」仍一律 401 |
+> | `requireRole(...)` / `requirePermission(...)` | **401「未认证」**。这两个门自己检查 `req.user`、不读开关，所以 §5.2 用户管理、权限矩阵、控制台等入口在兼容模式下仍有下限 |
+> | §4「自助设置接口的字段门」 | 与开关对齐：`canWriteGradingSelfSettings(undefined)` 未强制时为 `true`，`requireBackgroundUploadAccess` 未强制时放行匿名请求——桌面单机模式里没有「学生」身份可言，这是刻意的兼容口径 |
+>
+> 结论照旧：**Web 部署不要设置 `PROJECTX_AUTH_ENFORCE=0`**。一旦设置，只挂 `authMiddleware` 的自助路由
+> （含 `PATCH /api/users/me/settings`、`POST /api/users/me/background`）就变成匿名可写，
+> 只有后面还跟着 `requirePermission` / `requireRole` 的入口守着。
+> 免登录模式仅供单机桌面端使用。
 
 ```powershell
 # 默认即强制；显式写明更清楚

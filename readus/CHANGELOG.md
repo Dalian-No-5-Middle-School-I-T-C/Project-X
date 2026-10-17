@@ -52,6 +52,28 @@
   `button[aria-checked="true"]`（Radix RadioGroup 用 `aria-checked`）。本轮把设计副本对齐，两文件重新逐字节相同。
   **没有任何脚本会发现这种漂移**，这是删除虚假同步流程后必须靠约定的地方。
 
+**PR #334 评审返修（同日，两条 P2）**
+
+- **学生 AI 页签被误锁**：`AccountSettingsPage.tsx` 原写 `canEditGradingSettings ? settingsTab : "client"`，
+  普通学生没有 `grade:write`，于是每次渲染都被按回「客户端设置」——点「AI 设置」状态变了、`Tabs` 的
+  `value` 没变，学生无法添加/编辑/删除自己的 AI 服务商。这超出 #322 的收敛范围，也与本文件上方
+  「学生仍保留本人 AI 服务商配置」直接矛盾。改为仅在请求的正是被隐藏的 `grading` 时回退。
+  `verify:auth` 加了两条源码接线断言（正向式 + 反向禁止一刀切），因为仓库没有 DOM 测试设施，
+  页签可达性这类前端约束目前只能这样守。
+- **文档把鉴权下限写高了**：`ACCOUNT-CONTROL.md` §6 新增说明称「`authMiddleware` 保护的路由任何取值下都要求登录」，
+  实际 `src/server/middleware/auth.ts` 在 `via === "none"` 且 `!isAuthEnforced()` 时直接 `next()`；
+  新加的 `requireBackgroundUploadAccess` 同样在兼容模式放行匿名请求。按「挂了哪个门」重写为三行表格：
+  `authMiddleware` 兼容模式放行、`requireRole`/`requirePermission` 自己查 `req.user` 因此始终 401、
+  本次新增字段门与开关对齐。「Web 不要关强制鉴权」的警告保留并给出关掉后的具体后果。
+  §4 中间件一览里 `authMiddleware` / `requireRole` / `requirePermission` 三行同步纠正（原来一律写「否则 403」，
+  漏了未认证是 401）。
+- **顺带发现 main 已推进**：本分支基线之后 main 有 #324/#326/#328/#330/#332/#333 六个提交，
+  版本到 **2.7.1**、迁移到 **v63**（v61 `scanner-session-card-version`、v62 `scan-correction-pages`、
+  v63 `scan-session-warnings`，均为扫描端表/列）。本文件的 `DATABASE.md` 水位与文档头目前仍写 v60/v2.6.0，
+  解冲突合入 main 时应一并推到 v63 并补台账三行——台账不完整就是新造一处漂移。
+- 另开两个 issue 跟进本轮不做的事：#335（背景图上传 5 MiB 硬编码改「默认值 + `PROJECTX_*` + 天花板」三档）、
+  #336（学生历史背景图的清理口径与透明度是否纳入禁令，待拍板）。
+
 ## 2026-10-06：PR #311 / #312 整合与匿名 AI 全局配额修复
 
 - 在 #312 分支合入 #311 的考试班级快照与多班统计修复。大考天梯同时保留历史班级、逐科去重，以及学生仅聚合本人参加考试的范围限制。
