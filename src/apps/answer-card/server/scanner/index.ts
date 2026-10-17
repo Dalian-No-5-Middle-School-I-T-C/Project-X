@@ -22,13 +22,16 @@ import {
   getScanRecordWithResult,
   deleteScanRecord,
   getSession,
-  updateSessionStatus,
-  appendSessionWarning,
   parseSessionWarnings,
   listSessions,
   deleteSession,
   listScanRecordsGroupedByStudent
 } from "../database/scan-store";
+import {
+  flushSessionWarnings,
+  markSessionTerminal,
+  persistSessionWarning
+} from "./sessionWarnings";
 import { safeId, dataDir } from "../storage";
 import { findCardForLayout } from "../card-layout";
 import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
@@ -98,22 +101,7 @@ export function createScannerRouter(twainEnabled = true): Router {
   // Progress event emitters by sessionId (for WebSocket integration)
   const progressEmitters = new Map<string, Set<(event: ScanProgressEvent) => void>>();
 
-  // 告警落库只按会话串行，不进 enqueuePersist：那条队列承载「扫描 → 主库」的长任务，
-  // 把一条单行 UPDATE 排在它们后面，客户端此刻订阅时补发读到的仍是旧行，而实时事件已经错过。
-  // 会话内串行的必要之处在于 appendSessionWarning 是「读行 → 去重 → 写回」，并发写会互相覆盖。
-  const warningQueues = new Map<string, Promise<void>>();
-  function persistSessionWarning(sessionId: string, text: string): void {
-    const tail = (warningQueues.get(sessionId) ?? Promise.resolve())
-      .then(() => appendSessionWarning(sessionId, text))
-      .catch((error) => {
-        console.error(`[Scanner] Failed to persist warning for ${sessionId}:`, error);
-      });
-    warningQueues.set(sessionId, tail);
-    void tail.finally(() => {
-      if (warningQueues.get(sessionId) === tail) warningQueues.delete(sessionId);
-    });
-  }
-
+  // 告警落库与终态顺序见 ./sessionWarnings：那条队列只按会话串行，且终态写入前必须排空。
   function emitProgress(sessionId: string, event: ScanProgressEvent) {
     if (event.type === "warning" && event.message?.trim()) {
       // 广播给当时的监听者，同时落会话行：客户端可能在 202 之后才订阅，或扫描途中断线重连，
@@ -197,7 +185,7 @@ export function createScannerRouter(twainEnabled = true): Router {
         }
 
         const terminated = cancelScan(id);
-        await updateSessionStatus(id, "cancelled", "用户取消扫描");
+        await markSessionTerminal(id, "cancelled", "用户取消扫描");
         emitProgress(id, { sessionId: id, type: "cancelled", message: "扫描已取消" });
 
         res.json({
@@ -264,6 +252,9 @@ export function createScannerRouter(twainEnabled = true): Router {
         });
 
         // 订阅时若会话已终态（扫描可能在订阅前就完成/失败/被取消），补发终态事件
+        // 先排空本会话仍在队列里的告警再读行：终态是「告警已写完」之后才写下的，这里也必须等到
+        // 同一时点，否则读到旧 warnings_json 就补发、关流，稍后落库的告警永久丢失。
+        await flushSessionWarnings(sessionId);
         const session = await getSession(sessionId);
         if (res.writableEnded || res.destroyed) return;
         // 断线重连或订阅过晚时，先把落在会话行上的告警补回来，再补终态；

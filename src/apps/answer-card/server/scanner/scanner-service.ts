@@ -8,6 +8,7 @@ import {
   incrementPageCount, upsertRecognitionResult
 } from "../database/scan-store";
 import type { ScanProgressEvent, ScanSessionConfig } from "./scanner-types";
+import { markSessionTerminal } from "./sessionWarnings";
 import { listSources, scan } from "./twain-bridge";
 import { recognizeAnswerCard } from "../recognition";
 import { enqueueScannerSubmission, invalidateScanRecognitionInQueue } from "../../../../server/services/scannerSubmissions";
@@ -173,7 +174,7 @@ export async function runScanSession(
     // ①（issue #331）设定 DPI 是否真生效：优先用桥接回报的 dpi_x/dpi_y，老 exe 没有这两个
     // 字段时退回按出图像素尺寸反查，两种来源都能在现网随包 exe 上给出「实际约 200dpi」的结论。
     const dpiVerdict = verifyDeliveredScanDpi(result.pages, { dpi: config.dpi, paperSize: config.paperSize });
-    console.log(`[checkpoint] scan session=${sessionId} card=${config.cardId} pages=${filteredPages.length} dpi=${config.dpi} deliveredDpi=${dpiVerdict.deliveredDpi ?? "unknown"}(${dpiVerdict.status},${dpiVerdict.source ?? "n/a"},samples=${dpiVerdict.samplePages}) duplex=${config.duplex} size=${config.paperSize} colorMode=${colorMode.colorMode}${colorMode.upgraded ? "(forced)" : ""}`);
+    console.log(`[checkpoint] scan session=${sessionId} card=${config.cardId} pages=${filteredPages.length} dpi=${config.dpi} deliveredDpi=${dpiVerdict.deliveredDpi ?? "unknown"}(${dpiVerdict.status},${dpiVerdict.source ?? "n/a"},axes=${dpiVerdict.deliveredDpiX ?? "?"}x${dpiVerdict.deliveredDpiY ?? "?"},samples=${dpiVerdict.samplePages}) duplex=${config.duplex} size=${config.paperSize} colorMode=${colorMode.colorMode}${colorMode.upgraded ? "(forced)" : ""}`);
     if (dpiVerdict.status === "mismatch" && dpiVerdict.message) {
       onProgress({ sessionId, type: "warning", message: dpiVerdict.message });
     }
@@ -194,7 +195,9 @@ export async function runScanSession(
     if (result.status === "error") {
       throw new Error(result.message || "扫描中途失败，已扫描的页面已保留");
     }
-    await updateSessionStatus(sessionId, "completed");
+    // 终态写入走 markSessionTerminal：内部先把这条会话排队的告警写完，再让状态变成 completed。
+    // 反过来（先写终态、告警还在异步队列里）会让恰在此刻重连的订阅读到旧 warnings_json 就关流。
+    await markSessionTerminal(sessionId, "completed");
 
     onProgress({
       sessionId, type: "done",
@@ -210,7 +213,7 @@ export async function runScanSession(
     if (current?.status === "cancelled") {
       return sessionId;
     }
-    await updateSessionStatus(sessionId, "error", msg);
+    await markSessionTerminal(sessionId, "error", msg);
     onProgress({ sessionId, type: "error", message: msg });
     throw error;
   }

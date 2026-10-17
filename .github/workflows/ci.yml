@@ -246,6 +246,7 @@ jobs:
           CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_duplex_ci CHARACTER SET utf8mb4;
           CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_partial_ci CHARACTER SET utf8mb4;
           CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_correction_ci CHARACTER SET utf8mb4;
+          CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_warning_ci CHARACTER SET utf8mb4;
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_dup_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_flow_ci.* TO 'projectx_ci'@'%';
@@ -254,6 +255,7 @@ jobs:
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_duplex_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_partial_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_correction_ci.* TO 'projectx_ci'@'%';
+          GRANT ALL PRIVILEGES ON projectx_scanner_batch_warning_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_exam_classes_test.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_migration_test.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_card_correction_ci.* TO 'projectx_ci'@'%';
@@ -319,6 +321,13 @@ jobs:
           SCANNER_BATCH_MARIADB: "1"
           PROJECTX_MARIADB_DATABASE: projectx_scanner_batch_correction_ci
         run: npm run verify:scanner-correction-safety
+      - name: Scanner warning replay ordering (MariaDB)
+        # 告警落库与终态写入的先后关系是异步的：SQLite 走同步驱动、MariaDB 走连接池真异步，
+        # 「延迟写入 → 期间写终态 → 重连」这条竞态只有在生产方言上才算验过。
+        env:
+          SCANNER_BATCH_MARIADB: "1"
+          PROJECTX_MARIADB_DATABASE: projectx_scanner_batch_warning_ci
+        run: npm run verify:scanner-warning-replay
       - name: Class archive MariaDB regression
         env:
           PROJECTX_MARIADB_DATABASE: projectx_class_archive_test
