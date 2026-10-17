@@ -1,5 +1,5 @@
 import { scanCorrectionRouter } from "../../../../server/routes/scan-correction";
-import { processScannerSession, discardScannerGroup } from "../../../../server/services/scannerSubmissions";
+import { processScannerSession, discardScannerGroup, listActiveReceiptGroups, writeScannerSession } from "../../../../server/services/scannerSubmissions";
 import { scannerLegacyRecoveryRouter } from "../../../../server/routes/scanner-legacy-recovery";
 import {
   filterRecognitionJson,
@@ -11,6 +11,7 @@ import {
   scanRecordLayoutPage
 } from "../../../../server/middleware/scanner-scope";
 import { parseIdentityMode } from "../../../../shared/cardIdentity";
+import { resolveScannerExam } from "../../../../server/services/scannerExam";
 import { parseRecognitionDpi } from "../helpers";
 import { Router, type Response } from "express";
 import { existsSync } from "node:fs";
@@ -21,6 +22,7 @@ import {
   listScanRecords,
   getScanRecordWithResult,
   deleteScanRecord,
+  deleteScanRecordInTransaction,
   getSession,
   parseSessionWarnings,
   listSessions,
@@ -37,6 +39,7 @@ import { safeId, dataDir } from "../storage";
 import { findCardForLayout } from "../card-layout";
 import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
 import { collectSessionResults, groupSessionPages } from "./session-results";
+import { filterDeletableGroups } from "../../../../shared/scanPostprocess";
 
 // persistScannerResultToMainDb 的串行队列（模块级，跨请求生效）：
 // better-sqlite3 是单连接,并发事务会在 BEGIN/COMMIT 之间互相穿插（见 SqliteAdapter.transaction 注释），
@@ -324,8 +327,11 @@ export function createScannerRouter(twainEnabled = true): Router {
       // 安全（PR #312 CR5）：题块教师只保留含本人题块的排版页。
       const scope = scanPageScopeOf(res);
       const card = scope?.restricted ? await findCardForLayout(session.card_id) : null;
+      // 后处理页改考号要按考试查花名册；考试归属不定（未绑定或绑定多个考试）时为 null，前端降级为纯手输。
+      const { exam } = await resolveScannerExam(session.card_id, session.id);
       res.json({
         session,
+        examId: exam?.id ?? null,
         // 安全（R04）：不再回传服务端绝对路径；预览走 /api/scanner/scan-image/:recordId
         records: records.filter(r => scanPageAllowed(scope,
           scanRecordLayoutPage(card, r.page_num, r.side === "back" ? "back" : "front"))).map((r) => ({
@@ -635,6 +641,42 @@ export function createScannerRouter(twainEnabled = true): Router {
       if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
       await discardScannerGroup(card, sessionId, String(req.params.groupId));
       res.json(await processScannerSession(card, sessionId, "validate"));
+    } catch (error) { next(error); }
+  });
+
+  // 后处理页·视图 1 多选删除：只删本机扫描记录与识别结果，不动远端已上传成绩。
+  // 有 saved/held/conflict/roster 回执的组必须 force（客户端已二次确认代价），否则 409 列出 blocked。
+  router.delete("/session/:sessionId/groups", async (req, res, next) => {
+    try {
+      const sessionId = safeId(req.params.sessionId);
+      const body = (req.body ?? {}) as { groupIds?: unknown; force?: unknown };
+      const groupIds = Array.isArray(body.groupIds)
+        ? [...new Set(body.groupIds.filter((g): g is string => typeof g === "string" && g.length > 0))]
+        : [];
+      if (!groupIds.length) { res.status(400).json({ message: "groupIds 不能为空" }); return; }
+      const session = await getSession(sessionId);
+      if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
+      if (session.status === "scanning") { res.status(409).json({ message: "请等待扫描结束" }); return; }
+      const card = await findCardForLayout(session.card_id);
+      if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+      const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
+      const groups = groupSessionPages(card, records).groups;
+      const { getMysqlDb } = await import("../../../../server/db");
+      const active = await listActiveReceiptGroups(getMysqlDb(), sessionId, groupIds);
+      const { deletable, blocked } = filterDeletableGroups(groupIds, new Map(active.map(groupId => [groupId, true])), body.force === true);
+      if (blocked.length) {
+        res.status(409).json({ message: "所选卷包含已入库或待老师确认的回执，确认删除远端不受影响后请重试", blocked });
+        return;
+      }
+      // 整批删除走提交队列的同一事务：逐条 deleteScanRecord 会在中途失败时留下半删的组，
+      // validate 随即把它报成新的缺页异常（本文件的串行队列注释已说明并发穿插的成因）
+      const targets = deletable.flatMap(groupId => (groups.get(groupId) ?? []).map(row => row.record.id));
+      await writeScannerSession(sessionId, async tx => {
+        for (const recordId of targets) await deleteScanRecordInTransaction(tx, recordId);
+      });
+      const missing = groupIds.filter(groupId => !groups.has(groupId));
+      const result = await processScannerSession(card, sessionId, "validate");
+      res.json({ ...result, deletedGroups: deletable.length - missing.length, missingGroups: missing });
     } catch (error) { next(error); }
   });
 

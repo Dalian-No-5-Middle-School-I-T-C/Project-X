@@ -240,11 +240,14 @@ export async function updateScanQuality(id: string, quality: number): Promise<vo
   await db().run("UPDATE twain_scan_records SET scan_quality = ? WHERE id = ?", quality, id);
 }
 
+/** 单条删除的格选清理，供批量删除复用（同一事务内，别再各写一套 SQL）。 */
+export async function deleteScanRecordInTransaction(tx: DbAdapter, id: string): Promise<void> {
+  await tx.run("DELETE FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?", id);
+  await tx.run("DELETE FROM twain_scan_records WHERE id = ?", id);
+}
+
 export async function deleteScanRecord(id: string): Promise<void> {
-  await db().transaction(async tx => {
-    await tx.run("DELETE FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?", id);
-    await tx.run("DELETE FROM twain_scan_records WHERE id = ?", id);
-  });
+  await db().transaction(async tx => deleteScanRecordInTransaction(tx, id));
 }
 
 // ── Recognition Result CRUD ────────────────────────────

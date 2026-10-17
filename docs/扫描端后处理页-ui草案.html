@@ -1,0 +1,228 @@
+<h2>扫描后处理页 · Tab 式布局（v5 · 明澈风格）</h2>
+<p class="subtitle">v6 · 自包含定稿（2026-10-17）：①视图 1 小方块（demo 扫描台网格密度 auto-fill minmax(128px,1fr)、缩略图 3:4）+ 多选删除 ②视图 2 完整画法（点选+按题并存、右列 Web 成绩修改表格）③视图 3 异常队列 + 考号修正/重卡对比。实现以 docs/superpowers/specs/2026-10-17-scanner-postprocess-design.md 为准</p>
+
+<!-- ══════════ Tab 1：扫描结果 + 多选删除 ══════════ -->
+<div class="mockup">
+  <div class="mockup-header">视图 1 / 3 ·「扫描结果」—— 常态</div>
+  <div class="mockup-body" style="padding:0; background:#F4F4F5; font-size:13px; color:#18181B;">
+    <div style="display:flex; align-items:center; gap:12px; padding:10px 20px; background:#fff; border-bottom:1px solid #E4E4E7;">
+      <span style="border:1px solid #E4E4E7; border-radius:8px; padding:4px 10px; color:#52525B;">← 返回扫描</span>
+      <div>
+        <div style="font-size:15px; font-weight:600;">2026 期中数学 · 扫描结果</div>
+        <div style="font-size:12px; color:#71717A;">已扫 <b style="font-variant-numeric:tabular-nums;">42</b> 张 · 正常 37 · <span style="color:#C00F28;">异常 5</span> · 已上传 34/37</div>
+      </div>
+      <div style="margin-left:auto; display:flex; background:#F4F4F5; border-radius:8px; padding:3px; gap:2px;">
+        <span style="background:#fff; border-radius:6px; padding:5px 14px; font-weight:600; box-shadow:0 1px 2px rgba(0,0,0,.08);">扫描结果</span>
+        <span style="padding:5px 14px; color:#71717A;">卡查看与改分</span>
+        <span style="padding:5px 14px; color:#71717A;">异常处理 <span style="display:inline-block; min-width:18px; text-align:center; background:#C00F28; color:#fff; border-radius:9px; font-size:11px; padding:0 4px;">5</span></span>
+      </div>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; padding:10px 20px;">
+      <span style="background:#fff; border:1px solid #E4E4E7; border-radius:8px; padding:5px 12px; color:#A1A1AA; width:180px; text-align:left; font-size:12px;">搜索考号 / 姓名</span>
+      <span style="display:flex; background:#fff; border:1px solid #E4E4E7; border-radius:8px; padding:2px; gap:2px; font-size:12px;">
+        <span style="background:#F4F4F5; border-radius:6px; padding:3px 10px; font-weight:500;">全部 42</span>
+        <span style="padding:3px 10px; color:#71717A;">正常 37</span>
+        <span style="padding:3px 10px; color:#C00F28;">异常 5</span>
+      </span>
+      <span style="margin-left:auto;"></span>
+      <span style="border:1px solid #E4E4E7; border-radius:8px; padding:4px 12px; color:#52525B; font-size:12px; background:#fff;">☑ 选择</span>
+      <span style="display:flex; background:#fff; border:1px solid #E4E4E7; border-radius:8px; padding:2px; gap:2px; font-size:12px;">
+        <span style="background:#F4F4F5; border-radius:6px; padding:3px 8px; font-weight:500;">方块</span>
+        <span style="padding:3px 8px; color:#71717A;">列表</span>
+      </span>
+    </div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(128px,1fr)); gap:12px; padding:0 20px 20px;">
+      <div style="background:#fff; border:1px solid #E4E4E7; box-shadow:0 0 0 2px #C00F28; border-radius:8px; padding:5px;">
+        <div style="background:#F4F4F5; border-radius:5px; aspect-ratio:3/4; display:flex; align-items:center; justify-content:center; color:#A1A1AA; font-size:11px;">卡图</div>
+        <div style="margin-top:4px; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums;">20240107</div>
+        <div style="display:flex; align-items:center; gap:4px; font-size:11px; color:#C00F28;"><span style="width:6px; height:6px; border-radius:3px; background:#C00F28;"></span>考号重复</div>
+      </div>
+      <div style="background:#fff; border:1px solid #E4E4E7; box-shadow:0 0 0 2px #D97706; border-radius:8px; padding:5px;">
+        <div style="background:#F4F4F5; border-radius:5px; aspect-ratio:3/4; display:flex; align-items:center; justify-content:center; color:#A1A1AA; font-size:11px;">卡图</div>
+        <div style="margin-top:4px; font-size:12px; font-weight:600; color:#A1A1AA;">未识别</div>
+        <div style="display:flex; align-items:center; gap:4px; font-size:11px; color:#B45309;"><span style="width:6px; height:6px; border-radius:3px; background:#D97706;"></span>考号缺失</div>
+      </div>
+      <div style="background:#fff; border:1px solid #E4E4E7; border-radius:8px; padding:5px;">
+        <div style="background:#F4F4F5; border-radius:5px; aspect-ratio:3/4; display:flex; align-items:center; justify-content:center; color:#A1A1AA; font-size:11px;">卡图</div>
+        <div style="margin-top:4px; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums;">20240101</div>
+        <div style="display:flex; align-items:center; gap:4px; font-size:11px; color:#15803D;"><span style="width:6px; height:6px; border-radius:3px; background:#16A34A;"></span>张三 82</div>
+      </div>
+      <div style="background:#fff; border:1px solid #E4E4E7; border-radius:8px; padding:5px;">
+        <div style="background:#F4F4F5; border-radius:5px; aspect-ratio:3/4; display:flex; align-items:center; justify-content:center; color:#A1A1AA; font-size:11px;">卡图</div>
+        <div style="margin-top:4px; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums;">20240102</div>
+        <div style="display:flex; align-items:center; gap:4px; font-size:11px; color:#15803D;"><span style="width:6px; height:6px; border-radius:3px; background:#16A34A;"></span>李四 77</div>
+      </div>
+      <div style="background:#fff; border:1px solid #E4E4E7; border-radius:8px; padding:5px;">
+        <div style="background:#F4F4F5; border-radius:5px; aspect-ratio:3/4; display:flex; align-items:center; justify-content:center; color:#A1A1AA; font-size:11px;">卡图</div>
+        <div style="margin-top:4px; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums;">20240103</div>
+        <div style="display:flex; align-items:center; gap:4px; font-size:11px; color:#15803D;"><span style="width:6px; height:6px; border-radius:3px; background:#16A34A;"></span>王五 90</div>
+      </div>
+      <div style="background:#fff; border:1px solid #E4E4E7; border-radius:8px; padding:5px;">
+        <div style="background:#F4F4F5; border-radius:5px; aspect-ratio:3/4; display:flex; align-items:center; justify-content:center; color:#A1A1AA; font-size:11px;">卡图</div>
+        <div style="margin-top:4px; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums;">20240104</div>
+        <div style="display:flex; align-items:center; gap:4px; font-size:11px; color:#15803D;"><span style="width:6px; height:6px; border-radius:3px; background:#16A34A;"></span>赵六 65</div>
+      </div>
+      <div style="background:#fff; border:1px solid #E4E4E7; border-radius:8px; padding:5px;">
+        <div style="background:#F4F4F5; border-radius:5px; aspect-ratio:3/4; display:flex; align-items:center; justify-content:center; color:#A1A1AA; font-size:11px;">卡图</div>
+        <div style="margin-top:4px; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums;">20240105</div>
+        <div style="display:flex; align-items:center; gap:4px; font-size:11px; color:#15803D;"><span style="width:6px; height:6px; border-radius:3px; background:#16A34A;"></span>孙七 71</div>
+      </div>
+      <div style="background:#fff; border:1px solid #E4E4E7; border-radius:8px; padding:5px;">
+        <div style="background:#F4F4F5; border-radius:5px; aspect-ratio:3/4; display:flex; align-items:center; justify-content:center; color:#A1A1AA; font-size:11px;">卡图</div>
+        <div style="margin-top:4px; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums;">20240106</div>
+        <div style="display:flex; align-items:center; gap:4px; font-size:11px; color:#15803D;"><span style="width:6px; height:6px; border-radius:3px; background:#16A34A;"></span>周八 84</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 多选删除态 -->
+<div class="mockup" style="margin-top:16px;">
+  <div class="mockup-header">视图 1 · 点「☑ 选择」进入多选态 —— 底部操作条 + 删除确认</div>
+  <div class="mockup-body" style="padding:0; background:#F4F4F5; font-size:13px; color:#18181B;">
+    <div style="display:grid; grid-template-columns:repeat(8,1fr); gap:8px; padding:14px 20px;">
+      <div style="background:#fff; border:1px solid #E4E4E7; box-shadow:0 0 0 2px #C00F28; border-radius:8px; padding:5px; position:relative;">
+        <span style="position:absolute; top:8px; left:8px; width:16px; height:16px; border-radius:8px; background:#C00F28; color:#fff; font-size:11px; display:flex; align-items:center; justify-content:center;">✓</span>
+        <div style="background:#F4F4F5; border-radius:5px; aspect-ratio:3/4; display:flex; align-items:center; justify-content:center; color:#A1A1AA; font-size:11px;">卡图</div>
+        <div style="margin-top:4px; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums;">20240107</div>
+        <div style="font-size:11px; color:#C00F28;">考号重复</div>
+      </div>
+      <div style="background:#fff; border:1px solid #E4E4E7; box-shadow:0 0 0 2px #C00F28; border-radius:8px; padding:5px; position:relative;">
+        <span style="position:absolute; top:8px; left:8px; width:16px; height:16px; border-radius:8px; background:#C00F28; color:#fff; font-size:11px; display:flex; align-items:center; justify-content:center;">✓</span>
+        <div style="background:#F4F4F5; border-radius:5px; aspect-ratio:3/4; display:flex; align-items:center; justify-content:center; color:#A1A1AA; font-size:11px;">卡图</div>
+        <div style="margin-top:4px; font-size:12px; font-weight:600; color:#A1A1AA;">未识别</div>
+        <div style="font-size:11px; color:#B45309;">考号缺失</div>
+      </div>
+      <div style="background:#fff; border:1px solid #E4E4E7; border-radius:8px; padding:5px; position:relative;">
+        <span style="position:absolute; top:8px; left:8px; width:16px; height:16px; border-radius:8px; border:1.5px solid #A1A1AA; background:#fff;"></span>
+        <div style="background:#F4F4F5; border-radius:5px; aspect-ratio:3/4; display:flex; align-items:center; justify-content:center; color:#A1A1AA; font-size:11px;">卡图</div>
+        <div style="margin-top:4px; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums;">20240101</div>
+        <div style="font-size:11px; color:#15803D;">张三 82</div>
+      </div>
+      <div style="background:#fff; border:1px solid #E4E4E7; border-radius:8px; padding:5px; position:relative; opacity:.8;">
+        <span style="position:absolute; top:8px; left:8px; width:16px; height:16px; border-radius:8px; border:1.5px solid #A1A1AA; background:#fff;"></span>
+        <div style="background:#F4F4F5; border-radius:5px; aspect-ratio:3/4; display:flex; align-items:center; justify-content:center; color:#A1A1AA; font-size:11px;">卡图</div>
+        <div style="margin-top:4px; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums;">20240102</div>
+        <div style="font-size:11px; color:#15803D;">李四 77</div>
+      </div>
+      <div style="grid-column:5/-1; color:#A1A1AA; font-size:12px; align-self:center;">多选态：点卡片=勾选；已上传的卡删除前二次确认</div>
+    </div>
+    <div style="margin:0 20px 16px; background:#fff; border:1px solid #E4E4E7; border-radius:12px; padding:10px 16px; display:flex; align-items:center; gap:12px; box-shadow:0 4px 12px rgba(0,0,0,.08);">
+      <b style="font-variant-numeric:tabular-nums;">已选 2 张</b>
+      <span style="color:#71717A; font-size:12px;">删除 = 移除扫描记录与识别结果，不影响远端已上传成绩</span>
+      <span style="margin-left:auto; border:1px solid #E4E4E7; border-radius:8px; padding:6px 14px; color:#52525B;">取消</span>
+      <span style="background:#C00F28; color:#fff; border-radius:8px; padding:6px 14px; font-weight:600;">删除选中（2）</span>
+    </div>
+    <div style="margin:0 20px 20px; border:1px dashed #C00F28; border-radius:12px; padding:12px 16px; background:#fff;">
+      <b style="color:#C00F28;">确认 Dialog（危险操作规范）</b>
+      <div style="color:#52525B; font-size:12px; margin-top:4px;">「删除 2 张扫描卡？本地扫描记录与识别结果将被移除，不可恢复。已上传的远端成绩不受影响。」双按钮右置：取消 ｜ <b style="color:#C00F28;">删除，不可恢复</b></div>
+      <div style="color:#A1A1AA; font-size:11px; margin-top:6px;">实现 = ui/v2 ConfirmDialog（tone=danger，sm 480 宽）；含已上传回执的组先 409，再以此 Dialog 二次确认 force</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ Tab 2：卡查看与改分（点选+按题并存，照搬 Web 成绩修改） ══════════ -->
+<div class="mockup" style="margin-top:24px;">
+  <div class="mockup-header">视图 2 / 3 ·「卡查看与改分」—— 无模式切换：卡图随时可点，右列 = Web 成绩修改同款表格</div>
+  <div class="mockup-body" style="padding:0; background:#F4F4F5; font-size:13px; color:#18181B;">
+    <div style="padding:8px 20px; background:#fff; border-bottom:1px solid #E4E4E7; display:flex; align-items:center; gap:12px;">
+      <b>赵可为 · <span style="font-variant-numeric:tabular-nums;">24101</span></b>
+      <span style="color:#71717A; font-size:12px;">第 1 / 2 页 · 置信度 96%</span>
+      <span style="margin-left:auto; color:#52525B; font-size:12px;">客观题 <b style="font-variant-numeric:tabular-nums;">5</b> · 主观题 <b style="font-variant-numeric:tabular-nums;">50</b> · 总分 <b style="font-variant-numeric:tabular-nums;">55</b></span>
+      <span style="background:#C00F28; color:#fff; border-radius:8px; padding:6px 14px; font-weight:600;">保存修改</span>
+    </div>
+    <div style="display:flex; gap:14px; padding:14px 20px; min-height:430px;">
+
+      <!-- 左：卡图，直接可点 -->
+      <div style="flex:1.1; background:#fff; border:1px solid #E4E4E7; border-radius:12px; padding:12px;">
+        <div style="font-size:12px; color:#71717A; margin-bottom:8px;">答题卡 · 点击识别块直接改答案</div>
+        <div style="background:#F4F4F5; border-radius:8px; padding:12px;">
+          <div style="background:#fff; border:1px solid #E4E4E7; padding:10px;">
+            <div style="font-size:12px; color:#C00F28; margin-bottom:4px;">一、单选（共10题，共50分）· 第 1 页 · 5/50</div>
+            <div style="line-height:2; font-variant-numeric:tabular-nums; font-size:12px;">
+              1. ●○○○ &nbsp;2. ○●○○ &nbsp;3. ○○●○ &nbsp;4. ○○○●<br>
+              5. <span style="border:1px dashed #D97706; color:#B45309; border-radius:4px; padding:0 3px;">●●○○ 多涂</span> &nbsp;6. ○●○○
+            </div>
+          </div>
+          <div style="background:#fff; border:1px solid #E4E4E7; padding:10px; margin-top:8px;">
+            <div style="font-size:12px; color:#C00F28; margin-bottom:4px;">三、解答题（共1题，共35分）· 35/35</div>
+            <div style="height:70px; display:flex; align-items:center; justify-content:center; color:#A1A1AA; font-size:11px;">解答题区域裁图</div>
+          </div>
+        </div>
+        <div style="font-size:11px; color:#A1A1AA; margin-top:8px;">点卡图改客观题 = 在右侧表格里改，两条路等效，即时同步</div>
+      </div>
+
+      <!-- 右：成绩修改表格（Web 同款） -->
+      <div style="flex:1.3; background:#fff; border:1px solid #E4E4E7; border-radius:12px; padding:12px;">
+        <table style="width:100%; border-collapse:collapse; font-size:12px;">
+          <thead>
+            <tr style="color:#71717A; text-align:left; border-bottom:1px solid #E4E4E7;">
+              <th style="padding:6px 8px; font-weight:500;">题号</th>
+              <th style="padding:6px 8px; font-weight:500;">类型</th>
+              <th style="padding:6px 8px; font-weight:500; text-align:right;">得分/满分</th>
+              <th style="padding:6px 8px; font-weight:500;">识别</th>
+              <th style="padding:6px 8px; font-weight:500;">修改</th>
+            </tr>
+          </thead>
+          <tbody style="font-variant-numeric:tabular-nums;">
+            <tr style="border-bottom:1px solid #F4F4F5;"><td style="padding:6px 8px;">1</td><td style="padding:6px 8px; color:#71717A;">单选</td><td style="padding:6px 8px; text-align:right;">0/5</td><td style="padding:6px 8px; color:#71717A;">A</td><td style="padding:6px 8px;"><span style="border:1px solid #E4E4E7; border-radius:6px; padding:2px 14px; display:inline-block; color:#71717A;">A ▾</span></td></tr>
+            <tr style="border-bottom:1px solid #F4F4F5; background:#FDF6EC;"><td style="padding:6px 8px;">5</td><td style="padding:6px 8px; color:#71717A;">单选</td><td style="padding:6px 8px; text-align:right;">0/5</td><td style="padding:6px 8px; color:#B45309;">A/B 多涂</td><td style="padding:6px 8px;"><span style="border:1px solid #D97706; border-radius:6px; padding:2px 14px; display:inline-block; color:#B45309;">待定 ▾</span></td></tr>
+            <tr style="border-bottom:1px solid #F4F4F5;"><td style="padding:6px 8px;">10</td><td style="padding:6px 8px; color:#71717A;">单选</td><td style="padding:6px 8px; text-align:right;">5/5</td><td style="padding:6px 8px; color:#71717A;">B</td><td style="padding:6px 8px;"><span style="border:1px solid #E4E4E7; border-radius:6px; padding:2px 14px; display:inline-block; color:#71717A;">B ▾</span></td></tr>
+            <tr style="border-bottom:1px solid #F4F4F5;"><td style="padding:6px 8px;">11</td><td style="padding:6px 8px; color:#71717A;">解答</td><td style="padding:6px 8px; text-align:right;">15/15</td><td style="padding:6px 8px; color:#A1A1AA;">—</td><td style="padding:6px 8px;"><span style="border:1px solid #E4E4E7; border-radius:6px; padding:2px 10px; display:inline-block; width:44px; text-align:right;">15</span></td></tr>
+            <tr><td style="padding:6px 8px;">21</td><td style="padding:6px 8px; color:#71717A;">解答</td><td style="padding:6px 8px; text-align:right;">35/35</td><td style="padding:6px 8px; color:#A1A1AA;">—</td><td style="padding:6px 8px;"><span style="border:1px solid #E4E4E7; border-radius:6px; padding:2px 10px; display:inline-block; width:44px; text-align:right;">35</span></td></tr>
+          </tbody>
+        </table>
+        <div style="font-size:11px; color:#A1A1AA; margin-top:8px;">客观题「修改」列 = 选项编辑（单选下拉/多选 chips）；主观题 = 分数输入。存疑行琥珀底置顶。点左侧卡图定位到对应行。</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ Tab 3：异常处理 · 考号修正 + 重卡对比 ══════════ -->
+<div class="mockup" style="margin-top:24px;">
+  <div class="mockup-header">视图 3 / 3 ·「异常处理」—— 当前条 = 考号缺失时，右侧为「考号修正」面板</div>
+  <div class="mockup-body" style="padding:0; background:#F4F4F5; font-size:13px; color:#18181B;">
+    <div style="display:flex; gap:14px; padding:14px 20px; min-height:360px;">
+      <div style="width:250px; flex:none; background:#fff; border:1px solid #E4E4E7; border-radius:12px; padding:12px; display:flex; flex-direction:column;">
+        <div style="display:flex; align-items:baseline; justify-content:space-between;">
+          <b>异常队列</b><span style="color:#71717A; font-size:12px; font-variant-numeric:tabular-nums;">第 2 / 5 条</span>
+        </div>
+        <div style="height:4px; background:#F4F4F5; border-radius:2px; margin:8px 0 10px;"><div style="width:40%; height:4px; background:#C00F28; border-radius:2px;"></div></div>
+        <div style="border:1px solid #E4E4E7; border-radius:8px; padding:8px; color:#A1A1AA; font-size:12px;"><s style="font-variant-numeric:tabular-nums;">20240107</s> · 考号重复 <span style="color:#15803D;">✓ 已处理</span></div>
+        <div style="border:1.5px solid #C00F28; border-radius:8px; padding:8px; margin-top:8px; background:#FDF2F4; font-size:12px;">未识别 · 考号缺失 <span style="color:#C00F28;">◀ 处理中</span></div>
+        <div style="border:1px solid #E4E4E7; border-radius:8px; padding:8px; margin-top:8px; color:#52525B; font-size:12px; font-variant-numeric:tabular-nums;">20240115 · 缺第 2 页</div>
+        <div style="border:1px solid #E4E4E7; border-radius:8px; padding:8px; margin-top:8px; color:#52525B; font-size:12px; font-variant-numeric:tabular-nums;">20240121 · 3 题存疑</div>
+        <div style="margin-top:auto; display:flex; gap:8px; font-size:12px;">
+          <span style="flex:1; text-align:center; border:1px solid #E4E4E7; border-radius:8px; padding:6px; color:#52525B;">暂时跳过</span>
+          <span style="flex:1; text-align:center; border:1px solid #E4E4E7; border-radius:8px; padding:6px; color:#52525B;">下一条 ↓</span>
+        </div>
+      </div>
+
+      <!-- 考号修正面板 -->
+      <div style="flex:1; background:#fff; border:1px solid #E4E4E7; border-radius:12px; padding:16px;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <b style="font-size:15px;">考号修正 · 第 23 张</b>
+          <span style="background:#FDF6EC; color:#B45309; border-radius:6px; padding:2px 8px; font-size:12px;">考号未识别</span>
+        </div>
+        <div style="color:#71717A; font-size:12px; margin:4px 0 12px;">直接看考号区域裁图，输入考号（花名册联想），确认后重新匹配学生并重算</div>
+        <div style="display:flex; gap:14px;">
+          <div style="flex:1.1;">
+            <div style="background:#F4F4F5; border-radius:8px; height:110px; display:flex; align-items:center; justify-content:center; color:#A1A1AA; font-size:12px;">考号区域放大裁图（不用在整卡里找）</div>
+            <div style="margin-top:8px; background:#F4F4F5; border-radius:8px; height:70px; display:flex; align-items:center; justify-content:center; color:#A1A1AA; font-size:11px;">整卡缩略图（点击放大核对）</div>
+          </div>
+          <div style="flex:1;">
+            <div style="border:1px solid #E4E4E7; border-radius:8px; padding:8px 12px; color:#A1A1AA;">输入考号，边输边联想…</div>
+            <div style="border:1px solid #E4E4E7; border-radius:8px; margin-top:6px; padding:6px;">
+              <div style="padding:4px 6px; background:#FDF2F4; border-left:3px solid #C00F28; border-radius:4px; font-variant-numeric:tabular-nums;">20240107 王五 · 高三 2 班</div>
+              <div style="padding:4px 6px; color:#52525B; font-variant-numeric:tabular-nums;">20240170 赵六 · 高三 2 班</div>
+              <div style="padding:4px 6px; color:#52525B; font-variant-numeric:tabular-nums;">20241007 钱八 · 高三 5 班</div>
+            </div>
+            <div style="margin-top:10px; background:#C00F28; color:#fff; border-radius:8px; text-align:center; padding:8px; font-weight:600;">确认考号 · 重新匹配学生</div>
+            <div style="font-size:11px; color:#A1A1AA; margin-top:8px;">若识别出的考号不在花名册：红色提示「该考号不存在」，可继续修正或标记为废卷</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="padding:0 20px 16px; color:#71717A; font-size:12px;">当前条 = 考号重复时，右侧切换为 v3/v4 的「重卡对比」面板（并排看图定性 → 保留其一 / 改考号），其中「改考号」落地为本面板同款交互</div>
+  </div>
+</div>

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-*最近一次更新于 2026-09-10*
+*最近一次更新于 2026-10-17（2.7.1 基线复核）*
 
 ## 项目与部署边界
 
@@ -8,6 +8,7 @@
 
 - **实际部署形态：Windows 扫描端配原生 OMR 组件 + Linux 服务端。服务端部署使用 MariaDB；仅异常卷缺少坐标数据时，可显式调用随包分发的 Linux x86_64 识别器补识别，常规 OMR 仍在 Windows 扫描端。**
 - Web：教师 / 学生页面，构建到 `dist/web/`；扫描端：Electron 桌面应用，构建到 `dist/scanner/`。两者入口分离，不要把扫描端依赖引入 Web。
+- 扫描端不是独立后端：`electron/main.cjs`（`electron/` 下唯一主进程文件）用 `await import()` **在同进程内**加载 `dist/server/index.mjs`，并 `chdir` 到 userData 后注入 `PROJECTX_ENABLE_SCANNER=1` / `ANSWER_CARD_DATA_DIR` / `PROJECTX_DB_PATH`；服务端唯一入口始终是 `src/apps/answer-card/server/index.ts`（**`src/server/index.ts` 不存在**）。
 - Windows 扫描端负责扫描仪调用和原生识别；Linux 服务端接收扫描端上传并提供业务 API、阅卷和分析。
 - SQLite 仍用于本地模式及部分测试；不能因生产使用 MariaDB 而移除 SQLite 兼容，也不能用 SQLite 测试代替 MariaDB 验证。
 - Ubuntu 包的 `PROJECTX_ENABLE_SCANNER=0` 与 `PROJECTX_ENABLE_SCANNER_CLIENT_API=1` 分别控制本机扫描能力和远程扫描端上传接入，不要混淆。
@@ -15,7 +16,7 @@
 ## 开始工作前
 
 1. 查看 `git status` 和本次任务范围，保留用户已有修改，不覆盖、不回退无关工作。
-2. 按下方目录定位调用入口，先查现有接口、类型、组件和测试，再修改。修复问题需追踪「界面 / API 写入 → 持久化 → 实际消费者 → 可观察行为」。
+2. 先读 `readus/项目胶囊.md`（扫描端任务再读 `readus/扫描端胶囊.md`）定位调用入口，然后查现有接口、类型、组件和测试，再修改。修复问题需追踪「界面 / API 写入 → 持久化 → 实际消费者 → 可观察行为」。胶囊只作导航与契约速查，落点仍要按当前代码确认。
 3. 现行约束以本文件和用户要求为准；实现事实核对当前代码、`package.json`、`vite.config.ts` 和 CI。旧文档中的版本号、测试通过数、历史方案不代表当前状态。
 4. 审核任务保持只读；实施任务完成必要验证。不要把代码修改自动扩大为发布、生产迁移或部署。
 
@@ -25,6 +26,8 @@
 
 | 任务 | 优先阅读 |
 | --- | --- |
+| 定位改动落点、跨端契约、命令速查 | `readus/项目胶囊.md`（**第一入口**，单篇速览） |
+| 扫描端、TWAIN、上传、异常卷、扫描端打包 | `readus/扫描端胶囊.md` |
 | 项目概况、运行与打包 | `README.md`、`package.json` |
 | 架构与模块关系 | `readus/ARCHITECTURE.md` |
 | 数据库及 SQL 兼容 | `readus/DATABASE.md`、`readus/双方言SQL函数安全清单.md` |
@@ -33,7 +36,7 @@
 | 扫描端与多端使用 | `readus/SCANNER-SETUP.md`、`readus/多端使用说明.md` |
 | 历史变更 | `readus/CHANGELOG.md` |
 
-按任务阅读相关文档即可；遇到文档与实现冲突，明确差异，不凭旧说明改写现有行为。
+按任务阅读相关文档即可；遇到文档与实现冲突，明确差异，不凭旧说明改写现有行为。`readus/` 内带日期的一次性报告是历史快照；已知文档漂移项集中列在 `readus/项目胶囊.md`「已知文档漂移」。
 
 ## 代码导航
 
@@ -45,9 +48,10 @@
 | `src/server/routes/`、`services/`、`repositories/` | 业务路由、服务和数据访问；修改前检查已有实现 |
 | `src/server/auth/`、`middleware/` | 身份认证和权限控制 |
 | `src/server/db/` | 数据库配置、适配器、schema 和迁移 |
-| `src/shared/` | 跨端共享类型、布局、判分和统计；重点为 `types.ts`、`layout.ts`、`grading.ts` |
+| `src/shared/` | 跨端共享类型、布局、判分和统计；重点为 `types.ts`、`layout.ts`、`grading.ts`、`scanPages.ts`（页号/双面映射）、`scanUploadLimits.ts`（上传配额） |
 | `native/AnswerCardRecognizer/`、`native/ScannerBridge/` | C++ OMR 与 TWAIN 扫描桥 |
-| `electron/` | 扫描端桌面运行环境 |
+| `resources/native/` | 随包原生二进制 `win-x64` / `win-ia32` / `correction-linux-x64`；**受版本控制**，打包会被本机运行库覆盖，提交前必查 diff |
+| `electron/` | 扫描端桌面运行环境（唯一文件 `main.cjs`） |
 | `llmclient/` | Python AI 服务；按相关任务需要启动 |
 | `scripts/`、`.github/workflows/ci.yml` | 构建、打包、迁移、回归验证和 CI |
 
@@ -57,7 +61,8 @@
 
 - 优先复用现有库、服务、类型和组件；安装依赖时保持清单与锁文件一致，避免顺手升级无关依赖。
 - 数据访问沿用 `DbAdapter`（`src/server/db/mysql.ts`）及既有仓储模式；SQL 使用参数绑定。Upsert / 忽略冲突优先使用 `buildUpsertSQL` / `buildInsertIgnore`，不要在共享路径直接写单一数据库方言。
-- 数据结构变更检查 SQLite 的 `schema.sql` / `migrations.ts` 和 MariaDB 的 schema / `mysql.ts` 迁移；兼顾新库初始化与已有库升级，不能只改建表语句。
+- 数据结构变更检查 SQLite 的 `schema.sql` / `migrations.ts` 和 MariaDB 的 `schema.mariadb.sql` / `mysql.ts` 内联迁移；两侧版本序列需**成对递增并保持同名迁移**（以两个文件末尾为准），兼顾新库初始化与已有库升级，不能只改建表语句。`schema.mysql.sql` 当前无引用点，不要改它。
+- 扫描数据一律走统一适配器与 `twain_*` / `scanner_submissions` / `scan_correction_pages` 表；`scanner.db` 运行时已不再打开（仅 `routes/backup.ts` 兼容备份恢复），新代码不要写它。
 - 权限约束放在后端，并复用现有范围判断；前端隐藏按钮不等于授权校验。涉及成绩、阅卷、发布或删除时核对数据范围与持久化结果。
 - Web 兼容目标包含 iOS 15 / Safari 15（见 `vite.config.ts`）；UI 修改兼顾移动端、明暗模式及两套皮肤。
 - 不提交运行数据、数据库、密钥或生成的打包产物。验证使用隔离测试数据，避免影响现有业务数据。
@@ -84,6 +89,8 @@ README 开发环境建议 Node.js 24+；当前 CI 使用 Node.js 22。命令以 
 | Web + 服务端构建 | `npm run build`，含类型检查，产物 `dist/web/` + `dist/server/` |
 | 扫描端 + 服务端构建 | `npm run build:scanner:full`，含类型检查 |
 | Ubuntu 服务端打包 | `npm run package:server:ubuntu24`；该脚本不包含类型检查，需先单独验证 |
+| 扫描端打包 | `npm run electron:msi` / `electron:dist`（ia32 加 `:ia32`），非 Windows 主机用 `package:scanner:win32:cross`；副作用与还原见 `readus/扫描端胶囊.md` |
+| 扫描端专项验证 | `npm run verify:scanner-*` / `verify:scan-*`；按改动面对应关系见 `readus/扫描端胶囊.md`「改哪块跑哪些验证」 |
 | 健康检查 | `GET /api/app/health`；健康响应不能代替业务流程验证 |
 
 - 代码改动运行类型检查、相关专项测试和受影响目标的构建；共享代码影响两端时检查两端。纯文档改动检查路径、命令与 diff 即可。
