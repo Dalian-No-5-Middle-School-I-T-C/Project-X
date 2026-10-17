@@ -402,6 +402,9 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     setStudentResults(data.results);
     setFailures(data.failures);
     setReviewCards(data.reviewCards ?? []);
+    if (data.warnings?.length) {
+      setScanWarnings(prev => [...new Set([...prev, ...data.warnings!])]);
+    }
   }
 
   async function readResults(sid: string, save = false): Promise<ScanBatchResponse> {

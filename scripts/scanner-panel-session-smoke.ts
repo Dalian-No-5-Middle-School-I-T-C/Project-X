@@ -75,7 +75,10 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
     if (init?.method === "POST" && url.endsWith("/results")) data.results.forEach(result => { result.saved = true; });
     return Response.json(data);
   }
-  if (url.endsWith("/retry")) { retryRequests.push(JSON.parse(String(init?.body))); return Response.json(summary()); }
+  if (url.endsWith("/retry")) {
+    retryRequests.push(JSON.parse(String(init?.body)));
+    return Response.json({ ...summary(), warnings: ["重识别告警：历史灰度卷需改用彩色"] });
+  }
   if (url.endsWith("/health")) return Response.json({ ok: true, capabilities: { scannerClientApi: true } });
   throw new Error(`Uncovered panel request: ${url}`);
 });
@@ -154,6 +157,8 @@ try {
   await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="关闭"]')!.click(); }); await settle();
   await click("重新识别此卡"); await settle();
   assert.deepEqual(retryRequests, [{ groupId: "1" }]);
+  assert(document.body.textContent?.includes("重识别告警：历史灰度卷需改用彩色"),
+    "重新识别返回的告警要显示在扫描告警区");
   await click("刷新汇总"); await settle();
   assert.equal(uploads.length, 2, "Refreshing or correcting a partial session cannot auto-upload its successful cards");
   assert(document.body.textContent?.includes("实际输出 DPI 与设置不一致"), "Refresh and retry preserve the device error");

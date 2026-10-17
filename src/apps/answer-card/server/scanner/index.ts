@@ -569,7 +569,14 @@ export function createScannerRouter(twainEnabled = true): Router {
     return records.length > 0 && records.every(record => record.ocr_status !== "pending" && record.ocr_status !== "processing");
   }
 
-  async function sessionResults(id: string, save: boolean, res: Response, validate = false, previewOnly = false) {
+  async function sessionResults(
+    id: string,
+    save: boolean,
+    res: Response,
+    validate = false,
+    previewOnly = false,
+    warnings?: string[]
+  ) {
     const sessionId = safeId(id);
     const session = await getSession(sessionId);
     if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
@@ -578,7 +585,7 @@ export function createScannerRouter(twainEnabled = true): Router {
     const card = await findCardForLayout(session.card_id);
     if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
     const result = await processScannerSession(card, sessionId, previewOnly ? "preview" : save ? "save" : validate ? "validate" : "preview");
-    res.json(result);
+    res.json(warnings?.length ? { ...result, warnings } : result);
   }
 
   router.post("/session/:sessionId/retry", async (req, res, next) => {
@@ -604,10 +611,16 @@ export function createScannerRouter(twainEnabled = true): Router {
           res.status(400).json({ message: "请输入有效学号（1–64 位字母、数字、下划线或短横线）" }); return;
         }
         const rows = groupSessionPages(card, records).groups.get(groupId)!;
-        await runOcrOnSession(sessionId, session.card_id, () => {}, {
+        const retryWarnings: string[] = [];
+        await runOcrOnSession(sessionId, session.card_id, (event) => {
+          emitProgress(sessionId, event);
+          const message = event.type === "warning" ? event.message?.trim() : "";
+          if (message && !retryWarnings.includes(message)) retryWarnings.push(message);
+        }, {
           recordIds: new Set(rows.map(r => r.record.id)), studentId,
         });
-        await sessionResults(sessionId, false, res, true);
+        await flushSessionWarnings(sessionId);
+        await sessionResults(sessionId, false, res, true, false, retryWarnings);
       });
     } catch (error) { next(error); }
   });

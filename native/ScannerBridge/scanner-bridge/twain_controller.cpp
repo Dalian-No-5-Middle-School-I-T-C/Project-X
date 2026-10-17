@@ -692,12 +692,10 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         TW_UINT16 endRc = DSM_Entry(&m_appId, &m_sourceId,
             DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER,
             (TW_MEMREF)&pending);
-        // MSG_ENDXFER 的返回码不参与作业结束判定：随包 twain.h（2.5.1）只有 TWRC_ENDOFLIST(7)，
-        // 没有 TWRC_ENDOFLJOB；DAT_PENDINGXFERS 的剩余张数只看 Count。所以 7 只代表「不是失败」，
-        // 只有 7 且 Count==0 才是作业结束；7 且 Count>0 必须继续取帧，否则双面的背面会被当成
-        // 「整批成功」丢掉（errorMessage 为空、正面已入库 → result.success 为真）。
-        if (endRc == TWRC_ENDOFLIST && pending.Count == 0) {
-            fprintf(stderr, "[ScannerBridge] ENDXFER: end of job after sheet %d (pending=0)\n", pageNum);
+        // 7 + Count==0 只在单面时表示批次结束；双面仍可能在本张背面到达前回到状态 5。
+        // 直接在正面收批会把背面丢掉并报 success，因此双面继续等背面，超时则保留正面并报失败。
+        if (endRc == TWRC_ENDOFLIST && pending.Count == 0 && !config.duplex) {
+            fprintf(stderr, "[ScannerBridge] ENDXFER: end of job after sheet %d (pending=0, simplex)\n", pageNum);
             m_state = 5;
             hasMorePages = false;
             break;
@@ -717,7 +715,10 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         
         // 背面也可能在 Count=0 后到达；必须在当前物理张内等待，不能交给下轮正面。
         if (config.duplex) {
-            if (!shouldWaitForTransfer(pending.Count)) break;
+            if (!shouldWaitForTransfer(pending.Count)) {
+                result.errorMessage = "Duplex scan ended after front side of page " + std::to_string(pageNum);
+                break;
+            }
             if (!waitForState(6, config.pageTimeoutMs)) {
                 result.errorMessage = "Timeout waiting for back side of page " + std::to_string(pageNum);
                 break;
