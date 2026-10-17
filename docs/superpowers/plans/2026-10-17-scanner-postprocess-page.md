@@ -1889,3 +1889,11 @@ git commit -m "docs(scanner): 后处理页草案自包含定稿与胶囊导航�
 24. ⚠ **P2 主观题行按 questionId 反查 blockId**：`SubjectiveQuestionGrade` 不带 blockId，而 `blockId?` 可选、同一 questionId 可落在多个题块上，反查会把两块的分数格混为一谈（React key 撞车、改分改到别的块、汇总重复计分）。改为逐条遍历合并后的 `subjectiveQuestions` 并用 `gradeSubjectiveRecognition` 就地判分，key 带 blockId。
 25. P3：`applyCells` 改函数式 `setEdits`（同批两次改表会丢第一次）；删掉视图 2 里未被读取却每次深拷贝整份 recognition 的 `state`；队列面板的异步按钮补 `loading`（重新识别/保留这份）；多选 chips 去掉写死的 `h-6`（compact 密度红线）；列表行补 `tabIndex`+Enter/Space（与 `ScannerWorkspace` 的可点行一致）。
 26. 审核确认通过、无需改动的项：`CorrectionCanvas` 抽取未改变整卡改分弹窗行为（逐属性比对 base `68f348b`，未传 reviewQuestions 时描边/aria 与原来逐字一致）；两页卡按题改分不会抹掉他页/学号格；DELETE 路由确实在 `requireScannerExamScope` 前缀挂载覆盖内且非 GET 还要整卷判分权限；`src/shared/**` 改动纯新增，Web 侧无消费者受影响；`src/shared` 里没有 `<button>` 套交互控件。
+
+### 外部复核返修（PR #338，chuh2006 中文审核 4 条，全部核实为真）
+
+27. ⚠ **P1 自动跳页吃掉了仅本地模式的入库入口**（plan Task 10 只写「透传 onScansComplete」，没考虑 ScannerPanel done 视图被卸载）：`POST validate` 只演算不落库，正常卷因此从未写进 `student_scores`。修法：视图 1 工具条补「保存成绩入库」→ `POST /api/scanner/session/:sid/results`（与原 `saveSuccessful` 同端点），仅本地模式显示。
+28. ⚠ **P1 重卡「保留这份」的后续同步指向了被作废的那份**（plan Task 9 的 `onResolved()` 没带身份）：队列项是被作废组时，重拉后 results 里查不到 → 真正保留的那份永远不补传。修 `onResolved(card.sessionId, card.groupId)`；并把 `failures[].conflicts` 的副本一起计入「本页见过的异常」，否则保留份只出现在 conflicts 时仍然不补传。
+29. ⚠ **P2 考号画布与输入框是两份状态**：点格改完，确认仍按输入框旧文本重算全部 digit 格（屏幕已改、提交旧号）。改为 digit 格选是唯一真值：打字写格、点格回写显示，两者不一致时禁用确认。plan Task 9 Step 2 原文「Input 考号 + 联想 + 确认」没规定这一层。
+30. ⚠ **P2 修正 revision 不足以支持连续保存**：`saveSessionCorrection` 在 PUT 末尾以 `mode="save"` 接纳该组，第二次 PUT 被 `scanCorrection.ts:189` 明确拒绝（`此卷已入库…请从成绩修改进入整卡改分`）。偏差 23 的 revision 重拉只修了乐观锁那一层。现在保存返回 `saved` 即锁界面并指向 Web 成绩修改；已入库卷打开时同样锁（`initialSaved`）。
+- 复核方式说明：上述 4 条各自有断言，且逐条做变异测试确认可红（审核指出原冒烟把 PUT 固定模拟成成功，盖不到服务端状态转换，这条批评成立）。
