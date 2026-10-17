@@ -11,6 +11,7 @@ import {
   scanRecordLayoutPage
 } from "../../../../server/middleware/scanner-scope";
 import { parseIdentityMode } from "../../../../shared/cardIdentity";
+import { resolveScannerExam } from "../../../../server/services/scannerExam";
 import { parseRecognitionDpi } from "../helpers";
 import { Router, type Response } from "express";
 import { existsSync } from "node:fs";
@@ -269,8 +270,11 @@ export function createScannerRouter(twainEnabled = true): Router {
       // 安全（PR #312 CR5）：题块教师只保留含本人题块的排版页。
       const scope = scanPageScopeOf(res);
       const card = scope?.restricted ? await findCardForLayout(session.card_id) : null;
+      // 后处理页改考号要按考试查花名册；考试归属不定（未绑定或绑定多个考试）时为 null，前端降级为纯手输。
+      const { exam } = await resolveScannerExam(session.card_id, session.id);
       res.json({
         session,
+        examId: exam?.id ?? null,
         // 安全（R04）：不再回传服务端绝对路径；预览走 /api/scanner/scan-image/:recordId
         records: records.filter(r => scanPageAllowed(scope,
           scanRecordLayoutPage(card, r.page_num, r.side === "back" ? "back" : "front"))).map((r) => ({
