@@ -38,11 +38,13 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   /** 已有上传任务或已入库的组：补传护栏基线，绝不重复建会话 */
   const uploadedGroups = useRef<Set<string>>(new Set());
 
-  const remoteConfigured = getScannerMode() === "remote" && isRemoteServerConfigured();
   // 通道唯一为本地（spec §5 通道裁定）：远端语义只经 queueGroupUpload 补传承担
   const channel: PostprocessChannel = useMemo(() => localChannel(), []);
+  // 图片去向按调用时读取：渲染闭包里缓存的档位会在切换后失效，补传判定必须用当场值
+  const isRemoteUploadOn = useCallback(() => getScannerMode() === "remote" && isRemoteServerConfigured(), []);
 
-  const reload = useCallback(async () => {
+  /** 返回本轮拉到的快照：补传判定必须用重拉后的数据，闭包里的旧 batches 会漏掉刚处理好的组 */
+  const reload = useCallback(async (): Promise<{ batches: Record<string, ScanBatchResponse>; metas: Record<string, SessionMeta> }> => {
     setLoading(true);
     setError("");
     try {
@@ -70,8 +72,10 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
         const rows = (await scanList.json()) as Array<{ recordId: string; createdAt: string; scanQuality: number | null }>;
         setScans(rows.map(row => ({ recordId: row.recordId, createdAt: row.createdAt, scanQuality: row.scanQuality })));
       }
+      return { batches: nextBatches, metas: nextMetas };
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败");
+      return { batches: {}, metas: {} };
     } finally {
       setLoading(false);
     }
@@ -110,8 +114,8 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   async function syncAfterFix(sessionId: string, groupId: string) {
     const wasUploaded = uploadedGroups.current.has(groupId);
     const job = scannerUploadManager.getState().jobs.find(entry => entry.cardId === cardId && entry.groupIds.includes(groupId));
-    await reload();
-    if (!remoteConfigured || !card) return;
+    const fresh = await reload();
+    if (!isRemoteUploadOn() || !card) return;
     if (job) {
       if (job.status === "error" && job.failedPages.length > 0) {
         scannerUploadManager.retryFailed(job.id);
@@ -125,8 +129,8 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
       notify.info("该卷已上传入库；服务器成绩请走 Web 成绩修改，本机改动仅作留档");
       return;
     }
-    const result = batches[sessionId]?.results.find(entry => entry.groupId === groupId);
-    const meta = metas[sessionId];
+    const result = fresh.batches[sessionId]?.results.find(entry => entry.groupId === groupId);
+    const meta = fresh.metas[sessionId];
     if (!result || !meta) return;
     uploadedGroups.current.add(groupId);
     queueGroupUpload({ ...meta, cardId: card.id, cardVersion: cardFingerprint(card) }, sessionId, result);
