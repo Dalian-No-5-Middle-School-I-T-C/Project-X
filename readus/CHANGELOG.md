@@ -1,38 +1,15 @@
 # Project-X CHANGELOG
 
-## 2026-10-17：PR #332 两轮复核意见修复——收尾码只看 Count、红笔告警按页、告警落会话行、DPI 两路证据交叉核对、随包件重编与 ⑥ 门槛反转
+## 2026-10-17：PR #332 —— 双面批次收尾、红笔分数格强制彩色与告警可恢复、DPI 逐轴取证
 
-- **收尾码 7 不再单独决定批次结束**：上一条把 `DAT_PENDINGXFERS/MSG_ENDXFER` 返回 7 直接当「作业结束」，`Count` 只写进状态、不参与要不要继续取帧。双面时正面回 7 且 `Count=1`（背面还在）就不再采背面，`errorMessage` 为空、`result.success` 为真——已到手的正面被当成整批成功，现场表现是「双面只出一面还报完成」。随包 `twain.h`（2.5.1）里 7 是 `TWRC_ENDOFLIST`（列表结束码，规范留给 `DAT_IDENTITY`/`DAT_FILESYSTEM`），作业结束与否只看 `Count`，因此现在正面/背面两处都是「7 且 `Count==0` 才收批、7 且 `Count>0` 继续取帧」，日志分别给 `end of job after sheet N (pending=0)` 与 `rc=ENDOFLIST but pending=M after sheet N, continuing`；`disableSource` 收到 7 继续 `DISABLEDS` 的行为保留。假 DSM 补两条回归（双面正面回 7 + `Count=1` 必须取满两面、单面连回两次 7 + `Count>0` 必须取满两页）。**这条修改会让源码里的 `... (pending=%u)` 字串消失**，而 `verify-scanner-page-timeout.ts` ⑥ 锁的就是旧 ia32 exe 里的这个字串——源码改动、CI 重编 ia32、⑥ 门槛更新必须同批进主干。
-- **红笔零分告警只数真含分数格的页**：`needsRedPen` 是整卡判定，旧计数却给每张识别成功的图都加一。第 1 页客观题、第 2 页分数格的卡只扫到第 1 页（或这批没有分数页）时，`subjectiveQuestions` 恒为空，告警会写成「本次 N 张卷子的红笔分数格一张都没读到」并建议改彩色重扫——分数页根本不在这批里。现在按 `layout.pages[layoutPage - 1]` 逐页确认分数格再计数；识别器只把「看到红笔但未采纳」的格子放进 `invalidCells`（打「×」走 `multiple_red_components`），这类批次彩色是可用的、问题在画线方式，因此单独计数并给一条不提色彩模式的文案，与「全是灰线」分开。`verify:scanner-red-pen-colormode` 原先用正则把 `redPenPages += 1` 那行锁成旧写法，现改为锁逐页门控与未采纳计数两处接线，并补页级判定、页号越界、两种文案的用例。
-- **告警跟着会话留下**：`emitProgress` 只广播给当前监听者，`/progress` 订阅时只补 `done`/`error`/`cancelled`。色彩升级告警在 `scan()` 之前发出、客户端要等 202 返回才订阅，存在抢先丢掉的窗口；零红笔与 DPI 告警发生在长时间扫描之后，断线重连时会话已终态就再也进不了横幅和「复制诊断」。现在告警写入 `twain_scan_sessions.warnings_json`（SQLite 与 MariaDB 双方言建表 + 迁移 v63；按文本去重、只留最近 20 条），订阅时先补发落库告警再补终态，同一连接内去重所以不会与实时事件重复。新增 `npm run verify:scanner-warning-replay`（真起 express + 临时 SQLite，断言终态会话的 SSE 事件顺序与内容、去重、上限、脏数据回落）并接入 CI；`verify:mariadb` 增加该列「新建造表」与「已有库升级」两条路径的断言。
-- **DPI 取证口径**：像素反查此前不看桥接已经回报的 `dpi_x`/`dpi_y`（来自 `TW_IMAGEINFO`，且 `TwainController` 强制 `ICAP_UNITS=TWUN_INCHES` 才允许出图，所以那就是 DPI）。现在两条证据每页都取、并且互相核对：只有一侧有数据时按那一侧下结论（来源标 `device`/`geometry` 并写进 `[checkpoint]`），两侧都有但对不上时判 mismatch 并报几何值——驱动回报 300 而像素只对应 200 时不再报「设定已生效」。老 exe 不带这两个字段，行为自动退回纯几何反查。几何反查分不清「密度被驱动替代」与「实际进了同比例的不同纸张」（A4 与 A3 长宽比相同，A4 出图按 A3 档反查就是约 212），所以尺寸来源的 mismatch 提示现在同时要求核对进纸纸张与纸型，不再只让老师去改 DPI 档位。
-- **过时表述修正**：`scanRedPenScore.ts` 头部「扫描端、服务端与桥接三处的 colorMode 缺省都是 `gray`」改为按现状描述——路由缺省已由 #330 改为彩色，本模块负责的是含分数格时把历史会话与显式灰度/黑白升级，以及零红笔告警。
-- **⑥ 门槛与随包件必须同批改（复核点名：源码能合，但「修复已进包」不成立）**：入库的 `win-ia32/scanner-bridge.exe` 是 `2dbf7b1` 那次出的，早于 `2d19b09` 的收尾判定，exe 里仍是 `end of job after sheet %d (pending=%u)`——现场走 32 位包，双面照样丢背面却报整批成功。现在按交叉打包工序用 `[build-native]` 触发 CI 重编，产物核对后（PE i386、708,473 字节、四条收尾/续采日志齐全、旧字串已消失）替换入库；识别器源码自 `2dbf7b1` 起未动，不重出那颗 19.5 MB 二进制。同时把 ⑥ 从硬编码字串改成从 `twain_controller.cpp` 现场取 `ENDXFER:` 日志逐条核对：写死字串的门槛方向是反的——旧 exe 一直判绿，而按工序重编出来的正确产物反被判红，等于永久锁死过期包。
-- **建议项里不需要现场样本的都一并收掉**：告警落库不再排进 `enqueuePersist`（那条队列承载主库持久化的长任务，排在后面会把 SSE 补发空窗重新打开），改为按会话串行的 promise 链；`resolveScanColorMode` 不再把不认识的色彩值静默当灰度，只有明确写成 `gray`/`bw` 才按低色彩处理，缺省与非法值一律彩色；假 DSM 夹具补「双面 + 收尾码 7 + `Count=0`」用例，把规范（正面即结束整批）与现场假设（背面还要等）的冲突钉死在「不谎报成功」这一侧；`verify-scanner-warning-replay.ts` 的临时目录改由 `process.on("exit")` 清理，失败路径也不再留残骸；灰度零红笔文案补注释说明它只对 #330 之前的历史会话成立。
-- 本机验证：`typecheck`、`verify:scanner-red-pen-colormode`、`verify:scanner-delivered-dpi`（34/34，含回报值与像素尺寸交叉核对的三种情形）、`verify:scanner-warning-replay`、`verify:scanner-page-timeout`（⑥ 已按新门槛核对替换后的 exe）、`verify:scanner-panel-session`、`verify:scanner-batch-results`、`verify:scanner-duplicate-rescan`、`verify:scan-correction`、`scanner-retry-concurrency-smoke` 全通过。未覆盖：C++ 夹具只能在 CI（ubuntu + g++）跑；`verify:scanner-partial-failure` 在本机因 Windows 无法 spawn `#!/node` 的 `.cjs` 夹具而报 `spawn EFTYPE`（CI Linux 正常，非本次改动引入）；MariaDB 迁移由 CI 的 `verify:mariadb` 覆盖，本机没有 MariaDB 实例；真机扫描仪仍未验收；`win-x64` 两颗仍是 #330 期产物，缺 ② 的收尾判定与 ④ 的坐标映射，而 electron-builder 默认 win target 是 `msi`/`x64`，出 64 位包前必须先走 MSVC 工序重编（该现状已写死在 `readus/Windows32位扫描端交叉打包.md`）。
-
-## 2026-10-16：issue #331 剩余项——批次收尾判定、红笔分数格强制彩色、随包 ia32 原生件重编（②③④）
-
-### ② 「仍旧只能扫描一张」的最后一处：`TWRC_ENDOFLJOB` 被当成 ENDXFER 失败
-
-- 主线（#330）已覆盖 `CAP_XFERCOUNT=-1`、`Count=0` 的状态 5 续等、送纸器回读与双面配对，本条只补批次边界的最后一处：驱动用 `TWRC_ENDOFLJOB`（0x0007，随包 `twain.h` 里同值的 `TWRC_ENDOFLIST`）告知「这就是最后一张」，而正面、背面两处 `MSG_ENDXFER` 都按 `!= TWRC_SUCCESS` 判失败——已经到手的页面被报成「ENDXFER failed」，整批判为失败。现在两处（含 `disableSource` 收尾的 ENDXFER）按正常结束处理，日志留 `end of job after sheet N`。
-- `scripts/fixtures/scanner-native-recheck.cpp` 的假 DSM 增加可控的 ENDXFER 返回码：单张 ENDOFLJOB 批次成功且不再空等一个 `pageTimeoutMs`；双面背面后的 ENDOFLJOB 正常结束；保存失败收尾时 ENDOFLJOB 不再报「会话未正常关闭」。这四条由 `npm run verify:scanner-adf-recheck` 编译真实扫描循环执行，CI（ubuntu + g++）已真跑通过（run 38899548731）；本机没有任何 C++ 编译器，所以这几条只能看 CI。注意该 smoke 只把 `TwainController::` 方法体拼进 `production.inc` 再编译，生产代码里的文件级自造常量在 CI 不可见——收尾码因此直接用随包头文件真实存在的 `TWRC_ENDOFLIST`，TWAIN 2.x 的 ENDOFLJOB 语义写在调用点注释里。**这条实现随后在复核中被修正：7 不能单独当作业结束，见上面 2026-10-17 第一条。**
-- **随包 ia32 已重编译入库**：`.github/workflows/native-ia32.yml` 在提交信息含 `[build-native]` 时用 ubuntu + `mingw-w64` 跑仓库自带的 `scripts/build-native-mingw.sh`（OpenCV 4.13 源码构建、静态链接，产物自检 `pei-i386` 与 `_quirc_decode`），`resources/native/win-ia32/scanner-bridge.exe` 换成含收尾判定的这颗；`scripts/verify-scanner-page-timeout.ts` ⑥ 用 exe 里的 `ENDXFER: end of job after sheet %d (pending=%u)` 字串把「包内件是否带本修复」变成常驻检查。win-x64 那颗仍归 MSVC 工序（`npm run native:build:x64`），所以 ⑥ 只对 ia32 设硬门槛。**这条门槛随后被复核判为方向反了，且那颗 exe 其实没带上 `2d19b09` 的收尾判定；⑥ 已改为从源码取字串、随包件已第二次重编入库，见上面 2026-10-17 的「⑥ 门槛与随包件必须同批改」。**
-- ia32 两颗改为 MinGW 静态件后，同目录的 `opencv_world4130.dll` 与 UCRT/VC 桩不再被它们加载（静态链入）。文件先留着：MSVC 工序 `scripts/build-answer-card-recognizer.bat` 会重新投放，是否清除由维护者按打包路线定，本条不擅自删包。
-
-### ③ 「大题分数有时读不到」：含红笔分数格的卡强制彩色，零红笔批次必须告警
-
-- 识别器只在彩色像素里做红笔门控（`COLOR_BGR2HSV` + 饱和度 ≥55），灰度图被补成 B=G=R、饱和度恒为 0，红笔斜线整题落到 `no_valid_subjective_score` 并按 0 分计。主线已把色彩模式缺省改成彩色，但历史会话与显式选择仍可能是 `gray`，因此版面含 `score_cell` 时色彩模式由服务端定：会话行记录实际生效值，送进桥接的是升级后的模式，自动改写当场提示操作员，`[checkpoint]` 记 `colorMode=...(forced)`。不含分数格的卡保持原选择，灰度/黑白照常可用。
-- 一批卷子里一张红笔分数都没读到时给出可执行告警（按当前模式分别提示改彩色重扫 / 核对笔迹与斜线是否贯穿分数格），不再静默按 0 分入库；个别卷子空白属缺考或未打分，不触发告警。
-- 新增 `verify:recognizer-red-pen`（同一张卡、同一条斜线：彩色读到 10 分，灰度读 0 分且 `no_valid_subjective_score`，定位/学号/客观题不受影响；走 Linux x86_64 识别器）与 `verify:scanner-red-pen-colormode`，均接入 CI。判定全在服务端与共享层，不依赖原生重编译。
-- **没有动的部分**：斜线判定的原生阈值（贯穿比例 0.52、要求单一直线）不改。红笔打「X」会落到 `multiple_red_components` 而读不出分数，是否放宽需要现场样本再定，不在这里猜。
-
-### ④ 异常卷「完全不好用」：根因是随包识别器过期，ia32 那颗已重编译入库
-
-- 根因：`resources/native/win-x64|win-ia32/answer-card-recognizer.exe` 停在 2026-10-06，早于 10-15 引入的坐标映射（`geometry`/`layoutToImage`）——Windows 扫描端识别出的每一页都没有坐标，`storeCorrectionPage` 因此删掉订正快照，整卡改分退化成不可点击的原图，成绩修改侧直接抛「此卷缺少坐标映射」。本机复现过：旧 ia32 那颗跑 `npm run verify:recognizer-geometry` 报 `ZodError: geometry invalid_type`；旧 x64 那颗启动就是 0xC0000135，因为 `resources/native/win-x64/opencv_world4130.dll` 本就被 `.gitignore` 排除、只在打包机投放，任何 checkout 里都跑不动。字串层面也能直接看出差异：旧的两颗 Windows 识别器里根本没有 `geometry`/`layoutToImage`，而按同一份源码在 Linux 上出的 `resources/native/correction-linux-x64/answer-card-recognizer` 有。
-- 已修（ia32）：上面新增的 `[build-native]` CI job 同时编识别器与扫描桥，`resources/native/win-ia32/answer-card-recognizer.exe` 换成这颗（19,555,580 字节，MinGW 静态链 OpenCV 4.13）。本机以 `ANSWER_CARD_RECOGNIZER_EXE` 指向它跑通 `verify:recognizer-geometry`（0/90/180/270 四种旋转的原图映射与反查）、`verify:recognizer-limits`（45/0）、`verify:recognizer-layout`、`verify:recognizer-pencil`、`verify:recognizer-red-pen`；`verify-scanner-page-timeout.ts` ⑥ 用 `layoutToImage` 字串常驻核对。
-- 未修（x64）：`win-x64` 那颗仍要 VS+OpenCV 构建机跑 `npm run native:build:x64`，本机没有该工具链，所以 ⑥ 只对 ia32 设硬门槛，没出的包不当作已出。真机异常卷改分与扫描仪联调仍待验收。
-- 另一条独立缺口：只有 Ubuntu 服务端包里的独立识别器能显式补识别（Linux x86_64、单次串行、结果不落库，每次打开重算）；扫描端本地与 Windows 服务端没有这条路，是否落库/自动补识别待维护者定。
+- **批次结束只看 `DAT_PENDINGXFERS` 的 `Count`**：`MSG_ENDXFER` 返回的非成功码（含 TWAIN 2.x 表示「这就是最后一张」的码 7，随包 `twain.h` 2.5.1 里同值名为 `TWRC_ENDOFLIST`）不再单独决定收批——正面回该码但 `Count>0` 时继续取背面，`Count==0` 才结束。双面不再出现「只出一面却报整批成功」。收尾码与 `Count` 的组合由假 DSM 夹具编译真实扫描循环回归，只在 CI（Linux + g++）执行。
+- **含红笔分数格的答题卡强制彩色扫描**：版面含 `score_cell` 时，历史会话记录或显式选择里的灰度/黑白由服务端升级为彩色后再送桥接，会话行记录实际生效值，`[checkpoint]` 标注 `colorMode=...(forced)` 并在扫描前提示操作员；不含分数格的卡保持原选择，灰度/黑白照常可用。`resolveScanColorMode` 只有明确写成 `gray`/`bw` 才按低色彩处理，缺省与无法识别的值一律彩色。
+- **零红笔按页告警**：一批卷子里真含分数格的页一张红笔都没读到时给可执行告警，不再静默按 0 分入库。计数逐页确认分数格（只扫到客观题页不会被算成「N 张都没读到」）；「看到红笔但未采纳」与「全是灰线」分别给不同文案，前者不提色彩模式。斜线判定的原生阈值未改。
+- **扫描告警跟着会话留下**：色彩升级、DPI 取证、零红笔三类告警写入 `twain_scan_sessions.warnings_json`（SQLite 与 MariaDB 双方言建表，迁移 v63；按文本去重，只留最近 20 条）。SSE 订阅或断线重连时先排空该会话仍在队列里的告警、补发已落库告警，再补终态事件；`completed` / `error` / `cancelled` 三个终态一律经 `markSessionTerminal` 写入——先把告警落库完成，再让会话变成终态，避免重连读到旧行就关流而永久丢告警。
+- **DPI 取证按轴判定并两路交叉**：同时取桥接回报的 `dpi_x`/`dpi_y`（来自 `DAT_IMAGEINFO`，桥接强制 `ICAP_UNITS=TWUN_INCHES`，故即 DPI）与出图像素尺寸反查，横、纵两轴各自与设定值及彼此比较：两轴彼此偏离，或任一轴偏离设定超过容差，都以 `type:"warning"` 报给操作者并写进 `[checkpoint]`，不再先取平均（350×250 这类非等比例变形不会被报成「按设定生效」，方向异常保留在 `deliveredDpiX`/`deliveredDpiY`）；回报值与像素尺寸对不上时按像素一侧下结论。不回报 `dpi_x`/`dpi_y` 的旧桥接自动退回纯尺寸反查。尺寸侧分不清「密度被驱动替代」与「实际进了同比例的不同纸张」（A4 与 A3 长宽比相同），所以几何来源的提示同时要求核对进纸纸张与所选纸型。
+- **随包 `win-ia32` 原生件已更新**：`resources/native/win-ia32/scanner-bridge.exe`（含上述收尾判定）与 `answer-card-recognizer.exe`（含 2026-10-15 的坐标映射，异常卷整卡改分依赖它）按 `[build-native]` 关键字触发的交叉打包工序重编入库；`scripts/verify-scanner-page-timeout.ts` ⑥ 常驻核对随包件是否带当前源码的收尾日志与坐标映射，核对用的日志字串从 `twain_controller.cpp` 现场取，不在脚本里写死，以免门槛锁住过期产物。
+- **升级说明**：无新增配置项，也不需要手工迁移；`warnings_json` 列由两种方言的建表与 v63 迁移自动到位。已部署的 Windows 扫描端要换 32 位包才拿到本次收尾与识别器修复。
+- **已知限制**：`resources/native/win-x64` 两颗原生件未更新，缺本次收尾判定与坐标映射，而 electron-builder 默认 win target 是 `msi`/`x64`，出 64 位扫描端包前须先按 `readus/Windows32位扫描端交叉打包.md` 的 MSVC 工序重编；红笔打「×」是否放宽原生阈值待现场样本；真机扫描仪与异常卷改分未做硬件验收，以上结论只覆盖自动化验证。
 
 ## 2026-10-16：扫描 DPI 同步、单面设备兼容与失败批次恢复
 
