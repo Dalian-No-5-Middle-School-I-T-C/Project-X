@@ -79,6 +79,10 @@ jobs:
 
       - name: Linux x86_64 correction recognizer geometry
         run: npm run verify:recognizer-geometry
+      - name: Native red pen recognition at 150 and 300 DPI
+        env:
+          ANSWER_CARD_RECOGNIZER_EXE: resources/native/correction-linux-x64/answer-card-recognizer
+        run: npm run verify:recognizer-red-line
       # issue #331 ③：同一张卡、同一条红笔斜线，彩色读到分数、灰度归零——「有时读不到」的机制
       - name: Linux x86_64 red pen score cells
         run: npm run verify:recognizer-red-pen
