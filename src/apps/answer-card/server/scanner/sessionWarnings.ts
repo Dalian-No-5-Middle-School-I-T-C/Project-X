@@ -13,6 +13,7 @@ import { appendSessionWarning, transitionSessionStatus } from "../database/scan-
 // 不进 enqueuePersist：那条队列承载「扫描 → 主库」的长任务，把一条单行 UPDATE 排在它们后面，
 // 客户端此刻订阅时补发读到的仍是旧行，而实时事件已经错过。
 const warningQueues = new Map<string, Promise<void>>();
+const cancellationIntents = new Set<string>();
 
 let writeDelayMs = 0;
 
@@ -36,6 +37,11 @@ export function persistSessionWarning(sessionId: string, text: string): void {
   });
 }
 
+/** 取消请求先占位，再终止桥接进程；完成/错误转换不得越过这个已接受的取消。 */
+export function reserveSessionCancellation(sessionId: string): void {
+  cancellationIntents.add(sessionId);
+}
+
 /** 等本会话已排队的告警全部落库；没有排队项时立即返回 */
 export async function flushSessionWarnings(sessionId: string): Promise<void> {
   for (;;) {
@@ -54,6 +60,10 @@ export async function markSessionTerminal(
   status: "completed" | "error" | "cancelled",
   errorMsg?: string
 ): Promise<boolean> {
+  if (status !== "cancelled" && cancellationIntents.has(sessionId)) return false;
   await flushSessionWarnings(sessionId);
-  return await transitionSessionStatus(sessionId, status, errorMsg);
+  if (status !== "cancelled" && cancellationIntents.has(sessionId)) return false;
+  const changed = await transitionSessionStatus(sessionId, status, errorMsg);
+  if (status === "cancelled") cancellationIntents.delete(sessionId);
+  return changed;
 }

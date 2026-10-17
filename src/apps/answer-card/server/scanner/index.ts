@@ -30,7 +30,8 @@ import {
 import {
   flushSessionWarnings,
   markSessionTerminal,
-  persistSessionWarning
+  persistSessionWarning,
+  reserveSessionCancellation
 } from "./sessionWarnings";
 import { safeId, dataDir } from "../storage";
 import { findCardForLayout } from "../card-layout";
@@ -184,6 +185,7 @@ export function createScannerRouter(twainEnabled = true): Router {
           return;
         }
 
+        reserveSessionCancellation(id);
         const terminated = cancelScan(id);
         const cancelled = await markSessionTerminal(id, "cancelled", "用户取消扫描");
         if (!cancelled) {

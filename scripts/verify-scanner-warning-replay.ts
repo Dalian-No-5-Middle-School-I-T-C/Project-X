@@ -136,6 +136,17 @@ try {
     "重连补发在关闭前必须取到完整告警（订阅侧也要等队列）");
   assert.deepEqual(await readStored(racedOld.id), [RACE_WARNING], "延迟的告警最终仍要落到会话行");
 
+  const reserved = await store.createSession("card-race-reserved", "取消意图优先", {});
+  warnings.reserveSessionCancellation(reserved.id);
+  warnings.persistSessionWarning(reserved.id, RACE_WARNING);
+  assert.equal(await warnings.markSessionTerminal(reserved.id, "error"), false,
+    "取消意图落位后，被杀扫描的错误路径不能抢写终态");
+  assert.equal((await store.getSession(reserved.id))?.status, "pending",
+    "错误转换被拒绝后，会话仍等待取消路径写终态");
+  assert.equal(await warnings.markSessionTerminal(reserved.id, "cancelled"), true,
+    "取消路径仍可在告警落库后写入 cancelled");
+  assert.deepEqual(await readStored(reserved.id), [RACE_WARNING], "取消路径同样要等告警落库完成");
+
   for (const status of ["completed", "error", "cancelled"] as const) {
     const s = await store.createSession(`card-race-${status}`, "终态顺序", {});
     warnings.persistSessionWarning(s.id, RACE_WARNING);
