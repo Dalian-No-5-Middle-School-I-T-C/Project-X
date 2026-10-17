@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { evaluateScoreCells, type CorrectionCell } from "../src/shared/scanCorrection";
 import { selectObjectiveOptionCells, selectScoreCells, selectStudentDigitCells } from "../src/shared/correctionCellSelect";
-import { buildPostprocessGroups, buildPostprocessQueue, filterDeletableGroups, missingLayoutPages } from "../src/shared/scanPostprocess";
+import { buildPostprocessGroups, buildPostprocessQueue, filterDeletableGroups, missingLayoutPages, replaceScopedSelection } from "../src/shared/scanPostprocess";
 import type { ScanBatchResponse } from "../src/shared/scanPages";
 
 type OptionCell = Extract<CorrectionCell, { type: "objective_option" }>;
@@ -111,5 +111,18 @@ assert.equal(withOwn.find(g => g.groupId === "8")!.issues.join(), "duplicate");
 assert.deepEqual(filterDeletableGroups(["0", "3"], new Map([["3", true]]), false), { deletable: ["0"], blocked: ["3"] });
 assert.deepEqual(filterDeletableGroups(["0", "3"], new Map([["3", true]]), true), { deletable: ["0", "3"], blocked: [] });
 assert.deepEqual(filterDeletableGroups([], new Map(), false), { deletable: [], blocked: [] });
+
+// ── 表格里改一题：只替换该题作用域内的格，其余格原样保留 ──
+const owner = new Map([["o1A", "p1"], ["o1B", "p1"], ["o2A", "p1"], ["s1", "p2"], ["s2", "p2"], ["d0-1", "p1"]]);
+const q1Scope = new Set(["o1A", "o1B"]);
+assert.deepEqual(
+  replaceScopedSelection([{ sourceId: "p1", selected: ["d0-1", "o1A"], touched: ["x"] }, { sourceId: "p2", selected: ["s1"] }], owner, q1Scope, ["o1B"]),
+  [{ sourceId: "p1", selected: ["d0-1", "o1B"], touched: ["x"] }, { sourceId: "p2", selected: ["s1"] }],
+);
+assert.deepEqual(replaceScopedSelection([{ sourceId: "p1", selected: ["o1A", "o2A"] }], owner, q1Scope, []), [{ sourceId: "p1", selected: ["o2A"] }]);
+assert.deepEqual(
+  replaceScopedSelection([{ sourceId: "p1", selected: [] }, { sourceId: "p2", selected: ["s1"] }], owner, new Set(["s1", "s2"]), ["s2"]),
+  [{ sourceId: "p1", selected: [] }, { sourceId: "p2", selected: ["s2"] }],
+);
 
 console.log("PASS scanner-postprocess-smoke");

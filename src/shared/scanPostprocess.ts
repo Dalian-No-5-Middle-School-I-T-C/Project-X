@@ -151,6 +151,24 @@ function queueLabel(kind: PostprocessIssueKind, group: PostprocessGroup): string
 }
 
 /**
+ * 把「某题的新格选」写回各页选中集：只替换该题作用域内的格，
+ * 其余格（学号、别的题）一律保留。整页覆盖会把同页其他填涂一起抹掉。
+ * picked 里的格可能分布在多页，按 cellOwner 归位到各自页面。
+ */
+export function replaceScopedSelection<T extends { sourceId: string; selected: string[] }>(
+  pages: ReadonlyArray<T>,
+  cellOwner: ReadonlyMap<string, string>,
+  scope: ReadonlySet<string>,
+  picked: ReadonlyArray<string>,
+): T[] {
+  return pages.map(page => {
+    const kept = page.selected.filter(id => !scope.has(id));
+    const added = picked.filter(id => cellOwner.get(id) === page.sourceId && !kept.includes(id));
+    return { ...page, selected: [...kept, ...added] };
+  });
+}
+
+/**
  * 删除护栏纯逻辑：组内存在非 discarded 回执（已上传/待确认/冲突保留）时，
  * 未 force 一律 blocked；force 时放行（客户端已二次确认代价）。
  */
