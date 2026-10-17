@@ -23,6 +23,7 @@
     "native:build:x64": "scripts\\build-answer-card-recognizer.bat x64 && scripts\\build-scanner-bridge.bat x64",
     "native:build:ia32": "scripts\\build-answer-card-recognizer.bat ia32 && scripts\\build-scanner-bridge.bat ia32",
     "native:build:mingw:ia32": "bash scripts/build-native-mingw.sh",
+    "native:build:mingw:x64": "bash scripts/build-native-mingw.sh x64",
     "package:scanner:win32:cross": "node scripts/package-scanner-win32.cjs",
     "package:scanner:win32:portable:cross": "node scripts/package-scanner-win32.cjs --portable",
     "native:runtime": "node scripts/stage-vc-runtime.cjs",
