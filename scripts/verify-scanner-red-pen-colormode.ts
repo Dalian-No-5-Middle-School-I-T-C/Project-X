@@ -18,6 +18,7 @@ import {
   pageNeedsRedPenScoring,
   redPenMissNotice,
   resolveScanColorMode,
+  scoreCellsSampled,
 } from "../src/shared/scanRedPenScore";
 import type { PageLayout } from "../src/shared/types";
 
@@ -84,6 +85,30 @@ assert.equal(redPenMissNotice({ needsRedPen: true, colorMode: "gray", pageCount:
 assert.equal(redPenMissNotice({ needsRedPen: true, colorMode: "color", pageCount: 12, pagesWithRedMark: 0, pagesWithRejectedRed: 0 })!, colorNotice,
   "③c: 完全没有红笔时仍是原来的色彩/笔迹结论");
 
+// ③d 分母还要排除「格子根本没被采样」的页：二维码校验或定位点检测失败时，识别器提前返回
+// status:"failed" 且 subjectiveQuestions 为空。整批都这样失败时若仍按版面计数，
+// 告警会说成「红笔分数格一张都没读到」，而真实故障是该页识别失败（已按页报出）。
+assert.equal(scoreCellsSampled({ status: "failed", subjectiveQuestions: [] }), false,
+  "③d: 提前失败且无条目 ⇒ 格子没被看过，不进分母");
+assert.equal(scoreCellsSampled({ status: "failed", subjectiveQuestions: [{ questionId: "q1" }] }), false,
+  "③d: status 已判 failed 就不算采样过，残缺条目不能拿来反证读到红笔");
+assert.equal(scoreCellsSampled({ status: "ok", subjectiveQuestions: [] }), false,
+  "③d: 成功但一题都没有 ⇒ 这页没被采样（版面与识别对不上）");
+assert.equal(scoreCellsSampled({ status: "ok", subjectiveQuestions: [{ questionId: "q1" }] }), true,
+  "③d: 采样过的页按题留条目，未打分也有状态——这是进分母的证据");
+assert.equal(scoreCellsSampled({ status: "partial", subjectiveQuestions: [{ questionId: "q1", validCells: [] }] }), true,
+  "③d: partial 算采样过，零红笔告警仍要照常给");
+assert.equal(scoreCellsSampled({ status: "ok" }), false, "③d: 缺 subjectiveQuestions 字段按未采样处理，不得凭整卡判定就计数");
+
+const failedBatch = [
+  { status: "failed", subjectiveQuestions: [] as unknown[] },
+  { status: "failed", subjectiveQuestions: [] as unknown[] }
+];
+const failedCounted = failedBatch.filter(scoreCellsSampled).length;
+assert.equal(failedCounted, 0, "③d: 全批识别失败的页一页都不进分母");
+assert.equal(redPenMissNotice({ needsRedPen: true, colorMode: "gray", pageCount: failedCounted, pagesWithRedMark: 0 }), null,
+  "③d: 识别失败批次不给红笔告警，故障由该页的识别状态与失败原因报");
+
 // ④ 接线：会话行、送进桥接的参数、告警出口三处都要走同一个判定，不能各写一套
 {
   const service = readFileSync(fileURLToPath(new URL("../src/apps/answer-card/server/scanner/scanner-service.ts", import.meta.url)), "utf8");
@@ -99,8 +124,8 @@ assert.equal(redPenMissNotice({ needsRedPen: true, colorMode: "color", pageCount
   assert.match(service, /const missNotice = redPenMissNotice\(\{[\s\S]{0,200}colorMode: session\?\.color_mode,/,
     "④: 识别阶段按会话记录的模式给结论");
   assert.match(service, /type: "warning", message: missNotice/, "④: 全批零红笔要走 SSE 告警，不能只写日志");
-  assert.match(service, /if \(needsRedPen && pageNeedsRedPenScoring\(layout\.pages\[layoutPage - 1\]\)\) \{\s*redPenPages \+= 1;[\s\S]{0,160}validCells\?\.length \?\? 0\) > 0/,
-    "④: 分母只数本页有分数格的记录，且统计的是「读到过有效分数格」，不是识别状态");
+  assert.match(service, /if \(needsRedPen && pageNeedsRedPenScoring\(layout\.pages\[layoutPage - 1\]\) && scoreCellsSampled\(recognition\)\) \{\s*redPenPages \+= 1;[\s\S]{0,160}validCells\?\.length \?\? 0\) > 0/,
+    "④: 分母同时要求「本页有分数格」与「格子真被采样过」，且统计的是「读到过有效分数格」，不是识别状态");
   assert.match(service, /invalidCells\?\.length \?\? 0\) > 0\)\)\s*\{[\s\S]{0,160}redRejectedPages \+= 1;/,
     "④: 「读到红笔但未采纳」单独计数，不能和「完全没有红笔」混成一条");
   assert.match(service, /pagesWithRejectedRed: redRejectedPages/, "④: 未采纳计数必须进告警判定");

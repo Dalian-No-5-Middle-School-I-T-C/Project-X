@@ -20,7 +20,7 @@ import { prepareCardLayoutById } from "../card-layout";
 import { parseRecognitionDpi } from "../helpers";
 import { mapScanPageToLayout, applyScanStudentId, assignScanRecordPageNums } from "../../../../shared/scanPages";
 import { verifyDeliveredScanDpi } from "../../../../shared/scanDeliveredDpi";
-import { layoutNeedsRedPenScoring, pageNeedsRedPenScoring, resolveScanColorMode, colorModeUpgradeNotice, redPenMissNotice } from "../../../../shared/scanRedPenScore";
+import { layoutNeedsRedPenScoring, pageNeedsRedPenScoring, scoreCellsSampled, resolveScanColorMode, colorModeUpgradeNotice, redPenMissNotice } from "../../../../shared/scanRedPenScore";
 
 export { listSources };
 
@@ -294,9 +294,11 @@ async function runOcrOnSessionInQueue(
         cropsDir: await createRecognitionCropTempDir(cardId, record.id)
       })) as CombinedRecognitionResult;
 
-      // 只统计本页自己有分数格的记录：needsRedPen 是整卡判定，纯客观题页的
-      // subjectiveQuestions 恒为空，跟着整卡计数会把「分数页不在这批里」说成「一张都没读到」。
-      if (needsRedPen && pageNeedsRedPenScoring(layout.pages[layoutPage - 1])) {
+      // 分母只数「本页自己有分数格」且「格子真被采样过」的记录：needsRedPen 是整卡判定，
+      // 纯客观题页的 subjectiveQuestions 恒为空，跟着整卡计数会把「分数页不在这批里」说成
+      // 「一张都没读到」；而二维码/定位点失败时识别器提前返回 status:"failed"，格子一张没看过，
+      // 那种批次的故障是该页识别失败（已按页报出），再说红笔读不到会把排查带去笔迹和色彩模式。
+      if (needsRedPen && pageNeedsRedPenScoring(layout.pages[layoutPage - 1]) && scoreCellsSampled(recognition)) {
         redPenPages += 1;
         const questions = recognition.subjectiveQuestions ?? [];
         if (questions.some((question) => (question.validCells?.length ?? 0) > 0)) {

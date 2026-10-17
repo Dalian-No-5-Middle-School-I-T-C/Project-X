@@ -37,6 +37,19 @@ export function pageNeedsRedPenScoring(page: Pick<PageLayout, "elements"> | unde
 }
 
 /**
+ * 本页的分数格是否真的被采样过。识别器在二维码校验或定位点检测失败时会提前返回
+ * `status: "failed"`，此时 `subjectiveQuestions` 为空——格子一张都没看过。
+ * 这种页面的故障已经由该页的识别状态与失败原因报出，不能再进红笔分母：
+ * 整批都识别失败会被说成「红笔分数格一张都没读到」，把操作员支到笔迹和色彩模式上去排查。
+ * 真的采样过的页即便一格红笔都没打，也会按题给出条目（`no_valid_subjective_score` 等）。
+ */
+export function scoreCellsSampled(
+  recognition: { status?: string; subjectiveQuestions?: unknown[] }
+): boolean {
+  return recognition.status !== "failed" && (recognition.subjectiveQuestions?.length ?? 0) > 0;
+}
+
+/**
  * 只有明确写成 `gray` / `bw` 才按低色彩扫；其余（缺省的 color、缺字段、非法字符串）一律按彩色。
  * #330 之后路由缺省已是彩色，这里若把「不认识的值」降级成灰度，等于自己造出 ③ 的病根——
  * 不含分数格的卡更不会被升级，那种卡就会静默按灰度扫。
