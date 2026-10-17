@@ -137,4 +137,5 @@ export interface ScanBatchResponse {
   results: ScanBatchResult[];
   failures: ScanBatchFailure[];
   reviewCards?: ScanConflictCard[];
+  warnings?: string[];
 }

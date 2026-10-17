@@ -34,6 +34,8 @@ async function main(): Promise<void> {
 
     await initMariadbSchema();
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'identity_mode'"));
+    assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'warnings_json'"),
+      "含分数格告警必须能落到会话行");
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_records LIKE 'identity_json'"));
     // Upgrade an existing v61 database without relying on fresh-schema CREATEs.
     await db.exec("DROP TABLE scan_correction_pages");
@@ -45,10 +47,14 @@ async function main(): Promise<void> {
     assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version=62"));
     // Simulate a pre-QR installation and exercise the incremental migration too.
     await db.exec("ALTER TABLE twain_scan_sessions DROP COLUMN identity_mode");
+    await db.exec("ALTER TABLE twain_scan_sessions DROP COLUMN warnings_json");
     await db.exec("ALTER TABLE twain_scan_records DROP COLUMN identity_json");
     await db.run("DELETE FROM schema_migrations WHERE version = 51");
+    await db.run("DELETE FROM schema_migrations WHERE version = 63");
     await initMariadbSchema();
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'identity_mode'"));
+    assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'warnings_json'"),
+      "已有库升级必须补上告警列，不能只靠新装建表");
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_records LIKE 'identity_json'"));
     const migrations = await db.all<{ version: number; name: string }>(
       "SELECT version, name FROM schema_migrations ORDER BY version",

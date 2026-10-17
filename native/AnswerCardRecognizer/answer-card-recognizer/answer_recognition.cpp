@@ -10,6 +10,7 @@
 #include <cctype>
 #include <cmath>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <numeric>
@@ -29,9 +30,12 @@ constexpr double OPTION_INNER_MARGIN_RATIO = 0.18;
 constexpr double MIN_INK_GRAY_THRESHOLD = 160.0;
 constexpr double SCORE_CELL_MARGIN_RATIO = 0.03;
 constexpr double MIN_RED_RATIO = 0.012;
-constexpr double MIN_LINE_EXTENT_RATIO = 0.52;
-constexpr double MAX_LINE_MEAN_ERROR_RATIO = 0.075;
+constexpr double MIN_LINE_CROSSING_RATIO = 0.70;
+constexpr double MAX_LINE_MEAN_ERROR_RATIO = 0.05;
 constexpr double MAX_LINE_MAX_ERROR_RATIO = 0.22;
+constexpr double MIN_LINE_COVERAGE_RATIO = 0.55;
+constexpr double MAX_LINE_GAP_RATIO = 0.30;
+constexpr double MAX_LINE_END_GAP_RATIO = 0.25;
 constexpr double BLOCK_CROP_PADDING_MM = 2.5;
 
 struct ScoreCellSample {
@@ -230,45 +234,49 @@ ScoreCellSample sample_score_cell(const cv::Mat& warped, const SubjectiveScoreCe
     cv::cvtColor(roi, hsv, cv::COLOR_BGR2HSV);
     cv::Mat red_low;
     cv::Mat red_high;
-    cv::inRange(hsv, cv::Scalar(0, 55, 55), cv::Scalar(12, 255, 255), red_low);
-    cv::inRange(hsv, cv::Scalar(165, 55, 55), cv::Scalar(180, 255, 255), red_high);
+    // Subpixel pen strokes lose saturation when a 150 DPI scan is JPEG encoded.
+    cv::inRange(hsv, cv::Scalar(0, 35, 55), cv::Scalar(12, 255, 255), red_low);
+    cv::inRange(hsv, cv::Scalar(165, 35, 55), cv::Scalar(180, 255, 255), red_high);
     cv::Mat red_mask = red_low | red_high;
 
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
-    cv::morphologyEx(red_mask, red_mask, cv::MORPH_OPEN, kernel);
-    cv::morphologyEx(red_mask, red_mask, cv::MORPH_CLOSE, kernel);
-
-    const int red_pixels = cv::countNonZero(red_mask);
+    // Opening with a fixed 3px kernel erases thin scanned pen strokes. Printed
+    // digits also split a real stroke into several red components. Keep their
+    // pixels and assess the combined geometry instead of requiring connectivity.
+    cv::Mat labels, stats, centroids;
+    const int label_count = cv::connectedComponentsWithStats(red_mask, labels, stats, centroids);
+    const int min_pixels = std::max(3, static_cast<int>(std::ceil(red_mask.total() * 0.001)));
+    std::vector<bool> keep(static_cast<size_t>(label_count), false);
+    int component_count = 0;
+    for (int label = 1; label < label_count; ++label) {
+        if (stats.at<int>(label, cv::CC_STAT_AREA) >= min_pixels) {
+            keep[static_cast<size_t>(label)] = true;
+            ++component_count;
+        }
+    }
+    std::vector<cv::Point> points;
+    std::vector<int> point_labels;
+    for (int y = 0; y < labels.rows; ++y) {
+        const int* row = labels.ptr<int>(y);
+        for (int x = 0; x < labels.cols; ++x) {
+            if (keep[static_cast<size_t>(row[x])]) {
+                points.emplace_back(x, y);
+                point_labels.push_back(row[x]);
+            }
+        }
+    }
+    const int red_pixels = static_cast<int>(points.size());
     const double red_ratio = static_cast<double>(red_pixels) / static_cast<double>(red_mask.total());
     sample.has_red = red_ratio >= MIN_RED_RATIO;
 
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(red_mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-
-    std::vector<cv::Point> points;
-    int component_count = 0;
-    const double min_area = std::max(6.0, static_cast<double>(red_mask.total()) * 0.0025);
-    for (const auto& contour : contours) {
-        const double area = cv::contourArea(contour);
-        if (area < min_area) {
-            continue;
-        }
-        component_count += 1;
-        for (const auto& point : contour) {
-            points.push_back(point);
-        }
-    }
-
-    if (red_pixels > 0 && points.size() < static_cast<size_t>(red_pixels)) {
-        std::vector<cv::Point> mask_points;
-        cv::findNonZero(red_mask, mask_points);
-        points = mask_points;
-    }
-
     double extent_ratio = 0;
+    double crossing_ratio = 0;
     double mean_error_ratio = 1;
     double max_error_ratio = 1;
     double line_quality = 0;
+    double coverage_ratio = 0;
+    double gap_ratio = 1;
+    double end_gap_ratio = 1;
+    bool parallel_strokes = false;
     if (points.size() >= 8) {
         cv::Vec4f line;
         cv::fitLine(points, line, cv::DIST_L2, 0, 0.01, 0.01);
@@ -294,8 +302,77 @@ ScoreCellSample sample_score_cell(const cv::Mat& warped, const SubjectiveScoreCe
         extent_ratio = diagonal > 0 ? (max_projection - min_projection) / diagonal : 0;
         mean_error_ratio = diagonal > 0 ? (error_sum / static_cast<double>(points.size())) / diagonal : 1;
         max_error_ratio = diagonal > 0 ? max_error / diagonal : 1;
+        const double span = max_projection - min_projection;
+        // Measure against the cell span in the stroke direction. The diagonal
+        // unfairly penalizes vertical strokes in a wide score cell.
+        const double directional_span = std::min(
+            roi.cols / std::max(std::abs(vx), 1e-9),
+            roi.rows / std::max(std::abs(vy), 1e-9));
+        // Projections locate pixel centres. Include each endpoint pixel's
+        // footprint along the fitted line; losing a fraction of a pixel at
+        // either end is significant for thin strokes in a 150 DPI score cell.
+        const double pixel_span = std::abs(vx) + std::abs(vy);
+        double entry = std::numeric_limits<double>::lowest();
+        double exit = std::numeric_limits<double>::max();
+        const auto clip_axis = [&](double origin, double velocity, int size) {
+            if (std::abs(velocity) < 1e-9) return;
+            const double first = -origin / velocity;
+            const double last = (size - 1.0 - origin) / velocity;
+            entry = std::max(entry, std::min(first, last));
+            exit = std::min(exit, std::max(first, last));
+        };
+        clip_axis(x0, vx, roi.cols);
+        clip_axis(y0, vy, roi.rows);
+        // Only extend into the unobserved part of the line's clipped path.
+        // Existing pixels can exceed that path because of pen thickness, but
+        // a corner-grazing stroke must not gain extra crossing length there.
+        const double endpoint_support = std::min(pixel_span, std::max(0.0, exit - entry - span));
+        crossing_ratio = (span + endpoint_support) / directional_span;
+        // Length alone can admit a mark that stops inside one side of the cell.
+        // Require support near both ends of its clipped path through the ROI.
+        end_gap_ratio = std::max({0.0, min_projection - pixel_span / 2.0 - entry,
+            exit - max_projection - pixel_span / 2.0}) / directional_span;
+        std::vector<bool> occupied(static_cast<size_t>(std::ceil(span)) + 1, false);
+        struct ComponentExtent {
+            double low = std::numeric_limits<double>::max();
+            double high = std::numeric_limits<double>::lowest();
+            double offset_sum = 0;
+            int count = 0;
+        };
+        std::map<int, ComponentExtent> extents;
+        for (size_t i = 0; i < points.size(); ++i) {
+            const double dx = points[i].x - x0;
+            const double dy = points[i].y - y0;
+            const double projection = dx * vx + dy * vy;
+            occupied[static_cast<size_t>(std::floor(projection - min_projection))] = true;
+            auto& extent = extents[point_labels[i]];
+            extent.low = std::min(extent.low, projection);
+            extent.high = std::max(extent.high, projection);
+            extent.offset_sum += dx * vy - dy * vx;
+            ++extent.count;
+        }
+        int covered = 0, gap = 0, longest_gap = 0;
+        for (const bool hit : occupied) {
+            if (hit) { ++covered; gap = 0; }
+            else { longest_gap = std::max(longest_gap, ++gap); }
+        }
+        coverage_ratio = static_cast<double>(covered) / occupied.size();
+        gap_ratio = static_cast<double>(longest_gap) / occupied.size();
+        // Collinear fragments have disjoint projections. Two long components
+        // side by side are separate strokes, even when their common fit is good.
+        for (auto a = extents.begin(); a != extents.end(); ++a) {
+            for (auto b = std::next(a); b != extents.end(); ++b) {
+                const auto& first = a->second;
+                const auto& second = b->second;
+                const double overlap = std::min(first.high, second.high) - std::max(first.low, second.low);
+                const double separation = std::abs(first.offset_sum / first.count - second.offset_sum / second.count);
+                if (overlap > span * 0.40 && separation > std::max(2.0, diagonal * 0.06)) {
+                    parallel_strokes = true;
+                }
+            }
+        }
         const double error_quality = std::max(0.0, 1.0 - mean_error_ratio / MAX_LINE_MEAN_ERROR_RATIO);
-        const double extent_quality = std::min(1.0, extent_ratio / MIN_LINE_EXTENT_RATIO);
+        const double extent_quality = std::min(1.0, crossing_ratio / MIN_LINE_CROSSING_RATIO);
         line_quality = std::max(0.0, std::min(1.0, (error_quality + extent_quality) / 2.0));
     }
 
@@ -304,8 +381,13 @@ ScoreCellSample sample_score_cell(const cv::Mat& warped, const SubjectiveScoreCe
         {"componentCount", component_count},
         {"pointCount", points.size()},
         {"extentRatio", round_to(extent_ratio, 4)},
+        {"crossingRatio", round_to(crossing_ratio, 4)},
         {"meanErrorRatio", round_to(mean_error_ratio, 4)},
         {"maxErrorRatio", round_to(max_error_ratio, 4)},
+        {"coverageRatio", round_to(coverage_ratio, 4)},
+        {"gapRatio", round_to(gap_ratio, 4)},
+        {"endGapRatio", round_to(end_gap_ratio, 4)},
+        {"parallelStrokes", parallel_strokes},
         {"sampleBounds", {{"left", left}, {"top", top}, {"right", right}, {"bottom", bottom}}},
     };
 
@@ -313,16 +395,20 @@ ScoreCellSample sample_score_cell(const cv::Mat& warped, const SubjectiveScoreCe
         sample.reason = "no_red_line";
         return sample;
     }
-    if (component_count != 1) {
-        sample.reason = component_count == 0 ? "red_noise_only" : "multiple_red_components";
+    if (parallel_strokes) {
+        sample.reason = "multiple_red_strokes";
         return sample;
     }
-    if (extent_ratio < MIN_LINE_EXTENT_RATIO) {
+    if (crossing_ratio < MIN_LINE_CROSSING_RATIO || end_gap_ratio > MAX_LINE_END_GAP_RATIO) {
         sample.reason = "red_mark_does_not_cross_cell";
         return sample;
     }
     if (mean_error_ratio > MAX_LINE_MEAN_ERROR_RATIO || max_error_ratio > MAX_LINE_MAX_ERROR_RATIO) {
         sample.reason = "red_mark_is_not_single_straight_line";
+        return sample;
+    }
+    if (coverage_ratio < MIN_LINE_COVERAGE_RATIO || gap_ratio > MAX_LINE_GAP_RATIO) {
+        sample.reason = "red_line_has_large_gaps";
         return sample;
     }
 
@@ -524,7 +610,12 @@ json build_subjective_questions(const std::vector<ScoreCellSample>& samples) {
         std::optional<std::string> message;
         double score = 0;
 
-        if (valid_samples.empty()) {
+        if (!invalid_cells.empty()) {
+            // A rejected ones/tens/half-score mark must not silently disappear
+            // from an otherwise valid combination (e.g. 20 + unreadable 8).
+            status = "invalid";
+            message = "ambiguous_subjective_score";
+        } else if (valid_samples.empty()) {
             status = "invalid";
             message = "no_valid_subjective_score";
         } else {

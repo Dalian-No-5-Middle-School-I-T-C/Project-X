@@ -20,6 +20,10 @@ npm run native:build:mingw:ia32
 
 脚本下载并校验 OpenCV 4.13.0 与 nlohmann/json 3.12.0，缓存、安装前缀和原生产物位于 `ignored/native-mingw/`。OpenCV 启用 `core`、`imgproc`、`imgcodecs`、`objdetect` 及其依赖，包含 JPEG、PNG、TIFF、WebP，并显式启用答题卡身份校验需要的 quirc 二维码解码器。C++ 运行库和 OpenCV 静态链接；TWAIN DSM 沿用仓库内的 32 位 DLL。依赖许可证随原生组件一起打包。
 
+没有本机构建机时可以用 CI 出这两颗原生件：`.github/workflows/native-ia32.yml` 在 ubuntu runner 上装 `mingw-w64`、`binutils-mingw-w64-i686`、`cmake`、`ripgrep`、`nasm` 后执行同一个 `scripts/build-native-mingw.sh`，产物以 `native-win-ia32` 工件上传。该 job 只在提交信息含 `[build-native]` 时运行，实测整条约 7 分钟（run 38904919803：检出到上传 6 分 56 秒，OpenCV 4.13 现场从源码编，`NATIVE_BUILD_JOBS=3`）。注意条件是**整条提交信息**做子串匹配，正文里顺手写出这个字串同样会触发一次构建，所以正文请用「重编 ia32」这类描述。下载后先核对工件（PE i386、`--help` 能启动、`resources/native/win-ia32/` 覆盖），入库后由 `scripts/verify-scanner-page-timeout.ts` 的 ⑥ 长期检查两颗 exe 里的关键字串，避免源码已改而包内件仍是旧产物；⑥ 的收尾判定字串**从 `twain_controller.cpp` 现取**，门槛跟着源码走，不会把正确的重编判红。该工序不保证逐字节可复现：同一份源码两次构建出来的 exe 大小相同、`layoutToImage` 等关键字符串相同，SHA256 却不同（PE 头里有构建时间戳），所以核对要看字符串与实际运行，不要只比哈希。
+
+**本工序只出 `win-ia32`。** `win-x64` 不在这条路上，仍由 MSVC 工序（`npm run native:build:x64`）出，而 ⑥ 的字串门槛只核 ia32：`package.json` 里 electron-builder 的默认 win target 是 `msi`/`x64`，所以出 64 位包前必须先走 MSVC 重编并补上同样的核对，否则 CI 不会提醒——2026-10-17 实测仓库现存的 x64 两颗是 #330 期产物，桥接不含批次收尾判定、识别器不含 `layoutToImage`，即 issue #331 的 ②（只能扫一张）与 ④（异常卷不可点击）在 x64 包里仍未修好。32 位部署路线见 `readus/SCANNER-SETUP.md`（现场用的就是 ia32 包）。
+
 桌面应用依赖安装到 `ignored/scanner-package/`。Electron、better-sqlite3 和 sharp 的版本读取根目录锁文件；better-sqlite3 使用对应 Electron ABI 的官方 Windows ia32 预编译包，并校验 GitHub 发布资产的 SHA256。sharp 显式补齐 Windows ia32 二进制。当前 sharp ia32 包的 npm engines 限制为 Node 20，因此安装时使用 `--force`；实际 Electron 中的加载及图片处理仍须在目标 Windows 上验收。
 
 该流程符合 [electron-builder 的跨平台构建说明](https://www.electron.build/docs/features/multi-platform-build/)：具有官方预编译包的 Node 原生模块可以用于交叉打包；本项目两个 C++ 程序由独立 MinGW 工具链生成。
