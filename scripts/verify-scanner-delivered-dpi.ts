@@ -8,13 +8,11 @@
  *   回读并在 JSON 里回报 `dpi_x`/`dpi_y`，那是首选来源；但随包 exe 未必重编译，所以
  *   扫描端还要能用它**已经回报**的 width/height 反查实际密度，并把结论显示给操作者。
  *
- * 断言方式：① 纯函数正反例（含不能误报的纸型替代、横放交付）；② 接线检查——服务层确实
- *   调用了反查并以 type:"warning" 上报，客户端确实有对应分支（防止日后被改掉而无声失效）。
+ * 断言方式：直接调用反查函数，覆盖正常、降档、升档、跨轴变形、驱动回报与像素证据矛盾、
+ * 纸型替代和横放交付等正反例；不通过读取源码字串来证明行为。
  *
  * 全部用例通过则进程退出码为 0，否则为 1。
  */
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { nearestScanDpiStep, paperInchesFor, verifyDeliveredScanDpi } from "../src/shared/scanDeliveredDpi";
 
 let passed = 0;
@@ -29,8 +27,6 @@ function check(condition: unknown, label: string): void {
     console.log(`  \x1b[31m✗\x1b[0m ${label}`);
   }
 }
-
-const root = process.cwd();
 
 function main(): void {
   console.log("\n\x1b[36m== 反查：设定 DPI 与实际出图密度 ==\x1b[0m");
@@ -151,6 +147,14 @@ function main(): void {
   check(geometryExcluded.status === "match" && geometryExcluded.source === "device",
     `几何被排除、回报两轴一致（300/300）→ 按回报值判生效 (status=${geometryExcluded.status}, source=${geometryExcluded.source})`);
 
+  // 回报两轴一致，但像素几何本身是 325×275：代表值平均后仍是 300，不能据此判「已生效」。
+  const geometryAnisotropicAgainstDevice = verifyDeliveredScanDpi(
+    [{ width: 2688, height: 3215, dpi_x: 300, dpi_y: 300 }], { dpi: 300, paperSize: "A4" });
+  check(geometryAnisotropicAgainstDevice.status === "mismatch"
+    && Boolean(geometryAnisotropicAgainstDevice.message?.includes("325"))
+    && Boolean(geometryAnisotropicAgainstDevice.message?.includes("275")),
+    `设备回报 300×300，但像素反查 325×275 → 不按平均值误判生效 (status=${geometryAnisotropicAgainstDevice.status})`);
+
   // 老 exe 只有尺寸：几何两轴（短边方向/长边方向）彼此差 15% 以上同样要报变形。
   const geometryAnisotropic = verifyDeliveredScanDpi([{ width: 2928, height: 3507 }], { dpi: 300, paperSize: "A4" });
   check(geometryAnisotropic.status === "mismatch"
@@ -170,20 +174,6 @@ function main(): void {
 
   check(paperInchesFor("letter")[0] === 8.5 && paperInchesFor(undefined)[1] === 11.69,
     "纸型英寸表：Letter 短边 8.5，未指定回落 A4 长边 11.69");
-
-  console.log("\n\x1b[36m== 接线检查：结论要走到日志与界面 ==\x1b[0m");
-
-  const serviceSource = readFileSync(path.join(root, "src/apps/answer-card/server/scanner/scanner-service.ts"), "utf8");
-  check(serviceSource.includes("verifyDeliveredScanDpi(result.pages"), "扫描完成后按桥接回报尺寸反查");
-  check(/type:\s*"warning"/.test(serviceSource), "反查结论以 type:\"warning\" 上报（不是会被 ocr_start 冲掉的进度文案）");
-  check(serviceSource.includes("deliveredDpi="), "反查结果写进 [checkpoint] 扫描检查点日志");
-
-  const typesSource = readFileSync(path.join(root, "src/apps/answer-card/server/scanner/scanner-types.ts"), "utf8");
-  check(typesSource.includes('"warning"'), "ScanProgressEvent 类型里有 warning");
-
-  const panelSource = readFileSync(path.join(root, "src/apps/answer-card/client/components/ScannerPanel.tsx"), "utf8");
-  check(/case "warning":/.test(panelSource), "扫描端面板处理 warning 事件");
-  check(panelSource.includes("scanWarnings"), "扫描端面板把告警显示出来（并计入「复制诊断」）");
 
   console.log(`\n结果: ${passed} 通过, ${failures.length} 失败`);
   if (failures.length > 0) {

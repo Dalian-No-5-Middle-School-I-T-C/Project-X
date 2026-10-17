@@ -189,8 +189,22 @@ export function verifyDeliveredScanDpi(
     const geometryA = axisMedian(geometryPairs, "a");
     const geometryB = axisMedian(geometryPairs, "b");
     const geometryDpi = representative(geometryA, geometryB);
-    if (geometryDpi >= DELIVERED_SANITY_RANGE[0] && geometryDpi <= DELIVERED_SANITY_RANGE[1]
-      && !withinTolerance(geometryDpi, deliveredDpi)) {
+    const geometrySpread = axisSpread(geometryA, geometryB);
+    const geometryInRange = geometryDpi >= DELIVERED_SANITY_RANGE[0] && geometryDpi <= DELIVERED_SANITY_RANGE[1];
+    if (geometryInRange && geometrySpread > DPI_TOLERANCE) {
+      return {
+        status: "mismatch",
+        requestedDpi,
+        deliveredDpi: geometryDpi,
+        source: "geometry",
+        samplePages: geometryPairs.length,
+        message: `驱动回报约 ${deliveredDpi} DPI，但出图像素尺寸反查为短边方向 ${geometryA} DPI、长边方向 ${geometryB} DPI，`
+          + `两轴相差 ${Math.round(geometrySpread * 100)}%，平均成 ${geometryDpi} DPI 会掩盖非等比例变形。`
+          + `请先核对实际进纸的纸张与所选纸型（A4/A3、A4/A5 这类同比例纸张在尺寸上分不开）；`
+          + `纸型无误就检查驱动里「适应纸张尺寸 / 重采样」这类缩放选项后重扫。`
+      };
+    }
+    if (geometryInRange && !withinTolerance(geometryDpi, deliveredDpi)) {
       // 两个来源对不上时不能报「设定已生效」：像素是识别真正拿到的东西，回报值可能是抄来的档位。
       return {
         status: "mismatch",

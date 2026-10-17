@@ -10,13 +10,12 @@
  * 真实红笔/灰度成像的行为差异在 `npm run verify:recognizer-red-pen` 里用同一个识别器验证。
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import {
   colorModeUpgradeNotice,
   layoutNeedsRedPenScoring,
   pageNeedsRedPenScoring,
   redPenMissNotice,
+  redPenPageOutcome,
   resolveScanColorMode,
   scoreCellsSampled,
 } from "../src/shared/scanRedPenScore";
@@ -100,6 +99,18 @@ assert.equal(scoreCellsSampled({ status: "partial", subjectiveQuestions: [{ ques
   "③d: partial 算采样过，零红笔告警仍要照常给");
 assert.equal(scoreCellsSampled({ status: "ok" }), false, "③d: 缺 subjectiveQuestions 字段按未采样处理，不得凭整卡判定就计数");
 
+const scorePage = page(["score_cell"]);
+assert.equal(redPenPageOutcome(page(["objective_option"]), { status: "ok", subjectiveQuestions: [{}] }), "ignored",
+  "③e: 纯客观题页不进分母");
+assert.equal(redPenPageOutcome(scorePage, { status: "failed", subjectiveQuestions: [] }), "ignored",
+  "③e: 识别提前失败、格子未采样时不进分母");
+assert.equal(redPenPageOutcome(scorePage, { status: "ok", subjectiveQuestions: [{ validCells: [{ id: "cell" }] }] }), "accepted",
+  "③e: 读到有效分数格按已采纳计数");
+assert.equal(redPenPageOutcome(scorePage, { status: "ok", subjectiveQuestions: [{ validCells: [], invalidCells: [{ id: "cell" }] }] }), "rejected",
+  "③e: 看到红笔但未采纳单独分类");
+assert.equal(redPenPageOutcome(scorePage, { status: "ok", subjectiveQuestions: [{ validCells: [], invalidCells: [] }] }), "missing",
+  "③e: 已采样但没有红笔按完全未读到计数");
+
 const failedBatch = [
   { status: "failed", subjectiveQuestions: [] as unknown[] },
   { status: "failed", subjectiveQuestions: [] as unknown[] }
@@ -109,45 +120,4 @@ assert.equal(failedCounted, 0, "③d: 全批识别失败的页一页都不进分
 assert.equal(redPenMissNotice({ needsRedPen: true, colorMode: "gray", pageCount: failedCounted, pagesWithRedMark: 0 }), null,
   "③d: 识别失败批次不给红笔告警，故障由该页的识别状态与失败原因报");
 
-// ④ 接线：会话行、送进桥接的参数、告警出口三处都要走同一个判定，不能各写一套
-{
-  const service = readFileSync(fileURLToPath(new URL("../src/apps/answer-card/server/scanner/scanner-service.ts", import.meta.url)), "utf8");
-  assert.match(service, /colorMode: resolveScanColorMode\(config\.colorMode, layoutNeedsRedPenScoring\(prepared\.layout\.pages\)\)\.colorMode,/,
-    "④: createScanSession 落库的必须是实际生效的色彩模式");
-  assert.match(service, /const colorMode = resolveScanColorMode\(\s*config\.colorMode,\s*layoutNeedsRedPenScoring\(prepared\.layout\.pages\)\s*\);/,
-    "④: runScanSession 必须自行重算（不能依赖调用方改过的 config）");
-  assert.match(service, /colorMode: colorMode\.colorMode,/, "④: 传给 TWAIN 桥的必须是升级后的模式");
-  assert.match(service, /if \(colorMode\.upgraded\) \{\s*onProgress\(\{ sessionId, type: "warning", message: colorModeUpgradeNotice\(config\.colorMode\) \}\);/,
-    "④: 自动改写必须当场告知操作员");
-  assert.match(service, /colorMode=\$\{colorMode\.colorMode\}\$\{colorMode\.upgraded \? "\(forced\)" : ""\}/,
-    "④: [checkpoint] 日志要留下最终生效的模式，现场取证只看日志也能定案");
-  assert.match(service, /const missNotice = redPenMissNotice\(\{[\s\S]{0,200}colorMode: session\?\.color_mode,/,
-    "④: 识别阶段按会话记录的模式给结论");
-  assert.match(service, /type: "warning", message: missNotice/, "④: 全批零红笔要走 SSE 告警，不能只写日志");
-  assert.match(service, /if \(needsRedPen && pageNeedsRedPenScoring\(layout\.pages\[layoutPage - 1\]\) && scoreCellsSampled\(recognition\)\) \{\s*redPenPages \+= 1;[\s\S]{0,160}validCells\?\.length \?\? 0\) > 0/,
-    "④: 分母同时要求「本页有分数格」与「格子真被采样过」，且统计的是「读到过有效分数格」，不是识别状态");
-  assert.match(service, /invalidCells\?\.length \?\? 0\) > 0\)\)\s*\{[\s\S]{0,160}redRejectedPages \+= 1;/,
-    "④: 「读到红笔但未采纳」单独计数，不能和「完全没有红笔」混成一条");
-  assert.match(service, /pagesWithRejectedRed: redRejectedPages/, "④: 未采纳计数必须进告警判定");
-}
-
-// ⑤ 升级判定只有一处：路由与桥接都只传值，不能再各写一套色彩模式默认
-{
-  const route = readFileSync(fileURLToPath(new URL("../src/apps/answer-card/server/scanner/index.ts", import.meta.url)), "utf8");
-  assert.match(route, /colorMode: body\.colorMode \|\| "color"/, "⑤: 路由层沿用 #330 的彩色缺省，不自己做分数格判定");
-  assert.doesNotMatch(route, /resolveScanColorMode|layoutNeedsRedPenScoring/, "⑤: 色彩模式判定只能落在 scanner-service，路由不许复制一份");
-  const bridge = readFileSync(fileURLToPath(new URL("../src/apps/answer-card/server/scanner/twain-bridge.ts", import.meta.url)), "utf8");
-  assert.match(bridge, /"--mode", config\.colorMode,/, "⑤: 桥接必须照传解析后的模式，不能再自己兜一次默认");
-}
-
-// ⑥ 判定依据必须与识别器的真实门控同源：红笔靠 HSV 饱和度筛，灰度图饱和度恒为 0
-{
-  const native = readFileSync(fileURLToPath(new URL("../native/AnswerCardRecognizer/answer-card-recognizer/answer_recognition.cpp", import.meta.url)), "utf8");
-  assert.match(native, /cv::cvtColor\(roi, hsv, cv::COLOR_BGR2HSV\);[\s\S]{0,260}?cv::inRange\(hsv, cv::Scalar\(0, 55, 55\)/,
-    "⑥: 分数格仍按饱和度≥55 的红笔门控判定——这是「必须彩色」的依据，门控若改要走显式决策");
-  assert.match(native, /cv::cvtColor\(warped, bgr, cv::COLOR_GRAY2BGR\);/,
-    "⑥: 灰度输入被补成 B=G=R，饱和度恒为 0，红笔掩码必然为空（灰度扫描读不到红笔的根因）");
-  assert.match(native, /sample\.reason = "no_red_line";/, "⑥: 读不到红笔必须留下可归因的 reason");
-}
-
-console.log("verify-scanner-red-pen-colormode: 全部通过（分数格⇒彩色 / 会话与桥接同源 / 零红笔告警按页统计且区分未采纳 / 门控依据仍在）");
+console.log("verify-scanner-red-pen-colormode: 全部通过（分数格⇒彩色 / 按页采样与告警分类 / 零红笔文案）");

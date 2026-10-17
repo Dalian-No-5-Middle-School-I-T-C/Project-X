@@ -227,18 +227,33 @@ export function createScannerRouter(twainEnabled = true): Router {
           res.write(`data: ${JSON.stringify({ sessionId, type: "warning", message: text })}\n\n`);
         };
 
-        const handler = (event: ScanProgressEvent) => {
+        // 初始化要先排空告警队列并补发旧告警。监听器必须提前注册，防止这段窗口漏掉实时事件；
+        // 但终态在初始化完成前不能关流，否则补发会被 writableEnded 直接跳过。
+        let bootstrapped = false;
+        let terminalSent = false;
+        const queuedEvents: ScanProgressEvent[] = [];
+        const writeEvent = (event: ScanProgressEvent) => {
           if (res.writableEnded || res.destroyed) return;
           if (event.type === "warning") {
             writeWarning(event.message?.trim() ?? "");
             return;
           }
+          if (terminalSent) return;
           res.write(`data: ${JSON.stringify(event)}\n\n`);
           if (event.type === "done" || event.type === "error" || event.type === "cancelled") {
+            terminalSent = true;
             // 终态即移除自己（不依赖 close 事件的延迟清理），缩小竞态窗口
             removeHandler();
             res.end();
           }
+        };
+        const handler = (event: ScanProgressEvent) => {
+          if (res.writableEnded || res.destroyed) return;
+          if (!bootstrapped) {
+            queuedEvents.push(event);
+            return;
+          }
+          writeEvent(event);
         };
 
         // Register listener
@@ -260,16 +275,17 @@ export function createScannerRouter(twainEnabled = true): Router {
         // 断线重连或订阅过晚时，先把落在会话行上的告警补回来，再补终态；
         // 否则「本次批次一张红笔都没采纳」这类结论只在断开前那一瞬存在过。
         for (const text of parseSessionWarnings(session?.warnings_json)) writeWarning(text);
-        if (session && (session.status === "completed" || session.status === "error" || session.status === "cancelled")) {
-          removeHandler();
+        bootstrapped = true;
+        for (const event of queuedEvents) writeEvent(event);
+        if (session && !terminalSent
+          && (session.status === "completed" || session.status === "error" || session.status === "cancelled")) {
           if (session.status === "completed") {
-            res.write(`data: ${JSON.stringify({ sessionId, type: "done", message: "扫描已完成" })}\n\n`);
+            writeEvent({ sessionId, type: "done", message: "扫描已完成" });
           } else if (session.status === "cancelled") {
-            res.write(`data: ${JSON.stringify({ sessionId, type: "cancelled", message: "扫描已取消" })}\n\n`);
+            writeEvent({ sessionId, type: "cancelled", message: "扫描已取消" });
           } else {
-            res.write(`data: ${JSON.stringify({ sessionId, type: "error", message: session.error_msg || "扫描出错" })}\n\n`);
+            writeEvent({ sessionId, type: "error", message: session.error_msg || "扫描出错" });
           }
-          res.end();
         }
       } catch (error) {
         // getSession 等 DB 异常：关闭连接，避免 unhandled rejection 挂住

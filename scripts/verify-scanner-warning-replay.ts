@@ -14,14 +14,13 @@
  *   4. 竞态：把告警写入真的延迟（setWarningWriteDelayForTests），在延迟窗口里写终态并重连，
  *      断言终态可见时告警已在行里、补发顺序是「告警 → 终态」。只预先写好告警再测补发，
  *      覆盖不到这条窗口，所以这里同时保留「旧顺序会漏」的反证。
- *   5. 实时广播侧的接线（emitProgress 落库 + 连接级去重 + 终态只经 markSessionTerminal）
- *      留在源码里钉住：这里没有本机扫描仪，无法真跑 POST /scan，因此不断言扫描流水线的行为。
+ *   5. 取消请求与 SSE 订阅同时发生：监听器已注册、告警补发尚未完成时，终态事件必须排队，
+ *      不能先关流；本机没有扫描仪，因此用真实取消路由触发这条时序。
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 // 必须在导入任何 db 模块前设置数据库路径（getDatabase 在模块求值期读取该变量）
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-warning-replay-"));
@@ -149,6 +148,17 @@ try {
     assert.deepEqual(await raceTypes(s.id), ["warning", status === "completed" ? "done" : status],
       `${status}：这个会话之后重连，仍是先告警后终态`);
   }
+
+  // 真实接线竞态：取消请求先等告警队列，SSE 稍后订阅也必须补发告警。
+  // 监听器在补发初始化前就注册；若终态事件此时直接关流，旧实现只留下 cancelled。
+  const racing = await store.createSession("card-race-live", "订阅初始化竞态", {});
+  warnings.persistSessionWarning(racing.id, RACE_WARNING);
+  const cancelResponse = fetch(`http://127.0.0.1:${port}/api/scanner/scan/${racing.id}/cancel`, { method: "POST" });
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  const racingTypes = await raceTypes(racing.id);
+  assert.equal((await cancelResponse).status, 200, "取消请求必须成功");
+  assert.deepEqual(racingTypes, ["warning", "cancelled"],
+    "订阅初始化期间收到终态，也必须先补发落库告警再关流");
 } finally {
   warnings.setWarningWriteDelayForTests(0);
 }
@@ -156,44 +166,5 @@ try {
 server.close();
 closeDatabase();
 
-// ── 4. 实时链路接线（源码钉住，本机无扫描仪跑不了 POST /scan） ──
-// 用字串包含而不是正则：这几处含 `?.`、`??`、`[`，写成正则容易自我打结。
-const root = fileURLToPath(new URL("../src/apps/answer-card/server/scanner/", import.meta.url));
-const read = (name: string) => readFileSync(path.join(root, name), "utf8").replace(/\r/g, "");
-const router = read("index.ts");
-const warnModule = read("sessionWarnings.ts");
-const service = read("scanner-service.ts");
-
-const persistAt = router.indexOf("persistSessionWarning(sessionId, event.message.trim())");
-const broadcastAt = router.indexOf("for (const fn of listeners) fn(event)");
-assert.ok(persistAt > 0 && broadcastAt > persistAt, "告警必须在广播给监听者之前先起落库");
-assert.ok(!router.includes("enqueuePersist(() => appendSessionWarning"),
-  "告警不能排在主库持久化的串行队列后面——那会把补发空窗重新打开");
-assert.ok(warnModule.includes(".then(async () => {") && warnModule.includes("await appendSessionWarning(sessionId, text);"),
-  "同一会话的告警按会话串行写入，读行去重与写回之间不留并发缺口");
-assert.ok(router.includes('if (event.type === "warning" && event.message?.trim())'), "只有非空 warning 事件才落库");
-assert.ok(router.includes('if (event.type === "warning") {') && router.includes('writeWarning(event.message?.trim() ?? "");'),
-  "实时告警必须走连接级去重，不能与补发重复");
-
-// 订阅侧顺序：排空队列 → 读行补发 → 才补终态
-const flushAt = router.indexOf("await flushSessionWarnings(sessionId);");
-const readRowAt = router.indexOf("const session = await getSession(sessionId);", flushAt);
-const replayAt = router.indexOf("for (const text of parseSessionWarnings(session?.warnings_json)) writeWarning(text);", readRowAt);
-const terminalAt = router.indexOf('session.status === "completed"', replayAt);
-assert.ok(flushAt > 0 && readRowAt > flushAt && replayAt > readRowAt && terminalAt > replayAt,
-  "SSE 订阅必须「排空告警队列 → 读行补发 → 补终态」，不能读到旧行就把流关掉");
-
-// 终态侧顺序：排空队列 → 写终态，且终态只能走 markSessionTerminal
-const flushCallAt = warnModule.indexOf("await flushSessionWarnings(sessionId);");
-const statusWriteAt = warnModule.indexOf("await updateSessionStatus(sessionId, status, errorMsg);", flushCallAt);
-assert.ok(flushCallAt > 0 && statusWriteAt > flushCallAt, "markSessionTerminal 必须先把告警队列排空再写终态");
-assert.ok(/await markSessionTerminal\(sessionId, "completed"\)/.test(service)
-  && /await markSessionTerminal\(sessionId, "error", msg\)/.test(service),
-  "扫描服务的 completed / error 必须走带 flush 的终态入口");
-assert.ok(!/updateSessionStatus\(\s*sessionId,\s*"(completed|error)"/.test(service),
-  "扫描服务不得再绕过终态入口直接写 completed / error");
-assert.ok(router.includes('await markSessionTerminal(id, "cancelled", "用户取消扫描")'),
-  "取消接口同样要先排空告警，再让会话变成 cancelled");
-
-console.log(`verify-scanner-warning-replay: 全部通过（方言=${useMariaDb ? "MariaDB" : "SQLite"}；告警落库 / 终态订阅补发 / 去重与上限 / 延迟写入竞态与终态顺序 / 实时接线在位）`);
+console.log(`verify-scanner-warning-replay: 全部通过（方言=${useMariaDb ? "MariaDB" : "SQLite"}；告警落库 / 终态订阅补发 / 去重与上限 / 延迟写入竞态与终态顺序）`);
 process.exit(0);

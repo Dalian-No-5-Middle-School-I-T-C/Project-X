@@ -49,6 +49,26 @@ export function scoreCellsSampled(
   return recognition.status !== "failed" && (recognition.subjectiveQuestions?.length ?? 0) > 0;
 }
 
+export type RedPenPageOutcome = "ignored" | "missing" | "accepted" | "rejected";
+
+/** 一页对零红笔告警的贡献：未采样页不计数，采样页再区分采纳、未采纳和完全没读到。 */
+export function redPenPageOutcome(
+  page: Pick<PageLayout, "elements"> | undefined,
+  recognition: {
+    status?: string;
+    subjectiveQuestions?: Array<{
+      validCells?: unknown[];
+      invalidCells?: unknown[];
+    }>;
+  }
+): RedPenPageOutcome {
+  if (!pageNeedsRedPenScoring(page) || !scoreCellsSampled(recognition)) return "ignored";
+  const questions = recognition.subjectiveQuestions ?? [];
+  if (questions.some((question) => (question.validCells?.length ?? 0) > 0)) return "accepted";
+  if (questions.some((question) => (question.invalidCells?.length ?? 0) > 0)) return "rejected";
+  return "missing";
+}
+
 /**
  * 只有明确写成 `gray` / `bw` 才按低色彩扫；其余（缺省的 color、缺字段、非法字符串）一律按彩色。
  * #330 之后路由缺省已是彩色，这里若把「不认识的值」降级成灰度，等于自己造出 ③ 的病根——

@@ -20,7 +20,7 @@ import { prepareCardLayoutById } from "../card-layout";
 import { parseRecognitionDpi } from "../helpers";
 import { mapScanPageToLayout, applyScanStudentId, assignScanRecordPageNums } from "../../../../shared/scanPages";
 import { verifyDeliveredScanDpi } from "../../../../shared/scanDeliveredDpi";
-import { layoutNeedsRedPenScoring, pageNeedsRedPenScoring, scoreCellsSampled, resolveScanColorMode, colorModeUpgradeNotice, redPenMissNotice } from "../../../../shared/scanRedPenScore";
+import { layoutNeedsRedPenScoring, redPenPageOutcome, resolveScanColorMode, colorModeUpgradeNotice, redPenMissNotice } from "../../../../shared/scanRedPenScore";
 
 export { listSources };
 
@@ -298,15 +298,11 @@ async function runOcrOnSessionInQueue(
       // 纯客观题页的 subjectiveQuestions 恒为空，跟着整卡计数会把「分数页不在这批里」说成
       // 「一张都没读到」；而二维码/定位点失败时识别器提前返回 status:"failed"，格子一张没看过，
       // 那种批次的故障是该页识别失败（已按页报出），再说红笔读不到会把排查带去笔迹和色彩模式。
-      if (needsRedPen && pageNeedsRedPenScoring(layout.pages[layoutPage - 1]) && scoreCellsSampled(recognition)) {
+      const redPenOutcome = redPenPageOutcome(layout.pages[layoutPage - 1], recognition);
+      if (redPenOutcome !== "ignored") {
         redPenPages += 1;
-        const questions = recognition.subjectiveQuestions ?? [];
-        if (questions.some((question) => (question.validCells?.length ?? 0) > 0)) {
-          redMarkPages += 1;
-        } else if (questions.some((question) => (question.invalidCells?.length ?? 0) > 0)) {
-          // invalidCells 只在识别器真的看到红笔时填写：读到但未采纳，与「全是灰线」不是一回事。
-          redRejectedPages += 1;
-        }
+        if (redPenOutcome === "accepted") redMarkPages += 1;
+        if (redPenOutcome === "rejected") redRejectedPages += 1;
       }
 
       await getMysqlDb().run("UPDATE twain_scan_records SET identity_json = ? WHERE id = ?", JSON.stringify(recognition.identity), record.id);
