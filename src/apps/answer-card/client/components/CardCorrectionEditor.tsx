@@ -2,7 +2,8 @@ import { recoverCorrectionDocument } from "../lib/scanCorrectionRecovery";
 import { useEffect, useState } from "react";
 import { authFetch } from "../auth/api";
 import { Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter } from "./ui/v2";
-import { correctionCells, correctionState, projectRect, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../shared/scanCorrection";
+import { correctionState, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../shared/scanCorrection";
+import { CorrectionCanvas } from "./scanner-postprocess/CorrectionCanvas";
 
 type Request = (url: string, init?: RequestInit) => Promise<Response>;
 export function CardCorrectionButton({ url, request = authFetch, onSaved, disabled = false }: {
@@ -59,10 +60,8 @@ export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved}: 
   },[dirty]);
   const close = () => { if (!busy && (!dirty || window.confirm("修改尚未保存，确定放弃本次修改？"))) onClose(); };
   const page = document?.pages[pageIndex], edit = edits[pageIndex];
-  const state = document && page && edit ? correctionState(document.card,page,edit.selected,edit.touched) : null;
   const missing = document?.pages.some(p=>!p.recognition.geometry) ?? false;
   const errors = document && !missing ? document.pages.flatMap((p,i) => correctionState(document.card,p,edits[i]?.selected ?? p.selected,edits[i]?.touched).errors) : [];
-  const geometry = page?.recognition.geometry;
   async function recover() {
     if (!document) return;
     setBusy(true); setMessage("正在重新识别服务器旧卷…");
@@ -111,18 +110,7 @@ export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved}: 
           <span>此卷缺少坐标数据，请重新识别，核对后保存。</span>
           <Button variant="outline" disabled={busy} onClick={()=>void recover()}>重新识别旧卷</Button>
         </div>}
-        {page && !geometry && <img src={images[page.sourceId]} alt="待重新识别的完整原卷" className="block w-full" />}
-        {page && geometry && <svg viewBox={`0 0 ${geometry.imageWidth} ${geometry.imageHeight}`} width={`${zoom*100}%`} className="block max-w-none" aria-label={`第 ${page.layout.pageNumber} 页答题卡`}>
-          <image href={images[page.sourceId]} width={geometry.imageWidth} height={geometry.imageHeight} />
-          {correctionCells(page.layout).map(cell => {
-            const selected = edit.selected.includes(cell.id), invalid = state?.invalid.has(cell.id);
-            const label = cell.type === "student_digit" ? `学号第 ${cell.digitIndex+1} 位 ${cell.digit}` : cell.type === "objective_option" ? `第 ${cell.questionNumber} 题 ${cell.option}` : `第 ${cell.questionNumber} 题 ${cell.score} 分`;
-            return <polygon key={cell.id} points={projectRect(cell.rect,geometry.layoutToImage)} role="button" aria-label={`${label}${selected ? invalid ? "，异常" : "，已选" : ""}`} aria-pressed={selected} tabIndex={busy ? -1 : 0}
-              vectorEffect="non-scaling-stroke" strokeWidth={selected ? 2 : 0}
-              className={`cursor-pointer fill-transparent outline-none ${selected ? invalid ? "stroke-correction-error focus:stroke-3" : "stroke-correction-normal focus:stroke-3" : "stroke-transparent hover:stroke-info hover:stroke-1 focus:stroke-info focus:stroke-1"}`}
-              onClick={() => toggle(cell.id)} onKeyDown={e => {if (e.key === "Enter" || e.key === " ") {e.preventDefault();toggle(cell.id);}}}><title>{label}</title></polygon>;
-          })}
-        </svg>}
+        {page && edit && <CorrectionCanvas document={document} pageIndex={pageIndex} edit={edit} images={images} zoom={zoom} busy={busy} onToggle={toggle} />}
       </DialogBody>
       <DialogFooter className="flex-wrap">
         <div className="min-w-0 flex-1 text-sm" role="status">{message || (errors.length ? <span className="text-destructive-fg">{[...new Set(errors)].slice(0,3).join("；")}{errors.length>3 ? "…" : ""}</span> : dirty ? "修改尚未保存" : missing ? "请先重新识别旧卷" : "点击填涂格开始修改")}</div>
