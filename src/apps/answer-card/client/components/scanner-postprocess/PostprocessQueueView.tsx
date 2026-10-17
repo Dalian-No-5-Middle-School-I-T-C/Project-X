@@ -218,25 +218,47 @@ interface StudentIdPanelProps {
   onBack?: () => void;
 }
 
-/** 考号修正（D10）：考号区裁图 + 花名册联想 + 确认写回 digit 格并重匹配。 */
+/** 考号修正（D10）：考号区裁图 + 花名册联想 + 确认写回 digit 格并重匹配。
+ *  画布与输入框共用同一份真值——digit 格的选中集：打字会写格，点格会回写显示，
+ *  确认提交的就是屏幕上看到的那个号。 */
 function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBack }: StudentIdPanelProps) {
   const url = channel.correctionUrl(sessionId, groupId);
   const { document, images, error, busy } = useCorrectionBundle(channel, url, true);
   const [edits, setEdits] = useState<CorrectionEdit[]>([]);
-  const [value, setValue] = useState("");
+  /** 老师手输但还没落到格上的原文；null = 没有手输，显示格选结果 */
+  const [typed, setTyped] = useState<string | null>(null);
   const [roster, setRoster] = useState<Array<{ id: number; name: string; student_number: string | null }>>([]);
   const [rosterChecked, setRosterChecked] = useState(false);
   const [saving, setSaving] = useState(false);
   const cropRef = useRef<HTMLDivElement>(null);
   const digitPageIndex = useMemo(() => (document ? document.pages.findIndex(page => correctionCells(page.layout).some(cell => cell.type === "student_digit")) : -1), [document]);
   const digitPage = document && digitPageIndex >= 0 ? document.pages[digitPageIndex] : null;
+  const digitCells = useMemo(() => (document ? document.pages.flatMap(page => correctionCells(page.layout)).filter(cell => cell.type === "student_digit") : []), [document]);
+  const cellOwner = useMemo(() => {
+    const map = new Map<string, string>();
+    if (document) for (const page of document.pages) for (const cell of correctionCells(page.layout)) map.set(cell.id, page.sourceId);
+    return map;
+  }, [document]);
+  const digitColumns = useMemo(() => [...new Set(digitCells.map(cell => cell.digitIndex))].sort((a, b) => a - b), [digitCells]);
+  /** 从格选反推考号；有一列空着或选了两个数字就不完整 */
+  const digitsFromCells = useMemo<string | null>(() => {
+    if (!digitPage || !digitColumns.length) return null;
+    const entry = edits.find(item => item.sourceId === digitPage.sourceId);
+    if (!entry) return null;
+    let out = "";
+    for (const column of digitColumns) {
+      const hits = digitCells.filter(cell => cell.digitIndex === column && entry.selected.includes(cell.id));
+      if (hits.length !== 1) return null;
+      out += String(hits[0].digit);
+    }
+    return out;
+  }, [digitPage, digitColumns, digitCells, edits]);
+  const value = typed ?? digitsFromCells ?? "";
 
   useEffect(() => {
     if (!document) return;
     setEdits(document.pages.map(page => ({ sourceId: page.sourceId, revision: page.revision, selected: [...page.selected], touched: [] })));
-    // 卡上已填的考号作为初值，老师只需改错位的那几位
-    const filled = document.pages.find(page => page.recognition.studentId?.value)?.recognition.studentId?.value;
-    if (filled) setValue(filled);
+    setTyped(null);
   }, [document]);
 
   useEffect(() => {
@@ -269,33 +291,44 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
   const digits = value.trim();
   // 只有真正查过名单才敢说「不在名单」，否则查询失败会被误报成缺考
   const notInRoster = rosterChecked && /^\d+$/.test(digits) && digits.length >= 2 && !roster.some(student => student.student_number === digits);
-  const canConfirm = !!document && /^\d+$/.test(digits) && !saving;
+  const complete = digitsFromCells !== null;
+  // 屏幕上显示的号必须与格选一致：位数不对或含非数字时打字没落到格上，此时不能提交
+  const inSync = complete && digits === digitsFromCells;
+  const canConfirm = !!document && inSync && !saving;
 
-  /** 点选 digit 格：与手输同源，都写进同一份 edits */
+  /** 把文字考号写成 digit 格；位数不符或卡面没有该数字格时返回 false（不改动画布） */
+  function applyDigits(text: string): boolean {
+    const picked = selectStudentDigitCells(digitCells, text);
+    if (!picked) return false;
+    const scope = new Set(digitCells.map(cell => cell.id));
+    setEdits(current => replaceScopedSelection(current, cellOwner, scope, picked));
+    return true;
+  }
+
+  function onDigitInput(text: string) {
+    setTyped(text);
+    if (/^\d+$/.test(text)) applyDigits(text);
+  }
+
+  /** 点选 digit 格：格选成为唯一真值，输入框回到格选显示 */
   function toggleCell(cellId: string) {
     if (!document || !digitPage) return;
+    setTyped(null);
     setEdits(current => current.map(entry => entry.sourceId === digitPage.sourceId
       ? { ...entry, selected: toggleCorrectionCell(document.card, digitPage, entry.selected, cellId) }
       : entry));
   }
 
-  function useRosterNumber(number: string) { setValue(number); setRoster([]); }
+  function useRosterNumber(number: string) { setRoster([]); onDigitInput(number); }
 
   async function confirm() {
-    if (!document) return;
-    const cells = document.pages.flatMap(page => correctionCells(page.layout));
-    const picked = selectStudentDigitCells(cells, digits);
-    if (!picked) { notify.error("考号位数与卡面不符"); return; }
-    const scope = new Set(cells.filter(cell => cell.type === "student_digit").map(cell => cell.id));
-    const owner = new Map<string, string>();
-    for (const page of document.pages) for (const cell of correctionCells(page.layout)) owner.set(cell.id, page.sourceId);
-    const next = replaceScopedSelection(edits, owner, scope, picked);
+    if (!document || !digitsFromCells || !inSync) return;
     setSaving(true);
     try {
-      const response = await channel.request(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pages: next }) });
+      const response = await channel.request(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pages: edits }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.message || "保存考号失败");
-      notify.success(`考号已改为 ${digits}`);
+      notify.success(`考号已改为 ${digitsFromCells}`);
       await onResolved(sessionId, groupId);
     } catch (err) {
       notify.error(err instanceof Error ? err.message : "保存考号失败");
@@ -322,8 +355,8 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-3">
           <label className="flex flex-col gap-1.5 text-sm">
-            <span className="text-muted-foreground">考号（卡面共 {new Set(correctionCells(digitPage.layout).filter(c => c.type === "student_digit").map(c => c.digitIndex)).size} 位）</span>
-            <Input value={value} onChange={e => setValue(e.target.value)} inputMode="numeric" placeholder="按卡面位数输入数字" aria-label="考号" />
+            <span className="text-muted-foreground">考号（卡面共 {digitColumns.length} 位）</span>
+            <Input value={value} onChange={e => onDigitInput(e.target.value)} inputMode="numeric" placeholder="按卡面位数输入数字" aria-label="考号" />
           </label>
           {examId !== null && roster.length > 0 && (
             <ul className="m-0 flex max-h-40 flex-col gap-1 overflow-auto rounded-md border border-border-subtle bg-card p-1.5 text-sm">
@@ -344,7 +377,10 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
               确认考号 · 重新匹配学生
             </Button>
           </div>
-          <p className="m-0 text-xs text-muted-foreground">也可以直接在左图点选digit格改某一位；单选列内互斥，与上面的输入同源。</p>
+          <p className="m-0 text-xs text-muted-foreground">
+            {complete ? "也可以直接在左图点 digit 格改某一位；单选列内互斥，与上面的输入同源。"
+              : `卡面每列都要恰好选中一个数字（共 ${digitColumns.length} 位），当前格选不完整，不能提交。`}
+          </p>
         </div>
       </div>
     </PanelShell>
@@ -383,7 +419,9 @@ function DuplicatePanel({ item, channel, scans, onResolved, onFixStudentId }: {
       const data = await response.json();
       if (!response.ok) throw new Error(data?.message || "作废失败");
       notify.success(`已保留 ${card.studentId} 的第 ${Number(card.groupId) + 1} 组，另一份已作废`);
-      await onResolved(item.sessionId, item.groupId);
+      // 同步/补传的对象必须是**保留下来的那份**：传队列项自己时，若队列项正是被作废的那组，
+      // 重拉后在 results 里找不到它，真正留下的那份反而永远不会补传
+      await onResolved(card.sessionId, card.groupId);
     } catch (err) {
       notify.error(err instanceof Error ? err.message : "作废失败");
     } finally {

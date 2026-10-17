@@ -33,6 +33,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   const [highlight, setHighlight] = useState<SubjectiveQuestionNumber | null>(null);
   const [focusIssue, setFocusIssue] = useState<{ sessionId: string; groupId: string } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [savingAll, setSavingAll] = useState(false);
   const [error, setError] = useState("");
   /** 本页亲眼见过的异常组（sid/gid）。只有它们处理完才补传：正常组在扫描完成时已被
    *  ScannerPanel 排队上传，再建一个远端会话会形成同学号第二份回执并撤回正式成绩 */
@@ -61,10 +62,15 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
       }
       setBatches(nextBatches);
       setMetas(nextMetas);
-      // 记下面试异常组：这些是 ScannerPanel 当初没排上传的组，处理完才允许本页补传一次
+      // 记下面试异常组：这些是 ScannerPanel 当初没排上传的组，处理完才允许本页补传一次。
+      // 冲突副本也要记：重卡里被「保留」的那份往往只出现在 conflicts 里，
+      // 不算进来的话定性完仍然不会补传（另一份已作废，服务器再也没有这份成绩）
       for (const [sid, next] of Object.entries(nextBatches)) {
-        for (const failure of next.failures) abnormalSeen.current.add(`${sid}/${failure.groupId}`);
-        for (const review of next.reviewCards ?? []) if (review.sessionId === sid) abnormalSeen.current.add(`${sid}/${review.groupId}`);
+        for (const failure of next.failures) {
+          abnormalSeen.current.add(`${sid}/${failure.groupId}`);
+          for (const copy of failure.conflicts ?? []) abnormalSeen.current.add(`${copy.sessionId}/${copy.groupId}`);
+        }
+        for (const review of next.reviewCards ?? []) abnormalSeen.current.add(`${review.sessionId}/${review.groupId}`);
       }
       const scanList = await authFetch(`/api/scanner/card/${cardId}/scans`);
       if (scanList.ok) {
@@ -91,6 +97,28 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   const issueGroups = useMemo(() => new Set(queue.map(item => `${item.sessionId}/${item.groupId}`)).size, [queue]);
   const uploaded = useMemo(() => Object.values(batches).flatMap(b => b.results).filter(r => r.saved).length, [batches]);
   const examId = useMemo(() => Object.values(metas).find(meta => meta.examId !== null)?.examId ?? null, [metas]);
+
+  /**
+   * 仅本地模式的「保存成绩入库」：扫描完成后本页会自动接管工作台视图，
+   * 原 ScannerPanel done 视图里的保存按钮不再可见，这里必须把它接回来，
+   * 否则一批正常卷看起来「正常」却从未写进成绩表（validate 只演算不落库）。
+   */
+  async function saveAllLocal() {
+    setSavingAll(true);
+    try {
+      let failures = 0;
+      for (const { sessionId } of sessions) {
+        const saved = await channel.saveResults(sessionId);
+        failures += saved.failures.length;
+      }
+      notify.success(failures ? `已保存正常卷，仍有 ${failures} 份待处理` : "本批正常卷已写成本机正式成绩");
+      await reload();
+    } catch (e) {
+      notify.error(e instanceof Error ? e.message : "保存成绩失败");
+    } finally {
+      setSavingAll(false);
+    }
+  }
 
   async function handleDelete(targets: Array<{ sessionId: string; groupIds: string[] }>, force: boolean) {
     if (!targets.length) { notify.error("没有选中的卷子"); return; }
@@ -171,6 +199,8 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
           groups={groups}
           channel={channel}
           onDelete={handleDelete}
+          onSaveAll={isRemoteUploadOn() ? undefined : saveAllLocal}
+          saveAllBusy={savingAll}
           onOpen={group => {
             setActive(group);
             if (group.issues.length) {
@@ -187,6 +217,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
           channel={channel}
           sessionId={active.sessionId}
           groupId={active.groupId}
+          initialSaved={active.saved}
           highlightQuestion={highlight}
           onSaved={() => syncAfterFix(active.sessionId, active.groupId)}
         />

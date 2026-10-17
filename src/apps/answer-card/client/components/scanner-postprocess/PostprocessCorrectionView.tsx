@@ -19,6 +19,8 @@ export interface PostprocessCorrectionViewProps {
   channel: PostprocessChannel;
   sessionId: string;
   groupId: string;
+  /** 本组回执是否已入库：服务端 saveSessionCorrection 明确拒绝再改已入库卷（要转 Web 成绩修改） */
+  initialSaved?: boolean;
   /** 从异常队列「去改这题」带过来的题号：挂载后把该行滚进视野 */
   highlightQuestion?: SubjectiveQuestionNumber | null;
   onSaved: () => void | Promise<void>;
@@ -62,7 +64,7 @@ function mergeRecognitions(document: CorrectionDocument): CombinedRecognitionRes
   return merged;
 }
 
-export function PostprocessCorrectionView({ channel, sessionId, groupId, highlightQuestion, onSaved }: PostprocessCorrectionViewProps) {
+export function PostprocessCorrectionView({ channel, sessionId, groupId, initialSaved = false, highlightQuestion, onSaved }: PostprocessCorrectionViewProps) {
   const url = channel.correctionUrl(sessionId, groupId);
   const [document, setDocument] = useState<CorrectionDocument | null>(null);
   const [edits, setEdits] = useState<CorrectionEdit[]>([]);
@@ -72,6 +74,9 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, highlig
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(true);
   const [saving, setSaving] = useState(false);
+  /** 保存成功且服务端已接纳入库：本组不能再从这里改（回执已是 saved，再 PUT 必被拒） */
+  const [savedOnce, setSavedOnce] = useState(false);
+  const locked = initialSaved || savedOnce;
   /** 保存成功后自增：服务端会 +1 revision，不重拉文档下次保存必被「答题卡已更新」拒绝 */
   const [loadTick, setLoadTick] = useState(0);
   const tableRef = useRef<HTMLDivElement>(null);
@@ -194,7 +199,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, highlig
    * 把一题的新格选写回 edits：只替换该题作用域内的格，其余格（学号、别的题）原样保留。
    */
   function applyCells(picked: string[] | null, inScope: (cell: CorrectionCell) => boolean) {
-    if (!document) return;
+    if (!document || locked) return;
     if (!picked) { setMessage("该值在卡面上无法表示（缺少对应填涂格）"); return; }
     const scope = new Set(cells.filter(inScope).map(cell => cell.id));
     // 走 setEdits 的函数式形式：同一渲染批次里连续改两题时，读渲染时值的闭包会丢掉前一次
@@ -224,7 +229,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, highlig
   }
 
   function toggle(cellId: string) {
-    if (!document || !page || busy) return;
+    if (!document || !page || busy || locked) return;
     setEdits(current => current.map(e => e.sourceId === page.sourceId
       ? { ...e, selected: toggleCorrectionCell(document.card, page, e.selected, cellId), touched: page.invalid.includes(cellId) ? [...new Set([...(e.touched ?? []), cellId])] : e.touched }
       : e));
@@ -238,6 +243,9 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, highlig
       const response = await channel.request(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pages: edits }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.message || "保存失败");
+      // 服务端入库成功后本组就不能再从这条通道改，锁住界面并说明去处，别让人对着
+      // 「此卷已入库」的拒绝信息反复点保存
+      if (result.saved) setSavedOnce(true);
       await onSaved();
       // 重拉文档同步 revision，并把「未保存」状态归零
       setLoadTick(tick => tick + 1);
@@ -274,12 +282,12 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, highlig
           <Button size="sm" variant="outline" disabled={zoom <= 1} onClick={() => setZoom(z => Math.max(1, z - 0.5))}>缩小</Button>
           <span className="tabular-nums">{Math.round(zoom * 100)}%</span>
           <Button size="sm" variant="outline" disabled={zoom >= 4} onClick={() => setZoom(z => Math.min(4, z + 0.5))}>放大</Button>
-          <Button variant="primary" size="sm" icon={<Save />} disabled={!dirty || saving || errors.length > 0} loading={saving} onClick={() => void save()}>保存修改</Button>
+          <Button variant="primary" size="sm" icon={<Save />} disabled={!dirty || saving || errors.length > 0 || locked} loading={saving} onClick={() => void save()}>保存修改</Button>
         </div>
       </div>
       <div className="flex min-h-0 flex-1 gap-4 p-4">
         <div className="min-w-0 flex-1 overflow-auto rounded-md bg-muted p-3">
-          <CorrectionCanvas document={document} pageIndex={pageIndex} edit={edit} images={images} zoom={zoom} busy={busy} reviewQuestions={reviewQuestions} onToggle={toggle} />
+          <CorrectionCanvas document={document} pageIndex={pageIndex} edit={edit} images={images} zoom={zoom} busy={busy || locked} reviewQuestions={reviewQuestions} onToggle={toggle} />
         </div>
         <div ref={tableRef} className="min-w-0 flex-1 overflow-auto">
           <TableWrap>
@@ -364,7 +372,9 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, highlig
       <div role="status" className="border-t border-border-subtle bg-card px-4 py-2 text-sm">
         {message
           ? <span className="text-destructive-fg">{message}</span>
-          : errors.length
+          : locked
+            ? <span className="text-muted-foreground">本卷成绩已入库，不能再从扫描端改；后续改分请到 Web 端「成绩修改」，或重扫该卷由服务器重新判分。</span>
+            : errors.length
             ? <span className="text-destructive-fg">{[...new Set(errors)].slice(0, 3).join("；")}{errors.length > 3 ? "…" : ""}</span>
             : <span className="text-muted-foreground">{missing ? "此页缺少坐标数据，点选不可用；请在异常处理里重新识别该卡。" : dirty ? "修改尚未保存；左图点选与右表改分同步生效。" : "左图点填涂格改，右表按题改，两边同步。"}</span>}
       </div>

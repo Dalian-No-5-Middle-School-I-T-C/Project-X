@@ -15,6 +15,8 @@ import type { CorrectionDocument } from "../../../../../shared/scanCorrection";
 export interface PostprocessChannel {
   request(url: string, init?: RequestInit): Promise<Response>;
   results(sessionId: string): Promise<ScanBatchResponse>;
+  /** 仅本地模式的入库通道（= 原 ScannerPanel「保存成绩」按钮的 POST results） */
+  saveResults(sessionId: string): Promise<ScanBatchResponse>;
   correctionUrl(sessionId: string, groupId: string): string;
   imageUrl(recordId: string): string;
   discardUrl(sessionId: string, groupId: string): string;
@@ -39,6 +41,8 @@ export function localChannel(): PostprocessChannel {
         : await authFetch(`/api/scanner/session/${sessionId}/validate`, { method: "POST" });
       return readJson(res);
     },
+    // 与原 ScannerPanel.saveSuccessful 同一端点：POST results = save 模式，写正式成绩
+    saveResults: async sessionId => readJson(await authFetch(`/api/scanner/session/${sessionId}/results`, { method: "POST" })),
     correctionUrl: (sessionId, groupId) => `/api/scanner/session/${sessionId}/groups/${groupId}/correction`,
     imageUrl: recordId => mediaUrl(`/api/scanner/scan-image/${recordId}`),
     discardUrl: (sessionId, groupId) => `/api/scanner/session/${sessionId}/groups/${groupId}/discard`,

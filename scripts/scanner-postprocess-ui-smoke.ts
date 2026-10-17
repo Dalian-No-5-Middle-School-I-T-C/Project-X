@@ -66,6 +66,7 @@ const correctionDocument: CorrectionDocument = {
 let secondGroupResolved = false;
 let allClean = false;
 let deleteBlockedOnce = false;
+let duplicateKept = false;
 const groupTwoResult = {
   groupId: "1", studentId: "10002", totalScore: 10, maxScore: 10, objectiveScore: 10, objectiveMaxScore: 10,
   subjectiveScore: 0, subjectiveMaxScore: 0, needsReviewCount: 0, pageCount: 1, saved: false,
@@ -88,9 +89,27 @@ const batch = (): ScanBatchResponse => ({
 
 const puts: Array<{ groupId: string; pages: Array<{ sourceId: string; selected: string[] }> }> = [];
 const deletes: Array<{ url: string; body: { groupIds: string[]; force?: boolean } }> = [];
+const saveCalls: string[] = [];
+const discards: string[] = [];
 /** 第二批会话：groupId 与第一批重号，用来钉住「删除必须按会话下发」 */
 const batchFor = (sessionId: string): ScanBatchResponse => {
   const first = batch();
+  if (sessionId === "scan-3") {
+    const kept = { ...first.results[1], groupId: "1", studentId: "20002",
+      pages: first.results[1].pages.map(page => ({ ...page, recordId: "rec-6", pageNum: 6 })) };
+    return duplicateKept
+      ? { results: [kept], failures: [], reviewCards: [] }
+      : {
+        results: [{ ...first.results[1], groupId: "2", studentId: "20003", pages: first.results[1].pages.map(page => ({ ...page, recordId: "rec-7", pageNum: 7 })) }],
+        failures: [{ groupId: "0", studentId: "20002", stage: "saving", message: "重复学号：新旧答题卡均需核对订正",
+          pages: [{ recordId: "rec-4", pageNum: 4, side: "front", layoutPage: 1 }],
+          conflicts: [
+            { sessionId: "scan-3", groupId: "0", studentId: "20002", previouslySaved: false, totalScore: 10, pages: [{ recordId: "rec-4", pageNum: 4, side: "front", layoutPage: 1 }] },
+            { sessionId: "scan-3", groupId: "1", studentId: "20002", previouslySaved: false, totalScore: 10, pages: [{ recordId: "rec-6", pageNum: 6, side: "front", layoutPage: 1 }] },
+          ] }],
+        reviewCards: [],
+      };
+  }
   if (sessionId !== "scan-2") return first;
   return {
     results: [
@@ -106,7 +125,11 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   const method = init?.method ?? "GET";
   if (url.includes("/api/cards/")) return Response.json(card);
   const sessionMatch = url.match(/\/api\/scanner\/session\/([^/]+)\/(validate|results)/);
-  if (sessionMatch) return Response.json(batchFor(sessionMatch[1]));
+  if (sessionMatch) {
+    // 仅本地模式的「保存成绩入库」= POST results（save 模式），与 validate 演算不是一条路
+    if (method === "POST" && url.endsWith("/results")) saveCalls.push(`${method} ${url}`);
+    return Response.json(batchFor(sessionMatch[1]));
+  }
   if (/\/api\/scanner\/scan\/[^/]+$/.test(url)) {
     return Response.json({ session: { identity_mode: "strict", dpi: 300, paper_size: "A4" }, records: [], examId: 7 });
   }
@@ -121,7 +144,8 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   if (/\/groups\/[^/]+\/correction$/.test(url)) {
     if (method === "PUT") {
       puts.push({ groupId: url.match(/\/groups\/([^/]+)\/correction$/)![1], pages: (JSON.parse(String(init?.body)) as { pages: never[] }).pages });
-      return Response.json({ ok: true });
+      // 服务端 saveSessionCorrection 对已关联考试的会话会顺带入库，返回 saved:true
+      return Response.json({ ok: true, saved: true });
     }
     return Response.json(correctionDocument);
   }
@@ -135,7 +159,13 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
     }
     return Response.json({ ...batch(), deletedGroups: body.groupIds.length, missingGroups: [] });
   }
-  if (url.endsWith("/retry") || url.endsWith("/discard")) return Response.json(batch());
+  if (url.endsWith("/retry")) return Response.json(batch());
+  if (url.endsWith("/discard")) {
+    discards.push(url);
+    // 作废的是「另一份」：组 0 被作废后，重拉批结果时只剩保留下来的组 1
+    if (url.includes("/scan-3/")) duplicateKept = true;
+    return Response.json(batchFor(url.match(/\/session\/([^/]+)\/groups\/[^/]+\/discard$/)?.[1] ?? ""));
+  }
   throw new Error(`Uncovered postprocess request: ${method} ${url}`);
 });
 
@@ -149,6 +179,7 @@ scannerUploadManager.startUpload = (input => { uploads.push(input); return `uplo
 
 const root = createRoot(document.getElementById("root")!);
 let root2: ReturnType<typeof createRoot> | null = null;
+let root3: ReturnType<typeof createRoot> | null = null;
 async function settle(ms = 12) { await act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); }); }
 async function clickNode(node: Element) {
   await act(async () => {
@@ -195,6 +226,13 @@ try {
   assert.equal(tiles.length, 3, "三组卷子各一个方块");
   assert.equal(tiles[2].getAttribute("aria-label"), "打开 10003", "无异常卷排到最后（异常置顶）");
 
+  // ── 仅本地模式必须留有人库入口（自动跳页会卸载 ScannerPanel 的 done 视图）──
+  assert(saveCalls.length === 0, "进页面本身只演算，不写成绩");
+  await clickText("保存成绩入库");
+  await settle();
+  assert.equal(saveCalls.length, 1, "「保存成绩入库」走 POST results（save 模式）");
+  assert.match(saveCalls[0], /POST .*\/session\/scan-1\/results$/, "入库打到本会话的 results 端点");
+
   // ── 多选删除：无 force → 服务端 409 → 代价文案 → 二次确认带 force ──
   await clickText("选择");
   await clickSelector('[aria-label="选择 组 1"]');
@@ -231,6 +269,11 @@ try {
   assert(savedCells.includes(optionCell(2, "D")), "表格改的选项写进格选集合");
   assert(savedCells.includes(optionCell(1, "A")), "同卡其他题不受影响");
   assert(savedCells.includes(digitCell(0, 1)), "学号格不能被按题改分抹掉");
+  // 服务端入库成功后本组不能再从这条通道改，界面必须锁住并说明去处
+  assert(saveButton()?.disabled, "已入库后保存按钮必须禁用");
+  assert.match(text(), /已入库/, "锁住时要说清去哪儿改");
+  await clickSelector('polygon[aria-label="第 1 题 A，已选"]');
+  assert.equal(puts.filter(entry => entry.groupId === "2").length, 1, "锁定后画布点选不再生效");
 
   // ── 视图 3：考号面板独立入口（D10）+ 花名册联想 + 只替换 digit 格 ──
   await clickText("异常处理");
@@ -239,7 +282,7 @@ try {
   assert.match(text(), /第 1 \/ 2 条/);
   const studentInput = document.querySelector('input[aria-label="考号"]') as HTMLInputElement | null;
   assert(studentInput, "改考号必须有独立输入入口");
-  assert.equal(studentInput.value, "10001", "初值取卡面已填考号");
+  assert.equal(studentInput.value, "10001", "初值取自卡面 digit 格选");
   const valueSetter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")!.set!;
   await act(async () => {
     valueSetter.call(studentInput, "10002");
@@ -247,14 +290,20 @@ try {
   });
   await settle(700);
   assert.match(text(), /张三/, "花名册联想给出考号+姓名");
+  // 画布点选必须压过输入框里的旧文本：把末位点回 1，输入框要跟着变
+  await clickSelector('polygon[aria-label="学号第 5 位 1"]');
+  await settle();
+  assert.equal((document.querySelector('input[aria-label="考号"]') as HTMLInputElement).value, "10001",
+    "点画布后输入框跟随格选，不能留着旧文本");
   const confirm = [...document.querySelectorAll("button")].find(el => el.textContent?.includes("确认考号"));
   assert(confirm, "确认考号入口存在");
   await act(async () => { confirm.click(); });
   await settle();
   const digitPut = puts.find(entry => entry.groupId === "1")?.pages[0]?.selected ?? [];
-  for (const cell of [digitCell(0, 1), digitCell(1, 0), digitCell(2, 0), digitCell(3, 0), digitCell(4, 2)]) {
+  for (const cell of [digitCell(0, 1), digitCell(1, 0), digitCell(2, 0), digitCell(3, 0), digitCell(4, 1)]) {
     assert(digitPut.includes(cell), `考号逐位写入 digit 格：${cell}`);
   }
+  assert(!digitPut.includes(digitCell(4, 2)), "提交的是画布上的号，不能被输入框旧文本覆盖");
   assert(digitPut.includes(optionCell(1, "A")), "改考号不得抹掉客观题填涂");
 
   // ── 远端模式：处理完一条异常 → 按组补传一次，卡版本必须是全量指纹 ──
@@ -326,11 +375,37 @@ try {
   await settle();
   assert(puts.some(entry => entry.groupId === "0"), "第二批的改动已写回本机");
   assert.equal(uploads.length, uploadsBefore, "已上传过的组不得重复补传（第二份回执会撤回正式成绩）");
+
+  // ── 重卡定性：队列项是被作废的那份时，补传必须跟着「保留下来的那份」走 ──
+  await act(async () => { root2.unmount(); });
+  const host3 = document.createElement("div");
+  document.body.appendChild(host3);
+  root3 = createRoot(host3);
+  await act(async () => {
+    root3.render(createElement(TooltipProvider, null,
+      createElement(ScannerPostprocessPage, {
+        cardId: card.id, cardTitle: card.title, sessions: [{ sessionId: "scan-3", pageCount: 2 }], onBack: () => {},
+      })));
+  });
+  await settle();
+  await clickText("异常处理");
+  await settle();
+  assert.match(text(), /考号重复/, "重卡排在队首");
+  const keepButtons = [...document.querySelectorAll("button")].filter(el => el.textContent?.trim() === "保留这份");
+  assert.equal(keepButtons.length, 2, "两份副本并排定性");
+  const uploadsBeforeKeep = uploads.length;
+  // 队列项是组 0，这里点的是组 1 卡片上的「保留这份」→ 作废的是组 0
+  await act(async () => { keepButtons[1].click(); });
+  await settle();
+  assert.match(discards[discards.length - 1], /\/session\/scan-3\/groups\/0\/discard$/, "作废的必须是未被保留的那份");
+  assert.equal(uploads.length, uploadsBeforeKeep + 1, "保留下来的那份要补传（它只出现在 conflicts 里）");
+  assert.equal(uploads[uploads.length - 1].name, "扫描_20002", "补传任务对应保留下来的那份卷");
+
   console.log("PASS scanner-postprocess-ui-smoke");
 } catch (error) {
   failure = error;
 } finally {
-  await act(async () => { root.unmount(); root2?.unmount(); });
+  await act(async () => { root.unmount(); root2?.unmount(); root3?.unmount(); });
   scannerUploadManager.startUpload = realStartUpload;
   // 不关掉 jsdom 的 window，其定时器与观察者会让进程一直挂着
   dom.window.close();
