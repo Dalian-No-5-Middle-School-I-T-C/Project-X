@@ -150,10 +150,15 @@ try {
   for (const status of ["completed", "error", "cancelled"] as const) {
     const s = await store.createSession(`card-race-${status}`, "终态顺序", {});
     warnings.persistSessionWarning(s.id, RACE_WARNING);
-    const started = Date.now();
+    // 计时用单调时钟，并给定时器留 10ms 容差：原先用 Date.now() 相减并卡 `>= 250`，
+    // 两端的毫秒截断会让「正好等满 250ms」量成 249ms——CI run 573 就是这样假红的
+    // （同一脚本在 main 的 run 571 与本机均通过，与 #322/#283 无关）。
+    // 容差不会把这条断言变成空断言：不排队就写终态的实现，这里量到的是 ~0ms，照样红。
+    const started = performance.now();
     await warnings.markSessionTerminal(s.id, status, status === "completed" ? undefined : "扫描阶段失败");
-    const waited = Date.now() - started;
-    assert.ok(waited >= DELAY_MS, `${status}：终态必须等告警写完（本次只等了 ${waited}ms）`);
+    const waited = performance.now() - started;
+    assert.ok(waited >= DELAY_MS - 10,
+      `${status}：终态必须等告警写完（本次只等了 ${waited.toFixed(1)}ms，下限 ${DELAY_MS - 10}ms）`);
     assert.deepEqual(await readStored(s.id), [RACE_WARNING],
       `${status}：终态一可见，告警就已经在会话行里`);
     assert.deepEqual(await raceTypes(s.id), ["warning", status === "completed" ? "done" : status],

@@ -155,7 +155,8 @@ import {
   makeGate, getVisibleExamIds, requireExamAccess,
   validateExamIdsAccess, setAuthEnforced, hasViewPermission, makeViewPermissionGate, isTeacherPermittedForWholeExam,
   requirePermissionCompat, requireWholeExamGradingAccess, requireWholeExamGradingAccessForExam, canManageExamOrganization, hasExamOrganizationAffinity,
-  canGradeBlock, isExamSoftDeleted
+  canGradeBlock, isExamSoftDeleted,
+  canWriteGradingSelfSettings, GRADING_SELF_SETTING_FIELDS, requireBackgroundUploadAccess, isStudentAccount
 } from "./middleware";
 import { getAssignedStudentIdSet, isClaimableForAssignedSet } from "../../../server/services/ReviewPoolService";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
@@ -903,10 +904,14 @@ export async function createApp(): Promise<express.Express> {
       const uiStyle = uiStyleRaw && uiStyleRaw.length > 0
         ? uiStyleRaw
         : (themeSkinRaw === "flat" ? "clarity" : "paper_edge");
+      // 学生网页端始终无背景图：即使库里留有历史透明度，也不下发给客户端。
+      const backgroundOpacity = isStudentAccount(_req.user)
+        ? 0
+        : ((user as any).background_opacity ?? 0);
       res.json({
         scoreDisplayMode: (user as any).score_display_mode ?? "zscore",
         reviewConfidenceThreshold: (user as any).review_confidence_threshold ?? 0.12,
-        backgroundOpacity: (user as any).background_opacity ?? 0,
+        backgroundOpacity,
         showTabBar: (user as any).show_tab_bar ?? 0,
         themeSkin: themeSkinRaw,
         uiStyle,
@@ -918,6 +923,25 @@ export async function createApp(): Promise<express.Express> {
     try {
       const userId = _req.user!.id;
       const body = _req.body as Record<string, unknown>;
+
+      // #322: 没有 grade:write 时，请求体里出现阅卷字段就整单 403，同一次里的其他字段也不写。
+      // 不带这两个字段时，皮肤、明暗、Tab 栏照常可写。判定复用角色权限表，不写死 role 名单。
+      if (!canWriteGradingSelfSettings(_req.user)) {
+        const askedGradingFields = GRADING_SELF_SETTING_FIELDS.filter((field) => body[field] !== undefined);
+        if (askedGradingFields.length > 0) {
+          res.status(403).json({
+            message: `权限不足：修改阅卷设置需要 ${PERMISSIONS.GRADE_WRITE}`
+          });
+          return;
+        }
+      }
+
+      // 学生不能改背景透明度。该字段一出现就整单返回，避免同一次请求里的其他字段被部分写入。
+      if (isStudentAccount(_req.user) && body.backgroundOpacity !== undefined) {
+        res.status(403).json({ message: "学生账号不能修改背景图设置" });
+        return;
+      }
+
       const db = getMysqlDb();
 
       // 读取切换前快照，用于主题审计（from_*）
@@ -993,6 +1017,11 @@ export async function createApp(): Promise<express.Express> {
   const backgroundsDir = path.join(dataDir, "backgrounds");
 
   app.get("/api/app/background", optionalAuth, (req, res) => {
+    // 学生账号网页端始终不提供背景图（自定义图与默认图都不下发）。历史文件保留。
+    if (isStudentAccount(req.user)) {
+      res.status(404).json({ error: "background image not found" });
+      return;
+    }
     // 用户自定义背景优先
     if (req.user) {
       const customBg = path.join(backgroundsDir, `${req.user?.id}.jpg`);
@@ -1040,7 +1069,9 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/users/me/background", authMiddleware, bgUpload.single("file"), async (req, res, next) => {
+  // #322: 学生账号不能上传自定义背景图。门放在 multer 之前——
+  // 否则被拒的请求仍会先把上传体落盘到 dataDir/backgrounds 再返回 403。
+  app.post("/api/users/me/background", authMiddleware, requireBackgroundUploadAccess, bgUpload.single("file"), async (req, res, next) => {
     try {
       if (!req.file) {
         res.status(400).json({ error: "请选择图片文件" });

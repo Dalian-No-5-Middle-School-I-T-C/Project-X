@@ -1,6 +1,6 @@
 # 赞助页面说明
 
-> **适用版本**: v1.5.0 及以上
+> **适用版本**: v1.5.0 及以上（时间点版本标记；现行版本见 package.json，2026-10-17 复核入口与路由仍适用）
 > **关联 Issue**: [#11 赞助页面](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/issues/11)  
 > **关联文档**: [`CHANGELOG.md`](./CHANGELOG.md) · [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 

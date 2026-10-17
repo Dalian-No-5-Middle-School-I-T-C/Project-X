@@ -1,6 +1,7 @@
 # Project-X 数据库模块文档
 
-> **版本**: v2.0.0（迁移至 v34：v33 `users.theme_skin` 皮肤偏好、v34 `exams.exam_mode` 晨测/大考；SQLite `migrations.ts` 与 MariaDB `mariadbMigrations` 双轨同步）
+> **迁移水位**: v63（`scan-session-warnings`）—— SQLite `migrations.ts` 与 MariaDB `mariadbMigrations` 双轨同步
+> **文档复核**: 2026-10-17（v2.6.0 文档校订轮 + 同日随 main 对齐到 v2.7.1 / v63；表结构变更以迁移文件与 `schema.sql` 为准，不以本文版本号为准）
 > **技术栈**: SQLite (本地) / MariaDB 10.11 LTS (远程) + better-sqlite3 + mysql2 + bcryptjs
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力，支持本地单机部署和远程服务器部署
 
@@ -501,9 +502,10 @@ Body: multipart/form-data, files[]
 
 ### Token 机制
 
-- 登录成功后返回 `token`，有效期 **8 小时**
-- 请求时携带 Header：`Authorization: Bearer <token>`
-- Token 持久化到 `~/.projectx/tokens.json` 磁盘文件（服务器重启后仍有效，6 个月持久化 Token）
+- 登录成功后签发会话令牌：普通 **8 小时**，勾选「记住登录」的持久会话 **30 天**
+- 主通道是 HttpOnly Cookie `projectx_auth_token`；跨源/脚本客户端用 Header `Authorization: Bearer <token>`
+- 只有只读媒体类 GET 允许 URL 携带凭据，且推荐用单次资源票据 `?mt=`（`POST /api/auth/media-ticket` 签发）；详见 [`ACCOUNT-CONTROL.md`](./ACCOUNT-CONTROL.md) 第 4 节
+- Token 持久化到 `~/.projectx/tokens.json`（**只存 SHA-256 摘要**，服务器重启后仍有效）；改密、禁用账号、登出都会吊销令牌并作废媒体票据
 
 ### 权限控制
 
@@ -511,7 +513,10 @@ Body: multipart/form-data, files[]
 |------|--------|------|------|------|----------|
 | 管理员 | 全部 | 全部 | 全部 | 全部 | 全部 |
 | 教师 | 读写 | 读写 | 读写 | 读写 | 无 |
-| 学生 | 只读 | 无 | 无 | 查看自己的 | 无 |
+| 学生 | 无 | 无 | 无 | 查看自己的（`score:read`） | 无 |
+
+> 学生唯一的权限位是 `score:read`：不能读答题卡列表，也不能自助改阅卷设置、看到背景图、改背景透明度或上传背景图（#322，
+> 口径见 [`ACCOUNT-CONTROL.md`](./ACCOUNT-CONTROL.md) 第 4 节）。学生的自助范围是本人皮肤 / 明暗 / 导航栏，以及本人 AI 服务商配置。
 
 ---
 
@@ -583,6 +588,44 @@ exam_archives 表：记录归档信息（路径、大小、归档时间）
 ---
 
 ## 数据库迁移 (SQLite → MariaDB)
+
+### 迁移编号台账（v35 → v63）
+
+两套迁移各自维护版本号，**同一版本号在两侧含义必须一致**；作废编号只留注释占号，禁止复用
+（`migrations.ts` / `mysql.ts` 顶部有完整说明）。
+
+| 版本 | 名称 | 内容 |
+|------|------|------|
+| v35 | `exam-closed-at` | `exams.closed_at` 结考时间 |
+| v36 | `review-round-fresh-crops-zero` | 把无判分记录的切块 `review_round` 归零（存量修补） |
+| v37 | `question-scores-exam-question-type-index` | 逐题成绩查询索引 |
+| v38 | `ai-analysis-jobs` | AI 分析任务表 |
+| ~~v39/v40~~ | —— | **作废**：main 血统与本分支对同两号写了不同内容，任一侧已记录的库会跳过另一侧。内容并入 v43 / v44 |
+| v41 | `exam-score-published` | 成绩公布开关（未公布则学生侧 404），存量结考回填为已公布 |
+| v42 | `exam-publish-events` | 公布/撤回事件流水 |
+| v43 | `knowledge-points-track-type-backfill` | 知识点文理科别回补 |
+| v44 | `console-observability-and-permission-foundation` | 控制台地基：`users.ui_style` / `color_scheme` 拆分、主题切换审计、AI 调用观测（任务层 + 模型层）、实体生命周期事件、`teacher_permissions` 维度扩列与存量补建（原 v40 内容并入） |
+| v45 | `teacher-permissions-multidim-unique` | 教师权限矩阵多维唯一约束 |
+| v46 | `retention-policy-by-exam-mode` | 按 `exam_mode`（晨测/大考）区分留存策略 |
+| v47 | `exam-participants-snapshot` | 应考名单快照 |
+| v48 | `exam-participants-source` | 快照来源标记 |
+| v49 | `scanner-submission-receipts` | 扫描端上传回执（幂等去重） |
+| v50 | `archive-class-and-grade` | 班级/年级归档位 |
+| v51 | `scanner-card-identity` | 扫描端答题卡身份识别 |
+| v52 | `class-head-teacher` | `users.teacher_role` / 班级班主任列 |
+| v53 | `wechat-grade-release-notifications` | 微信成绩公布订阅 |
+| v54 | `exam-original-paper-and-answer-keys` | 原卷与答案钥匙 upload |
+| v55 | `backfill-class-head-teacher` | 班主任数据回填 |
+| v56 | `block-title-locked` | 题块标题锁定 |
+| ~~v57/v58~~ | —— | **故意留空**：v57 原要把 `grading + score_published=1` 推回 `closed`，但该组合是合法状态（阅卷期间可先公布部分成绩），改写会阻断扫描入库；v58 原要删「学生在读多班关联」，但多班在读本身合法，歧义改由读取侧统一消解（`AnalysisRepository` 的 `CURRENT_CLASS_*` / `DISPLAY_CLASS_ORDER`）。**取号提醒**：这两个作废号在编号序列上早于 v61，而 main 自 #324 起已把版本号用到 v61/v62/v63——将来真要清理这两类数据时必须从 v64 之后取号，回填 57/58 会和已执行过 v61+ 的库错位 |
+| v59 | `exam-class-memberships` | 考试参考班级多值关联 |
+| v60 | `answer-card-revision` | 答题卡版本/修订列 |
+| v61 | `scanner-session-card-version` | `twain_scan_sessions` 增 `card_version` 与 `version_source`（默认 `upload`）；升级前已存在的会话整体标为 `legacy`，区分「扫描端上报版本」与「后来补录的指纹」，避免历史会话被冒充成原始版本 |
+| v62 | `scan-correction-pages` | 建 `scan_correction_pages`（主键 `source_type` + `source_id`，存 `card_version`、`layout_json` / `recognition_json` 与 `revision` 乐观锁、修改人与时间），承载整卡/逐题改分快照。两侧由同一个 `scanCorrectionSchema(dialect)` 生成，只有 JSON 列按方言分叉——SQLite `TEXT`、MariaDB `LONGTEXT`；两列都存纯文本、JSON 解析留在 JS 层，符合[双方言SQL函数安全清单](双方言SQL函数安全清单.md)对 `json_extract` 的口径 |
+| v63 | `scan-session-warnings` | `twain_scan_sessions` 增 `warnings_json TEXT`，把色彩升级、DPI 取证、零红笔三类扫描告警随会话落库，SSE 断线重连时先补发已落库告警再补终态事件（按文本去重、只留最近 20 条是应用侧写入策略，不在 DDL 里）。SQLite 走 `addColumnIfMissing`，MariaDB 走裸 `ALTER`，幂等性由迁移循环统一吞掉 `ER_DUP_FIELDNAME` / “already exists” 保证 |
+
+> 表结构章节里出现的历史版本标签（如「模块五：大考组 (v1.5.0)」「v1.9.0 新增表」）是
+> **该能力的引入时间点**，不是当前版本；表本身仍是现行结构。
 
 ### 一键建库
 
