@@ -274,7 +274,7 @@ function asArray<T>(value: unknown): T[] {
 
 
 function App() {
-  const { user, loading, hasPermission, persona, teacherRoleOverride, patchUserLocal, refreshUser } = useAuth();
+  const { user, loading, hasPermission, persona, teacherRoleOverride, patchUserLocal, refreshUser, isStudent } = useAuth();
   // 皮肤偏好回写（R49）：成功要更新本地权威快照，失败要以服务端为准。
   const writeSkinPreference = useSkinPreferenceWriter();
   // v1.6.0: 运行时 persona 替换 compile-time VITE_PROJECTX_VARIANT
@@ -550,10 +550,12 @@ function App() {
   // 加载用户设置（背景图、明暗方案等）
   useEffect(() => {
     if (!user) return;
+    // 学生账号网页端始终无背景图，不采用账号里保存的透明度。
+    if (isStudent) setShowBg(0);
     fetchJson<{ backgroundOpacity: number; colorScheme?: string; uiStyle?: string }>("/api/users/me/settings")
       .then((s) => {
         if (!s) return;
-        setShowBg(s.backgroundOpacity ?? 0);
+        if (!isStudent) setShowBg(s.backgroundOpacity ?? 0);
         setServerColorScheme(s.colorScheme ?? null);
         // v37: 明暗方案账号级持久化 —— 仅当用户从未在本机显式选择过（无 localStorage 覆盖）时，
         // 采用服务端 colorScheme；否则沿用本机偏好（保留 localStorage 回退，设备级优先）。
@@ -563,7 +565,7 @@ function App() {
         }
       })
       .catch(() => {});
-  }, [user?.id]);
+  }, [user?.id, isStudent]);
 
   // v2.1.0: 登录后皮肤偏好同步（v2.3.0 语义：账号为权威，本会话显式选择优先）：
   // - sessionStorage 有「会话内显式选择」标记（登录页/设置页切换过皮肤，含默认值）
@@ -623,9 +625,11 @@ function App() {
   }, [theme, user?.id, serverColorScheme]);
 
   // 背景图：body::after 半透明浮层 (pointer-events:none 不挡交互)
+  // 学生账号登录后始终关闭，忽略历史透明度，避免换账号后沿用上一会话的浮层。
+  const backgroundOpacity = isStudent ? 0 : showBg;
   useEffect(() => {
-    if (showBg > 0) {
-      document.documentElement.style.setProperty("--bg-opacity", String(showBg));
+    if (backgroundOpacity > 0) {
+      document.documentElement.style.setProperty("--bg-opacity", String(backgroundOpacity));
       document.body.classList.add("has-bg-image");
     } else {
       document.documentElement.style.setProperty("--bg-opacity", "0");
@@ -634,7 +638,7 @@ function App() {
     return () => {
       document.body.classList.remove("has-bg-image");
     };
-  }, [showBg]);
+  }, [backgroundOpacity]);
 
   // 日间/夜间模式切换
   useEffect(() => {
@@ -1719,7 +1723,7 @@ function App() {
             : mode === "account"
               ? "管理用户、班级与花名册"
               : mode === "account-settings"
-                ? "个人阅卷、客户端与 AI 服务偏好"
+                ? (isStudent ? "客户端与 AI 服务偏好" : "个人阅卷、客户端与 AI 服务偏好")
                 : mode === "sponsor"
                 ? "感谢您的信任与支持"
                 : mode === "guide"

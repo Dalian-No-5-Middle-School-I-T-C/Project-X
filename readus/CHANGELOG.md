@@ -15,18 +15,19 @@
 
 **#322「移除学生账号在网页端修改阅卷设置和上传背景图的能力」**
 
-- **按字段拒绝而不是整条拒绝**（`PATCH /api/users/me/settings`）：这条接口同时承载阅卷偏好
-  （成绩显示方式 `scoreDisplayMode`、复核置信度阈值 `reviewConfidenceThreshold`）与外观偏好
-  （皮肤、亮暗、底部导航栏、背景透明度）。整条 403 会把学生连自己的界面都调不了，
-  因此新增常量表 `GRADING_SELF_SETTING_FIELDS` 只挡这两项。判定口径复用角色权限位 `grade:write`
-  （`canWriteGradingSelfSettings()`），不在代码里写死 role 名单——将来调整角色权限即可，无需改实现。
+- **阅卷字段按权限位拒绝**（`PATCH /api/users/me/settings`）：成绩显示方式 `scoreDisplayMode`、
+  复核置信度阈值 `reviewConfidenceThreshold` 需要 `grade:write`（`canWriteGradingSelfSettings()`），
+  不写死 role 名单。请求里带上这两项又没有权限时整单 403，同一次里的其他字段也不写；
+  不带这两项时，皮肤、亮暗、底部导航栏仍可保存。
+- **背景图对学生关闭**（整合 #337）：`isStudentAccount()` 按学生身份判定，不看 `grade:write`。
+  `GET /api/users/me/settings` 把学生的 `backgroundOpacity` 改写成 0（库里的历史值保留）；
+  `GET /api/app/background` 对学生返回 404，自定义图和默认图都不下发；
+  PATCH 里出现 `backgroundOpacity` 则整单 403。历史文件不删除。
 - **背景图上传按身份拒绝**（`POST /api/users/me/background`）：`requireBackgroundUploadAccess`
   对 `student` 一律 403，**故意不看权限位**：给某人放开壁纸不应连带给他改分权限。
   门挂在 `multer.single()` **之前**，否则被拒的请求已经把上传体落盘到 `dataDir/backgrounds` 才返回 403。
-- 前端（`AccountSettingsPage.tsx`）同步隐藏阅卷 Tab 与上传按钮，并把保存载荷拆开提交——
-  学生改外观时不再带上阅卷字段，避免「改个皮肤被 403」。后端门是唯一口径。
-- **保留项与残留**：背景图透明度仍可改（不上传自定义背景时它作用于 `resources/background.jpg`）；
-  学生历史上传的背景不删除，`GET /api/app/background` 仍只对本人返回它。学生本人的 AI 服务商配置不在本次范围。
+- 前端隐藏阅卷 Tab 和整段背景区（透明度滑块、上传按钮），保存载荷按权限拆开。
+  页签只在当前停在被隐藏的阅卷页时回到客户端，AI 页签仍可达。学生本人的 AI 服务商配置不在本次范围。
 - `scripts/verify-auth.ts` 第 7 节新增 11 条断言，含两条源码接线检查（门必须在 multer 前、
   settings 路由必须引用字段门）与免登录模式口径断言；本轮实测 `verify:auth` 与
   `verify:security-critical` 均 0 失败（用例数会随功能增长，不写死在文档里）。
@@ -80,7 +81,7 @@
   main 在本分支基线之后有 #324/#326/#328/#330/#332/#333 六个提交，版本到 **2.7.1**、迁移到 **v63**
   （v61 `scanner-session-card-version`、v62 `scan-correction-pages`、v63 `scan-session-warnings`，均扫描端表/列）。
   两处冲突都按并集解：`server/index.ts` 的 `./middleware` 导入块同时保留 main 新加的
-  `requireWholeExamGradingAccessForExam` 与本轮新增的三枚字段门符号；`CHANGELOG.md` 顶部两条 2026-10-17 都留。
+  `requireWholeExamGradingAccessForExam` 与本轮新增的字段门符号；`CHANGELOG.md` 顶部两条 2026-10-17 都留。
   `DATABASE.md` 水位据此推到 v63 并补这三行台账，文档头同步改 v2.7.1——台账不完整就是新造一处漂移。
 - **合并后重过索引，补登 11 份漏登记文档**：`readus/README.md` 是本分支新建的文件，合并 main 时**不会冲突**，
   于是 main 期间新增的 10 份文档（`整卡改分说明`、`虚拟扫描仪验证`、`虚拟机全链路测试脚本说明` 三份规范，
@@ -90,8 +91,9 @@
   `Windows32位扫描端交叉打包.md`。逐份按「现行规范 / 时间点记录」归类登记，未对照代码核的都写「未逐条复核」；
   `readus/images/` 与「改整卡改分、出 32 位包」两个任务入口一并补上。维护约定新增第 3 条：**合并 main 后必须重过一遍索引**，
   这种漏项在 diff 里看不见，只能比对目录清单。
-- 另开两个 issue 跟进本轮不做的事：#335（背景图上传 5 MiB 硬编码改「默认值 + `PROJECTX_*` + 天花板」三档）、
-  #336（学生历史背景图的清理口径与透明度是否纳入禁令，待拍板）。
+- #335（背景图上传 5 MiB 硬编码改「默认值 + `PROJECTX_*` + 天花板」三档）仍待做。
+  #336 里「学生是否还能看到背景、透明度是否纳入禁令」已由随后整合的 #337 决定：学生网页端不显示背景，
+  也不能改透明度；历史文件本身仍不删除。
 
 **PR #334 第二轮返修（bot inline 评审 5 条，同日）**
 

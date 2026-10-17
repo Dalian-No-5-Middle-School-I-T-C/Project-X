@@ -515,8 +515,8 @@ Body: multipart/form-data, files[]
 | 教师 | 读写 | 读写 | 读写 | 读写 | 无 |
 | 学生 | 无 | 无 | 无 | 查看自己的（`score:read`） | 无 |
 
-> 学生唯一的权限位是 `score:read`：不能读答题卡列表，也不能自助改阅卷设置或上传背景图（#322，
-> 口径见 [`ACCOUNT-CONTROL.md`](./ACCOUNT-CONTROL.md) 第 4 节）。学生的自助范围仅限本人外观与本人 AI 服务商配置。
+> 学生唯一的权限位是 `score:read`：不能读答题卡列表，也不能自助改阅卷设置、看到背景图、改背景透明度或上传背景图（#322，
+> 口径见 [`ACCOUNT-CONTROL.md`](./ACCOUNT-CONTROL.md) 第 4 节）。学生的自助范围是本人皮肤 / 明暗 / 导航栏，以及本人 AI 服务商配置。
 
 ---
 

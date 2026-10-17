@@ -146,20 +146,21 @@ system:manage               系统维护（仅管理员）
 
 ### 自助设置接口的字段门（#322，2026-10-17）
 
-「账号设置」页对学生是**部分开放**的：外观类设置属于本人偏好，阅卷类设置属于教师职责，
-二者共用 `PATCH /api/users/me/settings`，因此按字段而不是按整条请求收口
-（两个门都在 `src/apps/answer-card/server/middleware.ts`）：
+「账号设置」页对学生是**部分开放**的：皮肤、明暗和底部导航属于本人偏好，阅卷设置和背景图不属于。
+它们共用 `PATCH /api/users/me/settings`。被禁字段一旦出现就整单 403，不带这些字段时其余项仍可写。
+判定函数在 `src/apps/answer-card/server/middleware.ts`，读写接线在 `server/index.ts`：
 
 | 门 | 管住的字段 / 动作 | 判定口径 | 拒绝时 |
 |------|------------------|----------|--------|
-| `canWriteGradingSelfSettings(user)` | `scoreDisplayMode`、`reviewConfidenceThreshold`（常量表 `GRADING_SELF_SETTING_FIELDS`） | **角色权限位** `grade:write`——管理员可在权限矩阵里调整，不在代码里写死 role 名单 | 403，仅当请求确实带了这两个字段 |
+| `canWriteGradingSelfSettings(user)` | `scoreDisplayMode`、`reviewConfidenceThreshold`（常量表 `GRADING_SELF_SETTING_FIELDS`） | **角色权限位** `grade:write`——管理员可在权限矩阵里调整，不在代码里写死 role 名单 | 整单 403，仅当请求确实带了这两个字段 |
+| `isStudentAccount(user)` | `backgroundOpacity`；`GET /api/users/me/settings` 的透明度读数；`GET /api/app/background` | **角色身份**：`student` 一律按「没有背景」处理。故意不看权限位 | 读：透明度改写成 0，背景图 404。写：PATCH 带 `backgroundOpacity` 则整单 403。历史文件不删 |
 | `requireBackgroundUploadAccess` | `POST /api/users/me/background`（上传自定义背景图） | **角色身份**：`student` 一律拒绝。故意不看权限位——给某人放开壁纸不应连带给他改分权限 | 403；门挂在 multer **之前**，被拒请求不会先落盘 |
 
-学生仍保留的自助能力：界面皮肤 / 明暗模式 / Tab 栏显隐 / 背景图透明度，以及本人 AI 服务商配置
-（`/api/ai/providers` 按 `user_id` 隔离、密钥加密存储）。透明度之所以留口，是因为未上传自定义
-背景时它作用于全局默认背景 `resources/background.jpg`；历史遗留的学生背景图仍只对本人可见。
-前端同步隐藏阅卷 Tab 与上传按钮（`AccountSettingsPage.tsx`），并在保存时只提交允许的字段，
-避免学生改外观时被阅卷字段的 403 连带打断——但**授权口径始终以上表的后端门为准**。
+学生仍保留的自助能力：界面皮肤 / 明暗模式 / Tab 栏显隐，以及本人 AI 服务商配置
+（`/api/ai/providers` 按 `user_id` 隔离、密钥加密存储）。背景图不在此列：学生网页端不挂浮层，
+也不能改透明度或上传。前端同步隐藏阅卷 Tab 与整段背景区（`AccountSettingsPage.tsx`），
+并在保存时只提交允许的字段，避免夹带被禁字段时整单 403 把底部导航一起打断——
+但**授权口径始终以上表的后端门为准**。
 页签回退只在「请求的正是被隐藏的阅卷设置」时发生（`!canEditGradingSettings && settingsTab === "grading"`），
 写成「无 `grade:write` 就一律回客户端设置」会把学生的 AI 页签一起锁死，那是越界；`verify:auth` 里有一条
 源码接线断言看着这一点。
@@ -202,10 +203,10 @@ system:manage               系统维护（仅管理员）
 
 | 方法 | 自助路径 | 权限 | 说明 |
 |------|----------|------|------|
-| GET | `/api/users/me/settings` | 登录 | 读取本人设置（成绩显示方式、判分置信度阈值、背景透明度、Tab 栏、皮肤、明暗） |
-| PATCH | `/api/users/me/settings` | 登录 + 字段门 | 外观项人人可写；`scoreDisplayMode` / `reviewConfidenceThreshold` 需 `grade:write`，否则 403（#322） |
+| GET | `/api/users/me/settings` | 登录 | 读取本人设置。学生的 `backgroundOpacity` 固定返回 0，库里的历史值不下发（#322） |
+| PATCH | `/api/users/me/settings` | 登录 + 字段门 | `scoreDisplayMode` / `reviewConfidenceThreshold` 需 `grade:write`；学生带 `backgroundOpacity` 也整单 403。不带这些字段时皮肤 / 明暗 / Tab 栏可写（#322） |
 | POST | `/api/users/me/background` | 登录，**学生拒绝** | 上传自定义背景图（图片类型校验 + 体积上限）；学生账号 403（#322） |
-| GET | `/api/app/background` | 匿名/登录 | 返回本人自定义背景，无则回落全局默认背景；历史学生背景只对本人可见 |
+| GET | `/api/app/background` | 匿名/登录 | 非学生：本人自定义背景优先，否则全局默认背景。学生：404，自定义图和默认图都不下发（#322） |
 
 ### 5.3 班级管理 `/api/classes`（读：管理员+教师；写：`class:manage` 仅管理员）
 

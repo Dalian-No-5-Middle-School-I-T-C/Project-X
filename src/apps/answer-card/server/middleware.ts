@@ -559,9 +559,15 @@ export function requirePermissionCompat(permission: string) {
  * 成绩指标显示口径、复核置信度阈值。
  *
  * 按字段收敛而不是整条拒绝——学生账号改皮肤 / 明暗 / Tab 栏等外观项照常可用，
- * 只关掉「阅卷」这两项（issue #322 的诉求边界）。
+ * 阅卷只关掉这两项。背景图透明度另按学生身份拒绝，不放进这个清单，
+ * 避免「放开壁纸」和「放开改分」绑在同一个权限位上。
  */
 export const GRADING_SELF_SETTING_FIELDS = ["scoreDisplayMode", "reviewConfidenceThreshold"] as const;
+
+/** 网页端学生身份。背景图的显示、透明度与上传都按这个身份收口，不看 grade:write。 */
+export function isStudentAccount(user?: { role_name?: string } | null): boolean {
+  return user?.role_name === ROLE_NAMES.STUDENT;
+}
 
 /**
  * 当前身份能否写自助设置里的阅卷字段。与 `requirePermissionCompat` 同口径：
@@ -595,7 +601,7 @@ export function requireBackgroundUploadAccess(
     next();
     return;
   }
-  if (req.user.role_name === ROLE_NAMES.STUDENT) {
+  if (isStudentAccount(req.user)) {
     res.status(403).json({ message: "权限不足：学生账号不能上传自定义背景图" });
     return;
   }
