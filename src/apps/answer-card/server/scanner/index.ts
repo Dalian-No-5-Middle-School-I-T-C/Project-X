@@ -1,5 +1,5 @@
 import { scanCorrectionRouter } from "../../../../server/routes/scan-correction";
-import { processScannerSession, discardScannerGroup } from "../../../../server/services/scannerSubmissions";
+import { processScannerSession, discardScannerGroup, listActiveReceiptGroups } from "../../../../server/services/scannerSubmissions";
 import { scannerLegacyRecoveryRouter } from "../../../../server/routes/scanner-legacy-recovery";
 import {
   filterRecognitionJson,
@@ -31,6 +31,7 @@ import { safeId, dataDir } from "../storage";
 import { findCardForLayout } from "../card-layout";
 import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
 import { collectSessionResults, groupSessionPages } from "./session-results";
+import { filterDeletableGroups } from "../../../../shared/scanPostprocess";
 
 // persistScannerResultToMainDb 的串行队列（模块级，跨请求生效）：
 // better-sqlite3 是单连接,并发事务会在 BEGIN/COMMIT 之间互相穿插（见 SqliteAdapter.transaction 注释），
@@ -566,6 +567,37 @@ export function createScannerRouter(twainEnabled = true): Router {
       if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
       await discardScannerGroup(card, sessionId, String(req.params.groupId));
       res.json(await processScannerSession(card, sessionId, "validate"));
+    } catch (error) { next(error); }
+  });
+
+  // 后处理页·视图 1 多选删除：只删本机扫描记录与识别结果，不动远端已上传成绩。
+  // 有非 discarded/superseded 回执的组必须 force（客户端已二次确认代价），否则 409 列出 blocked。
+  router.delete("/session/:sessionId/groups", async (req, res, next) => {
+    try {
+      const sessionId = safeId(req.params.sessionId);
+      const body = (req.body ?? {}) as { groupIds?: unknown; force?: unknown };
+      const groupIds = Array.isArray(body.groupIds)
+        ? [...new Set(body.groupIds.filter((g): g is string => typeof g === "string" && g.length > 0))]
+        : [];
+      if (!groupIds.length) { res.status(400).json({ message: "groupIds 不能为空" }); return; }
+      const session = await getSession(sessionId);
+      if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
+      if (session.status === "scanning") { res.status(409).json({ message: "请等待扫描结束" }); return; }
+      const card = await findCardForLayout(session.card_id);
+      if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+      const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
+      const groups = groupSessionPages(card, records).groups;
+      const { getMysqlDb } = await import("../../../../server/db");
+      const active = await listActiveReceiptGroups(getMysqlDb(), sessionId, groupIds);
+      const { deletable, blocked } = filterDeletableGroups(groupIds, new Map(active.map(groupId => [groupId, true])), body.force === true);
+      if (blocked.length) {
+        res.status(409).json({ message: "所选卷包含已上传或待确认的回执，确认删除远端不受影响后请重试", blocked });
+        return;
+      }
+      const missing = groupIds.filter(groupId => !groups.has(groupId));
+      for (const groupId of deletable) for (const row of groups.get(groupId) ?? []) await deleteScanRecord(row.record.id);
+      const result = await processScannerSession(card, sessionId, "validate");
+      res.json({ ...result, deletedGroups: deletable.length, missingGroups: missing });
     } catch (error) { next(error); }
   });
 

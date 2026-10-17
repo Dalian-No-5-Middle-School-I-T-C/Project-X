@@ -521,3 +521,18 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
     response.reviewCards = all.filter(r => r.state === "pending" && r.previously_saved).map(conflictCard);
     return visible(response);
 }
+
+/**
+ * 删除护栏数据源：这些组里哪些还存在非 discarded/superseded 的回执。
+ * 回执行在 validate 阶段就写入（state=pending），保存后置 saved，冲突时置 conflict/held/roster，
+ * 因此「有回执」= 本机已有成绩归属或待老师确认的记录，删本地记录前必须显式 force。
+ */
+export async function listActiveReceiptGroups(db: DbAdapter, sessionId: string, groupIds: readonly string[]): Promise<string[]> {
+  if (!groupIds.length) return [];
+  const placeholders = groupIds.map(() => "?").join(",");
+  const rows = await db.all<{ group_id: string }>(
+    `SELECT DISTINCT group_id FROM scanner_submissions WHERE session_id = ? AND group_id IN (${placeholders}) AND state NOT IN ('discarded','superseded')`,
+    [sessionId, ...groupIds],
+  );
+  return rows.map(row => row.group_id);
+}
