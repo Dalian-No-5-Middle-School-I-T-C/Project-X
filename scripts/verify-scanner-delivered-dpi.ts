@@ -60,8 +60,8 @@ function main(): void {
     [{ width: 2480, height: 3508 }, { width: 2480, height: 3508 }, { width: 1654, height: 2339 }],
     { dpi: 300, paperSize: "A4" }
   );
-  check(duplex.samplePages === 3 && duplex.status === "match",
-    `多页取样不被个别异常页带偏（取中位数，samples=${duplex.samplePages}, delivered=${duplex.deliveredDpi}）`);
+  check(duplex.status === "mismatch" && Boolean(duplex.message?.includes("第 3/3 页")),
+    `多页中一页按 200 DPI 出图必须保留异常，不能被中位数抹平 (status=${duplex.status})`);
 
   const a3 = verifyDeliveredScanDpi([{ width: 3508, height: 4961 }], { dpi: 300, paperSize: "A3" });
   check(a3.status === "match", `A3 @300dpi（3508×4961）判为生效 (status=${a3.status})`);
@@ -110,7 +110,7 @@ function main(): void {
 
   // 几何反查分不清「密度被替代」与「进了同比例的不同纸张」，提示必须同时点出纸型这一侧
   check(Boolean(downgraded.message?.includes("纸")), "尺寸反查的提示要提醒核对进纸纸张与纸型");
-  check(Boolean(reported.message?.includes("驱动回报的密度")), "两种来源要在提示里说清是哪一种");
+  check(Boolean(reported.message?.includes("驱动回报")), "两种来源要在提示里说清是哪一种");
 
   console.log("\n\x1b[36m== 逐轴判定：两轴偏差不能相抵（评审点名 350×250）==\x1b[0m");
 
@@ -121,8 +121,6 @@ function main(): void {
     `350×250 报为未生效并留下两轴原值 (status=${anisotropic.status}, X=${anisotropic.deliveredDpiX}, Y=${anisotropic.deliveredDpiY})`);
   check(Boolean(anisotropic.message?.includes("350")) && Boolean(anisotropic.message?.includes("250")),
     "提示里点名两轴数值，操作者能看出是方向变形而不是密度偏低");
-  check(Boolean(anisotropic.message?.includes("长宽比与所选纸型对不上")),
-    "几何侧被排除时在提示里说清，别让操作者以为两路证据都支持结论");
 
   // 交换轴向：异常必须跟着方向走，不能因为「同样一对数」而报成同一种朝向。
   const swapped = verifyDeliveredScanDpi(
@@ -141,11 +139,14 @@ function main(): void {
   check(equalAxis.status === "match" && equalAxis.deliveredDpiX === 300 && equalAxis.deliveredDpiY === 300,
     "等轴且贴合设定 → 仍判生效，两轴原值一并给出");
 
-  // 几何数据被排除（长宽比超差）时，等轴的回报值单独也能下结论——这是「不能靠两轴相抵」之外的另一半要求。
+  // 设备回报两轴一致，但像素长宽比与纸型对不上：不能只看回报值判生效。
   const geometryExcluded = verifyDeliveredScanDpi(
     [{ width: 2895, height: 2923, dpi_x: 300, dpi_y: 300 }], { dpi: 300, paperSize: "A4" });
-  check(geometryExcluded.status === "match" && geometryExcluded.source === "device",
-    `几何被排除、回报两轴一致（300/300）→ 按回报值判生效 (status=${geometryExcluded.status}, source=${geometryExcluded.source})`);
+  check(geometryExcluded.status === "mismatch"
+    && Boolean(geometryExcluded.message?.includes("350"))
+    && Boolean(geometryExcluded.message?.includes("250"))
+    && Boolean(geometryExcluded.message?.includes("长宽比")),
+    `设备回报 300×300、像素反查 350×250 且比例异常 → 仍要提示纸型/裁切/变形 (status=${geometryExcluded.status})`);
 
   // 回报两轴一致，但像素几何本身是 325×275：代表值平均后仍是 300，不能据此判「已生效」。
   const geometryAnisotropicAgainstDevice = verifyDeliveredScanDpi(
@@ -161,13 +162,22 @@ function main(): void {
     && Boolean(geometryAnisotropic.message?.includes("短边方向")) && Boolean(geometryAnisotropic.message?.includes("长边方向")),
     `仅尺寸数据时按短边/长边两轴判定（354×300 差 15%）(status=${geometryAnisotropic.status}, delivered=${geometryAnisotropic.deliveredDpi})`);
 
+  const mixedDeviceReport = verifyDeliveredScanDpi([
+    { dpi_x: 300, dpi_y: 300 },
+    { dpi_x: 350, dpi_y: 250 },
+    { dpi_x: 300, dpi_y: 300 }
+  ], { dpi: 300, paperSize: "A4" });
+  check(mixedDeviceReport.status === "mismatch" && Boolean(mixedDeviceReport.message?.includes("第 2/3 页")),
+    `三页中仅一页回报 350×250 → 该页不能被整批中位数抹平 (status=${mixedDeviceReport.status})`);
+
   console.log("\n\x1b[36m== 数据不可用时不下结论 ==\x1b[0m");
 
   const noDims = verifyDeliveredScanDpi([{ }, { width: 0, height: 0 }], { dpi: 300, paperSize: "A4" });
   check(noDims.status === "unknown" && noDims.deliveredDpi === undefined, "旧桥不回报尺寸 → unknown（不猜）");
 
   const oddAspect = verifyDeliveredScanDpi([{ width: 2480, height: 1000 }], { dpi: 300, paperSize: "A4" });
-  check(oddAspect.status === "unknown", "长宽比与纸型对不上（2480×1000 这类异常尺寸）→ unknown，不把尺寸问题报成 DPI 问题");
+  check(oddAspect.status === "mismatch" && Boolean(oddAspect.message?.includes("长宽比")),
+    "长宽比与纸型对不上（2480×1000）→ 提示核对纸型/裁切/变形，不能静默判生效");
 
   const badDpi = verifyDeliveredScanDpi([{ width: 2480, height: 3508 }], { dpi: 0, paperSize: "A4" });
   check(badDpi.status === "unknown", "设定 DPI 非法（0）→ unknown");

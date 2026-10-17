@@ -197,7 +197,7 @@ export async function runScanSession(
     }
     // 终态写入走 markSessionTerminal：内部先把这条会话排队的告警写完，再让状态变成 completed。
     // 反过来（先写终态、告警还在异步队列里）会让恰在此刻重连的订阅读到旧 warnings_json 就关流。
-    await markSessionTerminal(sessionId, "completed");
+    if (!await markSessionTerminal(sessionId, "completed")) return sessionId;
 
     onProgress({
       sessionId, type: "done",
@@ -213,7 +213,7 @@ export async function runScanSession(
     if (current?.status === "cancelled") {
       return sessionId;
     }
-    await markSessionTerminal(sessionId, "error", msg);
+    if (!await markSessionTerminal(sessionId, "error", msg)) return sessionId;
     onProgress({ sessionId, type: "error", message: msg });
     throw error;
   }

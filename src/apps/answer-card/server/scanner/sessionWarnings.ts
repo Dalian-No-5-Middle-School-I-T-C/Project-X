@@ -5,8 +5,9 @@
  * 只广播会让「本次批次一张红笔都没采纳」这类结论在横幅和「复制诊断」里永久缺席。
  * 落库是异步的，所以终态写入之前必须先把队列排空——否则重连的订阅会先读到终态与旧的
  * `warnings_json`，补发完立刻关流，稍后才写完的那条告警再也没有机会被送出去。
+ * 终态转换还必须带旧状态条件：等待队列期间另一个请求可能已写入 cancelled。
  */
-import { appendSessionWarning, updateSessionStatus } from "../database/scan-store";
+import { appendSessionWarning, transitionSessionStatus } from "../database/scan-store";
 
 // 会话内串行的必要之处在于 appendSessionWarning 是「读行 → 去重 → 写回」，并发写会互相覆盖。
 // 不进 enqueuePersist：那条队列承载「扫描 → 主库」的长任务，把一条单行 UPDATE 排在它们后面，
@@ -52,7 +53,7 @@ export async function markSessionTerminal(
   sessionId: string,
   status: "completed" | "error" | "cancelled",
   errorMsg?: string
-): Promise<void> {
+): Promise<boolean> {
   await flushSessionWarnings(sessionId);
-  await updateSessionStatus(sessionId, status, errorMsg);
+  return await transitionSessionStatus(sessionId, status, errorMsg);
 }

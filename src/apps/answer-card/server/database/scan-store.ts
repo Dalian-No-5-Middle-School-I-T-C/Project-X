@@ -116,6 +116,21 @@ export async function updateSessionStatus(
   );
 }
 
+/** 只允许从非终态进入终态，避免完成/错误覆盖已经落库的取消或其他终态。 */
+export async function transitionSessionStatus(
+  id: string,
+  status: Extract<ScanSession["status"], "completed" | "error" | "cancelled">,
+  errorMsg?: string
+): Promise<boolean> {
+  const result = await db().run(
+    `UPDATE twain_scan_sessions
+     SET status = ?, error_msg = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND status NOT IN ('completed', 'error', 'cancelled')`,
+    status, errorMsg ?? null, id
+  );
+  return result.changes > 0;
+}
+
 export async function incrementPageCount(id: string): Promise<void> {
   await db().run(
     "UPDATE twain_scan_sessions SET page_count = page_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",

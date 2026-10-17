@@ -156,9 +156,15 @@ try {
   const cancelResponse = fetch(`http://127.0.0.1:${port}/api/scanner/scan/${racing.id}/cancel`, { method: "POST" });
   await new Promise<void>((resolve) => setTimeout(resolve, 50));
   const racingTypes = await raceTypes(racing.id);
-  assert.equal((await cancelResponse).status, 200, "取消请求必须成功");
+  const cancelResult = await cancelResponse;
+  assert.equal(cancelResult.status, 200, "取消请求必须成功");
+  assert.equal((await cancelResult.json() as { status: string }).status, "cancelled", "取消接口必须明确返回 cancelled");
   assert.deepEqual(racingTypes, ["warning", "cancelled"],
     "订阅初始化期间收到终态，也必须先补发落库告警再关流");
+  assert.equal(await warnings.markSessionTerminal(racing.id, "completed"), false,
+    "已经落库的取消不能被后续完成转换覆盖");
+  assert.equal((await store.getSession(racing.id))?.status, "cancelled",
+    "完成转换被拒绝后，会话最终状态仍是 cancelled");
 } finally {
   warnings.setWarningWriteDelayForTests(0);
 }

@@ -122,23 +122,113 @@ export function verifyDeliveredScanDpi(
   const devicePairs: AxisPair[] = [];
   const geometryPairs: AxisPair[] = [];
   let pagesWithDimensions = 0;
-  for (const page of pages) {
+  for (const [index, page] of pages.entries()) {
+    const pageLabel = pages.length > 1 ? `第 ${index + 1}/${pages.length} 页` : "本页";
     const reportedX = Number(page?.dpi_x), reportedY = Number(page?.dpi_y);
+    let devicePair: AxisPair | undefined;
     if (Number.isFinite(reportedX) && Number.isFinite(reportedY)
       && reportedX >= DELIVERED_SANITY_RANGE[0] && reportedX <= DELIVERED_SANITY_RANGE[1]
       && reportedY >= DELIVERED_SANITY_RANGE[0] && reportedY <= DELIVERED_SANITY_RANGE[1]) {
-      devicePairs.push({ a: reportedX, b: reportedY });
+      devicePair = { a: reportedX, b: reportedY };
+      devicePairs.push(devicePair);
+      const spread = axisSpread(reportedX, reportedY);
+      if (spread > DPI_TOLERANCE) {
+        return {
+          status: "mismatch",
+          requestedDpi,
+          deliveredDpi: representative(reportedX, reportedY),
+          deliveredDpiX: Math.round(reportedX),
+          deliveredDpiY: Math.round(reportedY),
+          source: "device",
+          samplePages: 1,
+          message: `${pageLabel}驱动回报横向 ${Math.round(reportedX)} DPI、纵向 ${Math.round(reportedY)} DPI，`
+            + `两轴相差 ${Math.round(spread * 100)}%，不能按平均值报为已生效。`
+            + "请核对实际进纸、纸型及驱动中的缩放/重采样设置后重扫。"
+        };
+      }
     }
     // 尺寸反查每页都做一次，不因「驱动已经回报」而跳过：驱动谎报 XResolution 而实际按低档出图，
     // 只有像素能揭穿——那恰好是 issue #331 ① 要治的病。
     const a = Number(page?.width), b = Number(page?.height);
-    if (!Number.isFinite(a) || !Number.isFinite(b) || a < 100 || b < 100) continue;
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a < 100 || b < 100) {
+      if (devicePair && (!withinTolerance(devicePair.a, requestedDpi) || !withinTolerance(devicePair.b, requestedDpi))) {
+        const deviceDpi = representative(devicePair.a, devicePair.b);
+        return {
+          status: "mismatch",
+          requestedDpi,
+          deliveredDpi: deviceDpi,
+          deliveredDpiX: Math.round(devicePair.a),
+          deliveredDpiY: Math.round(devicePair.b),
+          source: "device",
+          samplePages: 1,
+          message: `${pageLabel}驱动回报横向 ${Math.round(devicePair.a)} DPI、纵向 ${Math.round(devicePair.b)} DPI，`
+            + `与设定的 ${requestedDpi} DPI 不一致。请把 DPI 改为 ${nearestScanDpiStep(deviceDpi)} 后重扫。`
+        };
+      }
+      continue;
+    }
     pagesWithDimensions += 1;
     const shortEdge = Math.min(a, b), longEdge = Math.max(a, b);
     const dpiByShort = shortEdge / paperShort;
     const dpiByLong = longEdge / paperLong;
-    if (Math.abs(dpiByShort / dpiByLong - 1) > ASPECT_TOLERANCE) continue;
-    geometryPairs.push({ a: dpiByShort, b: dpiByLong });
+    if (Math.abs(dpiByShort / dpiByLong - 1) > ASPECT_TOLERANCE) {
+      const deviceDpi = devicePair ? representative(devicePair.a, devicePair.b) : undefined;
+      return {
+        status: "mismatch",
+        requestedDpi,
+        deliveredDpi: representative(dpiByShort, dpiByLong),
+        source: "geometry",
+        samplePages: 1,
+        message: `${deviceDpi === undefined ? "" : `驱动回报约 ${deviceDpi} DPI，但`}`
+          + `${pageLabel}像素尺寸按所选纸型反查为短边方向 ${Math.round(dpiByShort)} DPI、长边方向 ${Math.round(dpiByLong)} DPI，`
+          + "出图长宽比与所选纸型对不上。请核对实际进纸纸张、是否裁切或变形，以及驱动中的缩放/重采样设置后重扫。"
+      };
+    }
+    const geometryPair = { a: dpiByShort, b: dpiByLong };
+    const geometrySpread = axisSpread(dpiByShort, dpiByLong);
+    if (geometrySpread > DPI_TOLERANCE) {
+      return {
+        status: "mismatch",
+        requestedDpi,
+        deliveredDpi: representative(dpiByShort, dpiByLong),
+        source: "geometry",
+        samplePages: 1,
+        message: `${pageLabel}出图像素尺寸反查为短边方向 ${Math.round(dpiByShort)} DPI、长边方向 ${Math.round(dpiByLong)} DPI，`
+          + `两轴相差 ${Math.round(geometrySpread * 100)}%，平均后不能报为已生效。`
+          + "请核对实际进纸纸张、是否裁切或变形，以及驱动中的缩放/重采样设置后重扫。"
+      };
+    }
+    const geometryDpi = representative(dpiByShort, dpiByLong);
+    const geometryOffRequest = !withinTolerance(dpiByShort, requestedDpi) || !withinTolerance(dpiByLong, requestedDpi);
+    if (devicePair) {
+      const deviceDpi = representative(devicePair.a, devicePair.b);
+      const deviceOffRequest = !withinTolerance(devicePair.a, requestedDpi) || !withinTolerance(devicePair.b, requestedDpi);
+      if (geometryOffRequest || deviceOffRequest || !withinTolerance(geometryDpi, deviceDpi)) {
+        const sourcesDiffer = !withinTolerance(geometryDpi, deviceDpi);
+        return {
+          status: "mismatch",
+          requestedDpi,
+          deliveredDpi: sourcesDiffer ? geometryDpi : deviceDpi,
+          source: sourcesDiffer ? "geometry" : "device",
+          samplePages: 1,
+          message: `${pageLabel}驱动回报横向 ${Math.round(devicePair.a)} DPI、纵向 ${Math.round(devicePair.b)} DPI，`
+            + `出图像素尺寸反查为短边方向 ${Math.round(dpiByShort)} DPI、长边方向 ${Math.round(dpiByLong)} DPI，`
+            + (sourcesDiffer ? "两个来源对不上" : `两者都与设定的 ${requestedDpi} DPI 不一致`)
+            + "。请核对进纸纸张与纸型；纸型无误就检查驱动中的缩放/重采样设置后重扫。"
+        };
+      }
+    } else if (geometryOffRequest) {
+      return {
+        status: "mismatch",
+        requestedDpi,
+        deliveredDpi: geometryDpi,
+        source: "geometry",
+        samplePages: 1,
+        message: `${pageLabel}出图像素尺寸只对应约 ${Math.round(dpiByShort)}×${Math.round(dpiByLong)} DPI，`
+          + `与设定的 ${requestedDpi} DPI 不一致。请核对进纸纸张与纸型；纸型无误就检查驱动中的缩放/重采样设置后重扫。`
+      };
+    }
+    geometryPairs.push(geometryPair);
   }
 
   const hasDeviceReport = devicePairs.length > 0;

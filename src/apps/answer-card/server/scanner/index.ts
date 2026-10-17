@@ -185,7 +185,16 @@ export function createScannerRouter(twainEnabled = true): Router {
         }
 
         const terminated = cancelScan(id);
-        await markSessionTerminal(id, "cancelled", "用户取消扫描");
+        const cancelled = await markSessionTerminal(id, "cancelled", "用户取消扫描");
+        if (!cancelled) {
+          const current = await getSession(id);
+          res.json({
+            message: "扫描已结束，无需取消",
+            status: current?.status ?? session.status,
+            terminated
+          });
+          return;
+        }
         emitProgress(id, { sessionId: id, type: "cancelled", message: "扫描已取消" });
 
         res.json({
