@@ -35,6 +35,8 @@ export function CorrectionCanvas({ document, pageIndex, edit, images, zoom = 1, 
           <polygon
             key={cell.id}
             points={projectRect(cell.rect, geometry.layoutToImage)}
+            data-cell-id={cell.id}
+            data-cell-type={cell.type}
             role="button"
             aria-label={`${label}${selected ? (invalid ? "，异常" : "，已选") : review ? "，存疑" : ""}`}
             aria-pressed={selected}

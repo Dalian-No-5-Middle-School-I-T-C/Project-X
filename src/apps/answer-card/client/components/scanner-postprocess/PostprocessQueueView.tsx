@@ -22,6 +22,8 @@ export interface PostprocessQueueViewProps {
   examId: number | null;
   scans: ScanMeta[];
   layoutPageCount: number;
+  /** 从扫描结果点开的异常：把指针定位到该组，而不是永远从队首开始 */
+  focus?: { sessionId: string; groupId: string } | null;
   /** 处理完成（考号已改、重复卷已定性等）：页面重拉批结果并按需补传 */
   onResolved: (sessionId: string, groupId: string) => void | Promise<void>;
   onJumpToCorrection: (sessionId: string, groupId: string, questionNumber?: SubjectiveQuestionNumber) => void;
@@ -40,12 +42,24 @@ const kindTone = (kind: PostprocessQueueItem["kind"]): "danger" | "warning" | "n
   kind === "low_confidence" ? "warning" : kind === "other" ? "neutral" : "danger"
 );
 
-export function PostprocessQueueView({ queue, channel, examId, scans, layoutPageCount, onResolved, onJumpToCorrection, onDelete }: PostprocessQueueViewProps) {
+export function PostprocessQueueView({ queue, channel, examId, scans, layoutPageCount, focus, onResolved, onJumpToCorrection, onDelete }: PostprocessQueueViewProps) {
   const [cursor, setCursor] = useState(0);
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
   const [resolved, setResolved] = useState<Set<string>>(new Set());
   const [fixTarget, setFixTarget] = useState<{ sessionId: string; groupId: string } | null>(null);
   const seen = useRef<Set<string>>(new Set());
+
+  // 从扫描结果点开某一异常卡时定位到它；focus 变化只跳一次，不跟队列刷新较劲
+  const lastFocus = useRef<string | null>(null);
+  useEffect(() => {
+    const key = focus ? `${focus.sessionId}/${focus.groupId}` : null;
+    if (!key || key === lastFocus.current) return;
+    const index = queue.findIndex(item => `${item.sessionId}/${item.groupId}` === key);
+    if (index < 0) return;
+    lastFocus.current = key;
+    setCursor(index);
+    setFixTarget(null);
+  }, [focus, queue]);
 
   // 队列项在批结果重拉后消失 = 该条已处理；已处理的仍计入进度，否则进度条会随处理退回 0
   useEffect(() => {
@@ -226,7 +240,7 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
   }, [document]);
 
   useEffect(() => {
-    const node = cropRef.current?.querySelector('polygon[aria-label^="学号第"]');
+    const node = cropRef.current?.querySelector('polygon[data-cell-type="student_digit"]');
     node?.scrollIntoView({ block: "center", inline: "center" });
   }, [document, images]);
 

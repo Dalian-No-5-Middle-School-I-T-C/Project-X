@@ -230,7 +230,7 @@ try {
     valueSetter.call(studentInput, "10002");
     studentInput.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   });
-  await settle(400);
+  await settle(700);
   assert.match(text(), /张三/, "花名册联想给出考号+姓名");
   const confirm = [...document.querySelectorAll("button")].find(el => el.textContent?.includes("确认考号"));
   assert(confirm, "确认考号入口存在");

@@ -97,6 +97,8 @@ jobs:
         run: npm run verify:scanner-upload-manager
       - name: Scanner panel React and SSE session metadata
         run: npm run verify:scanner-panel-session
+      - name: Scanner postprocess page pure logic, delete guard and mounted views
+        run: npm run verify:scanner-postprocess-all
       - name: Scanner partial transfer failure persistence
         run: npm run verify:scanner-partial-failure
 
