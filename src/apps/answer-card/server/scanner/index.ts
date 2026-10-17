@@ -22,11 +22,17 @@ import {
   getScanRecordWithResult,
   deleteScanRecord,
   getSession,
-  updateSessionStatus,
+  parseSessionWarnings,
   listSessions,
   deleteSession,
   listScanRecordsGroupedByStudent
 } from "../database/scan-store";
+import {
+  flushSessionWarnings,
+  markSessionTerminal,
+  persistSessionWarning,
+  reserveSessionCancellation
+} from "./sessionWarnings";
 import { safeId, dataDir } from "../storage";
 import { findCardForLayout } from "../card-layout";
 import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
@@ -96,7 +102,13 @@ export function createScannerRouter(twainEnabled = true): Router {
   // Progress event emitters by sessionId (for WebSocket integration)
   const progressEmitters = new Map<string, Set<(event: ScanProgressEvent) => void>>();
 
+  // 告警落库与终态顺序见 ./sessionWarnings：那条队列只按会话串行，且终态写入前必须排空。
   function emitProgress(sessionId: string, event: ScanProgressEvent) {
+    if (event.type === "warning" && event.message?.trim()) {
+      // 广播给当时的监听者，同时落会话行：客户端可能在 202 之后才订阅，或扫描途中断线重连，
+      // 只广播会让告警在横幅和「复制诊断」里永久缺席。
+      persistSessionWarning(sessionId, event.message.trim());
+    }
     const listeners = progressEmitters.get(sessionId);
     if (listeners) {
       for (const fn of listeners) fn(event);
@@ -173,8 +185,18 @@ export function createScannerRouter(twainEnabled = true): Router {
           return;
         }
 
+        reserveSessionCancellation(id);
         const terminated = cancelScan(id);
-        await updateSessionStatus(id, "cancelled", "用户取消扫描");
+        const cancelled = await markSessionTerminal(id, "cancelled", "用户取消扫描");
+        if (!cancelled) {
+          const current = await getSession(id);
+          res.json({
+            message: "扫描已结束，无需取消",
+            status: current?.status ?? session.status,
+            terminated
+          });
+          return;
+        }
         emitProgress(id, { sessionId: id, type: "cancelled", message: "扫描已取消" });
 
         res.json({
@@ -208,14 +230,41 @@ export function createScannerRouter(twainEnabled = true): Router {
           }
         };
 
-        const handler = (event: ScanProgressEvent) => {
+        // 同一连接内一条告警只发一次：监听器先注册，实时告警可能早于下面的补发到达。
+        const sentWarnings = new Set<string>();
+        const writeWarning = (text: string) => {
+          if (!text || sentWarnings.has(text)) return;
+          sentWarnings.add(text);
+          res.write(`data: ${JSON.stringify({ sessionId, type: "warning", message: text })}\n\n`);
+        };
+
+        // 初始化要先排空告警队列并补发旧告警。监听器必须提前注册，防止这段窗口漏掉实时事件；
+        // 但终态在初始化完成前不能关流，否则补发会被 writableEnded 直接跳过。
+        let bootstrapped = false;
+        let terminalSent = false;
+        const queuedEvents: ScanProgressEvent[] = [];
+        const writeEvent = (event: ScanProgressEvent) => {
           if (res.writableEnded || res.destroyed) return;
+          if (event.type === "warning") {
+            writeWarning(event.message?.trim() ?? "");
+            return;
+          }
+          if (terminalSent) return;
           res.write(`data: ${JSON.stringify(event)}\n\n`);
           if (event.type === "done" || event.type === "error" || event.type === "cancelled") {
+            terminalSent = true;
             // 终态即移除自己（不依赖 close 事件的延迟清理），缩小竞态窗口
             removeHandler();
             res.end();
           }
+        };
+        const handler = (event: ScanProgressEvent) => {
+          if (res.writableEnded || res.destroyed) return;
+          if (!bootstrapped) {
+            queuedEvents.push(event);
+            return;
+          }
+          writeEvent(event);
         };
 
         // Register listener
@@ -229,18 +278,25 @@ export function createScannerRouter(twainEnabled = true): Router {
         });
 
         // 订阅时若会话已终态（扫描可能在订阅前就完成/失败/被取消），补发终态事件
+        // 先排空本会话仍在队列里的告警再读行：终态是「告警已写完」之后才写下的，这里也必须等到
+        // 同一时点，否则读到旧 warnings_json 就补发、关流，稍后落库的告警永久丢失。
+        await flushSessionWarnings(sessionId);
         const session = await getSession(sessionId);
         if (res.writableEnded || res.destroyed) return;
-        if (session && (session.status === "completed" || session.status === "error" || session.status === "cancelled")) {
-          removeHandler();
+        // 断线重连或订阅过晚时，先把落在会话行上的告警补回来，再补终态；
+        // 否则「本次批次一张红笔都没采纳」这类结论只在断开前那一瞬存在过。
+        for (const text of parseSessionWarnings(session?.warnings_json)) writeWarning(text);
+        bootstrapped = true;
+        for (const event of queuedEvents) writeEvent(event);
+        if (session && !terminalSent
+          && (session.status === "completed" || session.status === "error" || session.status === "cancelled")) {
           if (session.status === "completed") {
-            res.write(`data: ${JSON.stringify({ sessionId, type: "done", message: "扫描已完成" })}\n\n`);
+            writeEvent({ sessionId, type: "done", message: "扫描已完成" });
           } else if (session.status === "cancelled") {
-            res.write(`data: ${JSON.stringify({ sessionId, type: "cancelled", message: "扫描已取消" })}\n\n`);
+            writeEvent({ sessionId, type: "cancelled", message: "扫描已取消" });
           } else {
-            res.write(`data: ${JSON.stringify({ sessionId, type: "error", message: session.error_msg || "扫描出错" })}\n\n`);
+            writeEvent({ sessionId, type: "error", message: session.error_msg || "扫描出错" });
           }
-          res.end();
         }
       } catch (error) {
         // getSession 等 DB 异常：关闭连接，避免 unhandled rejection 挂住
@@ -513,7 +569,14 @@ export function createScannerRouter(twainEnabled = true): Router {
     return records.length > 0 && records.every(record => record.ocr_status !== "pending" && record.ocr_status !== "processing");
   }
 
-  async function sessionResults(id: string, save: boolean, res: Response, validate = false, previewOnly = false) {
+  async function sessionResults(
+    id: string,
+    save: boolean,
+    res: Response,
+    validate = false,
+    previewOnly = false,
+    warnings?: string[]
+  ) {
     const sessionId = safeId(id);
     const session = await getSession(sessionId);
     if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
@@ -522,7 +585,7 @@ export function createScannerRouter(twainEnabled = true): Router {
     const card = await findCardForLayout(session.card_id);
     if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
     const result = await processScannerSession(card, sessionId, previewOnly ? "preview" : save ? "save" : validate ? "validate" : "preview");
-    res.json(result);
+    res.json(warnings?.length ? { ...result, warnings } : result);
   }
 
   router.post("/session/:sessionId/retry", async (req, res, next) => {
@@ -548,10 +611,16 @@ export function createScannerRouter(twainEnabled = true): Router {
           res.status(400).json({ message: "请输入有效学号（1–64 位字母、数字、下划线或短横线）" }); return;
         }
         const rows = groupSessionPages(card, records).groups.get(groupId)!;
-        await runOcrOnSession(sessionId, session.card_id, () => {}, {
+        const retryWarnings: string[] = [];
+        await runOcrOnSession(sessionId, session.card_id, (event) => {
+          emitProgress(sessionId, event);
+          const message = event.type === "warning" ? event.message?.trim() : "";
+          if (message && !retryWarnings.includes(message)) retryWarnings.push(message);
+        }, {
           recordIds: new Set(rows.map(r => r.record.id)), studentId,
         });
-        await sessionResults(sessionId, false, res, true);
+        await flushSessionWarnings(sessionId);
+        await sessionResults(sessionId, false, res, true, false, retryWarnings);
       });
     } catch (error) { next(error); }
   });

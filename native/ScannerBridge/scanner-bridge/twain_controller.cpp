@@ -692,18 +692,33 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         TW_UINT16 endRc = DSM_Entry(&m_appId, &m_sourceId,
             DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER,
             (TW_MEMREF)&pending);
-        if (endRc != TWRC_SUCCESS) {
+        // 7 + Count==0 只在单面时表示批次结束；双面仍可能在本张背面到达前回到状态 5。
+        // 直接在正面收批会把背面丢掉并报 success，因此双面继续等背面，超时则保留正面并报失败。
+        if (endRc == TWRC_ENDOFLIST && pending.Count == 0 && !config.duplex) {
+            fprintf(stderr, "[ScannerBridge] ENDXFER: end of job after sheet %d (pending=0, simplex)\n", pageNum);
+            m_state = 5;
+            hasMorePages = false;
+            break;
+        }
+        if (endRc != TWRC_SUCCESS && endRc != TWRC_ENDOFLIST) {
             logError("ENDXFER failed: " + twainResultToString(endRc));
             result.errorMessage = "ENDXFER failed: " + twainResultToString(endRc);
             hasMorePages = false;
             break;
+        }
+        if (endRc == TWRC_ENDOFLIST) {
+            fprintf(stderr, "[ScannerBridge] ENDXFER: rc=ENDOFLIST but pending=%u after sheet %d, continuing\n",
+                static_cast<unsigned>(pending.Count), pageNum);
         }
         // 非零（含 0xffff 未知数量）表示 DS 已在状态 6，可直接取下一帧，不会再发 XFERREADY。
         m_state = pending.Count > 0 ? 6 : 5;
         
         // 背面也可能在 Count=0 后到达；必须在当前物理张内等待，不能交给下轮正面。
         if (config.duplex) {
-            if (!shouldWaitForTransfer(pending.Count)) break;
+            if (!shouldWaitForTransfer(pending.Count)) {
+                result.errorMessage = "Duplex scan ended after front side of page " + std::to_string(pageNum);
+                break;
+            }
             if (!waitForState(6, config.pageTimeoutMs)) {
                 result.errorMessage = "Timeout waiting for back side of page " + std::to_string(pageNum);
                 break;
@@ -734,11 +749,22 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             endRc = DSM_Entry(&m_appId, &m_sourceId,
                 DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER,
                 (TW_MEMREF)&pending);
-            if (endRc != TWRC_SUCCESS) {
+            // 同上：7 只在 Count==0 时是作业结束，否则继续等下一页
+            if (endRc == TWRC_ENDOFLIST && pending.Count == 0) {
+                fprintf(stderr, "[ScannerBridge] ENDXFER: end of job after back of sheet %d (pending=0)\n", pageNum);
+                m_state = 5;
+                hasMorePages = false;
+                break;
+            }
+            if (endRc != TWRC_SUCCESS && endRc != TWRC_ENDOFLIST) {
                 logError("ENDXFER (back) failed: " + twainResultToString(endRc));
                 result.errorMessage = "ENDXFER (back) failed: " + twainResultToString(endRc);
                 hasMorePages = false;
                 break;
+            }
+            if (endRc == TWRC_ENDOFLIST) {
+                fprintf(stderr, "[ScannerBridge] ENDXFER: rc=ENDOFLIST but pending=%u after back of sheet %d, continuing\n",
+                    static_cast<unsigned>(pending.Count), pageNum);
             }
             m_state = pending.Count > 0 ? 6 : 5;
         }
@@ -901,7 +927,9 @@ bool TwainController::disableSource() {
         const TW_UINT16 endRc = DSM_Entry(&m_appId, &m_sourceId,
             DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER, &pending);
         fprintf(stderr, "[ScannerBridge] end unfinished transfer before disable rc=%u\n", static_cast<unsigned>(endRc));
-        if (endRc != TWRC_SUCCESS) return false;
+        // 收尾的 ENDXFER 返回 7（随包头文件里的 TWRC_ENDOFLIST）不是失败，可以继续 DISABLEDS；
+        // 是否还有在途帧由 Count 决定，交给下面的 MSG_RESET 清掉。
+        if (endRc != TWRC_SUCCESS && endRc != TWRC_ENDOFLIST) return false;
         m_state = pending.Count > 0 ? 6 : 5;
     }
     if (m_state >= 6) {

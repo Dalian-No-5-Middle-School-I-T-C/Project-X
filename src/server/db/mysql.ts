@@ -1154,6 +1154,10 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
 
   mariadbMigrations.push({ version: 62, name: "scan-correction-pages", sqls: [scanCorrectionSchema("mariadb")] });
 
+  mariadbMigrations.push({ version: 63, name: "scan-session-warnings", sqls: [
+    "ALTER TABLE twain_scan_sessions ADD COLUMN warnings_json TEXT",
+  ] });
+
   for (const m of mariadbMigrations) {
     if (applied.has(m.version)) continue;
     for (const sql of m.sqls) {

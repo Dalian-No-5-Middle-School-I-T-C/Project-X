@@ -1341,6 +1341,12 @@ MIGRATIONS.push({ version: 61, name: "scanner-session-card-version", up(db) {
 
 MIGRATIONS.push({ version: 62, name: "scan-correction-pages", up(db) { db.exec(scanCorrectionSchema("sqlite")); } });
 
+MIGRATIONS.push({ version: 63, name: "scan-session-warnings", up(db) {
+  db.transaction(() => {
+    addColumnIfMissing(db, "twain_scan_sessions", "warnings_json", "TEXT");
+  })();
+} });
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
