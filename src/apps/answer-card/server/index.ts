@@ -151,7 +151,8 @@ import {
   makeGate, getVisibleExamIds, requireExamAccess,
   validateExamIdsAccess, setAuthEnforced, hasViewPermission, makeViewPermissionGate, isTeacherPermittedForWholeExam,
   requirePermissionCompat, requireWholeExamGradingAccess, canManageExamOrganization, hasExamOrganizationAffinity,
-  canGradeBlock, isExamSoftDeleted
+  canGradeBlock, isExamSoftDeleted,
+  canWriteGradingSelfSettings, GRADING_SELF_SETTING_FIELDS, requireBackgroundUploadAccess
 } from "./middleware";
 import { getAssignedStudentIdSet, isClaimableForAssignedSet } from "../../../server/services/ReviewPoolService";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
@@ -899,6 +900,20 @@ export async function createApp(): Promise<express.Express> {
     try {
       const userId = _req.user!.id;
       const body = _req.body as Record<string, unknown>;
+
+      // #322: 学生账号不得在网页端修改阅卷设置。按字段拒绝而不是整条拒绝——
+      // 同一接口还承载皮肤/明暗/Tab 栏等外观项，那些保持可用。
+      // 口径复用角色权限表（见 canWriteGradingSelfSettings），不在这里写死 role 名单。
+      if (!canWriteGradingSelfSettings(_req.user)) {
+        const askedGradingFields = GRADING_SELF_SETTING_FIELDS.filter((field) => body[field] !== undefined);
+        if (askedGradingFields.length > 0) {
+          res.status(403).json({
+            message: `权限不足：修改阅卷设置需要 ${PERMISSIONS.GRADE_WRITE}`
+          });
+          return;
+        }
+      }
+
       const db = getMysqlDb();
 
       // 读取切换前快照，用于主题审计（from_*）
@@ -1021,7 +1036,9 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/users/me/background", authMiddleware, bgUpload.single("file"), async (req, res, next) => {
+  // #322: 学生账号不能上传自定义背景图。门放在 multer 之前——
+  // 否则被拒的请求仍会先把上传体落盘到 dataDir/backgrounds 再返回 403。
+  app.post("/api/users/me/background", authMiddleware, requireBackgroundUploadAccess, bgUpload.single("file"), async (req, res, next) => {
     try {
       if (!req.file) {
         res.status(400).json({ error: "请选择图片文件" });

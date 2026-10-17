@@ -13,6 +13,7 @@
  *   5. 班级/年级/花名册管理
  *   6. 学生自助查分（ScoreRepository）
  *   7. 中间件 requirePermission / requireRole 的放行与拦截
+ *      （含 #322：学生账号的自助「阅卷设置」字段门与「上传背景图」门）
  *
  * 全部用例通过则进程退出码为 0，否则为 1。
  */
@@ -90,9 +91,11 @@ async function main(): Promise<void> {
   const { ScoreRepository } = await import("../src/server/repositories/ScoreRepository");
   const { AnalysisRepository } = await import("../src/server/repositories/AnalysisRepository");
   const { requirePermission, requireRole } = await import("../src/server/middleware/auth");
-  const { requireExamAccess, getVisibleExamIds, canGradeBlock, hasViewPermission, hasGroupViewPermission } = await import(
+  const { requireExamAccess, getVisibleExamIds, canGradeBlock, hasViewPermission, hasGroupViewPermission,
+    requireBackgroundUploadAccess, canWriteGradingSelfSettings, GRADING_SELF_SETTING_FIELDS } = await import(
     "../src/apps/answer-card/server/middleware"
   );
+  const { isAuthEnforced } = await import("../src/server/lib/authEnforce");
   const perms = await import("../src/server/auth/permissions");
   const { PERMISSIONS, ROLE_IDS, roleHasPermission, permissionsForRole, loadRolePermissions } = perms;
 
@@ -435,6 +438,39 @@ async function main(): Promise<void> {
   ok(
     (await runExamAccess(studentUser, "PUT", "/api/exams/" + examId + "/student/" + student.id + "/scores", examId)).status === 403,
     "学生写操作（改分）被 403"
+  );
+
+  // ── #322 网页端学生账号权限收敛 ──────────────────────────
+  // 「阅卷设置」（成绩指标显示 / 复核置信度阈值）与「上传背景图」对学生账号关闭：
+  // 阅卷字段按角色权限表判定（学生默认只有 score:read → 拒绝），背景图上传按学生身份拒绝。
+  ok(canWriteGradingSelfSettings(adminUser), "#322 管理员可写自助阅卷设置");
+  ok(canWriteGradingSelfSettings(teacherUser), "#322 教师可写自助阅卷设置");
+  ok(!canWriteGradingSelfSettings(studentUser), "#322 学生不可写自助阅卷设置");
+  ok(
+    canWriteGradingSelfSettings(null) === !isAuthEnforced(),
+    "#322 无身份时沿用兼容模式口径（强制鉴权=拒绝，单机免登录=放行）"
+  );
+  ok(
+    (GRADING_SELF_SETTING_FIELDS as readonly string[]).includes("scoreDisplayMode") &&
+      (GRADING_SELF_SETTING_FIELDS as readonly string[]).includes("reviewConfidenceThreshold"),
+    "#322 自助设置里的阅卷字段清单覆盖两项"
+  );
+  ok((await runMiddleware(requireBackgroundUploadAccess, adminUser)).allowed, "#322 管理员可上传背景图");
+  ok((await runMiddleware(requireBackgroundUploadAccess, teacherUser)).allowed, "#322 教师可上传背景图");
+  ok((await runMiddleware(requireBackgroundUploadAccess, studentUser)).status === 403, "#322 学生上传背景图被 403");
+  ok((await runMiddleware(requireBackgroundUploadAccess, undefined)).status === 401, "#322 未登录上传背景图被 401");
+
+  // 接线检查：门必须挂在 multer 之前——否则被拒的请求已把上传体落盘到 dataDir/backgrounds
+  const selfSettingsSource = readFileSync(path.resolve("src/apps/answer-card/server/index.ts"), "utf8");
+  ok(
+    /app\.post\(\s*"\/api\/users\/me\/background",\s*authMiddleware,\s*requireBackgroundUploadAccess,\s*bgUpload\.single/.test(
+      selfSettingsSource
+    ),
+    "#322 背景图路由在 multer 前挂载 requireBackgroundUploadAccess"
+  );
+  ok(
+    /if \(!canWriteGradingSelfSettings\(_req\.user\)\)/.test(selfSettingsSource),
+    "#322 PATCH /api/users/me/settings 使用阅卷字段门"
   );
 
   // ── 8. #246 权限矩阵运行时消费 / 题块授权 / auto_delete 软删除 ──

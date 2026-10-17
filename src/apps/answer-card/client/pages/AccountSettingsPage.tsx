@@ -11,6 +11,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
+import { PERMISSIONS } from "../auth/types";
 import { useWorkspace } from "../WorkspaceContext";
 import { fetchJson, authFetch } from "../auth/api";
 import { cn } from "../lib/utils";
@@ -137,12 +138,22 @@ function AiProviderForm({
  * /account-settings 路由页：个人「账号设置」（阅卷/客户端/AI/数据存储）。
  * 由 AccountMenu 的设置 Dialog 迁移为独立页面（v2 UI 重构 P6）。
  *
+ * #322: 「阅卷设置」页签只对持 grade:write 的账号渲染，「上传背景图」按钮对学生账号隐藏；
+ * 后端（PATCH /api/users/me/settings 字段门 + POST /api/users/me/background 角色门）
+ * 是同一规则的强制层，这里只是不再把不可用的控件摆出来。
+ *
  * P6 重写：放弃 vertical Tabs 左栏列布局（v2 Tabs 对 vertical 支持不佳时内容列塌缩），
  * 改为 v2 Tabs 默认「横向顶部 Tab 条 + 内容区全宽自然排布」，页面容器放宽为 max-w-5xl。
  * 功能零丢失，仅重排布局与样式。
  */
 export function AccountSettingsPage() {
-  const { isAdmin, refreshUser } = useAuth();
+  const { user, isAdmin, isStudent, hasPermission, refreshUser } = useAuth();
+  // #322: 学生账号在网页端不再提供「阅卷设置」与「上传背景图」两个入口。
+  // 判据与后端同源：阅卷设置看 grade:write 权限位（canWriteGradingSelfSettings），
+  // 背景图上传看学生身份（requireBackgroundUploadAccess）。
+  // 无身份的单机免登录模式保持可用，与后端「无用户时不收敛」的口径一致。
+  const canEditGradingSettings = !user || hasPermission(PERMISSIONS.GRADE_WRITE);
+  const canUploadBackground = !isStudent;
   // v2.1.0: 皮肤/明暗状态由 App 顶层持有（WorkspaceContext 下发），此处直接读改即时生效
   const { theme, setTheme, skin, setSkin } = useWorkspace();
   // v1.6.0: 非 Electron 环境（WEB 端）不显示扫描端选项和数据库设置
@@ -164,6 +175,8 @@ export function AccountSettingsPage() {
   });
   const [showHelpCard, setShowHelpCard] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("grading");
+  // #322: 学生没有「阅卷设置」页签，默认落点回退到「客户端设置」，避免出现空白内容区
+  const activeSettingsTab: SettingsTab = canEditGradingSettings ? settingsTab : "client";
   // 五轮C1：侧边栏自动展开（客户端级 localStorage 设置，原误放系统级配置页，迁至此「外观/皮肤」区）
   const [railAutoExpand, setRailAutoExpand] = useState(() => {
     try { return localStorage.getItem("projectx-rail-auto-expand") === "true"; } catch { return false; }
@@ -238,15 +251,20 @@ export function AccountSettingsPage() {
   async function saveSettings() {
     setSettingsMsg("");
     try {
+      // #322: 学生提交时不带阅卷字段——后端对越权字段整条返回 403，
+      // 若继续全量提交，「客户端设置」的保存会被阅卷字段连坐失败。
+      const payload: Record<string, unknown> = {
+        backgroundOpacity: bgOpacity,
+        showTabBar: showTabBar,
+      };
+      if (canEditGradingSettings) {
+        payload.scoreDisplayMode = displayMode;
+        payload.reviewConfidenceThreshold = reviewThreshold;
+      }
       await fetchJson("/api/users/me/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scoreDisplayMode: displayMode,
-          reviewConfidenceThreshold: reviewThreshold,
-          backgroundOpacity: bgOpacity,
-          showTabBar: showTabBar,
-        })
+        body: JSON.stringify(payload)
       });
       setSettingsMsg("已保存");
       // v1.9.0: 刷新用户状态使 Tab 栏开关即时生效
@@ -369,19 +387,24 @@ export function AccountSettingsPage() {
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-5 py-4">
           <div className="min-w-0">
             <h1 className="mb-0 text-lg font-semibold text-foreground">账号设置</h1>
-            <p className="m-0 mt-1.5 text-xs text-muted-foreground">阅卷 · 客户端 · AI 服务商 · 数据存储</p>
+            <p className="m-0 mt-1.5 text-xs text-muted-foreground">
+              {canEditGradingSettings ? "阅卷 · 客户端 · AI 服务商 · 数据存储" : "客户端 · AI 服务商"}
+            </p>
           </div>
         </div>
 
         {/* v2 Tabs 默认横向：顶部 Tab 条 + 内容区全宽自然排布（绕开 vertical 列布局塌缩） */}
         <Tabs
-          value={settingsTab}
+          value={activeSettingsTab}
           onValueChange={(v) => setSettingsTab(v as SettingsTab)}
         >
           <TabsList className="px-5">
-            <TabsTrigger value="grading">
-              <Gauge size={15} /> 阅卷设置
-            </TabsTrigger>
+            {/* #322: 学生账号不提供「阅卷设置」页签 */}
+            {canEditGradingSettings && (
+              <TabsTrigger value="grading">
+                <Gauge size={15} /> 阅卷设置
+              </TabsTrigger>
+            )}
             <TabsTrigger value="client">
               <Monitor size={15} /> 客户端设置
             </TabsTrigger>
@@ -395,60 +418,63 @@ export function AccountSettingsPage() {
             )}
           </TabsList>
 
-          <TabsContent value="grading" className="flex flex-col gap-4 px-5 py-5">
-            <div className="flex max-w-xl flex-col gap-4">
-              <section className="flex flex-col gap-2">
-                <h4 className="m-0 text-base font-semibold text-foreground">成绩指标显示</h4>
-                <RadioGroup value={displayMode} onValueChange={setDisplayMode} className="gap-1.5">
-                  <div className="flex items-center gap-1.5 text-sm">
-                    <RadioGroupItem value="deviation" id="dm-deviation" />
-                    <label htmlFor="dm-deviation" className="cursor-pointer text-secondary-foreground select-none">
-                      标准偏差值 (50为基准)
-                    </label>
-                  </div>
-                  <div className="flex items-center gap-1.5 text-sm">
-                    <RadioGroupItem value="zscore" id="dm-zscore" />
-                    <label htmlFor="dm-zscore" className="cursor-pointer text-secondary-foreground select-none">
-                      Z值 (0为基准)
-                    </label>
-                  </div>
-                  <div className="flex items-center gap-1.5 text-sm">
-                    <RadioGroupItem value="percentile" id="dm-percentile" />
-                    <label htmlFor="dm-percentile" className="cursor-pointer text-secondary-foreground select-none">
-                      百分位排名 (0~100)
-                    </label>
-                  </div>
-                </RadioGroup>
-              </section>
+          {/* #322: 阅卷设置整块对学生账号不渲染（后端同时按字段拒绝越权写入） */}
+          {canEditGradingSettings && (
+            <TabsContent value="grading" className="flex flex-col gap-4 px-5 py-5">
+              <div className="flex max-w-xl flex-col gap-4">
+                <section className="flex flex-col gap-2">
+                  <h4 className="m-0 text-base font-semibold text-foreground">成绩指标显示</h4>
+                  <RadioGroup value={displayMode} onValueChange={setDisplayMode} className="gap-1.5">
+                    <div className="flex items-center gap-1.5 text-sm">
+                      <RadioGroupItem value="deviation" id="dm-deviation" />
+                      <label htmlFor="dm-deviation" className="cursor-pointer text-secondary-foreground select-none">
+                        标准偏差值 (50为基准)
+                      </label>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-sm">
+                      <RadioGroupItem value="zscore" id="dm-zscore" />
+                      <label htmlFor="dm-zscore" className="cursor-pointer text-secondary-foreground select-none">
+                        Z值 (0为基准)
+                      </label>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-sm">
+                      <RadioGroupItem value="percentile" id="dm-percentile" />
+                      <label htmlFor="dm-percentile" className="cursor-pointer text-secondary-foreground select-none">
+                        百分位排名 (0~100)
+                      </label>
+                    </div>
+                  </RadioGroup>
+                </section>
 
-              <section className="flex flex-col gap-2">
-                <h4 className="m-0 text-base font-semibold text-foreground">
-                  复核置信度阈值: <span className="tabular-nums">{reviewThreshold.toFixed(2)}</span>
-                </h4>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={reviewThreshold}
-                  onChange={(e) => setReviewThreshold(Number(e.target.value))}
-                  className="w-full"
-                />
-                <span className="text-xs text-muted-foreground">低于此值的题目标记"需要复核"</span>
-              </section>
+                <section className="flex flex-col gap-2">
+                  <h4 className="m-0 text-base font-semibold text-foreground">
+                    复核置信度阈值: <span className="tabular-nums">{reviewThreshold.toFixed(2)}</span>
+                  </h4>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={reviewThreshold}
+                    onChange={(e) => setReviewThreshold(Number(e.target.value))}
+                    className="w-full"
+                  />
+                  <span className="text-xs text-muted-foreground">低于此值的题目标记"需要复核"</span>
+                </section>
 
-              {/* v1.9.4: 原卷两开关已提升为纯全局，由管理员在「全局设置」统一控制，此处不再提供个人开关 */}
-            </div>
+                {/* v1.9.4: 原卷两开关已提升为纯全局，由管理员在「全局设置」统一控制，此处不再提供个人开关 */}
+              </div>
 
-            {settingsMsg && (
-              <p className={cn("m-0 text-xs", settingsMsg.includes("失败") ? "text-primary" : "text-success")}>
-                {settingsMsg}
-              </p>
-            )}
-            <Button variant="primary" type="button" onClick={() => void saveSettings()} className="self-start">
-              保存设置
-            </Button>
-          </TabsContent>
+              {settingsMsg && (
+                <p className={cn("m-0 text-xs", settingsMsg.includes("失败") ? "text-primary" : "text-success")}>
+                  {settingsMsg}
+                </p>
+              )}
+              <Button variant="primary" type="button" onClick={() => void saveSettings()} className="self-start">
+                保存设置
+              </Button>
+            </TabsContent>
+          )}
 
           <TabsContent value="client" className="flex flex-col gap-4 px-5 py-5">
             <div className="flex max-w-xl flex-col gap-4">
@@ -527,10 +553,15 @@ export function AccountSettingsPage() {
                 />
                 <span className="text-xs text-muted-foreground">0% = 关闭，建议 5%~15%（浮层叠加，不影响阅读）</span>
                 <div className="flex items-center gap-1.5">
-                  <Button variant="ghost" size="sm" onClick={() => bgFileRef.current?.click()}>
-                    上传背景图
-                  </Button>
-                  <input ref={bgFileRef} type="file" accept="image/*" className="hidden" onChange={handleBgUpload} />
+                  {/* #322: 学生账号不提供「上传背景图」入口；透明度仍可调（作用于服务端默认背景） */}
+                  {canUploadBackground && (
+                    <>
+                      <Button variant="ghost" size="sm" onClick={() => bgFileRef.current?.click()}>
+                        上传背景图
+                      </Button>
+                      <input ref={bgFileRef} type="file" accept="image/*" className="hidden" onChange={handleBgUpload} />
+                    </>
+                  )}
                   {bgMsg && (
                     <span className={cn("text-xs", bgMsg.includes("失败") ? "text-primary" : "text-success")}>{bgMsg}</span>
                   )}

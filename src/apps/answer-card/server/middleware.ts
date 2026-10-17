@@ -8,7 +8,7 @@
 import type express from "express";
 import { getMysqlDb, type DbAdapter } from "../../../server/db";
 import { ScoreRepository } from "../../../server/repositories/ScoreRepository";
-import { roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
+import { roleHasPermission, PERMISSIONS, ROLE_NAMES } from "../../../server/auth/permissions";
 import { isAuthEnforced } from "../../../server/lib/authEnforce";
 
 // P0-5 (C-S3): 模块级鉴权状态，由 createApp 初始化时设置
@@ -550,6 +550,56 @@ export function requirePermissionCompat(permission: string) {
     }
     next();
   };
+}
+
+// ── 网页端学生账号权限收敛（#322） ────────────────────────
+
+/**
+ * 「阅卷设置」在自助设置接口（`PATCH /api/users/me/settings`）里对应的字段集：
+ * 成绩指标显示口径、复核置信度阈值。
+ *
+ * 按字段收敛而不是整条拒绝——学生账号改皮肤 / 明暗 / Tab 栏等外观项照常可用，
+ * 只关掉「阅卷」这两项（issue #322 的诉求边界）。
+ */
+export const GRADING_SELF_SETTING_FIELDS = ["scoreDisplayMode", "reviewConfidenceThreshold"] as const;
+
+/**
+ * 当前身份能否写自助设置里的阅卷字段。与 `requirePermissionCompat` 同口径：
+ * 有身份时查角色权限表（学生默认只有 `score:read` → 拒绝；教师持 `grade:write`、
+ * 管理员持 `*` → 放行，管理员还可在「角色权限」里按角色调整），
+ * 未开启强制鉴权的单机模式没有身份，保持放行。
+ */
+export function canWriteGradingSelfSettings(user?: { role_id: number } | null): boolean {
+  if (!user) return !authEnforced;
+  return roleHasPermission(user.role_id, PERMISSIONS.GRADE_WRITE);
+}
+
+/**
+ * 自定义背景图上传的门（#322）：学生账号一律拒绝。
+ *
+ * 这里按「角色身份」而不是权限位判定：上传背景图是个人外观能力，不属于任何业务域权限；
+ * 若借 `grade:write` 当门，管理员想单独放开「能否上传背景」时只能连阅卷配置一起放开。
+ * 无身份时沿用兼容模式口径——鉴权未强制（单机设计器）放行，强制模式下由前置
+ * `authMiddleware` 已经返回 401，这里再兜一层。
+ */
+export function requireBackgroundUploadAccess(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+): void {
+  if (!req.user) {
+    if (authEnforced) {
+      res.status(401).json({ message: "未提供认证令牌" });
+      return;
+    }
+    next();
+    return;
+  }
+  if (req.user.role_name === ROLE_NAMES.STUDENT) {
+    res.status(403).json({ message: "权限不足：学生账号不能上传自定义背景图" });
+    return;
+  }
+  next();
 }
 
 /**
