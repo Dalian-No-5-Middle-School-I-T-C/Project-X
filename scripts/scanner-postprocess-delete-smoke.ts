@@ -100,32 +100,45 @@ try {
   assert.match(String(busy.body.message), /扫描/);
   await store.updateSessionStatus(session.id, "completed");
 
-  // validate 建立本机回执后，不带 force 一律拦截并点名冲突组
+  // validate 写的 pending 回执是本机判分常态，不得拦住日常删除（spec §4.1）
   const validated = await fetch(`${base}/api/scanner/session/${session.id}/validate`, { method: "POST" });
   assert.equal(validated.status, 200, await validated.clone().text());
   assert.equal((await validated.json() as ScanBatchResponse).results.length, 2);
-  const blocked = await del({ groupIds: ["0", "1"] });
+  const routine = await del({ groupIds: ["1"] });
+  assert.equal(routine.status, 200, JSON.stringify(routine.body));
+  assert.equal(routine.body.deletedGroups, 1);
+  assert.equal(await recordCount(), 1, "pending 回执组可直接删除本机页面");
+
+  // 已定论回执（saved/held/conflict/roster）必须 force，否则 409 点名冲突组
+  await db.run("UPDATE scanner_submissions SET state = 'saved' WHERE session_id = ? AND group_id = '0'", session.id);
+  const blocked = await del({ groupIds: ["0"] });
   assert.equal(blocked.status, 409);
-  assert.deepEqual((blocked.body.blocked as string[]).slice().sort(), ["0", "1"]);
-  assert.equal(await recordCount(), 2, "拦截时不得留下半删状态");
+  assert.deepEqual(blocked.body.blocked, ["0"]);
+  assert.equal(await recordCount(), 1, "拦截时不得留下半删状态");
 
   // force 放行：只删本机页面与派生数据，回执保留
   const forced = await del({ groupIds: ["0"], force: true });
   assert.equal(forced.status, 200, JSON.stringify(forced.body));
   assert.equal(forced.body.deletedGroups, 1);
   assert.deepEqual(forced.body.missingGroups, []);
-  assert.equal((forced.body as unknown as ScanBatchResponse).results.length, 1);
-  assert.equal(await recordCount(), 1);
+  assert.equal((forced.body as unknown as ScanBatchResponse).results.length, 0);
+  assert.equal(await recordCount(), 0);
   assert.equal((await db.all("SELECT source_id FROM scan_correction_pages WHERE source_id = ?", recordIds[0])).length, 0);
   assert.equal((await db.all("SELECT id FROM twain_recognition_results WHERE scan_record_id = ?", recordIds[0])).length, 0);
   assert.equal((await db.all("SELECT group_id FROM scanner_submissions WHERE session_id = ? AND group_id = '0'", session.id)).length, 1,
     "删除只动本机扫描记录，不得销毁已建立的回执");
 
-  // 无回执的组（本机从未判分）无需 force 即可删除
+  // 从未判分的组（无回执、有页面）删除后仍算删成功
   const ghost = await store.createScanRecord({ sessionId: session.id, cardId: card.id, pageNum: 3, imagePath: path.join(root, "page_2.png") });
-  const unjudged = await del({ groupIds: ["2"] });
-  assert.equal(unjudged.status, 200, JSON.stringify(unjudged.body));
+  const stray = await del({ groupIds: ["2"] });
+  assert.equal(stray.status, 200, JSON.stringify(stray.body));
   assert.equal(await db.get("SELECT id FROM twain_scan_records WHERE id = ?", ghost.id), null);
+
+  // 请求了不存在的组：不谎报删除数量
+  const phantom = await del({ groupIds: ["9"] });
+  assert.equal(phantom.status, 200, JSON.stringify(phantom.body));
+  assert.equal(phantom.body.deletedGroups, 0);
+  assert.deepEqual(phantom.body.missingGroups, ["9"]);
   console.log("PASS scanner-postprocess-delete-smoke");
 } finally {
   server.close();

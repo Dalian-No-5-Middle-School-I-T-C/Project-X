@@ -10,10 +10,13 @@ import type { PostprocessChannel } from "./postprocessChannel";
 type Filter = "all" | "normal" | "issue";
 type Layout = "grid" | "list";
 
+export interface DeleteTarget { sessionId: string; groupIds: string[] }
+
 export interface PostprocessResultsViewProps {
   groups: PostprocessGroup[];
   channel: PostprocessChannel;
-  onDelete: (groupIds: string[], force: boolean) => Promise<void>;
+  /** 删除按会话分组下发：groupId 只在单个 session 内有意义，续扫后两批会出现同名组 */
+  onDelete: (targets: DeleteTarget[], force: boolean) => Promise<void>;
   onOpen: (group: PostprocessGroup) => void;
 }
 
@@ -50,16 +53,27 @@ export function PostprocessResultsView({ groups, channel, onDelete, onOpen }: Po
 
   const issueCount = groups.filter(g => g.issues.length > 0).length;
   const stopSelecting = () => { setSelecting(false); setSelected(new Set()); };
-  const toggle = (groupId: string) => setSelected(prev => {
+  const groupKey = (group: PostprocessGroup) => `${group.sessionId}/${group.groupId}`;
+  const toggle = (group: PostprocessGroup) => setSelected(prev => {
     const next = new Set(prev);
-    if (next.has(groupId)) next.delete(groupId); else next.add(groupId);
+    const key = groupKey(group);
+    if (next.has(key)) next.delete(key); else next.add(key);
     return next;
   });
+  /** 选中的组按所属会话归组下发，避免第二批的同名组被误删 */
+  const selectedTargets = (): DeleteTarget[] => {
+    const bySession = new Map<string, string[]>();
+    for (const group of groups) {
+      if (!selected.has(groupKey(group))) continue;
+      bySession.set(group.sessionId, [...(bySession.get(group.sessionId) ?? []), group.groupId]);
+    }
+    return [...bySession].map(([sessionId, groupIds]) => ({ sessionId, groupIds }));
+  };
 
   async function runDelete(force: boolean) {
     setDeleting(true);
     try {
-      await onDelete([...selected], force);
+      await onDelete(selectedTargets(), force);
       stopSelecting();
       setConfirmOpen(false);
       setBlockedNotice(null);
@@ -116,15 +130,15 @@ export function PostprocessResultsView({ groups, channel, onDelete, onOpen }: Po
           <div className="grid grid-cols-[repeat(auto-fill,minmax(128px,1fr))] gap-3">
             {visible.map(group => {
               const status = statusOf(group);
-              const isSel = selected.has(group.groupId);
+              const isSel = selected.has(groupKey(group));
               return (
                 <button
-                  key={group.groupId}
+                  key={groupKey(group)}
                   type="button"
                   // 选择态下整卡即勾选框：再嵌一个 Checkbox 会变成按钮套按钮，键盘无法退出
                   aria-pressed={selecting ? isSel : undefined}
                   aria-label={selecting ? `选择 ${group.studentId ?? `组 ${group.groupId}`}` : `打开 ${group.studentId ?? `组 ${group.groupId}`}`}
-                  onClick={() => (selecting ? toggle(group.groupId) : onOpen(group))}
+                  onClick={() => (selecting ? toggle(group) : onOpen(group))}
                   className={`flex flex-col gap-1 rounded-md border bg-card p-1.5 text-left transition-colors ${
                     group.issues.length ? "ring-2 ring-destructive" : "border-border-subtle"
                   } ${isSel ? "border-primary" : ""}`}
@@ -166,12 +180,14 @@ export function PostprocessResultsView({ groups, channel, onDelete, onOpen }: Po
               <TableBody>
                 {visible.map(group => {
                   const status = statusOf(group);
-                  const isSel = selected.has(group.groupId);
+                  const isSel = selected.has(groupKey(group));
                   return (
-                    <TableRow key={group.groupId} clickable onClick={() => (selecting ? toggle(group.groupId) : onOpen(group))}>
+                    <TableRow key={groupKey(group)} clickable tabIndex={0}
+                      onClick={() => (selecting ? toggle(group) : onOpen(group))}
+                      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (selecting) toggle(group); else onOpen(group); } }}>
                       {selecting && (
                         <TableCell onClick={e => e.stopPropagation()}>
-                          <Checkbox checked={isSel} onCheckedChange={() => toggle(group.groupId)} aria-label={`选择 ${group.studentId ?? `组 ${group.groupId}`}`} />
+                          <Checkbox checked={isSel} onCheckedChange={() => toggle(group)} aria-label={`选择 ${group.studentId ?? `组 ${group.groupId}`}`} />
                         </TableCell>
                       )}
                       <TableCell className="font-medium tabular-nums">{group.studentId ?? "未识别"}</TableCell>

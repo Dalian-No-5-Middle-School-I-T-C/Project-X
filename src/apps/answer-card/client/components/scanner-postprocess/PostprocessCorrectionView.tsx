@@ -11,7 +11,7 @@ import {
   correctionCells, correctionState, toggleCorrectionCell, type CorrectionCell, type CorrectionDocument, type CorrectionEdit,
 } from "../../../../../shared/scanCorrection";
 import { selectObjectiveOptionCells, selectScoreCells } from "../../../../../shared/correctionCellSelect";
-import { findObjectiveQuestion, gradeCombinedRecognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
+import { findObjectiveQuestion, gradeCombinedRecognition, gradeSubjectiveRecognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
 import { isMultiSelectMode, objectiveModeLabel } from "../../../../../shared/objectiveMode";
 import type { CombinedRecognitionResult, SubjectiveQuestionNumber } from "../../../../../shared/types";
 
@@ -72,6 +72,8 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, highlig
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(true);
   const [saving, setSaving] = useState(false);
+  /** 保存成功后自增：服务端会 +1 revision，不重拉文档下次保存必被「答题卡已更新」拒绝 */
+  const [loadTick, setLoadTick] = useState(0);
   const tableRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -106,7 +108,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, highlig
       }
     })();
     return () => { alive = false; blobs.forEach(blob => URL.revokeObjectURL(blob)); };
-  }, [url, channel]);
+  }, [url, channel, loadTick]);
 
   // 全部可编辑格与「格 → 所在页」索引：跨页改一题时只替换该题作用域内的格
   const cells = useMemo<CorrectionCell[]>(() => (document ? document.pages.flatMap(page => correctionCells(page.layout)) : []), [document]);
@@ -119,8 +121,6 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, highlig
 
   const page = document?.pages[pageIndex];
   const edit = edits[pageIndex];
-  // 当前页的即时状态（画布描边与错误提示用），整份卡的识别结果另由 merged 提供
-  const state = document && page && edit ? correctionState(document.card, page, edit.selected, edit.touched) : null;
   const liveMerged = useMemo<CombinedRecognitionResult | null>(() => {
     if (!document) return null;
     const questions = [];
@@ -160,16 +160,18 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, highlig
         options: optionLetters(definition?.optionCount),
       };
     });
-    const subjective: Row[] = graded.subjectiveQuestions.map(q => {
-      const origin = original.subjectiveQuestions?.find(o => o.questionId === q.questionId);
-      // 分数格的 blockId 只在识别结果里，格选区必须按（题号 + 题块）收窄
-      const blockId = liveMerged?.subjectiveQuestions?.find(o => o.questionId === q.questionId)?.blockId;
-      return {
-        questionNumber: q.questionNumber, kind: "subjective", questionId: q.questionId, blockId,
-        typeLabel: "解答", score: q.score, maxScore: q.maxScore,
-        recognized: origin ? String(origin.score) : "—", reviewed: q.status !== "ok" || q.needsReview,
-        modified: origin ? origin.score !== q.score : false, options: [],
-      };
+    // 主观题按「题块」逐条出行：同一 questionId 可能出现在多个题块上，
+    // 用 graded.subjectiveQuestions（无 blockId）反查会把两块的分数格混在一起
+    const subjective: Row[] = (liveMerged?.subjectiveQuestions ?? []).flatMap(entry => {
+      const grade = gradeSubjectiveRecognition(document.card, entry);
+      if (!grade) return [];
+      const origin = original.subjectiveQuestions?.find(o => o.questionId === grade.questionId && o.blockId === entry.blockId);
+      return [{
+        questionNumber: grade.questionNumber, kind: "subjective" as const, questionId: grade.questionId, blockId: entry.blockId,
+        typeLabel: "解答", score: grade.score, maxScore: grade.maxScore,
+        recognized: origin ? String(origin.score) : "—", reviewed: grade.status !== "ok" || grade.needsReview,
+        modified: origin ? origin.score !== grade.score : false, options: [],
+      }];
     });
     return [...objective, ...subjective].sort((a, b) => Number(a.questionNumber) - Number(b.questionNumber)
       || (a.kind === b.kind ? 0 : a.kind === "objective" ? -1 : 1));
@@ -195,7 +197,8 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, highlig
     if (!document) return;
     if (!picked) { setMessage("该值在卡面上无法表示（缺少对应填涂格）"); return; }
     const scope = new Set(cells.filter(inScope).map(cell => cell.id));
-    setEdits(replaceScopedSelection(edits, pageOfCell, scope, picked));
+    // 走 setEdits 的函数式形式：同一渲染批次里连续改两题时，读渲染时值的闭包会丢掉前一次
+    setEdits(current => replaceScopedSelection(current, pageOfCell, scope, picked));
     setMessage("");
   }
 
@@ -236,6 +239,8 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, highlig
       const result = await response.json();
       if (!response.ok) throw new Error(result.message || "保存失败");
       await onSaved();
+      // 重拉文档同步 revision，并把「未保存」状态归零
+      setLoadTick(tick => tick + 1);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "保存失败");
     } finally {
@@ -291,7 +296,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, highlig
               <TableBody>
                 {[...rows].sort((a, b) => Number(b.reviewed) - Number(a.reviewed)).map(row => (
                   <TableRow
-                    key={`${row.kind}-${row.questionNumber}-${row.questionId ?? ""}`}
+                    key={`${row.kind}-${row.questionNumber}-${row.questionId ?? ""}-${row.blockId ?? ""}`}
                     data-question={String(row.questionNumber)}
                     selected={row.modified}
                     clickable
@@ -317,7 +322,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, highlig
                               const now = liveMerged?.questions?.find(q => q.questionNumber === Number(row.questionNumber))?.selectedOptions ?? [];
                               const on = now.includes(option);
                               return (
-                                <Button key={option} size="sm" variant={on ? "primary" : "outline"} className="h-6 px-2" aria-pressed={on}
+                                <Button key={option} size="sm" variant={on ? "primary" : "outline"} className="px-2" aria-pressed={on}
                                   onClick={() => setObjectiveAnswer(row, on ? now.filter(o => o !== option) : [...now, option])}>
                                   {option}
                                 </Button>

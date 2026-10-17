@@ -1,5 +1,5 @@
 import { scanCorrectionRouter } from "../../../../server/routes/scan-correction";
-import { processScannerSession, discardScannerGroup, listActiveReceiptGroups } from "../../../../server/services/scannerSubmissions";
+import { processScannerSession, discardScannerGroup, listActiveReceiptGroups, writeScannerSession } from "../../../../server/services/scannerSubmissions";
 import { scannerLegacyRecoveryRouter } from "../../../../server/routes/scanner-legacy-recovery";
 import {
   filterRecognitionJson,
@@ -22,6 +22,7 @@ import {
   listScanRecords,
   getScanRecordWithResult,
   deleteScanRecord,
+  deleteScanRecordInTransaction,
   getSession,
   parseSessionWarnings,
   listSessions,
@@ -644,7 +645,7 @@ export function createScannerRouter(twainEnabled = true): Router {
   });
 
   // 后处理页·视图 1 多选删除：只删本机扫描记录与识别结果，不动远端已上传成绩。
-  // 有非 discarded/superseded 回执的组必须 force（客户端已二次确认代价），否则 409 列出 blocked。
+  // 有 saved/held/conflict/roster 回执的组必须 force（客户端已二次确认代价），否则 409 列出 blocked。
   router.delete("/session/:sessionId/groups", async (req, res, next) => {
     try {
       const sessionId = safeId(req.params.sessionId);
@@ -664,13 +665,18 @@ export function createScannerRouter(twainEnabled = true): Router {
       const active = await listActiveReceiptGroups(getMysqlDb(), sessionId, groupIds);
       const { deletable, blocked } = filterDeletableGroups(groupIds, new Map(active.map(groupId => [groupId, true])), body.force === true);
       if (blocked.length) {
-        res.status(409).json({ message: "所选卷包含已上传或待确认的回执，确认删除远端不受影响后请重试", blocked });
+        res.status(409).json({ message: "所选卷包含已入库或待老师确认的回执，确认删除远端不受影响后请重试", blocked });
         return;
       }
+      // 整批删除走提交队列的同一事务：逐条 deleteScanRecord 会在中途失败时留下半删的组，
+      // validate 随即把它报成新的缺页异常（本文件的串行队列注释已说明并发穿插的成因）
+      const targets = deletable.flatMap(groupId => (groups.get(groupId) ?? []).map(row => row.record.id));
+      await writeScannerSession(sessionId, async tx => {
+        for (const recordId of targets) await deleteScanRecordInTransaction(tx, recordId);
+      });
       const missing = groupIds.filter(groupId => !groups.has(groupId));
-      for (const groupId of deletable) for (const row of groups.get(groupId) ?? []) await deleteScanRecord(row.record.id);
       const result = await processScannerSession(card, sessionId, "validate");
-      res.json({ ...result, deletedGroups: deletable.length, missingGroups: missing });
+      res.json({ ...result, deletedGroups: deletable.length - missing.length, missingGroups: missing });
     } catch (error) { next(error); }
   });
 

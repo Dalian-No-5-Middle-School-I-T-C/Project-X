@@ -27,7 +27,7 @@ export interface PostprocessQueueViewProps {
   /** 处理完成（考号已改、重复卷已定性等）：页面重拉批结果并按需补传 */
   onResolved: (sessionId: string, groupId: string) => void | Promise<void>;
   onJumpToCorrection: (sessionId: string, groupId: string, questionNumber?: SubjectiveQuestionNumber) => void;
-  onDelete: (groupIds: string[], force: boolean) => Promise<void>;
+  onDelete: (targets: Array<{ sessionId: string; groupIds: string[] }>, force: boolean) => Promise<void>;
 }
 
 const ISSUE_LABEL: Record<PostprocessQueueItem["kind"], string> = {
@@ -425,7 +425,7 @@ function DuplicatePanel({ item, channel, scans, onResolved, onFixStudentId }: {
               <div className="mt-auto flex flex-wrap items-center gap-2 pt-2">
                 <Tip label={otherSaved ? "已入库卷不能作废，请改考号" : `作废第 ${Number(other.groupId) + 1} 组，保留这一份`}>
                   <span className="inline-flex">
-                    <Button variant="outline" size="sm" disabled={busy || otherSaved} onClick={() => void keep(card, other)}>保留这份</Button>
+                    <Button variant="outline" size="sm" disabled={busy || otherSaved} loading={busy} onClick={() => void keep(card, other)}>保留这份</Button>
                   </span>
                 </Tip>
                 <Button variant="ghost" size="sm" disabled={busy} onClick={() => onFixStudentId({ sessionId: card.sessionId, groupId: card.groupId })}>不是同一人 → 改考号</Button>
@@ -444,7 +444,7 @@ function MissingPagePanel({ item, channel, layoutPageCount, onResolved, onDelete
   channel: PostprocessChannel;
   layoutPageCount: number;
   onResolved: (sessionId: string, groupId: string) => void | Promise<void>;
-  onDelete: (groupIds: string[], force: boolean) => Promise<void>;
+  onDelete: (targets: Array<{ sessionId: string; groupIds: string[] }>, force: boolean) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -470,7 +470,7 @@ function MissingPagePanel({ item, channel, layoutPageCount, onResolved, onDelete
   async function remove() {
     setBusy(true);
     try {
-      await onDelete([item.groupId], false);
+      await onDelete([{ sessionId: item.sessionId, groupIds: [item.groupId] }], false);
       notify.success("已删除该组本机扫描记录");
       setConfirmDelete(false);
     } catch (err) {
@@ -494,7 +494,7 @@ function MissingPagePanel({ item, channel, layoutPageCount, onResolved, onDelete
         </div>
         <p className="m-0 text-xs text-muted-foreground">缺页请先整理原卷后重新扫描该份答题卡；只缺背面且确认无需背面时可用整卡改分补录。</p>
         <div className="flex flex-wrap items-center gap-2 pt-1">
-          <Button variant="outline" size="sm" disabled={busy} onClick={() => void retry()}>重新识别此卡</Button>
+          <Button variant="outline" size="sm" disabled={busy} loading={busy} onClick={() => void retry()}>重新识别此卡</Button>
           <CardCorrectionButton url={correctionUrl} request={channel.request} disabled={busy} onSaved={() => onResolved(item.sessionId, item.groupId)} />
           <Button variant="ghost" size="sm" className="text-destructive-fg" icon={<Trash2 />} disabled={busy} onClick={() => setConfirmDelete(true)}>删除该组</Button>
         </div>
@@ -591,7 +591,7 @@ function OtherPanel({ item, channel, onResolved }: {
         <span className="min-w-0 break-words">{item.failureMessage || "处理失败"}</span>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Button variant="outline" size="sm" disabled={busy} onClick={() => void retry()}>重新识别此卡</Button>
+        <Button variant="outline" size="sm" disabled={busy} loading={busy} onClick={() => void retry()}>重新识别此卡</Button>
         <CardCorrectionButton url={channel.correctionUrl(item.sessionId, item.groupId)} request={channel.request} disabled={busy}
           onSaved={() => onResolved(item.sessionId, item.groupId)} />
       </div>

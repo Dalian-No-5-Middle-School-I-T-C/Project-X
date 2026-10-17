@@ -523,16 +523,17 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
 }
 
 /**
- * 删除护栏数据源：这些组里哪些还存在非 discarded/superseded 的回执。
- * 回执行在 validate 阶段就写入（state=pending），保存后置 saved，冲突时置 conflict/held/roster，
- * 因此「有回执」= 本机已有成绩归属或待老师确认的记录，删本地记录前必须显式 force。
+ * 删除护栏数据源：这些组里哪些回执已经「定论或待老师确认」。
+ * 只认 saved/held/conflict/roster 四类（spec §4.1）：validate 阶段给每份卷写的 pending 回执
+ * 是本机判分常态，把它也算进来会让每次本地删除都弹「已上传」的假警告。
+ * 参数走 DbAdapter 的 varargs；整体绑数组在 MariaDB 上是占位符与实参数量不匹配。
  */
 export async function listActiveReceiptGroups(db: DbAdapter, sessionId: string, groupIds: readonly string[]): Promise<string[]> {
   if (!groupIds.length) return [];
   const placeholders = groupIds.map(() => "?").join(",");
   const rows = await db.all<{ group_id: string }>(
-    `SELECT DISTINCT group_id FROM scanner_submissions WHERE session_id = ? AND group_id IN (${placeholders}) AND state NOT IN ('discarded','superseded')`,
-    [sessionId, ...groupIds],
+    `SELECT DISTINCT group_id FROM scanner_submissions WHERE session_id = ? AND group_id IN (${placeholders}) AND state IN ('saved','held','conflict','roster')`,
+    sessionId, ...groupIds,
   );
   return rows.map(row => row.group_id);
 }

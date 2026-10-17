@@ -55,8 +55,6 @@ export interface UploadJobSnapshot {
   results?: ScanBatchResponse;
   resultRows?: Array<{ pageNum: number; side: "front" | "back"; row: CombinedGradingRow }>;
   remoteSessionId?: string | null;
-  /** 本任务覆盖的组（按份补传时用它判定「已有任务」，避免同组重复建会话） */
-  groupIds: string[];
   reviewCards?: ScanConflictCard[];
   id: string;
   kind: UploadJobKind;
@@ -273,7 +271,6 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       jobs: jobs.map((j) => ({
         id: j.id,
         remoteSessionId: j.remoteSessionId,
-        groupIds: [...new Set(j.pages.map(p => p.input.groupId).filter((g): g is string => typeof g === "string" && g.length > 0))],
         kind: j.kind,
         name: j.name,
         cardId: j.cardId,

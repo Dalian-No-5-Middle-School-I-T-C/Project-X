@@ -87,12 +87,26 @@ const batch = (): ScanBatchResponse => ({
 });
 
 const puts: Array<{ groupId: string; pages: Array<{ sourceId: string; selected: string[] }> }> = [];
-const deletes: Array<{ groupIds: string[]; force?: boolean }> = [];
+const deletes: Array<{ url: string; body: { groupIds: string[]; force?: boolean } }> = [];
+/** 第二批会话：groupId 与第一批重号，用来钉住「删除必须按会话下发」 */
+const batchFor = (sessionId: string): ScanBatchResponse => {
+  const first = batch();
+  if (sessionId !== "scan-2") return first;
+  return {
+    results: [
+      { ...first.results[1], groupId: "0", studentId: "20001", pages: first.results[1].pages.map(page => ({ ...page, recordId: "rec-4", pageNum: 4 })) },
+      { ...first.results[1], groupId: "1", studentId: "20002", pages: first.results[1].pages.map(page => ({ ...page, recordId: "rec-5", pageNum: 5 })) },
+    ],
+    failures: [],
+    reviewCards: [],
+  };
+};
 install("fetch", async (input: unknown, init?: RequestInit) => {
   const url = String(input);
   const method = init?.method ?? "GET";
   if (url.includes("/api/cards/")) return Response.json(card);
-  if (/\/api\/scanner\/session\/[^/]+\/(validate|results)/.test(url)) return Response.json(batch());
+  const sessionMatch = url.match(/\/api\/scanner\/session\/([^/]+)\/(validate|results)/);
+  if (sessionMatch) return Response.json(batchFor(sessionMatch[1]));
   if (/\/api\/scanner\/scan\/[^/]+$/.test(url)) {
     return Response.json({ session: { identity_mode: "strict", dpi: 300, paper_size: "A4" }, records: [], examId: 7 });
   }
@@ -114,7 +128,7 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   if (/\/scan-image\//.test(url)) return new Response("img", { headers: { "content-type": "image/png" } });
   if (url.endsWith("/groups") && method === "DELETE") {
     const body = JSON.parse(String(init?.body)) as { groupIds: string[]; force?: boolean };
-    deletes.push(body);
+    deletes.push({ url, body });
     if (!body.force && !deleteBlockedOnce) {
       deleteBlockedOnce = true;
       return Response.json({ message: "所选卷包含已上传或待确认的回执", blocked: body.groupIds }, { status: 409 });
@@ -134,6 +148,7 @@ const realStartUpload = scannerUploadManager.startUpload;
 scannerUploadManager.startUpload = (input => { uploads.push(input); return `upload-${uploads.length}`; }) as typeof scannerUploadManager.startUpload;
 
 const root = createRoot(document.getElementById("root")!);
+let root2: ReturnType<typeof createRoot> | null = null;
 async function settle(ms = 12) { await act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); }); }
 async function clickNode(node: Element) {
   await act(async () => {
@@ -187,11 +202,11 @@ try {
   assert.match(text(), /删除 1 张扫描卡？/, "确认弹窗先说清动作");
   await clickText("删除，不可恢复");
   await settle();
-  assert.deepEqual(deletes[0], { groupIds: ["1"], force: false }, "首次删除不得带 force");
+  assert.deepEqual(deletes[0].body, { groupIds: ["1"], force: false }, "首次删除不得带 force");
   assert.match(text(), /知晓代价，仍删除/, "409 之后必须把代价讲明白");
   await clickText("知晓代价，仍删除");
   await settle();
-  assert.deepEqual(deletes[1], { groupIds: ["1"], force: true }, "二次确认后带 force 重试");
+  assert.deepEqual(deletes[1].body, { groupIds: ["1"], force: true }, "二次确认后带 force 重试");
 
   // ── 视图 2：画布点选与表格汇总双向即时同步（D5 并存不切换）──
   await clickText("扫描结果");
@@ -272,11 +287,50 @@ try {
   await clickText("异常处理");
   await settle();
   assert.match(text(), /队列已清零/, "异常全部处理完 → 队列清零");
+
+  // ── 续扫第二批：groupId 跨会话重号，删除与选择都必须按会话隔离 ──
+  await act(async () => { root.unmount(); });
+  allClean = false;
+  secondGroupResolved = false;
+  const host2 = document.createElement("div");
+  document.body.appendChild(host2);
+  root2 = createRoot(host2);
+  await act(async () => {
+    root2.render(createElement(TooltipProvider, null,
+      createElement(ScannerPostprocessPage, {
+        cardId: card.id, cardTitle: card.title,
+        sessions: [{ sessionId: "scan-1", pageCount: 3 }, { sessionId: "scan-2", pageCount: 2 }], onBack: () => {},
+      })));
+  });
+  await settle();
+  assert.equal(document.querySelectorAll('[aria-label^="打开 "]').length, 5, "两批共五组");
+  await clickText("选择");
+  await clickSelector('[aria-label="选择 组 1"]');
+  assert(document.querySelector('[aria-label="选择 20002"]')?.getAttribute("aria-pressed") === "false",
+    "选中第一批的组 1 不得连带选中第二批的同名组");
+  await clickText("删除选中（1）");
+  await clickText("删除，不可恢复");
+  await settle();
+  assert.match(deletes[deletes.length - 1].url, /\/session\/scan-1\/groups$/, "删除必须下发到组所属的会话");
+  assert.deepEqual(deletes[deletes.length - 1].body.groupIds, ["1"]);
+
+  // ── 正常组（本批已被 ScannerPanel 排队上传）改分保存后绝不再建第二个上传会话 ──
+  const uploadsBefore = uploads.length;
+  await clickText("扫描结果");
+  await clickSelector('[aria-label="打开 20001"]');
+  await settle();
+  assert(document.querySelector('[data-question="1"]'), "正常卷直接进入改分视图");
+  await clickSelector('polygon[aria-label="第 1 题 B"]');
+  await settle();
+  await clickText("保存修改");
+  await settle();
+  assert(puts.some(entry => entry.groupId === "0"), "第二批的改动已写回本机");
+  assert.equal(uploads.length, uploadsBefore, "已上传过的组不得重复补传（第二份回执会撤回正式成绩）");
   console.log("PASS scanner-postprocess-ui-smoke");
 } catch (error) {
   failure = error;
 } finally {
-  await act(async () => { root.unmount(); });
+  await act(async () => { root.unmount(); root2?.unmount(); });
   scannerUploadManager.startUpload = realStartUpload;
   // 不关掉 jsdom 的 window，其定时器与观察者会让进程一直挂着
   dom.window.close();

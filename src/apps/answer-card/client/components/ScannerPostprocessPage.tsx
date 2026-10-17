@@ -13,7 +13,6 @@ import { PostprocessResultsView } from "./scanner-postprocess/PostprocessResults
 import { PostprocessCorrectionView } from "./scanner-postprocess/PostprocessCorrectionView";
 import { PostprocessQueueView, type ScanMeta } from "./scanner-postprocess/PostprocessQueueView";
 import { getScannerMode, isRemoteServerConfigured } from "../lib/scannerMode";
-import { scannerUploadManager } from "../lib/scannerUploadManager";
 
 type View = "results" | "correction" | "queue";
 
@@ -35,8 +34,11 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   const [focusIssue, setFocusIssue] = useState<{ sessionId: string; groupId: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  /** 已有上传任务或已入库的组：补传护栏基线，绝不重复建会话 */
-  const uploadedGroups = useRef<Set<string>>(new Set());
+  /** 本页亲眼见过的异常组（sid/gid）。只有它们处理完才补传：正常组在扫描完成时已被
+   *  ScannerPanel 排队上传，再建一个远端会话会形成同学号第二份回执并撤回正式成绩 */
+  const abnormalSeen = useRef<Set<string>>(new Set());
+  /** 本页已补传过的组，防同组重复入队 */
+  const queuedByPage = useRef<Set<string>>(new Set());
 
   // 通道唯一为本地（spec §5 通道裁定）：远端语义只经 queueGroupUpload 补传承担
   const channel: PostprocessChannel = useMemo(() => localChannel(), []);
@@ -59,14 +61,11 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
       }
       setBatches(nextBatches);
       setMetas(nextMetas);
-      // 基线必须在 setBatches 之后同轮刷新：续扫第二批时旧基线会误判成「未上传」而重复建会话
-      const covered = new Set<string>();
-      for (const job of scannerUploadManager.getState().jobs) {
-        if (job.cardId !== cardId) continue;
-        for (const groupId of job.groupIds) covered.add(groupId);
+      // 记下面试异常组：这些是 ScannerPanel 当初没排上传的组，处理完才允许本页补传一次
+      for (const [sid, next] of Object.entries(nextBatches)) {
+        for (const failure of next.failures) abnormalSeen.current.add(`${sid}/${failure.groupId}`);
+        for (const review of next.reviewCards ?? []) if (review.sessionId === sid) abnormalSeen.current.add(`${sid}/${review.groupId}`);
       }
-      for (const batch of Object.values(nextBatches)) for (const result of batch.results) if (result.saved) covered.add(result.groupId);
-      uploadedGroups.current = covered;
       const scanList = await authFetch(`/api/scanner/card/${cardId}/scans`);
       if (scanList.ok) {
         const rows = (await scanList.json()) as Array<{ recordId: string; createdAt: string; scanQuality: number | null }>;
@@ -93,46 +92,52 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   const uploaded = useMemo(() => Object.values(batches).flatMap(b => b.results).filter(r => r.saved).length, [batches]);
   const examId = useMemo(() => Object.values(metas).find(meta => meta.examId !== null)?.examId ?? null, [metas]);
 
-  async function handleDelete(groupIds: string[], force: boolean) {
-    const sessionId = sessions[sessions.length - 1]?.sessionId;
-    if (!sessionId) { notify.error("没有可删除的扫描会话"); return; }
-    const res = await channel.request(channel.deleteGroupsUrl(sessionId), {
-      method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupIds, force }),
-    });
-    const data = await res.json();
-    if (res.status === 409) throw Object.assign(new Error(data.message || "存在已上传回执"), { blocked: data.blocked ?? [] });
-    if (!res.ok) throw new Error(data.message || "删除失败");
-    notify.success(`已删除 ${data.deletedGroups ?? groupIds.length} 组扫描记录`);
+  async function handleDelete(targets: Array<{ sessionId: string; groupIds: string[] }>, force: boolean) {
+    if (!targets.length) { notify.error("没有选中的卷子"); return; }
+    let deleted = 0;
+    const blocked: string[] = [];
+    // 逐会话下发：groupId 只在单个 session 内有意义，混在一起删会删掉另一批的同名组。
+    // 先不带 force 问一遍服务端，遇到拦截就停下（本会话一枚页面都不删），让老师看清代价再重来。
+    for (const target of targets) {
+      const res = await channel.request(channel.deleteGroupsUrl(target.sessionId), {
+        method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupIds: target.groupIds, force }),
+      });
+      const data = await res.json();
+      if (res.status === 409) {
+        blocked.push(...(data.blocked as string[] ?? []).map((groupId: string) => {
+          const group = groups.find(entry => entry.sessionId === target.sessionId && entry.groupId === groupId);
+          return group?.studentId ?? `组 ${groupId}`;
+        }));
+        break;
+      }
+      if (!res.ok) throw new Error(data.message || "删除失败");
+      deleted += data.deletedGroups ?? target.groupIds.length;
+    }
+    if (blocked.length) throw Object.assign(new Error("所选卷包含已入库或待老师确认的回执"), { blocked });
+    notify.success(`已删除 ${deleted} 组扫描记录`);
     await reload();
   }
 
   /**
-   * 异常处理完一条之后的同步与补传（D12）。判定顺序不可调换：
-   * 本地模式不上传 → 同组已有任务则复用（失败页 retryFailed）→ 加载时已上传/已入库则不动
-   * （同考号第二份回执到服务端会 conflict → withdraw() 撤掉已保存的正式成绩）→ 其余首传。
+   * 异常处理完一条之后的同步与补传（D12）。
+   * 只补传「本页亲眼见过它异常」的组：扫描完成时正常组已由 ScannerPanel 排队上传，
+   * 同考号的第二份回执到服务端会走 conflict → withdraw() 删 student_scores/question_scores
+   * （撤掉已保存的正式成绩）。上传任务列表是内存态、进度卡可被关闭，不能当判据。
    */
   async function syncAfterFix(sessionId: string, groupId: string) {
-    const wasUploaded = uploadedGroups.current.has(groupId);
-    const job = scannerUploadManager.getState().jobs.find(entry => entry.cardId === cardId && entry.groupIds.includes(groupId));
+    const key = `${sessionId}/${groupId}`;
+    const wasAbnormal = abnormalSeen.current.has(key);
     const fresh = await reload();
     if (!isRemoteUploadOn() || !card) return;
-    if (job) {
-      if (job.status === "error" && job.failedPages.length > 0) {
-        scannerUploadManager.retryFailed(job.id);
-        notify.info("已按原上传任务重试失败页，不新建会话");
-      } else {
-        notify.info("该卷已有上传任务，进度见右上角上传卡");
-      }
+    if (!wasAbnormal) {
+      notify.info("本机已保存。该卷随本批一起上传过，改动不再重复上传；服务器成绩请走 Web 成绩修改。");
       return;
     }
-    if (wasUploaded) {
-      notify.info("该卷已上传入库；服务器成绩请走 Web 成绩修改，本机改动仅作留档");
-      return;
-    }
+    if (queuedByPage.current.has(key)) return;
     const result = fresh.batches[sessionId]?.results.find(entry => entry.groupId === groupId);
     const meta = fresh.metas[sessionId];
     if (!result || !meta) return;
-    uploadedGroups.current.add(groupId);
+    queuedByPage.current.add(key);
     queueGroupUpload({ ...meta, cardId: card.id, cardVersion: cardFingerprint(card) }, sessionId, result);
     notify.info("已加入上传队列，图片后台续传");
   }
