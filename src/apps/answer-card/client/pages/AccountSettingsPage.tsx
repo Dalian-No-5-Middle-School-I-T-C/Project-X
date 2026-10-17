@@ -175,8 +175,11 @@ export function AccountSettingsPage() {
   });
   const [showHelpCard, setShowHelpCard] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("grading");
-  // #322: 学生没有「阅卷设置」页签，默认落点回退到「客户端设置」，避免出现空白内容区
-  const activeSettingsTab: SettingsTab = canEditGradingSettings ? settingsTab : "client";
+  // #322: 学生没有「阅卷设置」页签，默认落点回退到「客户端设置」，避免出现空白内容区。
+  // 只在请求的正是被隐藏的 grading 时回退——其余页签（客户端 / AI 服务商 / 数据存储）
+  // 本来就该保留：无脑回退会把学生的 AI 页签也锁死，而 #322 只收敛阅卷设置与背景图上传。
+  const activeSettingsTab: SettingsTab =
+    !canEditGradingSettings && settingsTab === "grading" ? "client" : settingsTab;
   // 五轮C1：侧边栏自动展开（客户端级 localStorage 设置，原误放系统级配置页，迁至此「外观/皮肤」区）
   const [railAutoExpand, setRailAutoExpand] = useState(() => {
     try { return localStorage.getItem("projectx-rail-auto-expand") === "true"; } catch { return false; }
