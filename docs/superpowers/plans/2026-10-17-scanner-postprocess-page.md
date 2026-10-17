@@ -1875,3 +1875,17 @@ git commit -m "docs(scanner): 后处理页草案自包含定稿与胶囊导航�
 15. ⚠ **未答选项用 `__none__` 哨兵**：Radix `SelectItem` 拒绝空串 value（仓库既有做法：`ClassManagement.tsx:28` 等）。
 16. ⚠ **Task 7 删除按钮不得直接删**：按 plan 自带注记改为先进 `ConfirmDialog`；`Checkbox` 不再嵌在 `<button>` 内（按钮套按钮，键盘无法退出），选择态下整卡即勾选目标并带 `aria-pressed`；列表模式的 Checkbox 单元格局部 `stopPropagation`，避免与行点击互相抵消。
 17. ＋ **新增 `verify:scanner-postprocess-delete` / `-ui` 并接进 CI**（`verify:scanner-postprocess-all`）：plan 的 Task 3 Step 4 与 Task 11 Step 4 都要求手工 curl / 真扫验收，本环境无扫描仪与远端服务器，改为隔离 DB 的 HTTP 冒烟 + jsdom 真实挂载断言，可重复且进 CI。
+
+### 独立复核后的二次返修（2026-10-18，两轮子代理审核）
+
+审核结论先行：plan 原文另有一批缺陷未在上述 17 条内，且第一次施工版（含偏差 2、10）自身有 4 个 P1/P2 问题，已修正并有回归覆盖。
+
+18. ⚠ **P1 跨会话删除拿错 session**（推翻偏差 14 的部分修法）：`handleDelete` 原用 `sessions[last].sessionId` 下发全部 groupIds，续扫后第一批的「组 3」会删掉第二批的「组 3」。现按 `DeleteTarget[]`（sessionId + groupIds）逐会话下发；视图 1 的选择集与 React key 改 `sessionId/groupId`。覆盖：UI 冒烟断言删除 URL 命中 `scan-1`，且勾选第一批组 1 不会连带第二批同名组（已用变异测试验证该断言会红）。
+19. ⚠ **P1 补传护栏在远端模式下形同虚设**：原基线 = 内存任务列表 + `result.saved`；远端模式走 `previewOnly` 根本不写本机回执（saved 恒 false），任务被 `dismissJob` 移除或重启后基线归零 → 已上传组会被再次 `queueGroupUpload` → 服务端同学号第二份回执 → `withdraw()` 撤正式成绩。改为「本页亲眼见过该组异常」`abnormalSeen` + `queuedByPage` 双判据；偏差 2 里借用的上传快照 `groupIds` 字段随之撤销（无消费者即删，不留抽象）。覆盖：UI 冒烟断言正常组改分保存后 `startUpload` 调用数不变（变异测试确认可红）。
+20. ⚠ **P1 `listActiveReceiptGroups` 的 SQL 参数在 MariaDB 上必错**：`db.all(sql, [sessionId, ...groupIds])` 把数组当单个实参绑定；`DbAdapter.all(sql, ...params)` 是变参接口（`src/server/db/mysql.ts:69`），better-sqlite3 恰好会摊平所以 SQLite 冒烟看不出来。改 `sessionId, ...groupIds`，并把该冒烟接进 CI 的 `mariadb-test`（新建 `projectx_scanner_postprocess_ci`，`SCANNER_POSTPROCESS_MARIADB=1`）。
+21. ⚠ **P2 删除护栏把 pending 也算成「已上传」**：`NOT IN ('discarded','superseded')` 包含 validate 每次写的 pending 回执，于是仅本地模式下**任何**删除都要 force，弹窗还在说「服务器成绩保留」。按 spec §4.1 收敛为 `IN ('saved','held','conflict','roster')`；端点冒烟相应改为「pending 可直删 / 置 saved 后 409 / force 放行」三段式。
+22. ⚠ **P2 删除非原子**：逐条 `deleteScanRecord` 不在提交队列里，中途失败留下半删的组（validate 随即报成新缺页）。新增 `deleteScanRecordInTransaction`，整批在 `writeScannerSession` 的同一事务内删完；`deletedGroups` 不再把「无页面的组」计成已删。
+23. ⚠ **P2 视图 2 保存后 revision 变陈旧**：PUT 成功服务端 revision +1，组件仍持旧文档 → 状态条还说「修改尚未保存」，再点保存必被「答题卡已更新」拒绝。改为保存成功后 `loadTick` 自增重拉文档（整卡改分弹窗是靠关闭弹窗规避的）。
+24. ⚠ **P2 主观题行按 questionId 反查 blockId**：`SubjectiveQuestionGrade` 不带 blockId，而 `blockId?` 可选、同一 questionId 可落在多个题块上，反查会把两块的分数格混为一谈（React key 撞车、改分改到别的块、汇总重复计分）。改为逐条遍历合并后的 `subjectiveQuestions` 并用 `gradeSubjectiveRecognition` 就地判分，key 带 blockId。
+25. P3：`applyCells` 改函数式 `setEdits`（同批两次改表会丢第一次）；删掉视图 2 里未被读取却每次深拷贝整份 recognition 的 `state`；队列面板的异步按钮补 `loading`（重新识别/保留这份）；多选 chips 去掉写死的 `h-6`（compact 密度红线）；列表行补 `tabIndex`+Enter/Space（与 `ScannerWorkspace` 的可点行一致）。
+26. 审核确认通过、无需改动的项：`CorrectionCanvas` 抽取未改变整卡改分弹窗行为（逐属性比对 base `68f348b`，未传 reviewQuestions 时描边/aria 与原来逐字一致）；两页卡按题改分不会抹掉他页/学号格；DELETE 路由确实在 `requireScannerExamScope` 前缀挂载覆盖内且非 GET 还要整卷判分权限；`src/shared/**` 改动纯新增，Web 侧无消费者受影响；`src/shared` 里没有 `<button>` 套交互控件。
