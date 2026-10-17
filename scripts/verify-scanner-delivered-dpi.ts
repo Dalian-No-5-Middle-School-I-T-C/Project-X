@@ -116,6 +116,47 @@ function main(): void {
   check(Boolean(downgraded.message?.includes("纸")), "尺寸反查的提示要提醒核对进纸纸张与纸型");
   check(Boolean(reported.message?.includes("驱动回报的密度")), "两种来源要在提示里说清是哪一种");
 
+  console.log("\n\x1b[36m== 逐轴判定：两轴偏差不能相抵（评审点名 350×250）==\x1b[0m");
+
+  // 维护者直接调用复现的那一条：350×250 先平均成 300，几何又因长宽比超差被排除，旧实现据此报「已匹配」。
+  const anisotropic = verifyDeliveredScanDpi(
+    [{ width: 2895, height: 2923, dpi_x: 350, dpi_y: 250 }], { dpi: 300, paperSize: "A4" });
+  check(anisotropic.status === "mismatch" && anisotropic.deliveredDpiX === 350 && anisotropic.deliveredDpiY === 250,
+    `350×250 报为未生效并留下两轴原值 (status=${anisotropic.status}, X=${anisotropic.deliveredDpiX}, Y=${anisotropic.deliveredDpiY})`);
+  check(Boolean(anisotropic.message?.includes("350")) && Boolean(anisotropic.message?.includes("250")),
+    "提示里点名两轴数值，操作者能看出是方向变形而不是密度偏低");
+  check(Boolean(anisotropic.message?.includes("长宽比与所选纸型对不上")),
+    "几何侧被排除时在提示里说清，别让操作者以为两路证据都支持结论");
+
+  // 交换轴向：异常必须跟着方向走，不能因为「同样一对数」而报成同一种朝向。
+  const swapped = verifyDeliveredScanDpi(
+    [{ width: 2895, height: 2923, dpi_x: 250, dpi_y: 350 }], { dpi: 300, paperSize: "A4" });
+  check(swapped.status === "mismatch" && swapped.deliveredDpiX === 250 && swapped.deliveredDpiY === 350,
+    `交换轴后仍是未生效，且方向信息保持 X=${swapped.deliveredDpiX}/Y=${swapped.deliveredDpiY}`);
+
+  // 两轴各自都没超出与设定值的容差，但彼此差 16%：单看任一轴都「正常」，平均后更「正常」。
+  const eachAxisLooksFine = verifyDeliveredScanDpi([{ dpi_x: 344, dpi_y: 290 }], { dpi: 300, paperSize: "A4" });
+  check(eachAxisLooksFine.status === "mismatch",
+    `两轴都在设定容差内但彼此差 16%（344/290）→ 判为变形，不靠平均抵消 (status=${eachAxisLooksFine.status})`);
+
+  // 正常等轴必须仍然判「已生效」，且回读值方向齐全。
+  const equalAxis = verifyDeliveredScanDpi(
+    [{ width: 2480, height: 3508, dpi_x: 300, dpi_y: 300 }], { dpi: 300, paperSize: "A4" });
+  check(equalAxis.status === "match" && equalAxis.deliveredDpiX === 300 && equalAxis.deliveredDpiY === 300,
+    "等轴且贴合设定 → 仍判生效，两轴原值一并给出");
+
+  // 几何数据被排除（长宽比超差）时，等轴的回报值单独也能下结论——这是「不能靠两轴相抵」之外的另一半要求。
+  const geometryExcluded = verifyDeliveredScanDpi(
+    [{ width: 2895, height: 2923, dpi_x: 300, dpi_y: 300 }], { dpi: 300, paperSize: "A4" });
+  check(geometryExcluded.status === "match" && geometryExcluded.source === "device",
+    `几何被排除、回报两轴一致（300/300）→ 按回报值判生效 (status=${geometryExcluded.status}, source=${geometryExcluded.source})`);
+
+  // 老 exe 只有尺寸：几何两轴（短边方向/长边方向）彼此差 15% 以上同样要报变形。
+  const geometryAnisotropic = verifyDeliveredScanDpi([{ width: 2928, height: 3507 }], { dpi: 300, paperSize: "A4" });
+  check(geometryAnisotropic.status === "mismatch"
+    && Boolean(geometryAnisotropic.message?.includes("短边方向")) && Boolean(geometryAnisotropic.message?.includes("长边方向")),
+    `仅尺寸数据时按短边/长边两轴判定（354×300 差 15%）(status=${geometryAnisotropic.status}, delivered=${geometryAnisotropic.deliveredDpi})`);
+
   console.log("\n\x1b[36m== 数据不可用时不下结论 ==\x1b[0m");
 
   const noDims = verifyDeliveredScanDpi([{ }, { width: 0, height: 0 }], { dpi: 300, paperSize: "A4" });
