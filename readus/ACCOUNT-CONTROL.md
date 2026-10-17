@@ -1,14 +1,16 @@
 # Project-X 三级账号控制系统技术说明
 
-> **版本**: v1.5.0
+> **性质**: 账号 / RBAC 后端权威说明（第 1、2 节保留 v1.1~v1.5 的建设记录，属历史快照）
+> **复核至**: v2.6.0（数据库迁移 v60）
+> **校订日期**: 2026-10-17（#322 学生网页端自助权限收敛；同步 Cookie 主通道、媒体票据与鉴权默认值）
 > **作者**: Project-X
-> **日期**: 2026-06-14
-> **关联文档**: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · [`DATABASE.md`](./DATABASE.md)
+> **关联文档**: [`ACCOUNT-ARCHITECTURE.md`](./ACCOUNT-ARCHITECTURE.md)（全栈视角 + 多端） · [`ARCHITECTURE.md`](./ARCHITECTURE.md) · [`DATABASE.md`](./DATABASE.md) · [`ADMIN-GUIDE.md`](./ADMIN-GUIDE.md)
 
-本文档说明本次为「答题卡设计系统」补齐的 **学生 / 教师 / 管理员 三级账号控制系统（RBAC）**：
-做了什么、怎么实现、接口如何调用、如何验证、以及如何启用。
+本文档说明 **学生 / 教师 / 管理员 三级账号控制系统（RBAC）**：模型怎么定、接口如何调用、门放在哪里、如何验证。
+第 3~6 节与实现同步；第 1、2 节的「本次新增 / 修改清单」是 v1.1 当时的交付记录，
+只用于说明来源，不代表当前文件清单。
 
-v1.3.0 的账号控制接口保持兼容；新增的答题卡模板、题级评分规则和考试/答题卡删除保护仍沿用现有 `card:*`、`exam:*`、`grade:*` 权限网关。
+v1.3.0 的账号控制接口保持兼容；后续新增的答题卡模板、题级评分规则和考试/答题卡删除保护仍沿用现有 `card:*`、`exam:*`、`grade:*` 权限网关。
 
 ---
 
@@ -78,24 +80,37 @@ system:manage               系统维护（仅管理员）
 - `teacher` → `["card:read","card:write","exam:read","exam:write","grade:read","grade:write"]`
 - `student` → `["score:read"]`
 
+> **这三行由建库脚本播种**（SQLite `schema.sql` / MariaDB 对应初始化），`permissions.ts` 里的
+> `DEFAULT_ROLE_PERMISSIONS` 只是该列为空时的兜底；运行时判定 `roleHasPermission()` 读的是缓存里的 `roles.permissions`。
+> **当前没有修改角色权限位的管理界面或 API**——`/api/admin/permissions` 管的是教师权限矩阵
+> （`teacher_permissions` 行：年级 / 科目 / 班级 / 题块 × 5 个标志），不是角色位。
+> 要按人收口权限，改矩阵；要改角色语义，改播种数据并重启（第 4 节的 #322 字段门正是复用 `grade:write`，
+> 因此角色位一旦被调整，学生 / 教师的自助阅卷设置边界会随之变化）。
+
 **通配符判定** `permissionSetGrants(held, required)`：
 
 1. 持有 `"*"` → 放行一切；
 2. 持有精确权限 → 放行；
 3. 持有 `域:*`（如 `card:*`）→ 放行该域全部动作。
 
-**缓存**：角色权限极少变更，进程内用 `Map<roleId, Set<permission>>` 缓存；
-角色定义变更时调用 `invalidatePermissionCache()` 失效。服务启动时 `loadRolePermissions(true)` 预热。
+**缓存**：角色权限极少变更，进程内用 `Map<roleId, Set<permission>>` 缓存，服务启动时由
+`initPermissionCache()` 从 `roles` 表载入。
+`invalidatePermissionCache()`（改角色时调用）只是把缓存置空，随后的 `loadRolePermissions()` 会返回
+**硬编码兜底表**（仅 admin / teacher / student 三个角色）直到 `initPermissionCache()` 再跑一次——
+因此改完角色定义要靠重启或重新初始化缓存生效，不要以为失效即等于热更新。
 
 ---
 
 ## 4. 认证与会话（`AuthService` + 中间件）
 
-- **登录**：`identifier`（用户名/职工号/学号/`P`+学号）+ `password`；bcryptjs 校验 bcrypt 格式哈希；签发随机 32 字节 hex token，有效期 **8 小时**，持久化到 `~/.projectx/tokens.json`。
+- **登录**：`identifier`（用户名/职工号/学号/`P`+学号）+ `password`，可选 `isPersistent`（「记住登录」）；bcryptjs 校验 bcrypt 格式哈希。
+- **Token 签发与存储**：随机 32 字节 hex，落盘 `~/.projectx/tokens.json` **只存 SHA-256 摘要**（服务重启后会话仍可用）；普通会话有效期 **8 小时**，持久会话 **30 天**。
+- **会话传递**：主通道是 HttpOnly Cookie `projectx_auth_token`（同源浏览器登录响应体不再回传 token，避免 XSS 从响应体窃取长期令牌）；`Authorization: Bearer <token>` 供跨源/脚本客户端使用。
+- **URL 携带凭据（安全整改 R30）**：`?token=` 只对**媒体白名单**（`src/server/lib/mediaAllowlist.ts`：图片 / PDF / 导出 / SSE 类只读 GET）生效；需要把链接交给 `<img>`、下载或 EventSource 时，改由 `POST /api/auth/media-ticket` 签发单次资源票据 `?mt=`——票据绑定「当前用户 + 这一条只读路径 + 时限」，登出 / 吊销会话时连带作废，不能当万能令牌用。
+- **一次性密码强制改密**：`password_change_required` 账号只能访问认证自助端点，其余 API 一律 **428 `PASSWORD_CHANGE_REQUIRED`**（`requirePasswordChangeCompleted`）。
 - **学生密码**：默认密码为学号（允许 5 位）；学生自改密码仍要求 ≥ 6 位（`passwordPolicy.ts`）。
-- **会话**：`Authorization: Bearer <token>`；也支持 `?token=`（用于 SSE / PDF 等无法设请求头的场景）。
 - **修改密码**：校验原密码 → 写新哈希 → **吊销该用户全部会话**，强制重新登录。
-- **禁用/改密时** 自动调用 `revokeUserTokens(userId)`，避免旧 token 继续生效。
+- **禁用 / 改密时** 自动调用 `revokeUserTokens(userId)`，避免旧 token 继续生效；该调用同时作废该用户的媒体票据。
 
 ### 中间件一览
 
@@ -105,6 +120,8 @@ system:manage               系统维护（仅管理员）
 | `optionalAuth` | 有 token 则解析挂载，无 token 也放行（用于记录 `created_by`） |
 | `requireRole(...names)` | 要求属于指定角色之一，否则 403 |
 | `requirePermission(perm)` | 基于角色权限做细粒度判定（支持通配），否则 403 |
+| `requirePasswordChangeCompleted` | 一次性密码账号在改密前只放行认证自助端点，其余 428 |
+| `requirePermissionCompat` / `makeGate`（`apps/answer-card/server/middleware.ts`） | 业务路由的兼容版门：已登录按角色权限位判定；**匿名请求只在 `PROJECTX_AUTH_ENFORCE=0/false` 的免登录模式下放行**，默认强制模式下仍 401 |
 
 ### 考试范围数据门（2026-10 安全整改·第三批）
 
@@ -127,22 +144,45 @@ system:manage               系统维护（仅管理员）
 - 天梯（`/api/ladder/*`）：学生只能读自己**参加过**的考试或大考组，未参加的考试 403，不能借跨考/组天梯聚合读到他人排名。
 - 成绩公布门（v41/PR #256）仍是硬过滤：未公布时学生侧详情返回 404，改分会自动撤回公布状态。
 
+### 自助设置接口的字段门（#322，2026-10-17）
+
+「账号设置」页对学生是**部分开放**的：外观类设置属于本人偏好，阅卷类设置属于教师职责，
+二者共用 `PATCH /api/users/me/settings`，因此按字段而不是按整条请求收口
+（两个门都在 `src/apps/answer-card/server/middleware.ts`）：
+
+| 门 | 管住的字段 / 动作 | 判定口径 | 拒绝时 |
+|------|------------------|----------|--------|
+| `canWriteGradingSelfSettings(user)` | `scoreDisplayMode`、`reviewConfidenceThreshold`（常量表 `GRADING_SELF_SETTING_FIELDS`） | **角色权限位** `grade:write`——管理员可在权限矩阵里调整，不在代码里写死 role 名单 | 403，仅当请求确实带了这两个字段 |
+| `requireBackgroundUploadAccess` | `POST /api/users/me/background`（上传自定义背景图） | **角色身份**：`student` 一律拒绝。故意不看权限位——给某人放开壁纸不应连带给他改分权限 | 403；门挂在 multer **之前**，被拒请求不会先落盘 |
+
+学生仍保留的自助能力：界面皮肤 / 明暗模式 / Tab 栏显隐 / 背景图透明度，以及本人 AI 服务商配置
+（`/api/ai/providers` 按 `user_id` 隔离、密钥加密存储）。透明度之所以留口，是因为未上传自定义
+背景时它作用于全局默认背景 `resources/background.jpg`；历史遗留的学生背景图仍只对本人可见。
+前端同步隐藏阅卷 Tab 与上传按钮（`AccountSettingsPage.tsx`），并在保存时只提交允许的字段，
+避免学生改外观时被阅卷字段的 403 连带打断——但**授权口径始终以上表的后端门为准**。
+
 ---
 
 ## 5. 接口清单
 
-> 除特别说明，均需 `Authorization: Bearer <token>`。
+> 除特别说明，均需已登录会话：浏览器走 HttpOnly Cookie `projectx_auth_token`，脚本/跨源客户端走 `Authorization: Bearer <token>`。
+> 只有只读媒体类 GET 允许 URL 携带凭据，且优先用 `?mt=` 资源票据而不是把会话令牌拼进 URL（见第 4 节）。
 
 ### 5.1 认证 `/api/auth`
 
 | 方法 | 路径 | 权限 | 说明 |
 |------|------|------|------|
-| POST | `/api/auth/login` | 公开 | 登录，返回 `{ token, user, permissions }` |
-| POST | `/api/auth/logout` | 登录 | 退出，吊销当前 token |
+| POST | `/api/auth/login` | 公开 | 登录 `{ identifier, password, isPersistent? }`；Set-Cookie 为主通道，响应体 `{ httpOnlyAuth, user, permissions, passwordChangeRequired }`，仅在跨源/脚本客户端才附带 `token`；含 IP 与账号双维度限流 |
+| POST | `/api/auth/logout` | 登录 | 退出，吊销当前 token，清 Cookie 并作废该用户媒体票据 |
 | GET | `/api/auth/me` | 登录 | 当前用户信息 + 权限列表 |
-| POST | `/api/auth/change-password` | 登录 | 改密 `{ oldPassword, newPassword }` |
+| POST | `/api/auth/change-password` | 登录 | 改密 `{ oldPassword, newPassword }`（吊销全部会话） |
+| POST | `/api/auth/media-ticket` | 登录 | 签发单次资源票据 `{ path }` → `{ ticket, path, expiresAt, ttlSeconds }`；路径不在媒体白名单内返回 400 |
 
 ### 5.2 用户管理 `/api/users`（要求 `user:manage`，即仅管理员）
+
+> 例外：`/api/users/me/*` 是**本人自助**接口，在 `apps/answer-card/server/index.ts` 里挂载于
+> `app.use("/api/users", userRoutes)` **之前**，只要求登录，不受 `user:manage` 约束；
+> 它自己的字段门见下表与第 4 节。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -156,6 +196,13 @@ system:manage               系统维护（仅管理员）
 | POST | `/api/users/import-csv` | 批量导入学生/教师（CSV/Excel） |
 
 > **安全护栏**：系统至少保留 1 名管理员——降级或禁用最后一名管理员会被拒绝。
+
+| 方法 | 自助路径 | 权限 | 说明 |
+|------|----------|------|------|
+| GET | `/api/users/me/settings` | 登录 | 读取本人设置（成绩显示方式、判分置信度阈值、背景透明度、Tab 栏、皮肤、明暗） |
+| PATCH | `/api/users/me/settings` | 登录 + 字段门 | 外观项人人可写；`scoreDisplayMode` / `reviewConfidenceThreshold` 需 `grade:write`，否则 403（#322） |
+| POST | `/api/users/me/background` | 登录，**学生拒绝** | 上传自定义背景图（图片类型校验 + 体积上限）；学生账号 403（#322） |
+| GET | `/api/app/background` | 匿名/登录 | 返回本人自定义背景，无则回落全局默认背景；历史学生背景只对本人可见 |
 
 ### 5.3 班级管理 `/api/classes`（读：管理员+教师；写：`class:manage` 仅管理员）
 
@@ -186,40 +233,59 @@ system:manage               系统维护（仅管理员）
 
 `/api/cards`、`/api/exams`、`/api/analysis`、`/api/scanner` 由 `makeGate()` 守卫：
 GET/HEAD 走「读权限」，写操作走「写权限」。
+`makeGate()` / `requirePermissionCompat` 是**兼容版**判定：已登录按角色权限位（含通配）放行，
+匿名请求只在免登录模式下才通过；考试数据还要再过第 4 节的「数据范围门」。
+读写权限位之外，逐题明细、天梯、图表/名单查看等按第 4 节的门收敛，不由 `makeGate()` 单独负责。
 
 ---
 
 ## 6. 兼容性开关 `PROJECTX_AUTH_ENFORCE`
 
-`ARCHITECTURE.md` 指出 v1.0 前端三模式 UI **未强制登录**。为避免直接打断现网前端，业务路由的强制鉴权由环境变量控制：
+v1.0 前端三模式 UI **未强制登录**。为保留「桌面单机免登录设计器」这一用法，业务路由的强制鉴权
+由环境变量控制；判定唯一真源是 `src/server/lib/authEnforce.ts` 的 `isAuthEnforced()`
+（历史上 `server/index.ts` 与 `middleware/auth.ts` 各写了一份**语义相反**的判定，已收敛为这一处，
+且该函数每次调用实时读 env）。
+
+> 唯一的间接层：`apps/answer-card/server/middleware.ts` 里的兼容门读的是模块级 `authEnforced`，
+> 由 `createApp()` 在装配路由时用 `setAuthEnforced(isAuthEnforced())` 写入。因此**进程启动后改 env 不会自动生效**，
+> 需要重启；测试脚本可以直接调 `setAuthEnforced()` 模拟两种模式。
 
 | 取值 | 行为 |
 |------|------|
-| 未设置 / `0`（默认） | 仅 `optionalAuth` 解析身份（用于 `created_by`），**不拦截**业务路由——现有前端无需改造即可继续使用 |
-| `1` / `true` | **完整 RBAC**：业务路由未登录 401、权限不足 403 |
+| **未设置（默认）** / `1` / `true` / 其它任意值 | **开启强制鉴权**：受保护路由未登录 401、权限或数据范围不足 403 |
+| `0` / `false`（大小写敏感） | 关闭强制：`optionalAuth` 只解析身份（用于 `created_by`），匿名请求可通过兼容门——即「未登录即可使用」的兼容模式 |
 
-> 用户管理 / 班级管理 / 改密等 **管理类接口始终强制鉴权**，不受该开关影响。
-> 当前端接入登录后，设置 `PROJECTX_AUTH_ENFORCE=1` 即可全量启用三级控制。
+> ⚠️ 早期文档把这张表写反了（称「未设置 = 默认不拦截」）；以本表与 `isAuthEnforced()` 为准。
+> 管理类接口（用户 / 班级 / 改密 / 权限矩阵）与第 4 节的自助字段门**始终强制鉴权**，不受该开关影响；
+> 开关只影响「匿名请求能否通过兼容门」，而 `authMiddleware` 保护的路由任何取值下都要求登录。
+> 免登录模式仅供单机桌面端使用，Web 部署不要设置 `PROJECTX_AUTH_ENFORCE=0`。
 
 ```powershell
-# 启用强制鉴权
+# 默认即强制；显式写明更清楚
 $env:PROJECTX_AUTH_ENFORCE = "1"
-npm run server
+npm run dev
+
+# 仅桌面单机兼容模式：关闭业务路由拦截
+$env:PROJECTX_AUTH_ENFORCE = "0"
 ```
 
 ---
 
 ## 7. 验证
 
-提供端到端自动化验证脚本 `scripts/verify-auth.ts`，在 **临时数据库** 上覆盖 7 大类用例：
+提供端到端自动化验证脚本 `scripts/verify-auth.ts`，在 **临时数据库** 上按章节覆盖：
 
 1. 数据库初始化与默认管理员
 2. 角色权限模型（通配符 / 细粒度）
 3. 登录 / Token / 改密 / 会话吊销
 4. 创建教师·学生、批量导入、改角色、禁用与启用
 5. 年级 / 班级 / 花名册
-6. 学生自助查分（含即时排名、越权隔离）
-7. 中间件 `requirePermission` / `requireRole` 的放行与拦截（含 401/403）
+6. 学生自助查分（含即时排名、越权隔离）与看板 / 趋势统计
+7. 中间件 `requirePermission` / `requireRole` / `requireExamAccess` 的放行与拦截（含 401/403），
+   以及 **#322 的自助设置字段门与背景图上传门**（含「门必须挂在 multer 之前」的接线检查）
+8~12. 权限矩阵运行时消费、题块授权、软删除与恢复、天梯公布闸门、按考试模式收敛的数据留存策略
+
+> 用例数量随功能增长，本文不固定「N 项通过」；以脚本自身输出的失败数为准。
 
 ### 运行方式
 
@@ -228,16 +294,14 @@ npm install          # 首次需安装依赖（better-sqlite3 为原生模块，
 npm run verify:auth
 ```
 
-预期输出（节选）：
+输出末尾形如：
 
 ```
 == 7. 中间件 requirePermission / requireRole ==
   ✓ 管理员可访问用户管理
-  ✓ 教师访问用户管理被 403
-  ✓ 学生访问用户管理被 403
-  ✓ 未登录访问用户管理被 401
+  ✓ 学生上传背景图被 403
 ────────────────────────────────────────
-结果：33 通过，0 失败
+结果：<通过数> 通过，0 失败
 ```
 
 全部通过则退出码 `0`，否则 `1`（可直接接入 CI）。
@@ -250,9 +314,8 @@ npm run verify:auth
 npm run typecheck
 ```
 
-> ⚠️ **说明**：本系统在交付环境中已通过 TypeScript 语言服务的静态类型校验；
-> 由于交付环境未安装 Node.js 运行时与 `node_modules`，`verify:auth` 的**实际运行**需在
-> 已执行 `npm install` 的开发机上完成。脚本本身已随代码交付、可直接运行。
+> ⚠️ **说明**：`verify:auth` 需要已执行 `npm install` 的开发机（含原生模块）才能真正运行；
+> 交付环境若缺运行时，只能完成静态类型校验。不要把「类型检查通过」写成「端到端验证通过」。
 
 ---
 
@@ -279,7 +342,9 @@ npm run typecheck
 
 ## 9. 设计取舍
 
-- **Token 存磁盘**：`~/.projectx/tokens.json`，重启后 Token 存活（6 个月持久化 Token）；满足校内单机/小并发，后续可平滑替换为 JWT/Redis。
+- **Token 存磁盘**：`~/.projectx/tokens.json` 只存 SHA-256 摘要，重启后会话存活；
+  短会话 8 小时、持久会话 30 天，另有 Cookie 主通道与单次媒体票据（R30）。
+  满足校内单机/小并发，后续可平滑替换为 JWT/Redis。
 - **写权限合并**：业务网关中答题卡写操作要求 `grade:write`（教师/管理员均具备），与三级模型一致，无需对每条路由单独标注，降低耦合。
 - **学生账号自动建档**：阅卷落库时若学生不存在会以占位哈希自动建档（见 `index.ts` 的 `persistGradingResults`）；这类账号 `password_hash` 为空，`changePassword` 对空哈希放行原密码校验，便于后续由管理员重置或学生首次设密。
 - **排名即时计算**：`ScoreRepository` 查询时计算排名/百分位，避免依赖 `student_scores.rank` 是否落库，保证一致性。

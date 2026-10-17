@@ -66,15 +66,22 @@
 **令牌三处同步（防漂移）：**
 
 ```
-design/tokens/tokens.css（设计层事实源）
-        │  npm run sync-tokens（scripts/sync-tokens.mjs）
+design/tokens/tokens.css（设计层事实源，交付物）
+        │  手工同步（仓库内没有 sync-tokens 脚本，见下方警示）
         ▼
-client/theme/app.css（@theme 块）  ── 组件/工具类消费
-client/theme.ts（JS/图表取色）     ── chart.js 适配器等消费
+client/theme/tokens.css（落地副本，app.css 用 @import 引入）
+client/theme/app.css（@theme 块把 --px-* 映射为语义工具类）
+client/theme.ts（JS/图表取色镜像，与 L2 亮色基准保持一致）
 ```
 
-- 手改 `app.css` 的 `@theme` 块或 `theme.ts` 中的任一值 = **漂移事故**（历史上发生过 tokens.css / styles.css / theme.ts 三处漂移，已修）。
-- 唯一合法改法：改 `design/tokens/tokens.css` → 跑同步 → 验证（详见第三节）。
+- ⚠️ **不存在 `npm run sync-tokens` / `scripts/sync-tokens.mjs`**。早期文档把它写成同步的唯一入口，
+  实际流程是**人工改副本 + 自查**：`src/apps/answer-card/client/theme/tokens.css` 是 app.css 用 `@import`
+  引入的**生效副本**，`design/tokens/tokens.css` 是设计交付物，两者必须逐字节一致。
+- 这两份**漂过**：radiogroup 选中态选择器落地副本已修正为 `button[aria-checked="true"]`（Radix RadioGroup
+  用 `aria-checked`，`data-state="on"` 只对 ToggleGroup 的按钮成立），设计副本仍停在旧选择器；
+  2026-10-17 校订时已把设计副本对齐。**没有脚本会提醒这种漂移**，改完请自己 `diff`。
+- 手改生效副本或 `theme.ts` 而不回写另一处 = **漂移事故**（历史上发生过 tokens.css / styles.css / theme.ts 三处漂移，已修）。
+- 改法：先改落地副本让界面生效 → 同轮回写设计副本与 `theme.ts` → 用 `diff design/tokens/tokens.css src/apps/answer-card/client/theme/tokens.css` 确认零差异（详见第三节）。
 
 ### 4. 组件库 v2 用法要点
 
@@ -107,7 +114,7 @@ client/theme.ts（JS/图表取色）     ── chart.js 适配器等消费
 | [design/demo/demo.html](../design/demo/demo.html) | 交互 Demo（**8 视图**：登录 / 首页 / 考试管理 / 成绩分析 / 学生成绩 / 扫描工作台 / 设计基础 / 组件，亮暗双主题），**视觉验收基准** |
 | [design/designer-sandbox.html](../design/designer-sandbox.html) | 设计器沙盒 |
 | [design/EXECUTION-PLAN.md](../design/EXECUTION-PLAN.md) | 重构执行计划（T1–T8 任务卡、P0–P5 阶段、防串台规约、附录 B 同步规约） |
-| [docs/superpowers/specs/2026-07-29-grade-analysis-redesign-design.md](../docs/superpowers/specs/2026-07-29-grade-analysis-redesign-design.md) | 成绩分析重构设计文档（选项分析 / 跨班对比 / 可配置阈值体系，已批准实施） |
+| [docs/superpowers/specs/2026-07-29-grade-analysis-redesign-design.md](../docs/superpowers/specs/2026-07-29-grade-analysis-redesign-design.md) | 成绩分析重构的**过程稿**（选项分析 / 跨班对比 / 可配置阈值体系）。⚠ 按 AGENTS.md，`docs/superpowers` 不是项目文档目录、**不作为现行规范来源**；此处只作背景资料，口径以本文与实现为准 |
 | [readus/ARCHITECTURE.md](./ARCHITECTURE.md) | 系统总体架构、分层、数据流、原生模块与构建部署 |
 | [AGENTS.md](../AGENTS.md) | 「样式事实源（P6 T05 定稿）」节 = 团队铁律 |
 | [readus/CHANGELOG.md](./CHANGELOG.md) | v2.0.0 条目 = 本次重构变更全记录 |
@@ -180,14 +187,16 @@ import { Button, Card, CardContent, Badge, StatCard, Chart, paletteColor } from 
 ### 2. 标准流程（全局风格调整唯一合法路径）
 
 ```
-改 design/tokens/tokens.css（只改这里）
-      → npm run sync-tokens      （同步 app.css @theme + theme.ts）
+改 src/apps/answer-card/client/theme/tokens.css（生效的落地副本）
+      → 同轮回写 design/tokens/tokens.css，并检查 client/theme.ts 是否需要同值
+      → diff design/tokens/tokens.css src/apps/answer-card/client/theme/tokens.css   （应为零差异）
       → npm run typecheck
       → npm run build:web / build:scanner
       → Playwright 亮暗双主题截图验证（ui-visual-verification）
 ```
 
-⚠ **禁手改 `app.css` 的 `@theme` 块与 `theme.ts`**——它们是同步产物，手改 = 漂移事故，下次同步被覆盖。
+⚠ **`@theme` 映射块（`app.css`）与 `theme.ts` 不是脚本产物**，没有自动同步会帮你覆盖回来；
+它们靠人工保持一致，改令牌要三个消费点一起看，漏一处就是界面与图表不同色。
 
 ### 3. 场景 A · 换主题色（例：品牌红 → 蓝）
 

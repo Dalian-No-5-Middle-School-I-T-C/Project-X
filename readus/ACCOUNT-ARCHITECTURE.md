@@ -1,10 +1,9 @@
 # Project-X 账号管理系统技术架构与版本说明
 
-> **版本**: v1.5.0（历史架构快照）
-> **日期**: 2026-06-17
-> **关联文档**: [`ACCOUNT-CONTROL.md`](./ACCOUNT-CONTROL.md)（后端 API 详述）· [`ARCHITECTURE.md`](./ARCHITECTURE.md)（系统总览）· [`ADMIN-GUIDE.md`](./ADMIN-GUIDE.md)（管理员手册）
+> **性质**: 账号与权限体系的全栈说明（v1.1~v1.5 成文，2026-10-17 按 v2.6.0 代码校订现行事实）
+> **关联文档**: [`README.md`](./README.md)（readus 索引）· [`ACCOUNT-CONTROL.md`](./ACCOUNT-CONTROL.md)（后端 API 详述）· [`ARCHITECTURE.md`](./ARCHITECTURE.md)（系统总览）· [`ADMIN-GUIDE.md`](./ADMIN-GUIDE.md)（管理员手册）
 
-> ⚠️ **现状提示**：本文档为 v1.1~v1.5 时代的架构快照，其中前端文件结构（`styles.css`、模式 Tab 等）已随 v1.9.x 网页化路由与 v2.0.0 Flat 2.0 重构大幅演进，**前端结构请以 [ARCHITECTURE.md](./ARCHITECTURE.md) 与 [UI-ARCHITECTURE.md](./UI-ARCHITECTURE.md) 为准**；账号 RBAC 模型、权限矩阵与教师细分角色部分仍然有效。
+> **校订说明**：第 4 节「v1.1 账号系统 vs 早期 main」是**历史对比**，保留原文不改；第 1、2、3、5、6 节描述当前实现，2026-10-17 逐项对照代码更正了会话有效期、强制鉴权默认值、教师权限表述、前端目录结构与构建命令。前端组件与样式分层的细节仍以 [ARCHITECTURE.md](./ARCHITECTURE.md) 与 [UI-ARCHITECTURE.md](./UI-ARCHITECTURE.md) 为准。
 
 本文档从**全栈视角**说明 Project-X 三级账号控制系统（RBAC）的技术架构，并对比 **v1.1 账号系统** 与 **早期 main 分支（v1.0）** 的差异。
 
@@ -62,7 +61,7 @@ flowchart TB
 1. 用户打开 Electron 应用 → 前端检查 `localStorage` 中的 Token → 调用 `GET /api/auth/me` 恢复会话。
 2. 未登录则展示 `LoginPage`；登录成功后 Token 写入本地，后续所有 `fetchJson` 自动附加 `Authorization: Bearer <token>`。
 3. 管理员通过「账号」模式操作 `/api/users` 与 `/api/classes`；学生通过「我的成绩」访问 `/api/scores/me`。
-4. 业务接口（答题卡、考试、阅卷、分析）在 `PROJECTX_AUTH_ENFORCE=1` 时经 RBAC 网关拦截；管理类接口**始终强制鉴权**。
+4. 业务接口（答题卡、考试、阅卷、分析）经兼容门 `makeGate` / `requirePermissionCompat` 判定：默认（`PROJECTX_AUTH_ENFORCE` 未设置）**即强制**，只有显式 `0` / `false` 才允许匿名通过；管理类接口**始终强制鉴权**（见 §2.2）。
 
 ---
 
@@ -72,29 +71,53 @@ flowchart TB
 
 | 层级 | 路径 | 职责 |
 |------|------|------|
-| **权限模型** | `src/server/auth/permissions.ts` | 权限常量、`域:动作` 命名、通配符 `*` / `card:*`、角色权限缓存 |
-| **认证服务** | `src/server/services/AuthService.ts` | 登录、登出、改密、Token 签发与吊销（内存 Map，8 小时有效） |
-| **中间件** | `src/server/middleware/auth.ts` | `authMiddleware`、`optionalAuth`、`requireRole`、`requirePermission` |
+| **权限模型** | `src/server/auth/permissions.ts` | 权限常量（`域:动作`）、`ROLE_IDS` / `ROLE_NAMES` / `TEACHER_ROLES`、`DEFAULT_ROLE_PERMISSIONS` 兜底表、`permissionSetGrants()` 通配判定、启动时从 `roles.permissions` 载入的进程内缓存 |
+| **认证服务** | `src/server/services/AuthService.ts` | 登录、登出、改密、Token 签发与吊销。短时令牌 **8 小时**（`TOKEN_EXPIRE_MS`），勾选保持登录的持久令牌 **30 天**（`PERSISTENT_TOKEN_EXPIRE_MS`，安全审计 F-12-7 由 6 个月收敛而来）；令牌只存 SHA-256 哈希（P2-1 / M-S3） |
+| **单次资源票据** | `src/server/services/mediaTicket.ts` | `POST /api/auth/media-ticket` 换 `?mt=`，给图片 / PDF / SSE 这类带不了请求头的 GET 用（安全 R30） |
+| **中间件** | `src/server/middleware/auth.ts` | `authMiddleware`、`optionalAuth`、`requireRole`、`requirePermission`、`requirePasswordChangeCompleted` |
+| **业务侧兼容门** | `src/apps/answer-card/server/middleware.ts` | `makeGate`、`requirePermissionCompat`、`requireExamAccess`、`hasViewPermission`（教师权限矩阵）——无身份时按 `PROJECTX_AUTH_ENFORCE` 决定放行还是 401，避免免登录的旧部署被 `requirePermission` 一律挡死 |
 | **数据访问** | `UserRepository` / `ClassRepository` / `ScoreRepository` | 用户、组织结构、成绩查询 |
-| **路由** | `routes/auth.ts` · `users.ts` · `classes.ts` · `scores.ts` | REST API |
+| **路由** | `routes/auth.ts` · `users.ts` · `classes.ts` · `scores.ts` · `admin-permissions.ts` | REST API；`admin-permissions.ts` 是「按角色编辑权限位」的入口 |
 | **网关** | `apps/answer-card/server/index.ts` | 业务路由读写权限守卫；`optionalAuth` 记录 `created_by` |
 
 ### 2.1 三级角色与权限
 
-| 角色 | 权限标识 | 能力摘要 |
-|------|----------|----------|
-| **admin** | `["*"]` | 全部功能 + 用户/班级管理 |
-| **teacher** | `card:*` `exam:*` `grade:*`（读写） | 答题卡、考试、阅卷、分析；可读班级列表 |
-| **student** | `score:read` | 仅查自己的考试成绩 |
+| 角色 | `role_id` | 默认权限（`DEFAULT_ROLE_PERMISSIONS`） | 能力摘要 |
+|------|---------|----------------------------------------|----------|
+| **admin** | 1 | `["*"]` | 全部功能；`user:manage` / `class:manage` / `system:manage` 默认只有它持有 |
+| **teacher** | 2 | `card:read` `card:write` `exam:read` `exam:write` `grade:read` `grade:write` | 答题卡设计、考试管理、阅卷、成绩分析 |
+| **student** | 3 | `score:read` | 只看自己的成绩：我的成绩、已公布且本人参加考试的天梯、教师开启且成绩公布后的原卷/逐题答案、本人的 AI 成绩分析 |
+
+三个容易被误读的口径：
+
+- **默认表只是兜底，真正判定读数据库。** `initPermissionCache()` 启动时把 `roles.permissions`（JSON 列）载入进程内缓存，`roleHasPermission()` 查的是这份缓存；该列为空时才回落到 `DEFAULT_ROLE_PERMISSIONS`。这三个角色位由建库脚本播种，**当前没有改角色权限位的管理界面或 API**；`/api/admin/permissions`（整条 `requirePermission(USER_MANAGE)`，教师改不了）管的是教师权限矩阵 `teacher_permissions` 行，即「按人收口」，不是「改角色」。
+- **教师默认权限是逐条列举的，不是 `card:*` 这类域通配。** 通配能力确实存在（`permissionSetGrants()` 认 `*` 与 `域:*`，管理员可以给任意角色写 `grade:*`），但默认表里没有，按默认表推断能力时必须逐条看。
+- **教师细分角色改的是数据范围，不是权限位。** `teacher_role` 取 `subject_teacher`（学科老师）/ `head_teacher`（班主任）/ `grade_leader`（学年主任）（`TEACHER_ROLES`，迁移 v52 建列、v55 回填）。可见考试、可见班级、能阅哪些题块由 `getVisibleExamIds()` 与 `teacher_permissions` 矩阵（`hasViewPermission()`）决定，详见 [`ACCOUNT-CONTROL.md`](./ACCOUNT-CONTROL.md)。
 
 ### 2.2 渐进启用开关
 
 | `PROJECTX_AUTH_ENFORCE` | 行为 |
 |-------------------------|------|
-| 未设置 / `0`（默认） | 业务路由不拦截；管理类 API 仍强制登录 |
-| `1` / `true` | 业务路由未登录 401、权限不足 403 |
+| **未设置 / 其它任何取值（默认）** | **开启强制鉴权**：受保护路由未登录 401、权限不足 403 |
+| `0` 或 `false`（大小写敏感） | 兼容模式：仍解析身份，但无 Token 也放行（单机 / 旧部署）。有身份时权限门照常判定 |
 
-前端 v1.1 已默认要求登录，与强制鉴权开关配合使用时可实现完整三级控制。
+判定唯一真源是 `src/server/lib/authEnforce.ts` 的 `isAuthEnforced()`，**每次调用实时读 env**，不做进程启动快照。
+
+> ⚠️ 本文早期版本把默认值写成「未设置=不拦截」，方向是反的。AGENTS.md 记录过这个 bug 的来历：`server/index.ts` 的 createApp 与 `middleware/auth.ts` 曾各有一份语义相反的判定，现已收敛成同一个函数。
+
+### 2.3 学生账号在网页端的边界（#322）
+
+issue #322「移除学生账号在网页端修改阅卷设置和上传背景图的能力」的现行口径。约束全部落在后端，前端只是不再把控件摆出来（AGENTS.md：隐藏按钮不等于授权校验）。
+
+| 能力 | 学生 | 教师 / 管理员 | 强制点 |
+|------|------|---------------|--------|
+| 账号设置页「阅卷设置」页签（成绩指标显示、复核置信度阈值） | **不可见、不可写** | 可用 | `PATCH /api/users/me/settings` 逐字段拒绝：请求体含 `scoreDisplayMode` / `reviewConfidenceThreshold` 且 `!roleHasPermission(role_id, grade:write)` → **403**（`canWriteGradingSelfSettings()`）。同请求里的皮肤/明暗等字段不受影响 |
+| 上传自定义背景图 | **不可用** | 可用 | `POST /api/users/me/background` 在 multer **之前**挂 `requireBackgroundUploadAccess()`，学生直接 403，不产生落盘文件 |
+| 背景图透明度、皮肤、明暗、底部 Tab 栏 | 可用 | 可用 | 同一 PATCH 接口的其余字段，属于个人外观 |
+| 本人 AI 服务商增删改 | 可用 | 可用 | `routes/ai-providers.ts` 按 `user_id` 归属自身行，密钥加密存储；不是跨用户写权限 |
+| 网页端模式 | 只有 `scores` 与 `account-settings` | 全部 | `src/shared/appVariant.ts` 的 `allowedModes` + `App.tsx` 路由收敛 |
+
+两点残留口径，需要产品决策而不是代码缺陷：学生**历史上**上传过的背景图仍会作为其本人默认浮层继续显示（文件按 `backgrounds/<userId>.jpg` 只影响自己，不扩散）；透明度也保留，因为它作用于服务端自带的 `resources/background.jpg`。要一并收回，得同时改 `GET /api/app/background` 的取文件分支并清理历史文件。
 
 ---
 

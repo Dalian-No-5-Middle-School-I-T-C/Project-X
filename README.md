@@ -765,8 +765,8 @@ Project-X/
 | `GET/PUT/DELETE` | `/api/export/templates/:slot` | 导出模板 CRUD |
 | `POST` | `/api/export/exams/:id/scores` | 按列配置导出 Excel |
 | `GET` | `/api/export/columns` | 导出列元数据 |
-| `PATCH` | `/api/users/me/settings` | 更新用户设置（成绩指标/复核阈值/背景图透明度） |
-| `POST` | `/api/users/me/background` | 上传自定义背景图 |
+| `PATCH` | `/api/users/me/settings` | 更新用户设置（成绩指标/复核阈值/背景图透明度/皮肤/亮暗/导航栏）。**#322**：`scoreDisplayMode`、`reviewConfidenceThreshold` 需 `grade:write`，学生账号带这两项返回 403，其余外观项仍可用 |
+| `POST` | `/api/users/me/background` | 上传自定义背景图。**#322**：学生账号一律 403（按角色身份拒绝，不看权限位），且权限门在落盘之前 |
 | `GET` | `/api/app/background` | 获取背景图文件（优先用户自定义） |
 | `GET/POST/PUT/DELETE` | `/api/ai/providers` | AI 服务商配置管理 |
 | `GET` | `/api/db/backup` | 导出全量数据 ZIP（SQLite: VACUUM / MariaDB: mysqldump） |

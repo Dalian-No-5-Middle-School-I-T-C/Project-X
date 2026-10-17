@@ -2,6 +2,10 @@
 
 **Project-X（答题卡设计阅卷系统）** 是大连五中自研的智能试卷管理工具，覆盖 **答题卡设计 → PDF 导出 → 扫描/上传识别 → 自动判分 → 网上阅卷（2P/3P 多评 + 争议仲裁）→ 成绩分析 → AI 成绩分析** 全流程。架构上支持 **本地 SQLite 单机模式** 和 **远程 MariaDB 服务器模式**，通过统一的 `DbAdapter` 接口无缝切换。
 
+> 下面 v1.9.x / v1.9.4 三段是**发布历史按语**，记录当时的改动，其中的文件名与行数
+> （例如 `styles.css`、`App.tsx` 的体积）不代表现状：`styles.css` 与 `theme/legacy-bridge.css`
+> 已在 v2.0.0 删除，现行样式/组件口径见 §3.3 与 [UI-ARCHITECTURE.md](./UI-ARCHITECTURE.md)。
+
 > **v1.9.2** 网页化改造 / 启动台模式：
 > - **URL 路由化 → 真实 `<Routes>`**：`createBrowserRouter` + `react-router-dom v7` 每功能独立 URL；阶段 2 续由「`mode` + CSS `hidden-panel` 全挂载」升级为由 URL 真实驱动渲染（含 `/home` `/design` `/exam-manage` `/grading` `/analysis` `/scores` `/account` `/sponsor` `/permissions` `/guide`）
 > - **启动台模式**：Home 模块卡支持 `在新窗口打开`，子页面顶部有 `← 返回首页` 按钮
@@ -178,28 +182,30 @@ v1.9.2 从传统 `useState` 状态切换升级为 **URL 路由化**，使用 `re
 
 > v2.0.0 起样式与组件事实源全面切换：旧 `styles.css`（6048 行）与 `theme/legacy-bridge.css` 已删除，详见 [AGENTS.md](../AGENTS.md)「样式事实源」与 [UI-ARCHITECTURE.md](./UI-ARCHITECTURE.md)。以下为当前状态：
 
-- **`theme/tokens.css`**：L1 原始 / L2 语义（亮·暗）/ L3 组件三层令牌唯一事实源；`theme/app.css` 为 Tailwind v4 入口（`@theme` 块映射 `--px-*` → 语义工具类）；`theme/backdrop.css` 承载背景图功能样式。**`client/theme.ts`**：JS 侧令牌镜像（图表取色/动态样式），与 `tokens.css` 经 `scripts/sync-tokens.mjs` 三处同步。
+- **`theme/tokens.css`**：L1 原始 / L2 语义（亮·暗）/ L3 组件三层令牌唯一事实源；`theme/app.css` 为 Tailwind v4 入口（`@theme` 块映射 `--px-*` → 语义工具类）；`theme/backdrop.css` 承载背景图功能样式。**`client/theme.ts`**：JS 侧令牌镜像（图表取色/动态样式），**手工与 `tokens.css` 的 L2 亮色基准保持一致**——仓库里没有 `sync-tokens` 脚本，改令牌要两边一起改并自查漂移。
 - **`components/ui/v2/`**：唯一组件事实源（桶具名 import），旧 `components/ui/*` 首版组件（Button / Modal / SegmentedControl / Input / Panel / Table / Spinner / LoadingScreen）已于 P5 删除，仅 re-export v2。
-- **皮肤扩展机制**（v2.1.0 + v2.3.0）：`data-skin` 属性 + `tokens.css` 追加 `[data-skin="xxx"]` L2 覆盖块 + `SkinSwitcher` 注册表；现有 `flat`（默认）与 `paper-edge` 两套皮肤，详见 [SKIN-THEME.md](./SKIN-THEME.md)。
+- **皮肤扩展机制**（v2.1.0 + v2.3.0）：`data-skin` 属性 + `tokens.css` 追加 `[data-skin="xxx"]` L2 覆盖块 + `SkinSwitcher` 注册表；现有 `paper-edge`（纸锋，**默认**，`DEFAULT_SKIN`）与 `flat`（明澈）两套皮肤——`tokens.css` 的 `:root` 是 flat 基准，默认皮肤靠 `data-skin` 覆盖块生效，详见 [SKIN-THEME.md](./SKIN-THEME.md)。
 - **z-index 阶梯**：`--z-dropdown:900` / `--z-modal:1000` / `--z-toast:1100` / `--z-lightbox:1200`（L2 令牌并入 tokens.css）
 
 ### 3.4 工作模式一览
 
-> 现状共 11 个 mode（`client/modeRoutes.ts` 为唯一映射）；v1.9.2 的独立 `grading` 模式已移除，阅卷由考试管理「网阅」按钮进入。
+> 现状共 **12** 个 mode（`client/modeRoutes.ts` 的 `MODE_PATH` 为唯一映射）；v1.9.2 的独立 `grading` 模式已移除，阅卷由考试管理「网阅」按钮进入。
+> 页面壳组件自 v2.x 起统一命名为 `*RoutePage`（`client/pages/`），下表按当前导出名写。
 
 | 模式 | 路径 | 职责 | 主要组件 |
 |------|------|------|----------|
-| **home** | `/home` | 启动台仪表盘，模块卡可新标签打开 | `HomePage` |
+| **home** | `/home` | 启动台仪表盘，模块卡可新标签打开 | `HomeRoutePage` |
 | **design** | `/design/*` | 编辑答题卡、预览、导出 PDF | `DesignPage` + `DesignEditors`(`CardPreview`/`ObjectiveEditor`/`SubjectiveEditor`) + `buildLayout` 预览 |
 | **exam-manage** | `/exam-manage` | 考试管理 / 网阅入口（5 Tab）/ 大考组 | `ExamManagePage` |
-| **analysis** | `/analysis` | 考试统计、排名、题目分析 | `ExamSelectPage` / `ExamGroupDetailPage` / `ScoreDetailPage` |
-| **scores** | `/scores` | 学生查看个人成绩 | `StudentScores` |
-| **account** | `/account` | 教师/学生/班级管理 | `AccountManagement`、`TeacherManagement`、`ClassManagement` |
-| **account-settings** | `/account-settings` | 个人账号设置（v2.0.0 起独立路由页，横向 Tab） | `AccountSettingsPage` |
-| **global-settings** | `/global-settings` | 全局设置（仅管理员，v2.0.0 起独立路由页） | `GlobalSettingsPage` |
-| **sponsor** | `/sponsor` | 赞助页 | `SponsorPage` |
-| **permissions** | `/permissions` | 权限管理 | `PermissionManager` |
-| **guide** | `/guide` | 使用指南 | `UserGuidePage` |
+| **analysis** | `/analysis` | 考试统计、排名、题目分析 | `AnalysisRoutePage`（内含 `ExamSelectPage` / `ExamGroupDetailPage` / `ScoreDetailPage`） |
+| **scores** | `/scores` | 学生查看个人成绩 | `ScoresRoutePage` → `StudentScores` |
+| **account** | `/account` | 教师/学生/班级管理 | `AccountRoutePage` → `AccountManagement`、`TeacherManagement`、`ClassManagement` |
+| **account-settings** | `/account-settings` | 个人账号设置（v2.0.0 起独立路由页，横向 Tab；学生侧按 #322 隐藏阅卷设置与背景上传） | `AccountSettingsPage` |
+| **global-settings** | `/global-settings` | 全局设置（仅管理员，v2.0.0 起独立路由页） | `GlobalSettingsRoutePage` |
+| **admin-console** | `/admin-console` | 管理员控制台（`system:manage`；消费 `/api/admin/console/*` 与数据留存策略接口） | `AdminConsoleRoutePage` → `AdminConsolePage` |
+| **sponsor** | `/sponsor` | 赞助页 | `SponsorRoutePage` → `SponsorPage` |
+| **permissions** | `/permissions` | 权限管理（教师权限矩阵） | `PermissionsRoutePage` → `PermissionManager` |
+| **guide** | `/guide` | 使用指南 | `GuideRoutePage` → `UserGuidePage` |
 
 **特点：**
 
@@ -682,8 +688,9 @@ flowchart LR
 
 ---
 
-> 文档更新日期：2026-08-01  
-> 基于 Project-X v1.10.0 代码库分析（含 v1.9.2 网页化改造 + v1.9.4 网阅打分面板 + v1.10.0 成绩分析增强：难度 P / 区分度 D / 总体分析 / 大考 6-Tab / 大考 AI 分析）
+> 最近校订：2026-10-17（#283 文档更新轮：mode 数量与路由壳组件名、CSS/令牌事实源与默认皮肤、账号权限口径）  
+> 原始分析基于 Project-X v1.10.0 代码库（含 v1.9.2 网页化改造 + v1.9.4 网阅打分面板 + v1.10.0 成绩分析增强：难度 P / 区分度 D / 总体分析 / 大考 6-Tab / 大考 AI 分析）；
+> 迁移水位与功能现状以 `src/server/db/migrations.ts`（v60）与 `readus/CHANGELOG.md` 为准。
 
 ---
 

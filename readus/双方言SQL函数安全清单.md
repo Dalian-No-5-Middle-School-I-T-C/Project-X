@@ -1,5 +1,7 @@
 # 双方言 SQL 函数安全清单（SQLite / MariaDB）
 
+> 最近复核：2026-10-17（迁移至 v60；本清单条目仍有效）
+
 > 来源：成绩分析系统优化建议清单 · 建议 9「索引补齐与双方言函数审计」
 > 审计范围：`src/server/repositories/AnalysisRepository.ts`、`src/server/routes/exam-groups-analysis.ts`、`src/server/repositories/KnowledgePointRepository.ts`、`src/server/repositories/ScoreRepository.ts`、`src/apps/answer-card/server/routes/analysis.ts`
 > 审计日期：2026-08-19 · 结论：分析链当前 SQL 在两种方言下均安全，仅完成一处风格统一（`IFNULL` → `COALESCE`）。

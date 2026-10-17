@@ -2,6 +2,56 @@
 
 > **项目起点：2026-06-07 建库**（GitHub 仓库创建，`Initial commit` 于同一分钟提交）。本文件只记录建库之后的真实提交与发版；建库之前的任何日期/版本均为误记，已删除。
 
+## 2026-10-17：#322 学生网页端权限收敛 + #283 readus 文档校订
+
+**#322「移除学生账号在网页端修改阅卷设置和上传背景图的能力」**
+
+- **按字段拒绝而不是整条拒绝**（`PATCH /api/users/me/settings`）：这条接口同时承载阅卷偏好
+  （成绩显示方式 `scoreDisplayMode`、复核置信度阈值 `reviewConfidenceThreshold`）与外观偏好
+  （皮肤、亮暗、底部导航栏、背景透明度）。整条 403 会把学生连自己的界面都调不了，
+  因此新增常量表 `GRADING_SELF_SETTING_FIELDS` 只挡这两项。判定口径复用角色权限位 `grade:write`
+  （`canWriteGradingSelfSettings()`），不在代码里写死 role 名单——将来调整角色权限即可，无需改实现。
+- **背景图上传按身份拒绝**（`POST /api/users/me/background`）：`requireBackgroundUploadAccess`
+  对 `student` 一律 403，**故意不看权限位**：给某人放开壁纸不应连带给他改分权限。
+  门挂在 `multer.single()` **之前**，否则被拒的请求已经把上传体落盘到 `dataDir/backgrounds` 才返回 403。
+- 前端（`AccountSettingsPage.tsx`）同步隐藏阅卷 Tab 与上传按钮，并把保存载荷拆开提交——
+  学生改外观时不再带上阅卷字段，避免「改个皮肤被 403」。后端门是唯一口径。
+- **保留项与残留**：背景图透明度仍可改（不上传自定义背景时它作用于 `resources/background.jpg`）；
+  学生历史上传的背景不删除，`GET /api/app/background` 仍只对本人返回它。学生本人的 AI 服务商配置不在本次范围。
+- `scripts/verify-auth.ts` 第 7 节新增 11 条断言，含两条源码接线检查（门必须在 multer 前、
+  settings 路由必须引用字段门）与免登录模式口径断言；本轮实测 `verify:auth` 与
+  `verify:security-critical` 均 0 失败（用例数会随功能增长，不写死在文档里）。
+
+**#283「readus 目录下文件亟待更新」**
+
+- 新增 `readus/README.md` 索引：把**现行规范**与**某一天现场记录**分开登记，并逐份标注
+  「本轮是否对照代码复核过」；时间点记录保留原文不改写，只作「当时为什么这样做」的证据。
+- 八份现场记录（BUGFIX-SUMMARY-2026-07-19、CODE-REVIEW、SECURITY-AUDIT-NOTES-2026-10-04 等）
+  加时点横幅；ADMIN-GUIDE、多端使用说明、KNOWN-ISSUES、演示数据、AI成绩分析、SPONSOR-PAGE、
+  双方言SQL 清单补复核时点。
+- **两处会误导安全判断的反向描述已纠正**：`ACCOUNT-ARCHITECTURE.md` 与 `ACCOUNT-CONTROL.md`
+  都把 `PROJECTX_AUTH_ENFORCE` 写成「未设置 = 默认不拦截」，而 `isAuthEnforced()` 的真实语义是
+  **未设置即强制**，只有 `0` / `false` 才关闭。同时补上兼容门读的是 `createApp` 时写入的模块级快照这一层。
+- `ACCOUNT-CONTROL.md` / `DATABASE.md` 的会话描述从「8 小时 token + `?token=` + 6 个月持久化」
+  更正为 Cookie 主通道（HttpOnly `projectx_auth_token`）、令牌只存 SHA-256 摘要、短会话 8 小时 /
+  持久会话 30 天、URL 凭据收敛到媒体白名单与单次 `?mt=` 票据（安全 R30）、改密前 428 闸门。
+- **一处不存在的权限入口**：文档称管理员可在 `PUT /api/admin/permissions` 改「角色权限位」，
+  实际那条路由管的是教师权限矩阵 `teacher_permissions`；`roles.permissions` 由建库脚本播种，
+  **当前没有任何界面或 API 可改**。另记 `invalidatePermissionCache()` 只置空缓存，
+  之后 `loadRolePermissions()` 返回硬编码三角色兜底表，直到 `initPermissionCache()` 再跑。
+- `DATABASE.md` 迁移水位从 v34 更正为 **v60**，新增 v35→v60 编号台账，如实写明 v39/v40 作废原因与
+  v57/v58 故意留空的原因（两者都是「把合法状态当脏数据清理」被评审拦下）。
+- `ARCHITECTURE.md`：mode 数量 11→**12**（补 `admin-console`），路由壳组件名对齐 `*RoutePage`，
+  默认皮肤由 `flat` 更正为 `paper-edge`（`DEFAULT_SKIN`，v44 迁移列默认值同向），
+  v1.9.x 段标注为发布历史按语（含已删除的 `styles.css`）。
+- `UI-ARCHITECTURE.md`：删除不存在的 `npm run sync-tokens` / `scripts/sync-tokens.mjs` 流程，
+  改为「生效副本 `client/theme/tokens.css` + 设计副本 `design/tokens/tokens.css` 人工双改 + `diff` 自查」；
+  `docs/superpowers/specs/...` 按 AGENTS.md 降级为过程稿而非规范来源。
+- **顺带修掉一处真实漂移**：两副本 `tokens.css` 的 `[data-skin="paper-edge"] [role="radiogroup"]`
+  选中态选择器不一致，设计副本仍停在 `button[data-state="on"]`，生效副本早已修正为
+  `button[aria-checked="true"]`（Radix RadioGroup 用 `aria-checked`）。本轮把设计副本对齐，两文件重新逐字节相同。
+  **没有任何脚本会发现这种漂移**，这是删除虚假同步流程后必须靠约定的地方。
+
 ## 2026-10-06：PR #311 / #312 整合与匿名 AI 全局配额修复
 
 - 在 #312 分支合入 #311 的考试班级快照与多班统计修复。大考天梯同时保留历史班级、逐科去重，以及学生仅聚合本人参加考试的范围限制。
