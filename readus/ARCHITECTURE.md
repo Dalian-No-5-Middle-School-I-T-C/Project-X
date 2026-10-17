@@ -690,7 +690,7 @@ flowchart LR
 
 > 最近校订：2026-10-17（#283 文档更新轮：mode 数量与路由壳组件名、CSS/令牌事实源与默认皮肤、账号权限口径）  
 > 原始分析基于 Project-X v1.10.0 代码库（含 v1.9.2 网页化改造 + v1.9.4 网阅打分面板 + v1.10.0 成绩分析增强：难度 P / 区分度 D / 总体分析 / 大考 6-Tab / 大考 AI 分析）；
-> 迁移水位与功能现状以 `src/server/db/migrations.ts`（v60）与 `readus/CHANGELOG.md` 为准。
+> 迁移水位与功能现状以 `src/server/db/migrations.ts`（v63）与 `readus/CHANGELOG.md` 为准。
 
 ---
 

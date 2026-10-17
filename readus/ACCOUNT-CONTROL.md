@@ -153,7 +153,7 @@ system:manage               系统维护（仅管理员）
 | 门 | 管住的字段 / 动作 | 判定口径 | 拒绝时 |
 |------|------------------|----------|--------|
 | `canWriteGradingSelfSettings(user)` | `scoreDisplayMode`、`reviewConfidenceThreshold`（常量表 `GRADING_SELF_SETTING_FIELDS`） | **角色权限位** `grade:write`——管理员可在权限矩阵里调整，不在代码里写死 role 名单 | 整单 403，仅当请求确实带了这两个字段 |
-| `isStudentAccount(user)` | `backgroundOpacity`；`GET /api/users/me/settings` 的透明度读数；`GET /api/app/background` | **角色身份**：`student` 一律按「没有背景」处理。故意不看权限位 | 读：透明度改写成 0，背景图 404。写：PATCH 带 `backgroundOpacity` 则整单 403。历史文件不删 |
+| `isStudentAccount(user)` | `backgroundOpacity`；`GET /api/users/me/settings` 的透明度读数；`GET /api/app/background` | **角色身份**：`student` 一律按「没有背景」处理。故意不看权限位 | 读：透明度改写成 0，背景图 404，且 `Cache-Control: private, no-store`、`Vary: Cookie`。写：PATCH 带 `backgroundOpacity` 则整单 403。历史文件不删 |
 | `requireBackgroundUploadAccess` | `POST /api/users/me/background`（上传自定义背景图） | **角色身份**：`student` 一律拒绝。故意不看权限位——给某人放开壁纸不应连带给他改分权限 | 403；门挂在 multer **之前**，被拒请求不会先落盘 |
 
 学生仍保留的自助能力：界面皮肤 / 明暗模式 / Tab 栏显隐，以及本人 AI 服务商配置
@@ -269,9 +269,10 @@ v1.0 前端三模式 UI **未强制登录**。为保留「桌面单机免登录�
 > | `requireRole(...)` / `requirePermission(...)` | **401「未认证」**。这两个门自己检查 `req.user`、不读开关，所以 §5.2 用户管理、权限矩阵、控制台等入口在兼容模式下仍有下限 |
 > | §4「自助设置接口的字段门」 | 与开关对齐：`canWriteGradingSelfSettings(undefined)` 未强制时为 `true`，`requireBackgroundUploadAccess` 未强制时放行匿名请求——桌面单机模式里没有「学生」身份可言，这是刻意的兼容口径 |
 >
-> 结论照旧：**Web 部署不要设置 `PROJECTX_AUTH_ENFORCE=0`**。一旦设置，只挂 `authMiddleware` 的自助路由
-> （含 `PATCH /api/users/me/settings`、`POST /api/users/me/background`）就变成匿名可写，
-> 只有后面还跟着 `requirePermission` / `requireRole` 的入口守着。
+> **Web 部署不要设置 `PROJECTX_AUTH_ENFORCE=0`**。关掉之后，只挂 `authMiddleware` 的路由会让无令牌请求进入处理器。
+> 个人设置这两条并不因此变成匿名可写：`PATCH /api/users/me/settings` 在没有 `req.user.id` 时直接 401，不执行 UPDATE；
+> `POST /api/users/me/background` 同样 401，并删除 multer 刚落下的临时文件，不会写成 `backgrounds/undefined.jpg`。
+> 阅卷字段门在「无身份且未强制」时返回 true，只说明门本身放行，写库仍要求已登录用户。
 > 免登录模式仅供单机桌面端使用。
 
 ```powershell

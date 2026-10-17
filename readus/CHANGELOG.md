@@ -126,6 +126,17 @@
   容差不会把它变成空断言——不排队就写终态的实现在这里量到的是 ~0ms，照样红；
   同一节里另有「旧顺序确实读不到告警」的反证用例兜住行为本身。
 
+**PR #334 第三轮：背景图缓存与免登录写入口径（同日）**
+
+- `GET /api/app/background` 按 Cookie 身份返回不同正文（学生 404、本人自定义图、随包默认图）。
+  默认图原先是 `Cache-Control: public, max-age=86400` 且没有 `Vary`，共享缓存或同一浏览器换账号后会把教师看到的默认图交给学生，
+  或把学生的 404 留给下一位教师。现在每条响应都带 `Vary: Cookie`：学生与缺图 404 为 `private, no-store`，
+  自定义图为 `private, no-cache`，默认图为 `private, max-age=86400`。
+- 免登录模式（`PROJECTX_AUTH_ENFORCE=0`）下，无令牌请求能进入这两条处理器，但不再匿名写库：
+  `PATCH /api/users/me/settings` 没有用户 id 时 401；`POST /api/users/me/background` 同样 401，并删掉临时上传文件，
+  避免落成 `backgrounds/undefined.jpg`。`ACCOUNT-CONTROL.md` §6 按这个行为改写，不再写「这两条变成匿名可写」。
+- `ARCHITECTURE.md` 文末迁移水位从 v60 改为 v63，与 `migrations.ts`、`DATABASE.md` 一致。
+
 ## 2026-10-16：扫描 DPI 同步、单面设备兼容与失败批次恢复
 
 - 修复普通队列消息先经扫描消息泵、后经隐藏窗口回调而重复提交 DSM 的问题：派发期间标记已检查的消息，窗口回调匹配后仅跳过一次重复提交；驱动直接通知、驱动内部消息泵、嵌套通知及字段相同的新同步消息继续正常处理。回归编译实际 `WndProc` 与扫描循环，覆盖窗口、线程及其他窗口消息路径。

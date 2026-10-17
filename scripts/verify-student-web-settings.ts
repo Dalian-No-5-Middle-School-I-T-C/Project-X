@@ -123,6 +123,8 @@ async function main(): Promise<void> {
 
     const studentBackground = await fetch(`${base}/api/app/background`, { headers: studentAuth });
     assert.equal(studentBackground.status, 404, "学生请求背景图必须 404，即使磁盘上已有自定义图");
+    assert.equal(studentBackground.headers.get("cache-control"), "private, no-store", "学生 404 不能被缓存");
+    assert.equal(studentBackground.headers.get("vary"), "Cookie", "背景响应必须按 Cookie 区分身份");
 
     for (const body of [
       { backgroundOpacity: 0.2 },
@@ -176,6 +178,13 @@ async function main(): Promise<void> {
     assert.equal(teacherBody.scoreDisplayMode, "percentile");
     assert.equal(teacherBody.reviewConfidenceThreshold, 0.33);
 
+    const teacherDefault = await fetch(`${base}/api/app/background`, { headers: teacherAuth });
+    assert.equal(teacherDefault.status, 200, "未上传自定义图时教师应拿到随包默认背景");
+    assert.equal(teacherDefault.headers.get("cache-control"), "private, max-age=86400");
+    assert.equal(teacherDefault.headers.get("vary"), "Cookie");
+    assert.equal(/public/.test(teacherDefault.headers.get("cache-control") ?? ""), false);
+    await teacherDefault.arrayBuffer();
+
     const teacherForm = new FormData();
     teacherForm.append("file", new Blob([PNG], { type: "image/png" }), "bg.png");
     const teacherUpload = await fetch(`${base}/api/users/me/background`, {
@@ -187,12 +196,35 @@ async function main(): Promise<void> {
     assert.ok(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), "教师背景图应写入 backgrounds/<id>.jpg");
     const teacherBackground = await fetch(`${base}/api/app/background`, { headers: teacherAuth });
     assert.equal(teacherBackground.status, 200, "教师应能读取自己的背景图");
+    assert.equal(teacherBackground.headers.get("cache-control"), "private, no-cache", "自定义背景不能按天公共缓存");
+    assert.equal(teacherBackground.headers.get("vary"), "Cookie");
     assert.ok((await teacherBackground.arrayBuffer()).byteLength > 0);
 
     const studentBackgroundAgain = await fetch(`${base}/api/app/background`, { headers: studentAuth });
     assert.equal(studentBackgroundAgain.status, 404, "教师上传成功后，学生背景接口仍必须 404");
+    assert.equal(studentBackgroundAgain.headers.get("cache-control"), "private, no-store");
 
-    console.log("verify:student-web-settings 通过（学生无背景图、不能改阅卷/评分、不能上传；教师能力保留）");
+    const { setAuthEnforced } = await import("../src/apps/answer-card/server/middleware");
+    process.env.PROJECTX_AUTH_ENFORCE = "0";
+    setAuthEnforced(false);
+    const beforeTabs = readRow(teacher.id).show_tab_bar;
+    const anonPatch = await fetch(`${base}/api/users/me/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ showTabBar: false })
+    });
+    assert.equal(anonPatch.status, 401, "免登录模式下没有用户 id 时不能写入个人设置");
+    assert.equal(readRow(teacher.id).show_tab_bar, beforeTabs, "匿名 PATCH 不得改写已有用户设置");
+    const anonForm = new FormData();
+    anonForm.append("file", new Blob([PNG], { type: "image/png" }), "anon.png");
+    const anonUpload = await fetch(`${base}/api/users/me/background`, { method: "POST", body: anonForm });
+    assert.equal(anonUpload.status, 401, "免登录模式下没有用户 id 时不能保存背景图");
+    const names = readdirSync(backgroundsDir);
+    assert.equal(names.includes("undefined.jpg"), false, "匿名上传不能落成 undefined.jpg");
+    assert.deepEqual(names.filter((name) => name.startsWith("upload_")), [], "匿名上传被拒后不能留下临时文件");
+    assert.equal(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), true, "匿名上传不得覆盖教师背景");
+
+    console.log("verify:student-web-settings 通过（学生无背景图、不能改阅卷/评分、不能上传；教师能力保留；缓存按 Cookie 隔离；匿名不能写设置）");
   } finally {
     if (server) {
       server.closeAllConnections?.();
