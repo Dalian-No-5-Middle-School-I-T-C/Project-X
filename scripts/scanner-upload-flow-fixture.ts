@@ -8,6 +8,7 @@ export async function startScannerFlowFixture(port = 0, host = "127.0.0.1", opti
   const root = await mkdtemp(path.join(tmpdir(), "projectx-scanner-flow-"));
   process.env.PROJECTX_DB_PATH = path.join(root, "scanner.db");
   process.env.ANSWER_CARD_DATA_DIR = path.join(root, "cards");
+  process.env.PROJECTX_TOKEN_DIR = path.join(root, "tokens");
   process.env.PROJECTX_AUTH_ENFORCE = "1";
   await mkdir(process.env.ANSWER_CARD_DATA_DIR, { recursive: true });
   process.chdir(root);
