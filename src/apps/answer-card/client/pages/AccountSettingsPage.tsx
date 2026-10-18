@@ -593,7 +593,7 @@ export function AccountSettingsPage() {
                   onChange={(e) => {
                     const v = Number(e.target.value);
                     setBgOpacity(v);
-                    // 浮层只跟 Workspace 的 showBg 走。直接改 DOM 时，删除若把 showBg 从 0 设回 0，浮层关不掉。
+                    // 浮层由 Workspace 的 showBg 驱动，滑块只改这份状态。
                     setShowBg(v);
                     persistBgOpacity(v);
                   }}
