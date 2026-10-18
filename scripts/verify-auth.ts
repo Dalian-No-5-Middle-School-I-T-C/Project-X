@@ -19,13 +19,19 @@
  * 全部用例通过则进程退出码为 0，否则为 1。
  */
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 // 必须在导入任何 db 模块前设置数据库路径（getDatabase 在模块求值期读取该变量）
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-verify-"));
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "verify.db");
+process.env.PROJECTX_TOKEN_DIR = path.join(tmpDir, "tokens");
+const homeTokenPath = path.join(homedir(), ".projectx", "tokens.json");
+const homeTokenSha = existsSync(homeTokenPath)
+  ? createHash("sha256").update(readFileSync(homeTokenPath)).digest("hex")
+  : null;
 // 验证脚本固定使用临时 SQLite，避免 cloud.env 中的 MariaDB 变量干扰
 delete process.env.PROJECTX_MARIADB_HOST;
 delete process.env.PROJECTX_MARIADB_PORT;
@@ -86,7 +92,7 @@ async function main(): Promise<void> {
   const { initializeDatabase, ensureDefaultAdmin, getDatabase, closeDatabase } = await import(
     "../src/server/db/index"
   );
-  const { AuthService } = await import("../src/server/services/AuthService");
+  const { AuthService, tokenStoreDirectory } = await import("../src/server/services/AuthService");
   const { UserRepository } = await import("../src/server/repositories/UserRepository");
   const { ClassRepository } = await import("../src/server/repositories/ClassRepository");
   const { ScoreRepository } = await import("../src/server/repositories/ScoreRepository");
@@ -132,6 +138,14 @@ async function main(): Promise<void> {
   ok(JSON.stringify(adminLogin.permissions) === JSON.stringify(["*"]), "登录响应携带权限 ['*']");
   const sessionUser = await auth.getUserByToken(adminLogin.token!);
   ok(sessionUser?.username === "admin", "Token 可换取当前用户");
+  ok(tokenStoreDirectory() === process.env.PROJECTX_TOKEN_DIR, "令牌目录读取 PROJECTX_TOKEN_DIR");
+  await new Promise((resolve) => setImmediate(resolve));
+  const isolatedTokenPath = path.join(process.env.PROJECTX_TOKEN_DIR!, "tokens.json");
+  ok(existsSync(isolatedTokenPath), "登录令牌写入 PROJECTX_TOKEN_DIR");
+  const homeTokenShaAfter = existsSync(homeTokenPath)
+    ? createHash("sha256").update(readFileSync(homeTokenPath)).digest("hex")
+    : null;
+  ok(homeTokenShaAfter === homeTokenSha, "认证回归不改写运行账户的 ~/.projectx/tokens.json");
 
   const userRepo = new UserRepository();
 

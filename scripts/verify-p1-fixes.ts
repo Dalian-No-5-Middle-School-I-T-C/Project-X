@@ -13,6 +13,7 @@ import { createServer, type Server } from "node:http";
 
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-p1-verify-"));
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "verify.db");
+process.env.PROJECTX_TOKEN_DIR = path.join(tmpDir, "tokens");
 delete process.env.PROJECTX_MARIADB_HOST;
 delete process.env.PROJECTX_MARIADB_PORT;
 delete process.env.PROJECTX_MARIADB_USER;

@@ -137,6 +137,11 @@
   避免落成 `backgrounds/undefined.jpg`。`ACCOUNT-CONTROL.md` §6 按这个行为改写，不再写「这两条变成匿名可写」。
 - `ARCHITECTURE.md` 文末迁移水位从 v60 改为 v63，与 `migrations.ts`、`DATABASE.md` 一致。
 
+**PR #334 第四轮：打包命令与令牌目录隔离**
+
+- `ACCOUNT-ARCHITECTURE.md` §6 不再写不存在的 `npm run electron:msi:all` 和「三端共 6 个 MSI」。v1.6.1 起只打扫描端，命令是 `electron:msi`（x64）和 `electron:msi:ia32`。
+- 令牌文件目录支持 `PROJECTX_TOKEN_DIR`。`os.homedir()` 在 macOS / Linux 上不看 `USERPROFILE`，只改这个变量的认证脚本会把测试账号令牌写进运行账户的 `~/.projectx/tokens.json`。会登录或启动 `createApp` 的脚本在导入 `AuthService` 之前把该变量指到本次临时目录。
+
 ## 2026-10-16：扫描 DPI 同步、单面设备兼容与失败批次恢复
 
 - 修复普通队列消息先经扫描消息泵、后经隐藏窗口回调而重复提交 DSM 的问题：派发期间标记已检查的消息，窗口回调匹配后仅跳过一次重复提交；驱动直接通知、驱动内部消息泵、嵌套通知及字段相同的新同步消息继续正常处理。回归编译实际 `WndProc` 与扫描循环，覆盖窗口、线程及其他窗口消息路径。

@@ -294,7 +294,7 @@ v1.1 当前
 
 | 议题 | 当前方案 | 说明 |
 |------|----------|------|
-| Token 存储 | 磁盘文件 `~/.projectx/tokens.json`（只存 SHA-256 哈希） | 服务器重启后会话存活；普通 8 小时、持久会话 30 天 |
+| Token 存储 | 磁盘文件 `~/.projectx/tokens.json`（只存 SHA-256 哈希）；`PROJECTX_TOKEN_DIR` 可改目录 | 服务器重启后会话存活；普通 8 小时、持久会话 30 天。认证测试须把该变量指到临时目录，不能只改 `USERPROFILE` |
 | 前端 Token | 同源不落任何存储（HttpOnly Cookie），跨域模式仅内存 | 避免 XSS 拿到长期令牌；改密/禁用时服务端吊销 |
 | 密码 | bcryptjs 哈希（bcrypt 格式兼容） | 默认学生密码=学号，管理员应督促首次登录改密 |
 | 管理员保护 | 至少保留 1 名 admin | 后端拒绝降级/禁用最后一名管理员 |
@@ -307,11 +307,14 @@ v1.1 当前
 ```powershell
 npm install
 npm run typecheck      # TypeScript 严格模式
-npm run verify:auth    # 后端 RBAC 端到端（临时库，33 项）
+npm run verify:auth    # 后端 RBAC 端到端（临时库）
 npm run build
 npm run electron:dev   # 桌面应用联调
-npm run electron:msi:all # 生成三端 x64/ia32 共 6 个 MSI
+npm run electron:msi       # 扫描端 x64 MSI
+npm run electron:msi:ia32  # 扫描端 32 位 MSI
 ```
+
+v1.6.1 起教师端和学生端走浏览器，不再出 Electron 安装包。扫描端 MSI 只有上面两条，仓库里没有 `electron:msi:all`，也不会一次生成三端共 6 个 MSI。
 
 启用完整业务鉴权：
 

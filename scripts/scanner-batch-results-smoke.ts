@@ -15,6 +15,7 @@ await mkdir("data", { recursive: true });
 const root = await mkdtemp(path.resolve("data/scanner-batch-"));
 process.env.ANSWER_CARD_DATA_DIR = path.join(root, "cards");
 process.env.PROJECTX_DB_PATH = path.join(root, "scanner.db");
+process.env.PROJECTX_TOKEN_DIR = path.join(root, "tokens");
 process.env.PROJECTX_AUTH_ENFORCE = "0"; // Existing local-mode scenarios below.
 // config.yml is resolved from cwd; isolate it as well as the DB and card files.
 process.chdir(root);

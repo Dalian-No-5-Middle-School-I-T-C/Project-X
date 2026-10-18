@@ -3,17 +3,18 @@
  * 真实启动 answer-card 服务的 createApp()，通过 HTTP + 直接服务调用，
  * 验证该文档所列安全 / 数据完整性修复（P0-4/P0-5/P0-8/P0-9/P1-1/P1-2/P2-1/L-S5）。
  *
- * 运行：USERPROFILE=<tmp> npx tsx scripts/bugfix-summary-verification.ts
+ * 运行：npx tsx scripts/bugfix-summary-verification.ts
+ * 令牌目录由 PROJECTX_TOKEN_DIR 隔离，不要只设置 USERPROFILE。
  */
 import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-// ── 隔离环境：临时 SQLite DB + 临时 HOME（token 存于临时目录） ──
+// ── 隔离环境：临时 SQLite DB + PROJECTX_TOKEN_DIR（token 不写运行账户主目录） ──
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-bugfix-"));
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "verify.db");
 process.env.ANSWER_CARD_DATA_DIR = path.join(tmpDir, "data"); // 隔离答题卡数据，避免污染仓库
-process.env.USERPROFILE = path.join(tmpDir, "home"); // 隔离 token 存储，避免污染真实 HOME
+process.env.PROJECTX_TOKEN_DIR = path.join(tmpDir, "tokens"); // homedir() 不看 USERPROFILE
 process.env.PROJECTX_ENABLE_SCANNER = "false"; // 避免加载原生扫码模块
 for (const k of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
@@ -114,7 +115,7 @@ async function main(): Promise<void> {
   await sleep(150); // 等待 token 持久化（scheduleSave 为 setImmediate 异步写盘）
 
   // ── P2-1：Token 以 SHA-256 哈希存储，磁盘不含明文 ──
-  const tokenPath = path.join(process.env.USERPROFILE!, ".projectx", "tokens.json");
+  const tokenPath = path.join(process.env.PROJECTX_TOKEN_DIR!, "tokens.json");
   if (existsSync(tokenPath)) {
     const data = JSON.parse(readFileSync(tokenPath, "utf8")) as { tokens?: Record<string, unknown> };
     const keys = Object.keys(data.tokens ?? {});

@@ -20,6 +20,7 @@ import type { Server } from "node:http";
 
 const tempDir = mkdtempSync(path.join(tmpdir(), "projectx-dpi-clamp-"));
 process.env.PROJECTX_DB_PATH = path.join(tempDir, "projectx.db");
+process.env.PROJECTX_TOKEN_DIR = path.join(tempDir, "tokens");
 process.env.ANSWER_CARD_DATA_DIR = path.join(tempDir, "data");
 process.env.PROJECTX_AUTH_ENFORCE = "1";
 process.env.PROJECTX_ENABLE_SCANNER = "true";

@@ -5,15 +5,20 @@
  * 使用隔离 SQLite，不碰现有业务库。
  */
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import type { Server } from "node:http";
 
 const tempDir = mkdtempSync(path.join(tmpdir(), "projectx-student-web-settings-"));
 process.env.PROJECTX_DB_PATH = path.join(tempDir, "projectx.db");
 process.env.ANSWER_CARD_DATA_DIR = path.join(tempDir, "data");
-process.env.USERPROFILE = path.join(tempDir, "home");
+process.env.PROJECTX_TOKEN_DIR = path.join(tempDir, "tokens");
+const homeTokenPath = path.join(homedir(), ".projectx", "tokens.json");
+const homeTokenSha = existsSync(homeTokenPath)
+  ? createHash("sha256").update(readFileSync(homeTokenPath)).digest("hex")
+  : null;
 process.env.PROJECTX_ENABLE_SCANNER = "false";
 for (const key of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
@@ -223,6 +228,14 @@ async function main(): Promise<void> {
     assert.equal(names.includes("undefined.jpg"), false, "匿名上传不能落成 undefined.jpg");
     assert.deepEqual(names.filter((name) => name.startsWith("upload_")), [], "匿名上传被拒后不能留下临时文件");
     assert.equal(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), true, "匿名上传不得覆盖教师背景");
+
+    await new Promise((resolve) => setImmediate(resolve));
+    const isolatedTokenPath = path.join(process.env.PROJECTX_TOKEN_DIR!, "tokens.json");
+    assert.equal(existsSync(isolatedTokenPath), true, "登录令牌应写入 PROJECTX_TOKEN_DIR");
+    const homeTokenShaAfter = existsSync(homeTokenPath)
+      ? createHash("sha256").update(readFileSync(homeTokenPath)).digest("hex")
+      : null;
+    assert.equal(homeTokenShaAfter, homeTokenSha, "本脚本不得改写运行账户的 ~/.projectx/tokens.json");
 
     console.log("verify:student-web-settings 通过（学生无背景图、不能改阅卷/评分、不能上传；教师能力保留；缓存按 Cookie 隔离；匿名不能写设置）");
   } finally {
