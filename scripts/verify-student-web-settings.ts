@@ -55,6 +55,7 @@ async function assertLateOpacityPatchCannotFinishAfterDelete(): Promise<void> {
     events.push("patch-end");
   });
   const removed = queue.enqueue(async () => { events.push("delete"); });
+  await Promise.resolve();
   assert.deepEqual(events, ["patch-start"], "删除要等已经发出的透明度请求，不能和它并行");
   release();
   await stale;
