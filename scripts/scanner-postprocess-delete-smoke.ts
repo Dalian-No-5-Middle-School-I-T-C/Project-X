@@ -38,8 +38,10 @@ card.title = "后处理页删除验证";
 card.bodyBlocks = [{ id: "pp_q", type: "objective", title: "选择题", questionStart: 1, questionCount: 1,
   optionCount: 4, mode: "single", scorePerQuestion: 5, answerKey: { "1": ["A"] }, density: "normal" }];
 assert.equal(buildLayout(card).pages.length, 1, "单页卡：每张纸一份答题卡");
-await new CardRepository().createCard(card);
-const cardVersion = cardFingerprint((await new CardRepository().findById(card.id))!);
+const cards = new CardRepository();
+await cards.createCard(card);
+await cards.updateCard(card);
+const cardVersion = cardFingerprint((await cards.findById(card.id))!);
 
 const role = await db.get<{ id: number }>("SELECT id FROM roles WHERE name = 'student'");
 assert(role);
@@ -210,6 +212,8 @@ try {
   const partial = await fetch(saveUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupIds: ["0", "1"] }) });
   assert.equal(partial.status, 200, await partial.clone().text());
   const partialBody = await partial.json() as ScanBatchResponse;
+  assert.equal(partialBody.results.find(row => row.groupId === "0")?.needsReviewCount, 0);
+  assert.equal(partialBody.results.find(row => row.groupId === "1")?.needsReviewCount, 1, "低置信度必须进入待复核");
   assert.equal(partialBody.results.find(row => row.groupId === "0")?.saved, true, "点名的正常组要入库");
   assert.equal(partialBody.results.find(row => row.groupId === "1")?.saved, false, "待复核组不能跟着入库");
   const saveReceipts = await db.all<{ group_id: string; state: string }>(
