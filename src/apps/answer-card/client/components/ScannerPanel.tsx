@@ -17,7 +17,7 @@ import {
 import { authFetch, mediaUrl, urlWithToken } from "../auth/api";
 import { useScannerMode, getScannerMode, isRemoteServerConfigured } from "../lib/scannerMode";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
-import { isGroupQueued, rememberQueuedGroup } from "../lib/scannerUploadLedger";
+import { isGroupQueued } from "../lib/scannerUploadLedger";
 import type { ScanBatchResponse, ScanBatchFailure, ScanBatchResult, ScanConflictCard } from "../../../../shared/scanPages";
 import type { ScannerSourcesResult, ScanProgressEvent } from "../../server/scanner/scanner-types";
 import { ScanPreviewModal } from "./ScanPreviewModal";
@@ -493,7 +493,6 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           },
         })),
       });
-      rememberQueuedGroup(metadata.cardId, sid, result.groupId);
       queued++;
     }
     uploadJobsRef.current = nextJobs;

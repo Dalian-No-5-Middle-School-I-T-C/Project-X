@@ -4,7 +4,7 @@ import { Badge, Button, SegmentedControl, Spinner, notify } from "./ui/v2";
 import { authFetch } from "../auth/api";
 import { fetchCardDetailSynced } from "../lib/scannerSync";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
-import { isGroupQueued, readPreviewDiscards, readQueuedGroups, rememberPreviewDiscard, rememberQueuedGroup } from "../lib/scannerUploadLedger";
+import { forgetQueuedGroup, isGroupQueued, readPreviewDiscards, readQueuedGroups, rememberPreviewDiscard } from "../lib/scannerUploadLedger";
 import { cardFingerprint } from "../../../../shared/cardVersion";
 import { buildLayout } from "../../../../shared/layout";
 import {
@@ -46,7 +46,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
    *  它们订正干净后才允许补传一次。已经进过上传名单的组不再建第二份回执。 */
   const abnormalKey = `projectx-postprocess-abnormal/${cardId}`;
   const abnormalSeen = useRef<Set<string>>(readIdSet(abnormalKey));
-  /** 与扫描面板共用的上传名单。入队成功才写入；startUpload 抛错时允许再试。 */
+  /** 与扫描面板共用的上传名单。远端会话建出来之后才写入；取消尚未开始的任务不会占住资格。 */
   const queuedByPage = useRef<Set<string>>(readQueuedGroups(cardId));
 
   // 通道唯一为本地（spec §5 通道裁定）：远端语义只经 queueGroupUpload 补传承担
@@ -166,6 +166,23 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
 
   async function handleDelete(targets: Array<{ sessionId: string; groupIds: string[] }>, force: boolean) {
     if (!targets.length) { notify.error("没有选中的卷子"); return; }
+    const uploadCardId = card?.id ?? cardId;
+    for (const target of targets) {
+      for (const groupId of target.groupIds) {
+        const message = scannerUploadManager.localGroupDeleteBlock(uploadCardId, groupId, target.sessionId);
+        if (message) { notify.error(message); return; }
+      }
+    }
+    for (const target of targets) {
+      for (const groupId of target.groupIds) {
+        const gate = scannerUploadManager.releaseGroupForLocalDelete(uploadCardId, groupId, target.sessionId);
+        if (!gate.ok) { notify.error(gate.message); return; }
+        if (gate.forgetLedger) {
+          forgetQueuedGroup(cardId, target.sessionId, groupId);
+          queuedByPage.current.delete(`${target.sessionId}/${groupId}`);
+        }
+      }
+    }
     let deleted = 0;
     let finished = false;
     const blocked: string[] = [];
@@ -321,7 +338,8 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
             channel={channel}
             sessionId={active.sessionId}
             groupId={active.groupId}
-            initialSaved={active.saved}
+            initialSaved={isRemoteUploadOn() ? false : active.saved}
+            draftOnly={isRemoteUploadOn()}
             highlightQuestion={highlight}
             onSaved={() => syncAfterFix(active.sessionId, active.groupId)}
           />
@@ -395,12 +413,12 @@ function queueCleanGroup(
   result: ScanBatchResult,
   queued: Set<string>,
 ): QueueOutcome {
-  if (result.saved || result.needsReviewCount > 0 || !result.studentId) return "skipped";
+  // 这里只服务远端补传。本机 result.saved 只说明本机考试接住了成绩，不是远端回执。
+  if (result.needsReviewCount > 0 || !result.studentId) return "skipped";
   const key = `${sessionId}/${result.groupId}`;
   if (queued.has(key) || isGroupQueued(cardId, sessionId, result.groupId)) return "skipped";
   if (scannerUploadManager.hasGroupUpload(uploadCardId, result.groupId, sessionId)) {
     queued.add(key);
-    rememberQueuedGroup(cardId, sessionId, result.groupId);
     return "skipped";
   }
   if (!meta?.cardVersion) return "missing-version";
@@ -410,7 +428,6 @@ function queueCleanGroup(
     return "error";
   }
   queued.add(key);
-  rememberQueuedGroup(cardId, sessionId, result.groupId);
   return "queued";
 }
 

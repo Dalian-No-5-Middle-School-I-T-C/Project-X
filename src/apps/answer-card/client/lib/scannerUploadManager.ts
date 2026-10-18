@@ -8,6 +8,7 @@ import { SERVER_URL_KEY, readServerUrl } from "./scannerMode";
 import { assertCredentialTransportAllowed } from "./remoteCredentialTransport";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
 import { applyScanStudentId, uniqueScanConflictCards } from "../../../../shared/scanPages";
+import { rememberQueuedGroup } from "./scannerUploadLedger";
 import type { ScanBatchFailure, ScanConflictCard, ScanBatchResponse } from "../../../../shared/scanPages";
 import type { CombinedGradingRow } from "../../../../shared/types";
 
@@ -558,6 +559,12 @@ if (j.cancelled) throw cancelledError(j);
         const { sessionId, tokens } = await runWithRetry(j, "创建会话", () => createSession(j));
         j.remoteSessionId = sessionId;
         rememberSessionVersion(j, sessionId);
+        // 只有远端会话真正建出来才记入队。排队阶段就写入的话，取消或进程退出后标记还在，这组再也补不进去。
+        if (j.kind === "scan" && j.localSessionId) {
+          for (const groupId of new Set(j.pages.map(page => page.input.groupId).filter((id): id is string => Boolean(id)))) {
+            rememberQueuedGroup(j.cardId, j.localSessionId, groupId);
+          }
+        }
         j.pages.forEach((p, i) => {
           p.token = tokens[i];
         });
@@ -688,13 +695,44 @@ if (j.cancelled) throw cancelledError(j);
     }
   }
 
-  /** 这份原卷是否已经有未关闭的上传任务（含失败和已完成）。关掉进度卡后任务会离开列表，调用方还要查持久名单。 */
+  function scanGroupJobs(cardId: string, groupId: string, localSessionId: string): JobRecord[] {
+    return jobs.filter(job => job.kind === "scan" && job.cardId === cardId && job.localSessionId === localSessionId
+      && job.pages.some(page => page.input.groupId === groupId));
+  }
+
+  /** 这份扫描原卷是否已经占住上传资格。导入任务没有本机会话号，不能拿来挡新扫描；缺会话号也不当通配。 */
   function hasGroupUpload(cardId: string, groupId: string, localSessionId?: string): boolean {
-    return jobs.some(job => {
-      if (job.cardId !== cardId) return false;
-      if (localSessionId && job.localSessionId && job.localSessionId !== localSessionId) return false;
-      return job.pages.some(page => page.input.groupId === groupId);
+    if (!localSessionId) return false;
+    return scanGroupJobs(cardId, groupId, localSessionId).some(job => {
+      if (job.remoteSessionId) return true;
+      return job.status === "queued" || job.status === "creating" || job.status === "uploading"
+        || job.status === "paused" || job.status === "completing" || job.status === "done";
     });
+  }
+
+  /**
+   * 删除本机原图前先和上传任务对齐。
+   * 还在排队、且没建远端会话的任务直接取消，避免稍后读图 404 还提示重试。
+   * 正在上传的任务先拦住。已经传完或已经建出会话的，删除本机图时保留入队标记，不再开第二份回执。
+   */
+  function localGroupDeleteBlock(cardId: string, groupId: string, localSessionId: string): string | null {
+    const inFlight = scanGroupJobs(cardId, groupId, localSessionId).some(job => job.status === "creating"
+      || job.status === "uploading" || job.status === "completing" || job.status === "paused");
+    return inFlight ? "这份卷正在上传，请等上传结束再删除本机原图" : null;
+  }
+
+  function releaseGroupForLocalDelete(cardId: string, groupId: string, localSessionId: string):
+    { ok: true; forgetLedger: boolean } | { ok: false; message: string } {
+    const message = localGroupDeleteBlock(cardId, groupId, localSessionId);
+    if (message) return { ok: false, message };
+    const matching = scanGroupJobs(cardId, groupId, localSessionId);
+    // 已经建出远端会话或已经传完的，留下入队标记，避免删掉本机图后再开一份回执。
+    const forgetLedger = !matching.some(job => job.status === "done" || job.remoteSessionId != null);
+    for (const job of matching) {
+      if (job.status === "queued") cancelJob(job.id);
+      else if (job.status === "error" || job.status === "cancelled") dismissJob(job.id);
+    }
+    return { ok: true, forgetLedger };
   }
 
   function startUpload(input: StartUploadInput): string {
@@ -917,6 +955,8 @@ if (j.cancelled) throw cancelledError(j);
     },
     startUpload,
     hasGroupUpload,
+    localGroupDeleteBlock,
+    releaseGroupForLocalDelete,
     retryFailed,
     retryPaused,
     cancelJob,

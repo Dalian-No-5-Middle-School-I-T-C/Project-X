@@ -48,6 +48,13 @@ export function rememberQueuedGroup(cardId: string, sessionId: string, groupId: 
   writeStringSet(queuedKey(cardId), values);
 }
 
+/** 尚未在远端建出会话的任务被取消或删除时，把入队资格还回去。 */
+export function forgetQueuedGroup(cardId: string, sessionId: string, groupId: string): void {
+  const values = readQueuedGroups(cardId);
+  values.delete(queuedGroupKey(sessionId, groupId));
+  writeStringSet(queuedKey(cardId), values);
+}
+
 export function readPreviewDiscards(cardId: string): PreviewDiscardRef[] {
   try {
     const parsed = JSON.parse(localStorage.getItem(previewDiscardKey(cardId)) ?? "[]") as unknown;

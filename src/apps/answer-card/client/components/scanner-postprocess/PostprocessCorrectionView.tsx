@@ -22,6 +22,8 @@ export interface PostprocessCorrectionViewProps {
   groupId: string;
   /** 本组回执是否已入库：服务端 saveSessionCorrection 明确拒绝再改已入库卷（要转 Web 成绩修改） */
   initialSaved?: boolean;
+  /** 远端上传模式只把订正写成草稿。本机 saved 不能锁住界面，也不能代替远端回执。 */
+  draftOnly?: boolean;
   /** 从异常队列「去改这题」带过来的题号：挂载后把该行滚进视野 */
   highlightQuestion?: SubjectiveQuestionNumber | null;
   onSaved: () => void | Promise<void>;
@@ -88,7 +90,7 @@ function mergeRecognitions(document: CorrectionDocument): CombinedRecognitionRes
   return merged;
 }
 
-export function PostprocessCorrectionView({ channel, sessionId, groupId, initialSaved = false, highlightQuestion, onSaved }: PostprocessCorrectionViewProps) {
+export function PostprocessCorrectionView({ channel, sessionId, groupId, initialSaved = false, draftOnly = false, highlightQuestion, onSaved }: PostprocessCorrectionViewProps) {
   const url = channel.correctionUrl(sessionId, groupId);
   const [document, setDocument] = useState<CorrectionDocument | null>(null);
   const [edits, setEdits] = useState<CorrectionEdit[]>([]);
@@ -262,11 +264,11 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
     setSaving(true);
     setMessage("");
     try {
-      const response = await channel.request(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pages: edits }) });
+      const response = await channel.request(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pages: edits, ...(draftOnly ? { draft: true } : {}) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.message || "保存失败");
-      // 只有正式入库才锁。仍有存疑题时服务端留下草稿并返回 saved:false，剩下的题还要能改。
-      if (result.saved) setSavedOnce(true);
+      // 只有本机正式入库才锁。远端模式的草稿保存即使带回 saved，也还要等上传，不能把界面锁死。
+      if (result.saved && !draftOnly) setSavedOnce(true);
       else if (typeof result.message === "string" && result.message) setMessage(result.message);
       await onSaved();
       // 重拉文档同步 revision，并把「未保存」状态归零

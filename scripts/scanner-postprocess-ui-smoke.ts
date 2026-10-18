@@ -92,7 +92,7 @@ const batch = (): ScanBatchResponse => ({
   reviewCards: [],
 });
 
-const puts: Array<{ groupId: string; pages: Array<{ sourceId: string; selected: string[]; touched?: string[] }> }> = [];
+const puts: Array<{ groupId: string; draft: boolean; pages: Array<{ sourceId: string; selected: string[]; touched?: string[] }> }> = [];
 const deletes: Array<{ url: string; body: { groupIds: string[]; force?: boolean; previewOnly?: boolean } }> = [];
 const saveBodies: unknown[] = [];
 const saveCalls: string[] = [];
@@ -112,8 +112,8 @@ const batchFor = (sessionId: string): ScanBatchResponse => {
         failures: [{ groupId: "0", studentId: "20002", stage: "saving", message: "重复学号：新旧答题卡均需核对订正",
           pages: [{ recordId: "rec-4", pageNum: 4, side: "front", layoutPage: 1 }],
           conflicts: [
-            { sessionId: "scan-3", groupId: "0", studentId: "20002", previouslySaved: false, totalScore: 10, pages: [{ recordId: "rec-4", pageNum: 4, side: "front", layoutPage: 1 }] },
-            { sessionId: "scan-3", groupId: "1", studentId: "20002", previouslySaved: false, totalScore: 10, pages: [{ recordId: "rec-6", pageNum: 6, side: "front", layoutPage: 1 }] },
+            { sessionId: "scan-3", groupId: "0", studentId: "20002", previouslySaved: false, totalScore: 10, maxScore: 10, needsReviewCount: 0, pages: [{ recordId: "rec-4", pageNum: 4, side: "front", layoutPage: 1 }] },
+            { sessionId: "scan-3", groupId: "1", studentId: "20002", previouslySaved: false, totalScore: 10, maxScore: 10, needsReviewCount: 0, pages: [{ recordId: "rec-6", pageNum: 6, side: "front", layoutPage: 1 }] },
           ] }],
         reviewCards: [],
       };
@@ -174,7 +174,8 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   }
   if (/\/groups\/[^/]+\/correction$/.test(url)) {
     if (method === "PUT") {
-      puts.push({ groupId: url.match(/\/groups\/([^/]+)\/correction$/)![1], pages: (JSON.parse(String(init?.body)) as { pages: never[] }).pages });
+      const body = JSON.parse(String(init?.body)) as { pages: never[]; draft?: boolean };
+      puts.push({ groupId: url.match(/\/groups\/([^/]+)\/correction$/)![1], draft: body.draft === true, pages: body.pages });
       // 服务端 saveSessionCorrection 对已关联考试的会话会顺带入库，返回 saved:true
       return Response.json({ ok: true, saved: true });
     }
@@ -396,6 +397,9 @@ try {
   await clickText("异常处理");
   await settle();
   assert.match(text(), /队列已清零/, "异常全部处理完 → 队列清零");
+  assert(puts.some(entry => entry.groupId === "0" && entry.draft), "远端模式确认存疑题时只写草稿，不把本机入库当成已上传");
+  assert(uploads.some(item => item.name === "扫描_10001" && item.localSessionId === "scan-1"), "存疑题全部确认后仍要补传到远端");
+  assert(puts.some(entry => entry.groupId === "2" && !entry.draft), "仅本地模式的改分仍然正式入库");
 
   // ── 续扫第二批：groupId 跨会话重号，删除与选择都必须按会话隔离 ──
   await act(async () => { root.unmount(); });
