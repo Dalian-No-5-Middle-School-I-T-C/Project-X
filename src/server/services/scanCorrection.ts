@@ -224,7 +224,11 @@ export async function saveSessionCorrection(card: AnswerCard, sessionId: string,
     const admission = await resolveScannerExam(card.id,sessionId);
     if (!admission.exam) return {saved:false,message:"填涂订正已保存，等待上传到关联考试"};
     const batch = await processScannerSessionInQueue(card,sessionId,"save",groupId);
-    const saved = Boolean(batch.results.find(r => r.groupId === groupId)?.saved);
+    const row = batch.results.find(r => r.groupId === groupId);
+    const saved = Boolean(row?.saved);
+    if (row && !saved && row.needsReviewCount > 0) {
+      return {saved:false,message:"仍有存疑题，本次订正已留下，全部确认后再入库"};
+    }
     return {saved,message:saved ? "改分已保存" : batch.failures.find(f=>f.groupId===groupId)?.message ?? "订正已保存，请继续处理重复卷"};
   });
 }

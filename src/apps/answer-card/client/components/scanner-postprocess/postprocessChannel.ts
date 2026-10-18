@@ -63,12 +63,17 @@ export interface SessionMeta {
   identityMode: "strict" | "legacy";
   dpi: number;
   paperSize: string;
+  /** 扫描阶段写入会话的告警。跳到后处理页后扫描面板已卸载，横幅从这里读。 */
+  warnings: string[];
 }
 
 /** 补传与花名册查询所需的会话元数据。 */
 export async function loadSessionMeta(sessionId: string): Promise<SessionMeta> {
   const data = await readJson(await authFetch(`/api/scanner/scan/${sessionId}`));
-  const session = data.session as { identity_mode?: "strict" | "legacy"; dpi?: number; paper_size?: string; card_version?: string | null };
+  const session = data.session as {
+    identity_mode?: "strict" | "legacy"; dpi?: number; paper_size?: string;
+    card_version?: string | null; warnings_json?: unknown;
+  };
   return {
     sessionId,
     examId: typeof data.examId === "number" ? data.examId : null,
@@ -76,7 +81,17 @@ export async function loadSessionMeta(sessionId: string): Promise<SessionMeta> {
     identityMode: session.identity_mode === "legacy" ? "legacy" : "strict",
     dpi: Number(session.dpi) || 300,
     paperSize: session.paper_size || "A4",
+    warnings: parseStoredWarnings(session.warnings_json),
   };
+}
+
+function parseStoredWarnings(raw: unknown): string[] {
+  const list = typeof raw === "string"
+    ? (() => { try { return JSON.parse(raw) as unknown; } catch { return []; } })()
+    : raw;
+  return Array.isArray(list)
+    ? list.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
 }
 
 export interface UploadMeta extends SessionMeta {
@@ -96,6 +111,7 @@ export function queueGroupUpload(meta: UploadMeta, sessionId: string, result: Sc
     kind: "scan",
     cardId: meta.cardId,
     name: `扫描_${result.studentId}`,
+    localSessionId: sessionId,
     dpi: meta.dpi,
     paperSize: meta.paperSize,
     cardVersion: meta.cardVersion,

@@ -17,6 +17,7 @@ import {
 import { authFetch, mediaUrl, urlWithToken } from "../auth/api";
 import { useScannerMode, getScannerMode, isRemoteServerConfigured } from "../lib/scannerMode";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
+import { isGroupQueued, rememberQueuedGroup } from "../lib/scannerUploadLedger";
 import type { ScanBatchResponse, ScanBatchFailure, ScanBatchResult, ScanConflictCard } from "../../../../shared/scanPages";
 import type { ScannerSourcesResult, ScanProgressEvent } from "../../server/scanner/scanner-types";
 import { ScanPreviewModal } from "./ScanPreviewModal";
@@ -465,11 +466,15 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     const nextJobs = { ...uploadJobsRef.current };
     let queued = 0;
     for (const result of data.results) {
+      if (result.needsReviewCount > 0) continue;
       if (nextJobs[result.groupId]) continue;
+      if (isGroupQueued(metadata.cardId, sid, result.groupId)) continue;
+      if (scannerUploadManager.hasGroupUpload(metadata.cardId, result.groupId, sid)) continue;
       // Independent cards can finish even when another card fails remotely.
       nextJobs[result.groupId] = scannerUploadManager.startUpload({
         identityMode: metadata.identityMode,
         kind: "scan", cardId: metadata.cardId, name: `扫描_${result.studentId}`,
+        localSessionId: sid,
         dpi: metadata.dpi, paperSize: metadata.paperSize, cardVersion: metadata.cardVersion,
         pages: result.pages.map(page => ({
           pageNum: page.pageNum, side: page.side, groupId: result.groupId,
@@ -488,6 +493,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           },
         })),
       });
+      rememberQueuedGroup(metadata.cardId, sid, result.groupId);
       queued++;
     }
     uploadJobsRef.current = nextJobs;

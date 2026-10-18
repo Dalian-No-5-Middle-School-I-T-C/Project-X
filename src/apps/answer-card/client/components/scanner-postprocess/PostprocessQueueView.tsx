@@ -23,11 +23,14 @@ export interface PostprocessQueueViewProps {
   /** 按会话取考试。多场会话混在一页时，不能用第一场的 examId 查后面的花名册。 */
   examIdForSession: (sessionId: string) => number | null;
   scans: ScanMeta[];
-  layoutPageCount: number;
+  /** 按该组所属会话的扫描时页数画缺页对照，不能用后来拉到的新卡页数。 */
+  layoutPageCountFor: (sessionId: string) => number;
   /** 从扫描结果点开的异常：把指针定位到该组，而不是永远从队首开始 */
   focus?: { sessionId: string; groupId: string } | null;
   /** 处理完成（考号已改、重复卷已定性等）：页面重拉批结果并按需补传 */
   onResolved: (sessionId: string, groupId: string) => void | Promise<void>;
+  /** 远端预览没有回执。记下「不保留」的那份，由页面在后续预览里滤掉，不能打本地作废接口。 */
+  onPreviewDiscard: (sessionId: string, groupId: string) => void;
   onJumpToCorrection: (sessionId: string, groupId: string, questionNumber?: SubjectiveQuestionNumber) => void;
   onDelete: (targets: Array<{ sessionId: string; groupIds: string[] }>, force: boolean) => Promise<void>;
 }
@@ -44,7 +47,7 @@ const kindTone = (kind: PostprocessQueueItem["kind"]): "danger" | "warning" | "n
   kind === "low_confidence" ? "warning" : kind === "other" ? "neutral" : "danger"
 );
 
-export function PostprocessQueueView({ queue, channel, examIdForSession, scans, layoutPageCount, focus, onResolved, onJumpToCorrection, onDelete }: PostprocessQueueViewProps) {
+export function PostprocessQueueView({ queue, channel, examIdForSession, scans, layoutPageCountFor, focus, onResolved, onJumpToCorrection, onDelete, onPreviewDiscard }: PostprocessQueueViewProps) {
   const [cursor, setCursor] = useState(0);
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
   const [resolved, setResolved] = useState<Set<string>>(new Set());
@@ -144,9 +147,9 @@ export function PostprocessQueueView({ queue, channel, examIdForSession, scans, 
           : current.kind === "student_id"
             ? <StudentIdPanel sessionId={current.sessionId} groupId={current.groupId} channel={channel} examId={examIdForSession(current.sessionId)} onResolved={onResolved} />
             : current.kind === "duplicate"
-              ? <DuplicatePanel item={current} channel={channel} scans={scans} onResolved={onResolved} onFixStudentId={target => setFixTarget(target)} />
+              ? <DuplicatePanel item={current} channel={channel} scans={scans} onResolved={onResolved} onPreviewDiscard={onPreviewDiscard} onFixStudentId={target => setFixTarget(target)} />
               : current.kind === "missing_page"
-                ? <MissingPagePanel item={current} channel={channel} layoutPageCount={layoutPageCount} onResolved={onResolved} onDelete={onDelete} />
+                ? <MissingPagePanel item={current} channel={channel} layoutPageCount={layoutPageCountFor(current.sessionId)} onResolved={onResolved} onDelete={onDelete} />
                 : current.kind === "low_confidence"
                   ? <LowConfidencePanel item={current} channel={channel} onJump={onJumpToCorrection} />
                   : <OtherPanel item={current} channel={channel} onResolved={onResolved} />}
@@ -408,11 +411,12 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
 }
 
 /** 重卡定性（D11）：并排看图 → 保留其一（作废另一份）或改考号。 */
-function DuplicatePanel({ item, channel, scans, onResolved, onFixStudentId }: {
+function DuplicatePanel({ item, channel, scans, onResolved, onPreviewDiscard, onFixStudentId }: {
   item: PostprocessQueueItem;
   channel: PostprocessChannel;
   scans: ScanMeta[];
   onResolved: (sessionId: string, groupId: string) => void | Promise<void>;
+  onPreviewDiscard: (sessionId: string, groupId: string) => void;
   /** 改的是那一份副本的考号，跨会话时用副本自己的 session */
   onFixStudentId: (target: { sessionId: string; groupId: string }) => void;
 }) {
@@ -436,13 +440,21 @@ function DuplicatePanel({ item, channel, scans, onResolved, onFixStudentId }: {
     setBusy(true);
     try {
       const remote = getScannerMode() === "remote" && isRemoteServerConfigured();
-      const response = await channel.request(channel.discardUrl(other.sessionId, other.groupId), {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(remote ? { previewOnly: true } : {}),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data?.message || "作废失败");
-      notify.success(`已保留 ${card.studentId} 的第 ${Number(card.groupId) + 1} 组，另一份已作废`);
+      if (remote) {
+        // 预览冲突没有 scanner_submissions。打本地作废会得到「没有可作废的回执」，
+        // 整会话 validate 又会撤掉已有正式成绩。只记下本批不保留的那份。
+        const owned = item.conflicts.some(copy => copy.sessionId === other.sessionId && copy.groupId === other.groupId);
+        if (!owned) throw new Error("这份卷不在当前重卡里，不能在本机标记作废");
+        onPreviewDiscard(other.sessionId, other.groupId);
+        notify.success(`已保留 ${card.studentId} 的第 ${Number(card.groupId) + 1} 组，另一份不再上传`);
+      } else {
+        const response = await channel.request(channel.discardUrl(other.sessionId, other.groupId), {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.message || "作废失败");
+        notify.success(`已保留 ${card.studentId} 的第 ${Number(card.groupId) + 1} 组，另一份已作废`);
+      }
       // 同步/补传的对象必须是**保留下来的那份**：传队列项自己时，若队列项正是被作废的那组，
       // 重拉后在 results 里找不到它，真正留下的那份反而永远不会补传
       await onResolved(card.sessionId, card.groupId);

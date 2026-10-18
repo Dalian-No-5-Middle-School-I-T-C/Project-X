@@ -129,9 +129,13 @@ const batchFor = (sessionId: string): ScanBatchResponse => {
     reviewCards: [],
   };
 };
+let hideCard = false;
 install("fetch", async (input: unknown, init?: RequestInit) => {
   const url = String(input);
   const method = init?.method ?? "GET";
+  if (hideCard && (url.includes("/sync/cards/") || url.includes("/api/cards/"))) {
+    return Response.json({ message: "答题卡不存在" }, { status: 404 });
+  }
   if (url.includes("/api/cards/")) return Response.json(card);
   const sessionMatch = url.match(/\/api\/scanner\/session\/([^/]+)\/(validate|results)/);
   if (sessionMatch) {
@@ -146,7 +150,10 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
     const sessionId = url.match(/\/api\/scanner\/scan\/([^/]+)$/)?.[1] ?? "";
     const examId = sessionId === "scan-decoy" ? 99 : sessionId === "scan-2" ? 8 : 7;
     const card_version = sessionId === "scan-decoy" ? decoyVersion : scanVersion;
-    return Response.json({ session: { identity_mode: "strict", dpi: 300, paper_size: "A4", card_version }, records: [], examId });
+    const warnings_json = sessionId === "scan-1"
+      ? JSON.stringify(["本批未识别到红笔分数，请检查彩色设置"])
+      : null;
+    return Response.json({ session: { identity_mode: "strict", dpi: 300, paper_size: "A4", card_version, warnings_json }, records: [], examId });
   }
   if (/\/api\/scanner\/card\/[^/]+\/scans$/.test(url)) {
     return Response.json([
@@ -204,6 +211,7 @@ scannerUploadManager.startUpload = (input => { uploads.push(input); return `uplo
 const root = createRoot(document.getElementById("root")!);
 let root2: ReturnType<typeof createRoot> | null = null;
 let root3: ReturnType<typeof createRoot> | null = null;
+let root4: ReturnType<typeof createRoot> | null = null;
 async function settle(ms = 12) { await act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); }); }
 async function clickNode(node: Element) {
   await act(async () => {
@@ -242,6 +250,8 @@ try {
       })));
   });
   await settle();
+  assert.match(text(), /本批未识别到红笔分数，请检查彩色设置/, "跳到后处理页后仍展示本批扫描告警");
+  assert.match(text(), /答题卡已更换，缺页按本次实际扫到的页核对/, "会话指纹对不上当前卡时，缺页不按新卡页数报");
 
   // ── 视图 1：页头统计 + 方块网格（异常置顶）──
   assert.match(text(), /已扫 3 组/);
@@ -294,6 +304,11 @@ try {
   await clickText("D");
   await settle();
   assert(saveButton() && !saveButton()!.disabled, "有真实改动时保存按钮可用");
+  await clickText("扫描结果");
+  await settle();
+  await clickText("卡查看与改分");
+  await settle();
+  assert(saveButton() && !saveButton()!.disabled, "切到扫描结果再回来，未保存的修改还在");
   await clickText("保存修改");
   await settle();
   const savedPage = puts.find(entry => entry.groupId === "2")?.pages[0];
@@ -350,12 +365,17 @@ try {
   secondGroupResolved = true;
   await act(async () => { confirm.click(); });
   await settle();
-  assert.equal(uploads.length, 1, "已处理组按组补传一次");
-  assert.equal(uploads[0].cardVersion, scanVersion, "补传必须上报扫描当时的卡版本");
-  assert.notEqual(uploads[0].cardVersion, version, "不能改用页面后来拉到的最新卡指纹");
-  assert.notEqual(uploads[0].cardVersion, decoyVersion, "不能改用另一场会话的卡版本");
-  assert.equal(uploads[0].kind, "scan");
-  assert.equal(uploads[0].pages.length, 1);
+  assert.equal(uploads.length, 2, "汇总没排上的正常卷由后处理页补上首传，已处理组也在其中");
+  assert.deepEqual(uploads.map(item => item.name), ["扫描_10003", "扫描_10002"]);
+  for (const upload of uploads) {
+    assert.equal(upload.cardVersion, scanVersion, "补传必须上报扫描当时的卡版本");
+    assert.notEqual(upload.cardVersion, version, "不能改用页面后来拉到的最新卡指纹");
+    assert.notEqual(upload.cardVersion, decoyVersion, "不能改用另一场会话的卡版本");
+    assert.equal(upload.localSessionId, "scan-1");
+    assert.equal(upload.kind, "scan");
+    assert.equal(upload.pages.length, 1);
+  }
+  assert.equal(uploads.some(item => item.name === "扫描_10001"), false, "仍有存疑的卷不能先上传");
 
   // ── 队列进度：处理完一条后条数减少、已处理计数保留 ──
   await settle();
@@ -438,16 +458,38 @@ try {
   // 队列项是组 0，这里点的是组 1 卡片上的「保留这份」→ 作废的是组 0
   await act(async () => { keepButtons[1].click(); });
   await settle();
-  assert.match(discards[discards.length - 1].url, /\/session\/scan-3\/groups\/0\/discard$/, "作废的必须是未被保留的那份");
-  assert.deepEqual(discards[discards.length - 1].body, { previewOnly: true }, "远端模式作废后刷新必须走 preview");
+  assert.equal(discards.length, 0, "远端预览重卡不能打本地作废接口");
+  assert.deepEqual(
+    JSON.parse(localStorage.getItem(`projectx-postprocess-preview-discard/${card.id}`) ?? "[]"),
+    [{ sessionId: "scan-3", groupId: "0" }],
+    "不保留的那份记在本机，后续预览和首传都要滤掉",
+  );
   assert.equal(uploads.length, uploadsBeforeKeep + 1, "保留下来的那份要补传（它只出现在 conflicts 里）");
   assert.equal(uploads[uploads.length - 1].name, "扫描_20002", "补传任务对应保留下来的那份卷");
+  assert.equal(uploads.filter(item => item.localSessionId === "scan-3" && item.pages[0]?.groupId === "1").length, 1, "保留份只上传一次");
+
+  // ── 远端卡 404：本机卡也没有时，页面仍能返回，而不是停在没有按钮的失败态 ──
+  await act(async () => { root3.unmount(); });
+  hideCard = true;
+  const host4 = document.createElement("div");
+  document.body.appendChild(host4);
+  root4 = createRoot(host4);
+  await act(async () => {
+    root4.render(createElement(TooltipProvider, null,
+      createElement(ScannerPostprocessPage, {
+        cardId: card.id, cardTitle: card.title, sessions: [{ sessionId: "scan-1", pageCount: 1 }], onBack: () => {},
+      })));
+  });
+  await settle();
+  assert.match(text(), /答题卡不存在/);
+  assert(document.querySelector('[aria-label="返回扫描"]'), "加载失败时仍能返回扫描");
+  assert([...document.querySelectorAll("button")].some(el => el.textContent?.includes("重试")), "加载失败时可以重试");
 
   console.log("PASS scanner-postprocess-ui-smoke");
 } catch (error) {
   failure = error;
 } finally {
-  await act(async () => { root.unmount(); root2?.unmount(); root3?.unmount(); });
+  await act(async () => { root.unmount(); root2?.unmount(); root3?.unmount(); root4?.unmount(); });
   scannerUploadManager.startUpload = realStartUpload;
   // 不关掉 jsdom 的 window，其定时器与观察者会让进程一直挂着
   dom.window.close();

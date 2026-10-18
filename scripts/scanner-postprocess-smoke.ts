@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { createDefaultCard } from "../src/shared/defaultCard";
 import { buildLayout } from "../src/shared/layout";
-import { correctionState, evaluateScoreCells, recognizedCells, type CorrectionCell } from "../src/shared/scanCorrection";
+import { correctionState, evaluateScoreCells, lowConfidenceTouchedIds, recognizedCells, type CorrectionCell } from "../src/shared/scanCorrection";
 import { matchesCorrectionFocus, selectObjectiveOptionCells, selectScoreCells, selectStudentDigitCells } from "../src/shared/correctionCellSelect";
-import { buildPostprocessGroups, buildPostprocessQueue, filterDeletableGroups, missingLayoutPages, replaceScopedSelection } from "../src/shared/scanPostprocess";
+import { gradeSubjectiveRecognition } from "../src/shared/grading";
+import { buildPostprocessGroups, buildPostprocessQueue, filterDeletableGroups, matchingLayoutPageCount, missingLayoutPages, observedLayoutPageCount, omitPreviewDiscardedGroups, replaceScopedSelection } from "../src/shared/scanPostprocess";
 import type { ScanBatchResponse } from "../src/shared/scanPages";
 
 type OptionCell = Extract<CorrectionCell, { type: "objective_option" }>;
@@ -158,5 +159,110 @@ assert.equal(correctionState(confirmCard, confirmPage, confirmPage.selected, [])
 const confirmed = correctionState(confirmCard, confirmPage, confirmPage.selected, [optionA.id]);
 assert.equal(confirmed.recognition.questions?.[0].confidence, 1, "点过原答案即确认，置信度抬到 1");
 assert.deepEqual(confirmed.recognition.questions?.[0].selectedOptions, ["A"], "确认不改选项");
+
+// ── 未答的低置信度：没有选中格，点过该题选项格也算确认；没点过的题保持 0.05 ──
+const blankRecognition = {
+  ...confirmRecognition,
+  questions: [
+    { questionNumber: 1, selectedOptions: [], confidence: 0.05 },
+    { questionNumber: 2, selectedOptions: [], confidence: 0.05 },
+  ],
+} as Parameters<typeof recognizedCells>[1];
+const blankCard = createDefaultCard("confirm-blank");
+blankCard.bodyBlocks = [{ id: "c2", type: "objective", title: "单选", questionStart: 1, questionCount: 2,
+  optionCount: 4, mode: "single", scorePerQuestion: 5, answerKey: { "1": ["A"], "2": ["B"] }, density: "normal" }];
+const blankLayout = buildLayout(blankCard).pages[0];
+const blankPicked = recognizedCells(blankLayout, blankRecognition);
+const blankPage = {
+  sourceType: "twain_scan_record" as const, sourceId: "r", revision: 1, layout: blankLayout,
+  recognition: blankRecognition as never, selected: blankPicked.selected, invalid: blankPicked.invalid, imageUrl: "/x",
+};
+const blankA = blankLayout.elements.find(element => element.type === "objective_option" && element.questionNumber === 1 && element.option === "A");
+assert.ok(blankA, "未答夹具必须有第 1 题 A");
+const blankState = correctionState(blankCard, blankPage, blankPage.selected, [blankA.id]);
+assert.equal(blankState.recognition.questions?.[0].confidence, 1, "点选后再清空，空答案的低置信度抬到 1");
+assert.deepEqual(blankState.recognition.questions?.[0].selectedOptions, [], "确认未答不填进选项");
+assert.equal(blankState.recognition.questions?.[1].confidence, 0.05, "没点过的空答案仍要复核");
+const highRecognition = { ...blankRecognition, questions: [{ questionNumber: 1, selectedOptions: ["A"], confidence: 0.9 }] } as typeof blankRecognition;
+const highPicked = recognizedCells(blankLayout, highRecognition);
+const highPage = { ...blankPage, recognition: highRecognition as never, selected: highPicked.selected, invalid: highPicked.invalid };
+assert.equal(correctionState(blankCard, highPage, highPage.selected, []).recognition.questions?.[0].confidence, 0.9,
+  "高置信度原答案没有被点过，不能变成一次确认");
+const blankScope = blankLayout.elements.filter(element => element.type === "objective_option" && element.questionNumber === 1).map(element => element.id);
+assert.deepEqual(lowConfidenceTouchedIds(blankScope, [], () => true), blankScope, "清空为未答时，作用域里的低置信度格都要记入 touched");
+assert.deepEqual(lowConfidenceTouchedIds(blankScope, [], () => false), [], "高置信度格不因选了未答而被记成确认");
+
+// ── 同一 questionId 的两个题块：按 blockId 取满分，不夹到先出现的那块 ──
+const blockCard = createDefaultCard("block-dup");
+blockCard.bodyBlocks = [
+  { id: "early", type: "subjective", title: "前块", questions: [{ id: "same", number: 10, score: 10, style: "manual_score_grid", kind: "plain_box", minHeightMm: 20 }] },
+  { id: "late", type: "subjective", title: "后块", questions: [{ id: "same", number: 20, score: 30, style: "manual_score_grid", kind: "plain_box", minHeightMm: 20 }] },
+];
+const subjective = (blockId: string | undefined, score: number) => gradeSubjectiveRecognition(blockCard, {
+  ...(blockId ? { blockId } : {}), questionId: "same", questionNumber: 99, score, maxScore: 99,
+  status: "ok", confidence: 1, validCells: [], invalidCells: [],
+});
+const earlyGrade = subjective("early", 25);
+assert.equal(earlyGrade?.questionNumber, 10);
+assert.equal(earlyGrade?.maxScore, 10);
+assert.equal(earlyGrade?.score, 10, "前块满分 10，25 分夹到 10");
+const lateGrade = subjective("late", 25);
+assert.equal(lateGrade?.questionNumber, 20);
+assert.equal(lateGrade?.maxScore, 30);
+assert.equal(lateGrade?.score, 25, "后块满分 30，25 分原样保留");
+assert.equal(subjective(undefined, 25)?.maxScore, 10, "没带 blockId 的旧结果仍取第一块");
+assert.equal(subjective("missing", 25), null, "对不上的题块不能借用另一块的分数");
+
+// ── 扫描时页数：指纹对上用那一版；对不上按本批实际扫到的页，不按新卡发明缺页 ──
+assert.deepEqual(matchingLayoutPageCount({
+  cardVersion: "aaaaaaaaaaaaaaaaaaaaaaaa", localFingerprint: "aaaaaaaaaaaaaaaaaaaaaaaa", localPageCount: 1,
+  remoteFingerprint: "bbbbbbbbbbbbbbbbbbbbbbbb", remotePageCount: 4, observedMaxLayoutPage: 1,
+}), { pageCount: 1, layoutStale: false }, "本机指纹对上时用扫描时的 1 页，不用远端新卡的 4 页");
+assert.deepEqual(matchingLayoutPageCount({
+  cardVersion: "bbbbbbbbbbbbbbbbbbbbbbbb", localFingerprint: "cccccccccccccccccccccccc", localPageCount: 1,
+  remoteFingerprint: "bbbbbbbbbbbbbbbbbbbbbbbb", remotePageCount: 4, observedMaxLayoutPage: 1,
+}), { pageCount: 4, layoutStale: false });
+assert.deepEqual(matchingLayoutPageCount({
+  cardVersion: "dddddddddddddddddddddddd", localFingerprint: "aaaaaaaaaaaaaaaaaaaaaaaa", localPageCount: 4,
+  remoteFingerprint: "bbbbbbbbbbbbbbbbbbbbbbbb", remotePageCount: 4, observedMaxLayoutPage: 1,
+}), { pageCount: 1, layoutStale: true }, "两边都不是扫描时那版，缺页按实际扫到的页");
+assert.deepEqual(missingLayoutPages([{ layoutPage: 1 }], 1), [], "1 页扫描对照 1 页时不报缺 2/3/4");
+assert.deepEqual(missingLayoutPages([{ layoutPage: 1 }], 4), [2, 3, 4]);
+assert.deepEqual(matchingLayoutPageCount({
+  cardVersion: null, localFingerprint: null, localPageCount: 2,
+  remoteFingerprint: null, remotePageCount: 4, observedMaxLayoutPage: 1,
+}), { pageCount: 2, layoutStale: false }, "没有指纹的旧会话仍用当前卡页数");
+
+// ── 远端预览重卡：本机作废决定从预览里拿掉，并放出只活在 conflicts 里的保留份 ──
+const duplicatePreview: ScanBatchResponse = {
+  results: [{ groupId: "2", studentId: "20003", totalScore: 10, maxScore: 10, objectiveScore: 10, objectiveMaxScore: 10,
+    subjectiveScore: 0, subjectiveMaxScore: 0, needsReviewCount: 0, pageCount: 1, saved: false,
+    pages: [{ recordId: "rec-7", pageNum: 7, side: "front", layoutPage: 1, objectiveScore: 10, subjectiveScore: 0, totalScore: 10, totalMaxScore: 10 }] }],
+  failures: [{ groupId: "0", studentId: "20002", stage: "saving", message: "重复学号",
+    pages: [{ recordId: "rec-4", pageNum: 4, side: "front", layoutPage: 1 }],
+    conflicts: [
+      { sessionId: "scan-3", groupId: "0", studentId: "20002", previouslySaved: false, totalScore: 10, pages: [{ recordId: "rec-4", pageNum: 4, side: "front", layoutPage: 1 }] },
+      { sessionId: "scan-3", groupId: "1", studentId: "20002", previouslySaved: false, totalScore: 10, pages: [{ recordId: "rec-6", pageNum: 6, side: "front", layoutPage: 1 }] },
+    ] }],
+};
+const keptPreview = omitPreviewDiscardedGroups(duplicatePreview, [{ sessionId: "scan-3", groupId: "0" }], "scan-3");
+assert.deepEqual(keptPreview.failures, [], "作废决定拿掉之后，不再是一条重卡失败");
+assert.deepEqual(keptPreview.results.map(result => result.studentId), ["20003", "20002"], "保留份从冲突副本提升成可上传的结果");
+assert.equal(keptPreview.results[1]?.needsReviewCount, 0);
+assert.equal(observedLayoutPageCount(duplicatePreview), 1);
+const symmetric: ScanBatchResponse = {
+  results: [],
+  failures: ["0", "1"].map(groupId => ({
+    groupId, studentId: "20002", stage: "saving" as const, message: "重复学号",
+    pages: [{ recordId: `p-${groupId}`, pageNum: 1, side: "front" as const, layoutPage: 1 }],
+    conflicts: ["0", "1"].map(copy => ({
+      sessionId: "scan-3", groupId: copy, studentId: "20002", previouslySaved: false, totalScore: 10,
+      pages: [{ recordId: `p-${copy}`, pageNum: 1, side: "front" as const, layoutPage: 1 }],
+    })),
+  })),
+};
+const oneSide = omitPreviewDiscardedGroups(symmetric, [{ sessionId: "scan-3", groupId: "0" }], "scan-3");
+assert.deepEqual(oneSide.failures, []);
+assert.deepEqual(oneSide.results.map(result => result.groupId), ["1"], "两条失败各带两份副本时，去掉一份后只留下另一份");
 
 console.log("PASS scanner-postprocess-smoke");

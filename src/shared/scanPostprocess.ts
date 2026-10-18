@@ -1,4 +1,9 @@
-import { uniqueScanConflictCards, type ScanBatchResponse, type ScanConflictCard } from "./scanPages";
+import {
+  uniqueScanConflictCards,
+  type ScanBatchResponse,
+  type ScanBatchResult,
+  type ScanConflictCard,
+} from "./scanPages";
 
 /** 队列四类（用户锁定）+ other 兜底（不丢异常，非业务新类型）。 */
 export type PostprocessIssueKind = "duplicate" | "student_id" | "missing_page" | "low_confidence" | "other";
@@ -40,6 +45,113 @@ export interface PostprocessQueueItem {
   missingLayoutPages: number[];
   needsReviewCount: number;
   failureMessage?: string;
+}
+
+/** 这批结果里实际出现过的最大布局页。版本对不上时用它当页数，避免按后来的新卡发明缺页。 */
+export function observedLayoutPageCount(response: ScanBatchResponse | undefined): number {
+  if (!response) return 0;
+  let max = 0;
+  const consider = (pages: ReadonlyArray<{ layoutPage: number }> | undefined) => {
+    for (const page of pages ?? []) if (page.layoutPage > max) max = page.layoutPage;
+  };
+  for (const result of response.results) consider(result.pages);
+  for (const failure of response.failures) {
+    consider(failure.pages);
+    for (const copy of failure.conflicts ?? []) consider(copy.pages);
+  }
+  for (const card of response.reviewCards ?? []) consider(card.pages);
+  return max;
+}
+
+/**
+ * 缺页对照用哪一版卡的页数。
+ * 会话指纹对上本机卡或远端卡时用那一版（本机优先）；对不上就按本批实际扫到的最大页，并标 layoutStale。
+ * 没有指纹的旧会话仍用当前卡页数，真缺页继续提示。
+ */
+export function matchingLayoutPageCount(input: {
+  cardVersion: string | null;
+  localFingerprint: string | null;
+  localPageCount: number;
+  remoteFingerprint: string | null;
+  remotePageCount: number;
+  observedMaxLayoutPage: number;
+}): { pageCount: number; layoutStale: boolean } {
+  const { cardVersion, localFingerprint, localPageCount, remoteFingerprint, remotePageCount, observedMaxLayoutPage } = input;
+  if (cardVersion && localFingerprint === cardVersion && localPageCount > 0) {
+    return { pageCount: localPageCount, layoutStale: false };
+  }
+  if (cardVersion && remoteFingerprint === cardVersion && remotePageCount > 0) {
+    return { pageCount: remotePageCount, layoutStale: false };
+  }
+  if (cardVersion) return { pageCount: observedMaxLayoutPage, layoutStale: true };
+  const fallback = localPageCount > 0 ? localPageCount : remotePageCount;
+  return { pageCount: fallback, layoutStale: false };
+}
+
+export interface PreviewDiscardRef {
+  sessionId: string;
+  groupId: string;
+}
+
+/** 远端预览没有回执，不能走作废接口。把本机记下的「不保留」从后续预览里拿掉，并放出仍在本会话里的保留份。 */
+export function omitPreviewDiscardedGroups(
+  response: ScanBatchResponse,
+  discarded: readonly PreviewDiscardRef[],
+  sessionId: string,
+): ScanBatchResponse {
+  const dropped = (sid: string, gid: string) => discarded.some(item => item.sessionId === sid && item.groupId === gid);
+  const results = response.results.filter(result => !dropped(sessionId, result.groupId));
+  const reviewCards = (response.reviewCards ?? []).filter(card => !dropped(card.sessionId, card.groupId));
+  const failures: ScanBatchResponse["failures"] = [];
+  const promoted = new Map<string, ScanBatchResult>();
+  const remember = (result: ScanBatchResult) => {
+    if (!result.studentId || dropped(sessionId, result.groupId)) return;
+    if (results.some(existing => existing.groupId === result.groupId) || promoted.has(result.groupId)) return;
+    promoted.set(result.groupId, result);
+  };
+  for (const failure of response.failures) {
+    const conflicts = (failure.conflicts ?? []).filter(card => !dropped(card.sessionId, card.groupId));
+    const ownDropped = dropped(sessionId, failure.groupId);
+    const hadConflicts = (failure.conflicts?.length ?? 0) > 0;
+    if (hadConflicts && conflicts.length < 2) {
+      if (ownDropped) {
+        for (const copy of conflicts) if (copy.sessionId === sessionId) remember(synthesizeKeptResult(copy));
+      } else if (failure.studentId) {
+        remember(synthesizeKeptResult({
+          sessionId, groupId: failure.groupId, studentId: failure.studentId,
+          previouslySaved: false, pages: failure.pages,
+        }));
+      }
+      continue;
+    }
+    if (ownDropped) continue;
+    failures.push({ ...failure, conflicts });
+  }
+  return { ...response, results: [...results, ...promoted.values()], failures, reviewCards };
+}
+
+function synthesizeKeptResult(card: ScanConflictCard): ScanBatchResult {
+  const pages = card.pages.map(page => ({
+    ...page,
+    objectiveScore: 0,
+    subjectiveScore: 0,
+    totalScore: 0,
+    totalMaxScore: 0,
+  }));
+  return {
+    groupId: card.groupId,
+    studentId: card.studentId,
+    totalScore: card.totalScore ?? 0,
+    maxScore: 0,
+    objectiveScore: 0,
+    objectiveMaxScore: 0,
+    subjectiveScore: 0,
+    subjectiveMaxScore: 0,
+    needsReviewCount: 0,
+    pageCount: pages.length,
+    saved: false,
+    pages,
+  };
 }
 
 /** 该组实际页相对卡面布局缺哪些 layoutPage（1 起）。 */

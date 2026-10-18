@@ -8,7 +8,8 @@ import { CorrectionCanvas } from "./CorrectionCanvas";
 import type { PostprocessChannel } from "./postprocessChannel";
 import { replaceScopedSelection } from "../../../../../shared/scanPostprocess";
 import {
-  correctionCells, correctionState, toggleCorrectionCell, type CorrectionCell, type CorrectionDocument, type CorrectionEdit,
+  correctionCells, correctionState, lowConfidenceTouchedIds, toggleCorrectionCell,
+  type CorrectionCell, type CorrectionDocument, type CorrectionEdit,
 } from "../../../../../shared/scanCorrection";
 import { matchesCorrectionFocus, selectObjectiveOptionCells, selectScoreCells } from "../../../../../shared/correctionCellSelect";
 import { findObjectiveQuestion, gradeCombinedRecognition, gradeSubjectiveRecognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
@@ -55,11 +56,12 @@ function markLowConfidenceConfirmation<T extends { sourceId: string; selected: s
   document: CorrectionDocument,
   pages: T[],
   picked: readonly string[],
+  scope: ReadonlySet<string>,
 ): T[] {
   return pages.map(pageEdit => {
     const page = document.pages.find(item => item.sourceId === pageEdit.sourceId);
     if (!page) return pageEdit;
-    const extra = picked.filter(id => lowConfidenceObjective(page, id));
+    const extra = lowConfidenceTouchedIds([...scope], picked, id => lowConfidenceObjective(page, id));
     if (!extra.length) return pageEdit;
     return { ...pageEdit, touched: [...new Set([...(pageEdit.touched ?? []), ...extra])] };
   });
@@ -225,7 +227,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
     if (!picked) { setMessage("该值在卡面上无法表示（缺少对应填涂格）"); return; }
     const scope = new Set(cells.filter(inScope).map(cell => cell.id));
     // 走 setEdits 的函数式形式：同一渲染批次里连续改两题时，读渲染时值的闭包会丢掉前一次
-    setEdits(current => markLowConfidenceConfirmation(document, replaceScopedSelection(current, pageOfCell, scope, picked), picked));
+    setEdits(current => markLowConfidenceConfirmation(document, replaceScopedSelection(current, pageOfCell, scope, picked), picked, scope));
     setMessage("");
   }
 
@@ -263,9 +265,9 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
       const response = await channel.request(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pages: edits }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.message || "保存失败");
-      // 服务端入库成功后本组就不能再从这条通道改，锁住界面并说明去处，别让人对着
-      // 「此卷已入库」的拒绝信息反复点保存
+      // 只有正式入库才锁。仍有存疑题时服务端留下草稿并返回 saved:false，剩下的题还要能改。
       if (result.saved) setSavedOnce(true);
+      else if (typeof result.message === "string" && result.message) setMessage(result.message);
       await onSaved();
       // 重拉文档同步 revision，并把「未保存」状态归零
       setLoadTick(tick => tick + 1);

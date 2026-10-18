@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { AlertTriangle, ArrowLeft } from "lucide-react";
 import { Badge, Button, SegmentedControl, Spinner, notify } from "./ui/v2";
 import { authFetch } from "../auth/api";
 import { fetchCardDetailSynced } from "../lib/scannerSync";
+import { scannerUploadManager } from "../lib/scannerUploadManager";
+import { isGroupQueued, readPreviewDiscards, readQueuedGroups, rememberPreviewDiscard, rememberQueuedGroup } from "../lib/scannerUploadLedger";
+import { cardFingerprint } from "../../../../shared/cardVersion";
 import { buildLayout } from "../../../../shared/layout";
-import { buildPostprocessGroups, buildPostprocessQueue, type PostprocessGroup } from "../../../../shared/scanPostprocess";
-import type { ScanBatchResponse } from "../../../../shared/scanPages";
+import {
+  buildPostprocessGroups, buildPostprocessQueue, matchingLayoutPageCount, observedLayoutPageCount,
+  omitPreviewDiscardedGroups, type PostprocessGroup,
+} from "../../../../shared/scanPostprocess";
+import type { ScanBatchResponse, ScanBatchResult } from "../../../../shared/scanPages";
 import type { AnswerCard, SubjectiveQuestionNumber } from "../../../../shared/types";
 import { localChannel, loadSessionMeta, queueGroupUpload, type PostprocessChannel, type SessionMeta } from "./scanner-postprocess/postprocessChannel";
 import { PostprocessResultsView } from "./scanner-postprocess/PostprocessResultsView";
@@ -24,7 +30,9 @@ export interface ScannerPostprocessPageProps {
 
 export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: ScannerPostprocessPageProps) {
   const [view, setView] = useState<View>("results");
-  const [card, setCard] = useState<AnswerCard | null>(null);
+  const [localCard, setLocalCard] = useState<AnswerCard | null>(null);
+  const [remoteCard, setRemoteCard] = useState<AnswerCard | null>(null);
+  const card = localCard ?? remoteCard;
   const [batches, setBatches] = useState<Record<string, ScanBatchResponse>>({});
   const [metas, setMetas] = useState<Record<string, SessionMeta>>({});
   const [scans, setScans] = useState<ScanMeta[]>([]);
@@ -34,14 +42,12 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   const [loading, setLoading] = useState(true);
   const [savingAll, setSavingAll] = useState(false);
   const [error, setError] = useState("");
-  /** 本页亲眼见过的异常组（sid/gid）。只有它们处理完才补传：正常组在扫描完成时已被
-   *  ScannerPanel 排队上传，再建一个远端会话会形成同学号第二份回执并撤回正式成绩。
-   *  记在 localStorage：刷新后内存清空，已改好但还没补传的组会被当成「本来就正常」而漏传。 */
+  /** 本页见过的异常组（sid/gid），含结果里仍需复核的低置信度卷。
+   *  它们订正干净后才允许补传一次。已经进过上传名单的组不再建第二份回执。 */
   const abnormalKey = `projectx-postprocess-abnormal/${cardId}`;
-  const queuedKey = `projectx-postprocess-queued/${cardId}`;
   const abnormalSeen = useRef<Set<string>>(readIdSet(abnormalKey));
-  /** 本页已补传过的组，防同组重复入队。入队成功才写入；startUpload 抛错时允许再试。 */
-  const queuedByPage = useRef<Set<string>>(readIdSet(queuedKey));
+  /** 与扫描面板共用的上传名单。入队成功才写入；startUpload 抛错时允许再试。 */
+  const queuedByPage = useRef<Set<string>>(readQueuedGroups(cardId));
 
   // 通道唯一为本地（spec §5 通道裁定）：远端语义只经 queueGroupUpload 补传承担
   const channel: PostprocessChannel = useMemo(() => localChannel(), []);
@@ -49,25 +55,26 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   const isRemoteUploadOn = useCallback(() => getScannerMode() === "remote" && isRemoteServerConfigured(), []);
 
   /** 返回本轮拉到的快照：补传判定必须用重拉后的数据，闭包里的旧 batches 会漏掉刚处理好的组 */
-  const reload = useCallback(async (): Promise<{ batches: Record<string, ScanBatchResponse>; metas: Record<string, SessionMeta> }> => {
+  const reload = useCallback(async (): Promise<{ batches: Record<string, ScanBatchResponse>; metas: Record<string, SessionMeta>; card: AnswerCard | null }> => {
     setLoading(true);
     setError("");
     try {
-      const { card: loaded } = await fetchCardDetailSynced(cardId);
-      if (!loaded) throw new Error("答题卡不存在");
-      setCard(loaded as AnswerCard);
+      const loaded = await loadPostprocessCards(cardId);
+      const display = loaded.local ?? loaded.remote;
+      if (!display) throw new Error("答题卡不存在");
+      const discarded = readPreviewDiscards(cardId);
       const nextBatches: Record<string, ScanBatchResponse> = {};
       const nextMetas: Record<string, SessionMeta> = {};
       for (const { sessionId } of sessions) {
-        nextBatches[sessionId] = await channel.results(sessionId);
+        const batch = omitPreviewDiscardedGroups(await channel.results(sessionId), discarded, sessionId);
+        nextBatches[sessionId] = batch;
         nextMetas[sessionId] = await loadSessionMeta(sessionId);
       }
-      setBatches(nextBatches);
-      setMetas(nextMetas);
-      // 记下面试异常组：这些是 ScannerPanel 当初没排上传的组，处理完才允许本页补传一次。
-      // 冲突副本也要记：重卡里被「保留」的那份往往只出现在 conflicts 里，
-      // 不算进来的话定性完仍然不会补传（另一份已作废，服务器再也没有这份成绩）
+      // 失败、冲突副本、以及结果里仍需复核的卷，都还没进过上传名单。订正干净后才补传一次。
       for (const [sid, next] of Object.entries(nextBatches)) {
+        for (const result of next.results) {
+          if (result.needsReviewCount > 0) abnormalSeen.current.add(`${sid}/${result.groupId}`);
+        }
         for (const failure of next.failures) {
           abnormalSeen.current.add(`${sid}/${failure.groupId}`);
           for (const copy of failure.conflicts ?? []) abnormalSeen.current.add(`${copy.sessionId}/${copy.groupId}`);
@@ -75,27 +82,52 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
         for (const review of next.reviewCards ?? []) abnormalSeen.current.add(`${review.sessionId}/${review.groupId}`);
       }
       writeIdSet(abnormalKey, abnormalSeen.current);
+      const queuedNow = ensureFirstUploads(cardId, display.id, nextBatches, nextMetas, isRemoteUploadOn(), queuedByPage.current);
+      if (queuedNow > 0) notify.info(queuedNow === 1 ? "已加入上传队列，图片后台续传" : `已加入上传队列（${queuedNow} 份），图片后台续传`);
+      setLocalCard(loaded.local);
+      setRemoteCard(loaded.remote);
+      setBatches(nextBatches);
+      setMetas(nextMetas);
       const scanList = await authFetch(`/api/scanner/card/${cardId}/scans`);
       if (scanList.ok) {
         const rows = (await scanList.json()) as Array<{ recordId: string; createdAt: string; scanQuality: number | null }>;
         setScans(rows.map(row => ({ recordId: row.recordId, createdAt: row.createdAt, scanQuality: row.scanQuality })));
       }
-      return { batches: nextBatches, metas: nextMetas };
+      return { batches: nextBatches, metas: nextMetas, card: display };
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败");
-      return { batches: {}, metas: {} };
+      return { batches: {}, metas: {}, card: null };
     } finally {
       setLoading(false);
     }
-  }, [cardId, sessions, channel, abnormalKey]);
+  }, [cardId, sessions, channel, abnormalKey, isRemoteUploadOn]);
 
   useEffect(() => { void reload(); }, [reload]);
 
-  const layoutPageCount = card ? buildLayout(card).pages.length : 0;
+  const sessionLayouts = useMemo(() => {
+    const localFingerprint = localCard ? cardFingerprint(localCard) : null;
+    const remoteFingerprint = remoteCard ? cardFingerprint(remoteCard) : null;
+    const localPageCount = localCard ? buildLayout(localCard).pages.length : 0;
+    const remotePageCount = remoteCard ? buildLayout(remoteCard).pages.length : 0;
+    const map: Record<string, { pageCount: number; layoutStale: boolean }> = {};
+    for (const { sessionId } of sessions) {
+      map[sessionId] = matchingLayoutPageCount({
+        cardVersion: metas[sessionId]?.cardVersion ?? null,
+        localFingerprint, localPageCount, remoteFingerprint, remotePageCount,
+        observedMaxLayoutPage: observedLayoutPageCount(batches[sessionId]),
+      });
+    }
+    return map;
+  }, [sessions, batches, metas, localCard, remoteCard]);
+  const layoutStale = Object.values(sessionLayouts).some(entry => entry.layoutStale);
   const groups = useMemo(() => {
     if (!card) return [];
-    return sessions.flatMap(({ sessionId }) => buildPostprocessGroups(batches[sessionId] ?? { results: [], failures: [] }, sessionId, layoutPageCount));
-  }, [batches, sessions, layoutPageCount, card]);
+    return sessions.flatMap(({ sessionId }) => buildPostprocessGroups(
+      batches[sessionId] ?? { results: [], failures: [] },
+      sessionId,
+      sessionLayouts[sessionId]?.pageCount ?? 0,
+    ));
+  }, [batches, sessions, sessionLayouts, card]);
   const queue = useMemo(() => buildPostprocessQueue(groups), [groups]);
   const issueGroups = useMemo(() => new Set(queue.map(item => `${item.sessionId}/${item.groupId}`)).size, [queue]);
   const uploaded = useMemo(() => Object.values(batches).flatMap(b => b.results).filter(r => r.saved).length, [batches]);
@@ -167,27 +199,21 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   }
 
   /**
-   * 异常处理完一条之后的同步与补传（D12）。
-   * 只补传「本页亲眼见过它异常」的组：扫描完成时正常组已由 ScannerPanel 排队上传，
-   * 同考号的第二份回执到服务端会走 conflict → withdraw() 删 student_scores/question_scores
-   * （撤掉已保存的正式成绩）。上传任务列表是内存态、进度卡可被关闭，不能当判据。
+   * 处理完一条之后重拉。首传已经在 reload 里按「未入库、无存疑、不在名单」做过。
+   * 这里只补「不在本页会话列表里」的保留份，并拦住仍需复核或已经传过的组。
    */
   async function syncAfterFix(sessionId: string, groupId: string) {
     const key = `${sessionId}/${groupId}`;
     const wasAbnormal = abnormalSeen.current.has(key);
+    const alreadyQueued = queuedByPage.current.has(key) || isGroupQueued(cardId, sessionId, groupId)
+      || scannerUploadManager.hasGroupUpload(cardId, groupId, sessionId);
     const fresh = await reload();
-    if (!isRemoteUploadOn() || !card) return;
-    if (!wasAbnormal) {
-      notify.info("本机已保存。该卷随本批一起上传过，改动不再重复上传；服务器成绩请走 Web 成绩修改。");
-      return;
-    }
-    if (queuedByPage.current.has(key)) return;
+    if (!isRemoteUploadOn() || !fresh.card) return;
     let batch = fresh.batches[sessionId];
     let meta = fresh.metas[sessionId];
-    // 保留下来的冲突副本可能属于另一场会话，不在本页 sessions 里。只查已加载的批次会静默跳过补传。
     if (!batch || !meta) {
       try {
-        batch = await channel.results(sessionId);
+        batch = omitPreviewDiscardedGroups(await channel.results(sessionId), readPreviewDiscards(cardId), sessionId);
         meta = await loadSessionMeta(sessionId);
       } catch (error) {
         notify.error(error instanceof Error ? error.message : "读取保留卷失败，未能补传");
@@ -196,26 +222,48 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
     }
     const result = batch?.results.find(entry => entry.groupId === groupId);
     if (!result || !meta) {
-      notify.error("没有找到可补传的识别结果");
+      if (wasAbnormal) notify.error("没有找到可补传的识别结果");
+      else if (alreadyQueued) notify.info("本机已保存。该卷随本批一起上传过，改动不再重复上传；服务器成绩请走 Web 成绩修改。");
       return;
     }
-    if (!meta.cardVersion) {
+    if (result.needsReviewCount > 0) {
+      notify.info("仍有存疑题，全部确认后再上传");
+      return;
+    }
+    const inPage = sessionId in fresh.batches;
+    const queuedNow = queueCleanGroup(cardId, fresh.card.id, sessionId, meta, result, queuedByPage.current);
+    if (queuedNow === "queued") {
+      notify.info("已加入上传队列，图片后台续传");
+      return;
+    }
+    if (queuedNow === "error") {
+      notify.error("加入上传队列失败");
+      return;
+    }
+    if (queuedNow === "missing-version" && !inPage) {
       notify.error("本机会话没有扫描时的答题卡版本，已停止补传，避免按新版面上传旧识别结果");
       return;
     }
-    try {
-      queueGroupUpload({ ...meta, cardId: card.id, cardVersion: meta.cardVersion }, sessionId, result);
-    } catch (error) {
-      notify.error(error instanceof Error ? error.message : "加入上传队列失败");
-      return;
+    if (!wasAbnormal && alreadyQueued) {
+      notify.info("本机已保存。该卷随本批一起上传过，改动不再重复上传；服务器成绩请走 Web 成绩修改。");
     }
-    queuedByPage.current.add(key);
-    writeIdSet(queuedKey, queuedByPage.current);
-    notify.info("已加入上传队列，图片后台续传");
   }
 
   if (loading && !card) return <div className="flex h-[100dvh] items-center justify-center bg-background"><Spinner size={24} /></div>;
-  if (!card) return <div className="flex h-[100dvh] items-center justify-center bg-background text-sm text-destructive-fg">{error || "加载失败"}</div>;
+  if (!card) {
+    return (
+      <div className="flex h-[100dvh] flex-col items-center justify-center gap-3 bg-background px-6 text-sm text-destructive-fg">
+        <p className="m-0">{error || "加载失败"}</p>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={onBack} aria-label="返回扫描" icon={<ArrowLeft size={16} />}>返回扫描</Button>
+          <Button onClick={() => void reload()}>重试</Button>
+        </div>
+      </div>
+    );
+  }
+
+  const sessionWarnings = [...new Set(Object.values(metas).flatMap(meta => meta.warnings ?? []))];
+  if (layoutStale) sessionWarnings.push("答题卡已更换，缺页按本次实际扫到的页核对。");
 
   return (
     <main className="flex h-[100dvh] min-w-0 flex-col overflow-hidden bg-background">
@@ -238,6 +286,16 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
           ]}
         />
       </header>
+      {sessionWarnings.length > 0 && (
+        <div role="status" className="flex flex-col gap-2 border-b border-warning-border bg-warning-soft px-5 py-3 text-sm text-foreground">
+          {sessionWarnings.map(warning => (
+            <div key={warning} className="flex items-start gap-2">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+              <span className="min-w-0 flex-1 break-words">{warning}</span>
+            </div>
+          ))}
+        </div>
+      )}
       {view === "results" && (
         <PostprocessResultsView
           groups={groups}
@@ -256,15 +314,18 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
           }}
         />
       )}
-      {view === "correction" && active && (
-        <PostprocessCorrectionView
-          channel={channel}
-          sessionId={active.sessionId}
-          groupId={active.groupId}
-          initialSaved={active.saved}
-          highlightQuestion={highlight}
-          onSaved={() => syncAfterFix(active.sessionId, active.groupId)}
-        />
+      {active && (
+        <div className={view === "correction" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
+          <PostprocessCorrectionView
+            key={`${active.sessionId}/${active.groupId}`}
+            channel={channel}
+            sessionId={active.sessionId}
+            groupId={active.groupId}
+            initialSaved={active.saved}
+            highlightQuestion={highlight}
+            onSaved={() => syncAfterFix(active.sessionId, active.groupId)}
+          />
+        </div>
       )}
       {view === "correction" && !active && (
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">先在「扫描结果」里选一张卷子</div>
@@ -275,9 +336,10 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
           channel={channel}
           examIdForSession={sessionId => metas[sessionId]?.examId ?? null}
           scans={scans}
-          layoutPageCount={layoutPageCount}
+          layoutPageCountFor={sessionId => sessionLayouts[sessionId]?.pageCount ?? 0}
           focus={focusIssue}
           onResolved={syncAfterFix}
+          onPreviewDiscard={(sessionId, groupId) => rememberPreviewDiscard(cardId, sessionId, groupId)}
           onDelete={handleDelete}
           onJumpToCorrection={(sessionId, groupId, questionNumber) => {
             const group = groups.find(entry => entry.sessionId === sessionId && entry.groupId === groupId) ?? null;
@@ -289,6 +351,90 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
       )}
     </main>
   );
+}
+
+function isRemoteNotFound(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const row = error as { remoteNotFound?: boolean; status?: number };
+  return row.remoteNotFound === true || row.status === 404;
+}
+
+/** 远端 404 不再挡住本机批次；其它远端错误仍交给页面上的返回和重试。 */
+async function loadPostprocessCards(cardId: string): Promise<{ local: AnswerCard | null; remote: AnswerCard | null }> {
+  let remote: AnswerCard | null = null;
+  let local: AnswerCard | null = null;
+  try {
+    const synced = await fetchCardDetailSynced(cardId);
+    if (synced.source === "remote") remote = synced.card as AnswerCard;
+    else local = synced.card as AnswerCard;
+  } catch (error) {
+    if (!isRemoteNotFound(error)) throw error;
+  }
+  if (!local) {
+    const response = await authFetch(`/api/cards/${encodeURIComponent(cardId)}`);
+    if (response.ok) local = await response.json() as AnswerCard;
+    else if (!remote) {
+      let message = "答题卡不存在";
+      try {
+        const body = await response.json() as { message?: string };
+        if (body.message) message = body.message;
+      } catch { /* 用上面的默认文案 */ }
+      throw new Error(message);
+    }
+  }
+  return { local, remote };
+}
+
+type QueueOutcome = "queued" | "skipped" | "missing-version" | "error";
+
+function queueCleanGroup(
+  cardId: string,
+  uploadCardId: string,
+  sessionId: string,
+  meta: SessionMeta | undefined,
+  result: ScanBatchResult,
+  queued: Set<string>,
+): QueueOutcome {
+  if (result.saved || result.needsReviewCount > 0 || !result.studentId) return "skipped";
+  const key = `${sessionId}/${result.groupId}`;
+  if (queued.has(key) || isGroupQueued(cardId, sessionId, result.groupId)) return "skipped";
+  if (scannerUploadManager.hasGroupUpload(uploadCardId, result.groupId, sessionId)) {
+    queued.add(key);
+    rememberQueuedGroup(cardId, sessionId, result.groupId);
+    return "skipped";
+  }
+  if (!meta?.cardVersion) return "missing-version";
+  try {
+    queueGroupUpload({ ...meta, cardId: uploadCardId, cardVersion: meta.cardVersion }, sessionId, result);
+  } catch {
+    return "error";
+  }
+  queued.add(key);
+  rememberQueuedGroup(cardId, sessionId, result.groupId);
+  return "queued";
+}
+
+function ensureFirstUploads(
+  cardId: string,
+  uploadCardId: string,
+  batches: Record<string, ScanBatchResponse>,
+  metas: Record<string, SessionMeta>,
+  remote: boolean,
+  queued: Set<string>,
+): number {
+  if (!remote) return 0;
+  let count = 0;
+  let missingVersion = false;
+  for (const [sessionId, batch] of Object.entries(batches)) {
+    for (const result of batch.results) {
+      const outcome = queueCleanGroup(cardId, uploadCardId, sessionId, metas[sessionId], result, queued);
+      if (outcome === "queued") count += 1;
+      if (outcome === "missing-version") missingVersion = true;
+      if (outcome === "error") notify.error("加入上传队列失败");
+    }
+  }
+  if (missingVersion) notify.error("本机会话没有扫描时的答题卡版本，已停止补传，避免按新版面上传旧识别结果");
+  return count;
 }
 
 function readIdSet(key: string): Set<string> {

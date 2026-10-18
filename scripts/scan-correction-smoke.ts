@@ -348,5 +348,55 @@ try {
   const correctedSnapshot = JSON.parse((await db.get<{score_snapshot:string}>("SELECT score_snapshot FROM scanner_submissions WHERE exam_id=? AND session_id=? AND group_id='0'",numberedExamId,numberedSessionId))!.score_snapshot);
   assert.deepEqual(correctedSnapshot.questions.filter((q:{score_type:string})=>q.score_type==="subjective").map((q:{question_number:number;score:number})=>({number:Number(q.question_number),score:Number(q.score)})).sort((a:{number:number},b:{number:number})=>a.number-b.number),
     [{number:2,score:10},{number:3,score:10}],"withdrawn snapshot correction also canonicalizes subjective numbers");
+  const partialCard = createDefaultCard("91514077");
+  partialCard.studentInfo.studentNumberDigits = 5;
+  partialCard.bodyBlocks = [{ id: "partial-obj", type: "objective", title: "部分确认", questionStart: 1, questionCount: 2,
+    optionCount: 4, mode: "single", scorePerQuestion: 5, answerKey: { "1": ["A"], "2": ["B"] }, density: "normal" }];
+  await repo.createCard(partialCard);
+  await repo.updateCard(partialCard);
+  const partialCurrent = (await repo.findById(partialCard.id))!;
+  const partialExam = await db.run("INSERT INTO exams (name,card_id,status) VALUES (?,?,'grading')", "部分确认不入库", partialCard.id);
+  const partialExamId = Number(partialExam.lastInsertRowid);
+  await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", partialExamId, student.id);
+  const partialCells = correctionCells(buildLayout(partialCurrent).pages[0]);
+  const partialIdentity = { ...identity, cardId: partialCard.id };
+  const partialRecognition: CombinedRecognitionResult = {
+    status: "ok", pageNumber: 1, identity: partialIdentity, geometry: recognition.geometry,
+    studentId: { status: "ok", value: "91001" },
+    questions: [
+      { questionNumber: 1, selectedOptions: [], confidence: 0.05 },
+      { questionNumber: 2, selectedOptions: [], confidence: 0.05 },
+    ],
+    subjectiveQuestions: [],
+  };
+  const partialSession = await store.createSession(partialCard.id, "部分确认");
+  await db.run("UPDATE twain_scan_sessions SET status='completed',card_version=?,version_source='upload' WHERE id=?", cardFingerprint(partialCurrent), partialSession.id);
+  const partialRecord = await store.createScanRecord({ sessionId: partialSession.id, cardId: partialCard.id, pageNum: 1, imagePath: "partial.png" });
+  await db.run("UPDATE twain_scan_records SET identity_json=?,student_id='91001',ocr_status='done' WHERE id=?", JSON.stringify(partialIdentity), partialRecord.id);
+  await store.upsertRecognitionResult({ scanRecordId: partialRecord.id, objectiveJson: JSON.stringify(partialRecognition.questions), subjectiveJson: "[]" });
+  await storeCorrectionPage(partialCurrent, "twain_scan_record", partialRecord.id, partialRecognition);
+  const partialDoc = await sessionCorrection(partialCurrent, partialSession.id, "0");
+  const partialPage = partialDoc.pages[0];
+  const partialA = partialCells.find(cell => cell.type === "objective_option" && cell.questionNumber === 1 && cell.option === "A")!;
+  const partialEdit = {
+    sourceId: partialPage.sourceId, revision: partialPage.revision,
+    selected: toggleCorrectionCell(partialCurrent, partialPage, partialPage.selected, partialA.id),
+    touched: [partialA.id],
+  };
+  const partialSaved = await saveSessionCorrection(partialCurrent, partialSession.id, "0", [partialEdit], null);
+  assert.equal(partialSaved.saved, false, JSON.stringify(partialSaved));
+  assert.match(partialSaved.message, /存疑/);
+  assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id=?", partialExamId), null, "仍有存疑题时不写正式成绩");
+  const partialAgain = await sessionCorrection(partialCurrent, partialSession.id, "0");
+  assert.equal(partialAgain.pages.length, 1, "草稿还在，剩余存疑题可以继续打开");
+  const partialB = partialCells.find(cell => cell.type === "objective_option" && cell.questionNumber === 2 && cell.option === "B")!;
+  const partialPage2 = partialAgain.pages[0];
+  const finished = await saveSessionCorrection(partialCurrent, partialSession.id, "0", [{
+    sourceId: partialPage2.sourceId, revision: partialPage2.revision,
+    selected: toggleCorrectionCell(partialCurrent, partialPage2, partialPage2.selected, partialB.id),
+    touched: [partialB.id],
+  }], null);
+  assert.equal(finished.saved, true, finished.message);
+  assert.notEqual(await db.get("SELECT id FROM student_scores WHERE exam_id=?", partialExamId), null, "全部确认后才入库");
   console.log(`PASS scan correction: ${db.dialect}; geometry, colours, toggles, draft isolation, stale-write rejection, persisted answers, rankings/publication, review preservation and scanner replay`);
 } finally { await fixture.close(); }

@@ -150,8 +150,10 @@ try {
   for (const status of ["completed", "error", "cancelled"] as const) {
     const s = await store.createSession(`card-race-${status}`, "终态顺序", {});
     warnings.persistSessionWarning(s.id, RACE_WARNING);
-    // 计时用单调时钟，并给定时器留 10ms 容差：Date.now() 两端各自截断到毫秒，
-    // 「正好等满 250ms」会量成 249 甚至更低。不排队就写终态的实现这里仍是 ~0ms，照样红。
+    // 计时用单调时钟，并给定时器留 10ms 容差：原先用 Date.now() 相减并卡 `>= 250`，
+    // 两端的毫秒截断会让「正好等满 250ms」量成 249ms——CI run 573 就是这样假红的
+    // （同一脚本在 main 的 run 571 与本机均通过，与 #322/#283 无关）。
+    // 容差不会把这条断言变成空断言：不排队就写终态的实现，这里量到的是 ~0ms，照样红。
     const started = performance.now();
     await warnings.markSessionTerminal(s.id, status, status === "completed" ? undefined : "扫描阶段失败");
     const waited = performance.now() - started;

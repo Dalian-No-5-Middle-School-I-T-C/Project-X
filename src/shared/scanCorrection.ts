@@ -16,6 +16,23 @@ export type CorrectionPage = {
 };
 export type CorrectionDocument = { card: AnswerCard; pages: CorrectionPage[]; version: string };
 export type CorrectionEdit = { sourceId: string; revision: number; selected: string[]; touched?: string[]; recovery?: { fingerprint: string; signature?: string; recognition: CombinedRecognitionResult } };
+/**
+ * 低置信度客观题被老师处理过时，要记进 touched 的格。
+ * 有选中格就记那些格；清空为未答时选中集是空的，改记作用域里的低置信度选项格。
+ * 高置信度格由 isLowConfidence 排除，原答案不会因此变成一次确认。
+ */
+export function lowConfidenceTouchedIds(
+  scope: readonly string[],
+  picked: readonly string[],
+  isLowConfidence: (id: string) => boolean,
+): string[] {
+  const extra = picked.filter(isLowConfidence);
+  if (picked.length === 0) {
+    for (const id of scope) if (isLowConfidence(id) && !extra.includes(id)) extra.push(id);
+  }
+  return extra;
+}
+
 export function correctionCells(page: PageLayout): CorrectionCell[] {
   return page.elements.filter((e): e is CorrectionCell => ["student_digit", "objective_option", "score_cell"].includes(e.type));
 }
@@ -91,7 +108,9 @@ export function correctionState(card: AnswerCard, page: CorrectionPage, selected
     for (const c of hits) if (def?.answerKey?.length && !def.answerKey.includes(c.option)) invalid.add(c.id);
     const changed = hits.map(c => c.option).sort().join() !== [...q.selectedOptions].sort().join();
     // 老师点过这些格（含「点掉再点回原答案」）即是确认：低置信度不能因为选项没变就一直停在复核阈值下。
-    const confirmed = hits.some(c => touched.includes(c.id));
+    // 未答没有选中格，确认落在该题任一选项格上（点选后再清空、或直接选「未答」）。
+    const confirmed = hits.some(c => touched.includes(c.id))
+      || (hits.length === 0 && available.some(c => touched.includes(c.id)));
     return { ...q, selectedOptions: hits.map(c => c.option), confidence: changed || confirmed ? 1 : q.confidence };
   });
   recognition.subjectiveQuestions = (recognition.subjectiveQuestions ?? []).map(q => {

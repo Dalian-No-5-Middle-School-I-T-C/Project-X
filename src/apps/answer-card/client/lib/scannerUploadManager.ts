@@ -48,6 +48,8 @@ export interface StartUploadInput {
   name: string;
   dpi?: number;
   paperSize?: string;
+  /** 本机扫描会话。同一张卡的 groupId 会跨会话重号，有它才能判断是不是同一份原卷。 */
+  localSessionId?: string;
   pages: UploadPageInput[];
 }
 
@@ -104,6 +106,7 @@ interface JobRecord {
   kind: UploadJobKind;
   name: string;
   cardId: string;
+  localSessionId?: string;
   /** 安全 R35：随会话创建上报的卡版本指纹，服务端据此拒绝旧版本上传 */
   cardVersion: string;
   dpi: number;
@@ -685,6 +688,15 @@ if (j.cancelled) throw cancelledError(j);
     }
   }
 
+  /** 这份原卷是否已经有未关闭的上传任务（含失败和已完成）。关掉进度卡后任务会离开列表，调用方还要查持久名单。 */
+  function hasGroupUpload(cardId: string, groupId: string, localSessionId?: string): boolean {
+    return jobs.some(job => {
+      if (job.cardId !== cardId) return false;
+      if (localSessionId && job.localSessionId && job.localSessionId !== localSessionId) return false;
+      return job.pages.some(page => page.input.groupId === groupId);
+    });
+  }
+
   function startUpload(input: StartUploadInput): string {
     if (input.pages.length === 0) throw new Error("没有可上传的页面");
     const pages: PageRecord[] = input.pages.map(p => ({ input: { ...p }, token: "", done: false, failed: false }));
@@ -717,6 +729,7 @@ if (j.cancelled) throw cancelledError(j);
       kind: input.kind,
       name: input.name,
       cardId: input.cardId,
+      localSessionId: input.localSessionId,
       cardVersion: input.cardVersion,
       dpi: input.dpi ?? 300,
       paperSize: input.paperSize ?? "A4",
@@ -903,6 +916,7 @@ if (j.cancelled) throw cancelledError(j);
       return jobFetch(job)(url, init);
     },
     startUpload,
+    hasGroupUpload,
     retryFailed,
     retryPaused,
     cancelJob,

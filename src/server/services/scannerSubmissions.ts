@@ -480,9 +480,10 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
     const response = await collectSessionResults(card, activeRecords, cached, mode === "save" ? async result => {
       const candidate = candidates.find(c => c.pages.some(p => p.recordId === result.pages[0]?.recordId));
       if (!candidate || discarded.has(candidate.groupId) || (saveGroupId !== undefined && candidate.groupId !== saveGroupId)) return false;
-      // 后处理「保存成绩入库」只点名正常组。整会话 POST 会把 needsReview 的组一起写成正式成绩，
-      // 重载后 initialSaved 把订正视图锁死，异常队列里却不能再改。
-      if (saveGroupIds && (!saveGroupIds.has(candidate.groupId) || result.needsReviewCount > 0)) return false;
+      // 点名保存（整批 groupIds，或订正这一组的 saveGroupId）在仍有存疑题时只留草稿。
+      // 整会话 POST 两个参数都缺省，维持扫描面板「保存成功部分」的原行为。
+      if (saveGroupIds && !saveGroupIds.has(candidate.groupId)) return false;
+      if ((saveGroupIds != null || saveGroupId !== undefined) && result.needsReviewCount > 0) return false;
       await db.transaction(async tx => {
         await lockExam(tx, exam.id);
         const current = await receipts(tx, exam.id);
