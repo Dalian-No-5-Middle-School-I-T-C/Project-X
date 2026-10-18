@@ -248,7 +248,7 @@ try {
   const unreviewed = await seedPapers("unreviewed-save", [{ studentNumber: "92022", confidence: 0.05 }]);
   const blockedSave = await processScannerSession((await cards.findById(card.id))!, unreviewed.id, "save", undefined, undefined, true);
   assert.equal(blockedSave.results[0]?.needsReviewCount, 1);
-  assert.equal(blockedSave.results[0]?.saved, false, "上传完成的整会话保存不能把未确认卷入库");
+  assert.equal(blockedSave.results[0]?.saved, false, "显式 blockUnreviewed 时未确认卷不能入库");
   const leaked = await db.get<{ student_number: string }>(
     `SELECT u.student_number FROM student_scores ss JOIN users u ON u.id = ss.student_id
      WHERE ss.exam_id = ? AND u.student_number = '92022'`, exam.lastInsertRowid);

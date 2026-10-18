@@ -670,15 +670,14 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
         res.status(409).json({ message: "图片已保存，但缺少本机识别结果；请使用新版扫描端重试上传，成绩尚未入库" });
         return;
       }
-      const batch = await processScannerSession(card, String(sessionId), "save", undefined, undefined, true);
+      // 不传 blockUnreviewed。上传管理器没有「先确认存疑题再提交」的步骤，
+      // 低置信度或未配答案的题仍按原协议入库，并在结果里带 needsReviewCount。
+      // 若这里改成 409，双面订正等既有完成流程会停在 error，成绩也写不进去。
+      // 后处理页自己在 needsReviewCount > 0 时不入队。
+      const batch = await processScannerSession(card, String(sessionId), "save");
       reviewCards = batch.reviewCards ?? [];
-      const unreviewed = batch.results.filter(result => result.needsReviewCount > 0 && !result.saved);
-      if (batch.failures.length || unreviewed.length) {
-        res.status(409).json({
-          ok: false,
-          message: unreviewed.length ? "仍有存疑题未确认，成绩尚未入库" : "部分答题卡未入库，请处理以下问题后重试",
-          ...batch,
-        });
+      if (batch.failures.length) {
+        res.status(409).json({ ok: false, message: "部分答题卡未入库，请处理以下问题后重试", ...batch });
         return;
       }
       const { exam: savedExam } = await resolveScannerExam(fullSession!.card_id, String(sessionId));

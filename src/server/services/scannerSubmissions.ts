@@ -502,7 +502,8 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
       const candidate = candidates.find(c => c.pages.some(p => p.recordId === result.pages[0]?.recordId));
       if (!candidate || discarded.has(candidate.groupId) || (saveGroupId !== undefined && candidate.groupId !== saveGroupId)) return false;
       // 点名保存（整批 groupIds，或订正这一组的 saveGroupId）在仍有存疑题时只留草稿。
-      // 上传完成的整会话保存同样拦住未确认卷。扫描面板的整会话 POST 不带这个标记，仍保存已识别成功的部分。
+      // blockUnreviewed 只在调用方显式打开时拦住整会话保存。上传完成接口不打开它：
+      // 那条链路没有确认步骤，必须继续把带复核标记的成绩入库。
       if (saveGroupIds && !saveGroupIds.has(candidate.groupId)) return false;
       if ((blockUnreviewed || saveGroupIds != null || saveGroupId !== undefined) && result.needsReviewCount > 0) return false;
       await db.transaction(async tx => {
