@@ -363,6 +363,11 @@ try {
   // ── 远端模式：处理完一条异常 → 按组补传一次，卡版本必须是全量指纹 ──
   localStorage.setItem("projectx_scanner_mode", "remote");
   localStorage.setItem("projectx_server_url", "https://remote.test");
+  const { retryPreviewBody } = await import("../src/apps/answer-card/client/components/scanner-postprocess/PostprocessQueueView");
+  assert.deepEqual(retryPreviewBody(), { previewOnly: true }, "远端重新识别必须告诉服务端只做 preview，避免给其余组写回执");
+  localStorage.setItem("projectx_scanner_mode", "local");
+  assert.deepEqual(retryPreviewBody(), {}, "本机模式重新识别后仍走原来的 validate");
+  localStorage.setItem("projectx_scanner_mode", "remote");
   secondGroupResolved = true;
   await act(async () => { confirm.click(); });
   await settle();

@@ -640,7 +640,9 @@ export function createScannerRouter(twainEnabled = true): Router {
           recordIds: new Set(rows.map(r => r.record.id)), studentId,
         });
         await flushSessionWarnings(sessionId);
-        await sessionResults(sessionId, false, res, true, false, retryWarnings);
+        // 远端后处理读结果用 preview。重新识别后再 validate 会给同会话其余组写回执。
+        const previewOnly = (req.body ?? {}).previewOnly === true;
+        await sessionResults(sessionId, false, res, true, previewOnly, retryWarnings);
       });
     } catch (error) { next(error); }
   });

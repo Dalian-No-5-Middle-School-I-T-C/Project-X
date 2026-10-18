@@ -17,6 +17,11 @@ import type { SubjectiveQuestionNumber } from "../../../../../shared/types";
 
 export interface ScanMeta { recordId: string; createdAt: string; scanQuality: number | null; }
 
+/** 远端图片不在本机落正式回执。重新识别后的刷新必须跟读结果一样走 preview。 */
+export function retryPreviewBody(): { previewOnly: true } | Record<string, never> {
+  return getScannerMode() === "remote" && isRemoteServerConfigured() ? { previewOnly: true } : {};
+}
+
 export interface PostprocessQueueViewProps {
   queue: PostprocessQueueItem[];
   channel: PostprocessChannel;
@@ -528,7 +533,8 @@ function MissingPagePanel({ item, channel, layoutPageCount, onResolved, onDelete
     setBusy(true);
     try {
       const response = await channel.request(channel.retryUrl(item.sessionId), {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupId: item.groupId }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ groupId: item.groupId, ...retryPreviewBody() }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.message || "重新识别失败");
@@ -645,7 +651,8 @@ function OtherPanel({ item, channel, onResolved }: {
     setBusy(true);
     try {
       const response = await channel.request(channel.retryUrl(item.sessionId), {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupId: item.groupId }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ groupId: item.groupId, ...retryPreviewBody() }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.message || "重新识别失败");
