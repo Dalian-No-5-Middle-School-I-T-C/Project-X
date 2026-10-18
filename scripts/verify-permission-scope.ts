@@ -24,6 +24,7 @@ import { createServer, type Server } from "node:http";
 
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-perm-scope-"));
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "verify.db");
+process.env.PROJECTX_TOKEN_DIR = path.join(tmpDir, "tokens");
 for (const key of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
   "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST",

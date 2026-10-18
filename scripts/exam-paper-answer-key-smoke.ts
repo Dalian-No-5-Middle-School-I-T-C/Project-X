@@ -26,6 +26,7 @@ import sharp from "sharp";
 
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-exam-paper-"));
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "verify.db");
+process.env.PROJECTX_TOKEN_DIR = path.join(tmpDir, "tokens");
 // 原卷/答案页文件也写进临时目录，避免污染仓库 data/
 process.env.ANSWER_CARD_DATA_DIR = path.join(tmpDir, "data");
 for (const key of Object.keys(process.env)) {

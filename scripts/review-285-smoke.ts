@@ -10,6 +10,7 @@ import { validateCardScores } from "../src/shared/cardScoreValidation";
 const temp = await mkdtemp(path.join(tmpdir(), "projectx-review-285-"));
 process.chdir(temp);
 process.env.PROJECTX_DB_PATH = path.join(temp, "test.db");
+process.env.PROJECTX_TOKEN_DIR = path.join(temp, "tokens");
 process.env.ANSWER_CARD_DATA_DIR = path.join(temp, "data");
 process.env.PROJECTX_AUTH_ENFORCE = "0";
 if (process.env.REVIEW_285_MARIADB === "1") {

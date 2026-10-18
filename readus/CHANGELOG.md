@@ -11,6 +11,137 @@
 - **升级说明**：无新增配置项，也不需要手工迁移；`warnings_json` 列由两种方言的建表与 v63 迁移自动到位。已部署的 Windows 扫描端要换 32 位包才拿到本次收尾与识别器修复。
 - **已知限制**：`resources/native/win-x64` 两颗原生件未更新，缺本次收尾判定与坐标映射，而 electron-builder 默认 win target 是 `msi`/`x64`，出 64 位扫描端包前须先按 `readus/Windows32位扫描端交叉打包.md` 的 MSVC 工序重编；红笔打「×」是否放宽原生阈值待现场样本；真机扫描仪与异常卷改分未做硬件验收，以上结论只覆盖自动化验证。
 
+## 2026-10-17：#322 学生网页端权限收敛 + #283 readus 文档校订
+
+**#322「移除学生账号在网页端修改阅卷设置和上传背景图的能力」**
+
+- **阅卷字段按权限位拒绝**（`PATCH /api/users/me/settings`）：成绩显示方式 `scoreDisplayMode`、
+  复核置信度阈值 `reviewConfidenceThreshold` 需要 `grade:write`（`canWriteGradingSelfSettings()`），
+  不写死 role 名单。请求里带上这两项又没有权限时整单 403，同一次里的其他字段也不写；
+  不带这两项时，皮肤、亮暗、底部导航栏仍可保存。
+- **背景图对学生关闭**（整合 #337）：`isStudentAccount()` 按学生身份判定，不看 `grade:write`。
+  `GET /api/users/me/settings` 把学生的 `backgroundOpacity` 改写成 0（库里的历史值保留）；
+  `GET /api/app/background` 对学生返回 404，自定义图和默认图都不下发；
+  PATCH 里出现 `backgroundOpacity` 则整单 403。历史文件不删除。
+- **背景图上传按身份拒绝**（`POST /api/users/me/background`）：`requireBackgroundUploadAccess`
+  对 `student` 一律 403，**故意不看权限位**：给某人放开壁纸不应连带给他改分权限。
+  门挂在 `multer.single()` **之前**，否则被拒的请求已经把上传体落盘到 `dataDir/backgrounds` 才返回 403。
+- 前端隐藏阅卷 Tab 和整段背景区（透明度滑块、上传按钮），保存载荷按权限拆开。
+  页签只在当前停在被隐藏的阅卷页时回到客户端，AI 页签仍可达。学生本人的 AI 服务商配置不在本次范围。
+- `scripts/verify-auth.ts` 第 7 节新增 11 条断言，含两条源码接线检查（门必须在 multer 前、
+  settings 路由必须引用字段门）与免登录模式口径断言；本轮实测 `verify:auth` 与
+  `verify:security-critical` 均 0 失败（用例数会随功能增长，不写死在文档里）。
+
+**#283「readus 目录下文件亟待更新」**
+
+- 新增 `readus/README.md` 索引：把**现行规范**与**某一天现场记录**分开登记，并逐份标注
+  「本轮是否对照代码复核过」；时间点记录保留原文不改写，只作「当时为什么这样做」的证据。
+- 八份现场记录（BUGFIX-SUMMARY-2026-07-19、CODE-REVIEW、SECURITY-AUDIT-NOTES-2026-10-04 等）
+  加时点横幅；ADMIN-GUIDE、多端使用说明、KNOWN-ISSUES、演示数据、AI成绩分析、SPONSOR-PAGE、
+  双方言SQL 清单补复核时点。
+- **两处会误导安全判断的反向描述已纠正**：`ACCOUNT-ARCHITECTURE.md` 与 `ACCOUNT-CONTROL.md`
+  都把 `PROJECTX_AUTH_ENFORCE` 写成「未设置 = 默认不拦截」，而 `isAuthEnforced()` 的真实语义是
+  **未设置即强制**，只有 `0` / `false` 才关闭。同时补上兼容门读的是 `createApp` 时写入的模块级快照这一层。
+- `ACCOUNT-CONTROL.md` / `DATABASE.md` 的会话描述从「8 小时 token + `?token=` + 6 个月持久化」
+  更正为 Cookie 主通道（HttpOnly `projectx_auth_token`）、令牌只存 SHA-256 摘要、短会话 8 小时 /
+  持久会话 30 天、URL 凭据收敛到媒体白名单与单次 `?mt=` 票据（安全 R30）、改密前 428 闸门。
+- **一处不存在的权限入口**：文档称管理员可在 `PUT /api/admin/permissions` 改「角色权限位」，
+  实际那条路由管的是教师权限矩阵 `teacher_permissions`；`roles.permissions` 由建库脚本播种，
+  **当前没有任何界面或 API 可改**。另记 `invalidatePermissionCache()` 只置空缓存，
+  之后 `loadRolePermissions()` 返回硬编码三角色兜底表，直到 `initPermissionCache()` 再跑。
+- `DATABASE.md` 迁移水位从 v34 更正为 **v60**，新增 v35→v60 编号台账，如实写明 v39/v40 作废原因与
+  v57/v58 故意留空的原因（两者都是「把合法状态当脏数据清理」被评审拦下）。
+- `ARCHITECTURE.md`：mode 数量 11→**12**（补 `admin-console`），路由壳组件名对齐 `*RoutePage`，
+  默认皮肤由 `flat` 更正为 `paper-edge`（`DEFAULT_SKIN`，v44 迁移列默认值同向），
+  v1.9.x 段标注为发布历史按语（含已删除的 `styles.css`）。
+- `UI-ARCHITECTURE.md`：删除不存在的 `npm run sync-tokens` / `scripts/sync-tokens.mjs` 流程，
+  改为「生效副本 `client/theme/tokens.css` + 设计副本 `design/tokens/tokens.css` 人工双改 + `diff` 自查」；
+  `docs/superpowers/specs/...` 按 AGENTS.md 降级为过程稿而非规范来源。
+- **顺带修掉一处真实漂移**：两副本 `tokens.css` 的 `[data-skin="paper-edge"] [role="radiogroup"]`
+  选中态选择器不一致，设计副本仍停在 `button[data-state="on"]`，生效副本早已修正为
+  `button[aria-checked="true"]`（Radix RadioGroup 用 `aria-checked`）。本轮把设计副本对齐，两文件重新逐字节相同。
+  **没有任何脚本会发现这种漂移**，这是删除虚假同步流程后必须靠约定的地方。
+
+**PR #334 评审返修（同日，两条 P2）**
+
+- **学生 AI 页签被误锁**：`AccountSettingsPage.tsx` 原写 `canEditGradingSettings ? settingsTab : "client"`，
+  普通学生没有 `grade:write`，于是每次渲染都被按回「客户端设置」——点「AI 设置」状态变了、`Tabs` 的
+  `value` 没变，学生无法添加/编辑/删除自己的 AI 服务商。这超出 #322 的收敛范围，也与本文件上方
+  「学生仍保留本人 AI 服务商配置」直接矛盾。改为仅在请求的正是被隐藏的 `grading` 时回退。
+  `verify:auth` 加了两条源码接线断言（正向式 + 反向禁止一刀切），因为仓库没有 DOM 测试设施，
+  页签可达性这类前端约束目前只能这样守。
+- **文档把鉴权下限写高了**：`ACCOUNT-CONTROL.md` §6 新增说明称「`authMiddleware` 保护的路由任何取值下都要求登录」，
+  实际 `src/server/middleware/auth.ts` 在 `via === "none"` 且 `!isAuthEnforced()` 时直接 `next()`；
+  新加的 `requireBackgroundUploadAccess` 同样在兼容模式放行匿名请求。按「挂了哪个门」重写为三行表格：
+  `authMiddleware` 兼容模式放行、`requireRole`/`requirePermission` 自己查 `req.user` 因此始终 401、
+  本次新增字段门与开关对齐。「Web 不要关强制鉴权」的警告保留并给出关掉后的具体后果。
+  §4 中间件一览里 `authMiddleware` / `requireRole` / `requirePermission` 三行同步纠正（原来一律写「否则 403」，
+  漏了未认证是 401）。
+- **本分支用 `git merge origin/main` 对齐当前 main**（合并提交，不变基、不改写已推送的三个返修 sha）：
+  main 在本分支基线之后有 #324/#326/#328/#330/#332/#333 六个提交，版本到 **2.7.1**、迁移到 **v63**
+  （v61 `scanner-session-card-version`、v62 `scan-correction-pages`、v63 `scan-session-warnings`，均扫描端表/列）。
+  两处冲突都按并集解：`server/index.ts` 的 `./middleware` 导入块同时保留 main 新加的
+  `requireWholeExamGradingAccessForExam` 与本轮新增的字段门符号；`CHANGELOG.md` 顶部两条 2026-10-17 都留。
+  `DATABASE.md` 水位据此推到 v63 并补这三行台账，文档头同步改 v2.7.1——台账不完整就是新造一处漂移。
+- **合并后重过索引，补登 11 份漏登记文档**：`readus/README.md` 是本分支新建的文件，合并 main 时**不会冲突**，
+  于是 main 期间新增的 10 份文档（`整卡改分说明`、`虚拟扫描仪验证`、`虚拟机全链路测试脚本说明` 三份规范，
+  与 `异常卷手动处理修复验证-20261011`、`扫描异常卷整合验证-20261011`、`英语听力测试扫卡图片缺失调查-20261011`、
+  `全链路生产模拟测试-20261015`、`剩余问题修复与虚拟机复测-20261015`、`OCR重新识别与人工改分并发修复-20261015`、
+  `主观题红笔划线识别修复记录-20261017` 七份现场记录）会静默漂在索引之外，另加此前就漏收的
+  `Windows32位扫描端交叉打包.md`。逐份按「现行规范 / 时间点记录」归类登记，未对照代码核的都写「未逐条复核」；
+  `readus/images/` 与「改整卡改分、出 32 位包」两个任务入口一并补上。维护约定新增第 3 条：**合并 main 后必须重过一遍索引**，
+  这种漏项在 diff 里看不见，只能比对目录清单。
+- #335（背景图上传 5 MiB 硬编码改「默认值 + `PROJECTX_*` + 天花板」三档）仍待做。
+  #336 里「学生是否还能看到背景、透明度是否纳入禁令」已由随后整合的 #337 决定：学生网页端不显示背景，
+  也不能改透明度；历史文件本身仍不删除。
+
+**PR #334 第二轮返修（bot inline 评审 5 条，同日）**
+
+- 第 1 条与上面 P2-1 同源（页签一刀切），已修。余下四条都是**我自己在 #283 里造成的新漂移**：
+  宣称某节「描述当前实现」，但该节正文没跟上一轮评审，属于「改了口径没改完全」，逐条对照代码补齐。
+- `ACCOUNT-ARCHITECTURE.md`：**凭据流向写反**——§1 数据流与 §3.2 时序图仍说前端从 `localStorage`
+  读 `projectx_auth_token`、所有请求带 Bearer，而 `client/auth/api.ts` 是同源 HttpOnly Cookie、
+  只有跨域 API 模式才把 token 放内存并加 `Authorization`（`localStorage` 在 `AuthContext` 里只剩界面偏好）。
+  据此改了架构图两处、数据流 1/2 两条、§3.2 整段时序与「关键实现」四条，§5 取舍表的
+  「前端 Token = localStorage」与「持久化 6 个月」两行（实为哈希存储、普通 8 小时 / 持久 30 天）。
+- `ACCOUNT-ARCHITECTURE.md`：§2 组件表把 `admin-permissions.ts` 称作「按角色编辑权限位的入口」，
+  与同文档 §2.1 的正确表述自相矛盾；改为「教师权限矩阵 `teacher_permissions` 行」。
+- `UI-ARCHITECTURE.md`：上一轮只改了 §2 的标准流程，**残留三处自动同步指令**——§1 铁律「只改设计副本 + 跑同步」、
+  §3 换色第 5 步「同步脚本会自动更新 `theme.ts`」、§6「禁手改 `app.css`（`@theme` 块是同步产物）」。
+  实际 `app.css` 是分层的入口与手写 `@theme` 映射（`--color-*: var(--px-*)`），改令牌要人工补一行。
+- `UI-ARCHITECTURE.md` §7 皮肤段过期：称「当前仅默认 `flat` 一套」「默认皮肤不设 `data-skin` 属性」，
+  实际 `SKIN_OPTIONS` 有 `paper-edge` / `flat` 两套、`DEFAULT_SKIN = "paper-edge"`，且 `App.tsx` 的
+  同步 effect **无条件**写 `dataset.skin`（纸锋覆盖块依赖该选择器），`main.tsx` 首屏前预置防白闪。
+  「显式选择 vs 默认落盘」由 sessionStorage `projectx-skin-chosen` 承载，与属性写入无关。
+  索引里两行的复核状态同步改写，避免「标记为已复核却仍是旧模型」把下一个人带走。
+
+**PR #334 的 CI 假红（同日，与 #322/#283 无关）**
+
+- `verify:scanner-warning-replay` 在合并 main 后的首个 CI run（573）里报
+  `cancelled：终态必须等告警写完（本次只等了 249ms）`。这段是**用墙钟量延迟**：`DELAY_MS = 250`
+  的实现确实等满了，但 `Date.now()` 两端各自向下截断到毫秒，相减就能得 249，于是断言
+  `waited >= DELAY_MS` 恰好踩在边界上。同一脚本在 main 的 run 571 与本机连跑三次均通过，
+  所以是既有的脆弱断言，不是本次合并引入的回归。
+- 改法：计时换成 `performance.now()`（单调、亚毫秒），并给定时器留 10ms 容差。
+  容差不会把它变成空断言——不排队就写终态的实现在这里量到的是 ~0ms，照样红；
+  同一节里另有「旧顺序确实读不到告警」的反证用例兜住行为本身。
+
+**PR #334 第三轮：背景图缓存与免登录写入口径（同日）**
+
+- `GET /api/app/background` 按 Cookie 身份返回不同正文（学生 404、本人自定义图、随包默认图）。
+  默认图原先是 `Cache-Control: public, max-age=86400` 且没有 `Vary`，共享缓存或同一浏览器换账号后会把教师看到的默认图交给学生，
+  或把学生的 404 留给下一位教师。现在该接口的每一条响应都是 `Cache-Control: private, no-store`，
+  并带 `Vary: Cookie, Authorization`（学生 404、自定义图、默认图、缺图 404 同一口径）。
+- 免登录模式（`PROJECTX_AUTH_ENFORCE=0`）下，无令牌请求能进入这两条处理器，但不再匿名写库：
+  `PATCH /api/users/me/settings` 没有用户 id 时 401；`POST /api/users/me/background` 同样 401，并删掉临时上传文件，
+  避免落成 `backgrounds/undefined.jpg`。`ACCOUNT-CONTROL.md` §6 按这个行为改写，不再写「这两条变成匿名可写」。
+- `ARCHITECTURE.md` 文末迁移水位从 v60 改为 v63，与 `migrations.ts`、`DATABASE.md` 一致。
+
+**PR #334 第四轮：打包命令与令牌目录隔离**
+
+- `ACCOUNT-ARCHITECTURE.md` §6 不再写不存在的 `npm run electron:msi:all` 和「三端共 6 个 MSI」。v1.6.1 起只打扫描端，命令是 `electron:msi`（x64）和 `electron:msi:ia32`。
+- 令牌文件目录支持 `PROJECTX_TOKEN_DIR`。`os.homedir()` 在 macOS / Linux 上不看 `USERPROFILE`，只改这个变量的认证脚本会把测试账号令牌写进运行账户的 `~/.projectx/tokens.json`。会登录或启动 `createApp` 的脚本在导入 `AuthService` 之前把该变量指到本次临时目录。
+
 ## 2026-10-16：扫描 DPI 同步、单面设备兼容与失败批次恢复
 
 - 修复普通队列消息先经扫描消息泵、后经隐藏窗口回调而重复提交 DSM 的问题：派发期间标记已检查的消息，窗口回调匹配后仅跳过一次重复提交；驱动直接通知、驱动内部消息泵、嵌套通知及字段相同的新同步消息继续正常处理。回归编译实际 `WndProc` 与扫描循环，覆盖窗口、线程及其他窗口消息路径。

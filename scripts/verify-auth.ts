@@ -13,17 +13,25 @@
  *   5. 班级/年级/花名册管理
  *   6. 学生自助查分（ScoreRepository）
  *   7. 中间件 requirePermission / requireRole 的放行与拦截
+ *      （含 #322：学生账号的自助「阅卷设置」字段门与「上传背景图」门，
+ *       以及前端页签回退只能收回「阅卷设置」这一个页签）
  *
  * 全部用例通过则进程退出码为 0，否则为 1。
  */
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 // 必须在导入任何 db 模块前设置数据库路径（getDatabase 在模块求值期读取该变量）
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-verify-"));
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "verify.db");
+process.env.PROJECTX_TOKEN_DIR = path.join(tmpDir, "tokens");
+const homeTokenPath = path.join(homedir(), ".projectx", "tokens.json");
+const homeTokenSha = existsSync(homeTokenPath)
+  ? createHash("sha256").update(readFileSync(homeTokenPath)).digest("hex")
+  : null;
 // 验证脚本固定使用临时 SQLite，避免 cloud.env 中的 MariaDB 变量干扰
 delete process.env.PROJECTX_MARIADB_HOST;
 delete process.env.PROJECTX_MARIADB_PORT;
@@ -84,15 +92,17 @@ async function main(): Promise<void> {
   const { initializeDatabase, ensureDefaultAdmin, getDatabase, closeDatabase } = await import(
     "../src/server/db/index"
   );
-  const { AuthService } = await import("../src/server/services/AuthService");
+  const { AuthService, tokenStoreDirectory } = await import("../src/server/services/AuthService");
   const { UserRepository } = await import("../src/server/repositories/UserRepository");
   const { ClassRepository } = await import("../src/server/repositories/ClassRepository");
   const { ScoreRepository } = await import("../src/server/repositories/ScoreRepository");
   const { AnalysisRepository } = await import("../src/server/repositories/AnalysisRepository");
   const { requirePermission, requireRole } = await import("../src/server/middleware/auth");
-  const { requireExamAccess, getVisibleExamIds, canGradeBlock, hasViewPermission, hasGroupViewPermission } = await import(
+  const { requireExamAccess, getVisibleExamIds, canGradeBlock, hasViewPermission, hasGroupViewPermission,
+    requireBackgroundUploadAccess, canWriteGradingSelfSettings, GRADING_SELF_SETTING_FIELDS } = await import(
     "../src/apps/answer-card/server/middleware"
   );
+  const { isAuthEnforced } = await import("../src/server/lib/authEnforce");
   const perms = await import("../src/server/auth/permissions");
   const { PERMISSIONS, ROLE_IDS, roleHasPermission, permissionsForRole, loadRolePermissions } = perms;
 
@@ -128,6 +138,14 @@ async function main(): Promise<void> {
   ok(JSON.stringify(adminLogin.permissions) === JSON.stringify(["*"]), "登录响应携带权限 ['*']");
   const sessionUser = await auth.getUserByToken(adminLogin.token!);
   ok(sessionUser?.username === "admin", "Token 可换取当前用户");
+  ok(tokenStoreDirectory() === process.env.PROJECTX_TOKEN_DIR, "令牌目录读取 PROJECTX_TOKEN_DIR");
+  await new Promise((resolve) => setImmediate(resolve));
+  const isolatedTokenPath = path.join(process.env.PROJECTX_TOKEN_DIR!, "tokens.json");
+  ok(existsSync(isolatedTokenPath), "登录令牌写入 PROJECTX_TOKEN_DIR");
+  const homeTokenShaAfter = existsSync(homeTokenPath)
+    ? createHash("sha256").update(readFileSync(homeTokenPath)).digest("hex")
+    : null;
+  ok(homeTokenShaAfter === homeTokenSha, "认证回归不改写运行账户的 ~/.projectx/tokens.json");
 
   const userRepo = new UserRepository();
 
@@ -435,6 +453,57 @@ async function main(): Promise<void> {
   ok(
     (await runExamAccess(studentUser, "PUT", "/api/exams/" + examId + "/student/" + student.id + "/scores", examId)).status === 403,
     "学生写操作（改分）被 403"
+  );
+
+  // ── #322 网页端学生账号权限收敛 ──────────────────────────
+  // 「阅卷设置」（成绩指标显示 / 复核置信度阈值）与「上传背景图」对学生账号关闭：
+  // 阅卷字段按角色权限表判定（学生默认只有 score:read → 拒绝），背景图上传按学生身份拒绝。
+  ok(canWriteGradingSelfSettings(adminUser), "#322 管理员可写自助阅卷设置");
+  ok(canWriteGradingSelfSettings(teacherUser), "#322 教师可写自助阅卷设置");
+  ok(!canWriteGradingSelfSettings(studentUser), "#322 学生不可写自助阅卷设置");
+  ok(
+    canWriteGradingSelfSettings(null) === !isAuthEnforced(),
+    "#322 无身份时沿用兼容模式口径（强制鉴权=拒绝，单机免登录=放行）"
+  );
+  ok(
+    (GRADING_SELF_SETTING_FIELDS as readonly string[]).includes("scoreDisplayMode") &&
+      (GRADING_SELF_SETTING_FIELDS as readonly string[]).includes("reviewConfidenceThreshold"),
+    "#322 自助设置里的阅卷字段清单覆盖两项"
+  );
+  ok((await runMiddleware(requireBackgroundUploadAccess, adminUser)).allowed, "#322 管理员可上传背景图");
+  ok((await runMiddleware(requireBackgroundUploadAccess, teacherUser)).allowed, "#322 教师可上传背景图");
+  ok((await runMiddleware(requireBackgroundUploadAccess, studentUser)).status === 403, "#322 学生上传背景图被 403");
+  ok((await runMiddleware(requireBackgroundUploadAccess, undefined)).status === 401, "#322 未登录上传背景图被 401");
+
+  // 接线检查：门必须挂在 multer 之前——否则被拒的请求已把上传体落盘到 dataDir/backgrounds
+  const selfSettingsSource = readFileSync(path.resolve("src/apps/answer-card/server/index.ts"), "utf8");
+  ok(
+    /app\.post\(\s*"\/api\/users\/me\/background",\s*authMiddleware,\s*requireBackgroundUploadAccess,\s*bgUpload\.single/.test(
+      selfSettingsSource
+    ),
+    "#322 背景图路由在 multer 前挂载 requireBackgroundUploadAccess"
+  );
+  ok(
+    /if \(!canWriteGradingSelfSettings\(_req\.user\)\)/.test(selfSettingsSource),
+    "#322 PATCH /api/users/me/settings 使用阅卷字段门"
+  );
+
+  // 接线检查（前端）：隐藏「阅卷设置」页签不能顺手把其余页签也锁死。
+  // PR 评审曾发现 `canEditGradingSettings ? settingsTab : "client"` 这种一刀切回退——
+  // 它让学生连自己的 AI 服务商都进不去，而 AI 配置不在 #322 的收敛范围内。
+  const accountPageSource = readFileSync(
+    path.resolve("src/apps/answer-card/client/pages/AccountSettingsPage.tsx"),
+    "utf8"
+  );
+  ok(
+    /const activeSettingsTab: SettingsTab =\s*!canEditGradingSettings && settingsTab === "grading"\s*\?\s*"client"\s*:\s*settingsTab/.test(
+      accountPageSource
+    ),
+    "#322 页签回退只针对被隐藏的 grading，AI / 客户端页签对学生仍可达"
+  );
+  ok(
+    !/\? settingsTab : "client"/.test(accountPageSource),
+    "#322 不存在「无权限即回到 client」的一刀切页签回退"
   );
 
   // ── 8. #246 权限矩阵运行时消费 / 题块授权 / auto_delete 软删除 ──

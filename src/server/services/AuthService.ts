@@ -27,8 +27,19 @@ interface TokenRecord {
   expiresAt: number;
 }
 
-const TOKEN_STORE_DIR = join(homedir(), ".projectx");
-const TOKEN_STORE_PATH = join(TOKEN_STORE_DIR, "tokens.json");
+/**
+ * 令牌文件目录。未设置时用运行账户主目录下的 `.projectx`。
+ * 认证测试必须在导入本模块前把 `PROJECTX_TOKEN_DIR` 指到本次临时目录：
+ * Node 的 `homedir()` 在 macOS / Linux 上看 `HOME`，不看 `USERPROFILE`。
+ */
+export function tokenStoreDirectory(): string {
+  const override = process.env.PROJECTX_TOKEN_DIR?.trim();
+  return override ? override : join(homedir(), ".projectx");
+}
+
+function tokenStorePath(): string {
+  return join(tokenStoreDirectory(), "tokens.json");
+}
 
 const TOKEN_EXPIRE_MS = 8 * 60 * 60 * 1000; // 8小时
 // 安全审计（F-12-7）：持久 token 由 6 个月收敛为 30 天，降低泄漏窗口
@@ -56,8 +67,9 @@ export class AuthService {
   /** 从磁盘加载持久化 tokens */
   private loadTokens(): void {
     try {
-      if (!existsSync(TOKEN_STORE_PATH)) return;
-      const raw = readFileSync(TOKEN_STORE_PATH, "utf8");
+      const storePath = tokenStorePath();
+      if (!existsSync(storePath)) return;
+      const raw = readFileSync(storePath, "utf8");
       const data = JSON.parse(raw) as { tokens: Record<string, TokenRecord> };
       const now = Date.now();
       for (const [token, record] of Object.entries(data.tokens ?? {})) {
@@ -83,16 +95,18 @@ export class AuthService {
 
   private persistTokens(): void {
     try {
-      if (!existsSync(TOKEN_STORE_DIR)) {
-        mkdirSync(TOKEN_STORE_DIR, { recursive: true });
+      const storeDir = tokenStoreDirectory();
+      const storePath = tokenStorePath();
+      if (!existsSync(storeDir)) {
+        mkdirSync(storeDir, { recursive: true });
       }
       const data: { tokens: Record<string, TokenRecord> } = { tokens: {} };
       for (const [token, record] of this.tokenStore.entries()) {
         data.tokens[token] = record;
       }
-      writeFileSync(TOKEN_STORE_PATH, JSON.stringify(data, null, 2), "utf8");
+      writeFileSync(storePath, JSON.stringify(data, null, 2), "utf8");
       // 安全审计（F-12-6）：token 文件权限收紧（POSIX 0600）；Windows 下 chmod 忽略
-      try { chmodSync(TOKEN_STORE_PATH, 0o600); } catch { /* ignore */ }
+      try { chmodSync(storePath, 0o600); } catch { /* ignore */ }
     } catch (error) {
       console.error("[Auth] 持久化 token 失败:", error);
     }

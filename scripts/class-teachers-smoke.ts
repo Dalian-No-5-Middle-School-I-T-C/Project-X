@@ -16,7 +16,7 @@ import type { Server } from "node:http";
 const tempDir = mkdtempSync(path.join(tmpdir(), "projectx-class-teachers-"));
 process.env.PROJECTX_DB_PATH = path.join(tempDir, "projectx.db");
 process.env.ANSWER_CARD_DATA_DIR = path.join(tempDir, "data");
-process.env.USERPROFILE = path.join(tempDir, "home");
+process.env.PROJECTX_TOKEN_DIR = path.join(tempDir, "tokens");
 process.env.PROJECTX_ENABLE_SCANNER = "false";
 for (const key of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
