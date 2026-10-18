@@ -90,7 +90,9 @@ export function correctionState(card: AnswerCard, page: CorrectionPage, selected
     if (!isMultiSelectMode(def?.mode ?? "single") && hits.length > 1) { hits.forEach(c => invalid.add(c.id)); errors.push(`第 ${q.questionNumber} 题为单选`); }
     for (const c of hits) if (def?.answerKey?.length && !def.answerKey.includes(c.option)) invalid.add(c.id);
     const changed = hits.map(c => c.option).sort().join() !== [...q.selectedOptions].sort().join();
-    return { ...q, selectedOptions: hits.map(c => c.option), confidence: changed ? 1 : q.confidence };
+    // 老师点过这些格（含「点掉再点回原答案」）即是确认：低置信度不能因为选项没变就一直停在复核阈值下。
+    const confirmed = hits.some(c => touched.includes(c.id));
+    return { ...q, selectedOptions: hits.map(c => c.option), confidence: changed || confirmed ? 1 : q.confidence };
   });
   recognition.subjectiveQuestions = (recognition.subjectiveQuestions ?? []).map(q => {
     const all = cells.filter((c): c is Extract<CorrectionCell,{type:"score_cell"}> => c.type === "score_cell" && c.questionId === q.questionId && (!q.blockId || c.blockId === q.blockId));

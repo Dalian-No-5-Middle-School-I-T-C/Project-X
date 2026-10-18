@@ -77,3 +77,20 @@ export function selectScoreCells(
   }
   return picked.length ? picked : null;
 }
+
+/**
+ * 订正表点某一行时，画布该翻到哪一格所在的页。
+ * 主观题同一 questionId 可以出现在多个题块，必须连 blockId 一起对上，
+ * 否则点后面的行会落到第一块的分数格上。
+ */
+export function matchesCorrectionFocus(
+  cell: CorrectionCell,
+  row: { kind: "objective" | "subjective"; questionNumber: number | string; questionId?: string; blockId?: string },
+): boolean {
+  if (row.kind === "objective") {
+    return cell.type === "objective_option" && cell.questionNumber === Number(row.questionNumber);
+  }
+  return cell.type === "score_cell"
+    && cell.questionId === row.questionId
+    && (!row.blockId || cell.blockId === row.blockId);
+}

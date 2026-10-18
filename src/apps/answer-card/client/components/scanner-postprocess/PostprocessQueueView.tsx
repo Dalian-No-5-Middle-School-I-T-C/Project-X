@@ -7,6 +7,7 @@ import {
 import { CardCorrectionButton } from "../CardCorrectionEditor";
 import { CorrectionCanvas } from "./CorrectionCanvas";
 import type { PostprocessChannel } from "./postprocessChannel";
+import { getScannerMode, isRemoteServerConfigured } from "../../lib/scannerMode";
 import { replaceScopedSelection, type PostprocessQueueItem } from "../../../../../shared/scanPostprocess";
 import { selectStudentDigitCells } from "../../../../../shared/correctionCellSelect";
 import { uniqueScanConflictCards, type ScanConflictCard } from "../../../../../shared/scanPages";
@@ -19,7 +20,8 @@ export interface ScanMeta { recordId: string; createdAt: string; scanQuality: nu
 export interface PostprocessQueueViewProps {
   queue: PostprocessQueueItem[];
   channel: PostprocessChannel;
-  examId: number | null;
+  /** 按会话取考试。多场会话混在一页时，不能用第一场的 examId 查后面的花名册。 */
+  examIdForSession: (sessionId: string) => number | null;
   scans: ScanMeta[];
   layoutPageCount: number;
   /** 从扫描结果点开的异常：把指针定位到该组，而不是永远从队首开始 */
@@ -42,7 +44,7 @@ const kindTone = (kind: PostprocessQueueItem["kind"]): "danger" | "warning" | "n
   kind === "low_confidence" ? "warning" : kind === "other" ? "neutral" : "danger"
 );
 
-export function PostprocessQueueView({ queue, channel, examId, scans, layoutPageCount, focus, onResolved, onJumpToCorrection, onDelete }: PostprocessQueueViewProps) {
+export function PostprocessQueueView({ queue, channel, examIdForSession, scans, layoutPageCount, focus, onResolved, onJumpToCorrection, onDelete }: PostprocessQueueViewProps) {
   const [cursor, setCursor] = useState(0);
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
   const [resolved, setResolved] = useState<Set<string>>(new Set());
@@ -137,10 +139,10 @@ export function PostprocessQueueView({ queue, channel, examId, scans, layoutPage
 
       <div className="min-w-0 flex-1 overflow-auto">
         {fixTarget
-          ? <StudentIdPanel sessionId={fixTarget.sessionId} groupId={fixTarget.groupId} channel={channel} examId={examId}
+          ? <StudentIdPanel sessionId={fixTarget.sessionId} groupId={fixTarget.groupId} channel={channel} examId={examIdForSession(fixTarget.sessionId)}
               onResolved={onResolved} onBack={() => setFixTarget(null)} />
           : current.kind === "student_id"
-            ? <StudentIdPanel sessionId={current.sessionId} groupId={current.groupId} channel={channel} examId={examId} onResolved={onResolved} />
+            ? <StudentIdPanel sessionId={current.sessionId} groupId={current.groupId} channel={channel} examId={examIdForSession(current.sessionId)} onResolved={onResolved} />
             : current.kind === "duplicate"
               ? <DuplicatePanel item={current} channel={channel} scans={scans} onResolved={onResolved} onFixStudentId={target => setFixTarget(target)} />
               : current.kind === "missing_page"
@@ -228,7 +230,9 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
   /** 老师手输但还没落到格上的原文；null = 没有手输，显示格选结果 */
   const [typed, setTyped] = useState<string | null>(null);
   const [roster, setRoster] = useState<Array<{ id: number; name: string; student_number: string | null }>>([]);
-  const [rosterChecked, setRosterChecked] = useState(false);
+  /** 这场考试的应考名单学号。联想搜索是班级模糊匹配且只返回 20 条，不能用来判断在不在名单。 */
+  const [rosterNumbers, setRosterNumbers] = useState<Set<string> | null>(null);
+  const [rosterKnown, setRosterKnown] = useState(false);
   const [saving, setSaving] = useState(false);
   const cropRef = useRef<HTMLDivElement>(null);
   const digitPageIndex = useMemo(() => (document ? document.pages.findIndex(page => correctionCells(page.layout).some(cell => cell.type === "student_digit")) : -1), [document]);
@@ -266,12 +270,29 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
     node?.scrollIntoView({ block: "center", inline: "center" });
   }, [document, images]);
 
-  // 花名册联想：300ms 防抖；读不到考试就退化为纯手输
+  useEffect(() => {
+    if (examId === null) { setRosterNumbers(null); setRosterKnown(false); return; }
+    let alive = true;
+    setRosterKnown(false);
+    void (async () => {
+      try {
+        const response = await channel.request(`/api/exams/${examId}/participants`);
+        const data = await response.json() as { known?: boolean; students?: Array<{ studentNumber?: string | null }> };
+        if (!alive || !response.ok) return;
+        const numbers = new Set<string>();
+        for (const student of data.students ?? []) if (student.studentNumber) numbers.add(String(student.studentNumber));
+        setRosterNumbers(numbers);
+        setRosterKnown(data.known !== false);
+      } catch { /* 名单读不到就不报「不在名单」 */ }
+    })();
+    return () => { alive = false; };
+  }, [examId, channel]);
+
+  // 花名册联想：300ms 防抖；读不到考试就退化为纯手输。只负责提示姓名，不判定应考资格。
   useEffect(() => {
     const keyword = value.trim();
-    if (examId === null || keyword.length < 2) { setRoster([]); setRosterChecked(false); return; }
+    if (examId === null || keyword.length < 2) { setRoster([]); return; }
     let alive = true;
-    setRosterChecked(false);
     const timer = setTimeout(() => {
       void (async () => {
         try {
@@ -280,7 +301,6 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
           if (!alive) return;
           if (response.ok) {
             setRoster((data.students ?? []) as Array<{ id: number; name: string; student_number: string | null }>);
-            setRosterChecked(true);
           }
         } catch { /* 名单查不到不影响手输 */ }
       })();
@@ -289,8 +309,8 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
   }, [value, examId, channel]);
 
   const digits = value.trim();
-  // 只有真正查过名单才敢说「不在名单」，否则查询失败会被误报成缺考
-  const notInRoster = rosterChecked && /^\d+$/.test(digits) && digits.length >= 2 && !roster.some(student => student.student_number === digits);
+  // 只有应考名单本身读成功才敢说「不在名单」。联想接口忽略 examId，且 LIMIT 20，不能当名单。
+  const notInRoster = rosterKnown && rosterNumbers !== null && /^\d+$/.test(digits) && digits.length >= 2 && !rosterNumbers.has(digits);
   const complete = digitsFromCells !== null;
   // 屏幕上显示的号必须与格选一致：位数不对或含非数字时打字没落到格上，此时不能提交
   const inSync = complete && digits === digitsFromCells;
@@ -415,7 +435,11 @@ function DuplicatePanel({ item, channel, scans, onResolved, onFixStudentId }: {
   async function keep(card: ScanConflictCard, other: ScanConflictCard) {
     setBusy(true);
     try {
-      const response = await channel.request(channel.discardUrl(other.sessionId, other.groupId), { method: "POST" });
+      const remote = getScannerMode() === "remote" && isRemoteServerConfigured();
+      const response = await channel.request(channel.discardUrl(other.sessionId, other.groupId), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(remote ? { previewOnly: true } : {}),
+      });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.message || "作废失败");
       notify.success(`已保留 ${card.studentId} 的第 ${Number(card.groupId) + 1} 组，另一份已作废`);

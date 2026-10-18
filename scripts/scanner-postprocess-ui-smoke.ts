@@ -42,6 +42,11 @@ card.bodyBlocks = [
 ];
 assert.equal(buildLayout(card).pages.length, 1, "夹具为单页卡");
 const version = cardFingerprint(card);
+/** 扫描当时写入会话的指纹。必须和「现在重新拉到的卡」不是同一串，补传才证明没用最新卡面。 */
+const scanVersion = "aaaaaaaaaaaaaaaaaaaaaaaa";
+const decoyVersion = "bbbbbbbbbbbbbbbbbbbbbbbb";
+assert.notEqual(scanVersion, version);
+assert.equal(scanVersion.length, 24);
 const layout = buildLayout(card).pages[0];
 const recognition = {
   status: "ok", pageNumber: 1,
@@ -87,10 +92,13 @@ const batch = (): ScanBatchResponse => ({
   reviewCards: [],
 });
 
-const puts: Array<{ groupId: string; pages: Array<{ sourceId: string; selected: string[] }> }> = [];
-const deletes: Array<{ url: string; body: { groupIds: string[]; force?: boolean } }> = [];
+const puts: Array<{ groupId: string; pages: Array<{ sourceId: string; selected: string[]; touched?: string[] }> }> = [];
+const deletes: Array<{ url: string; body: { groupIds: string[]; force?: boolean; previewOnly?: boolean } }> = [];
+const saveBodies: unknown[] = [];
 const saveCalls: string[] = [];
-const discards: string[] = [];
+const discards: Array<{ url: string; body: unknown }> = [];
+const participantUrls: string[] = [];
+const searchUrls: string[] = [];
 /** 第二批会话：groupId 与第一批重号，用来钉住「删除必须按会话下发」 */
 const batchFor = (sessionId: string): ScanBatchResponse => {
   const first = batch();
@@ -110,6 +118,7 @@ const batchFor = (sessionId: string): ScanBatchResponse => {
         reviewCards: [],
       };
   }
+  if (sessionId === "scan-decoy") return { results: [], failures: [], reviewCards: [] };
   if (sessionId !== "scan-2") return first;
   return {
     results: [
@@ -127,11 +136,17 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   const sessionMatch = url.match(/\/api\/scanner\/session\/([^/]+)\/(validate|results)/);
   if (sessionMatch) {
     // 仅本地模式的「保存成绩入库」= POST results（save 模式），与 validate 演算不是一条路
-    if (method === "POST" && url.endsWith("/results")) saveCalls.push(`${method} ${url}`);
+    if (method === "POST" && url.endsWith("/results")) {
+      saveCalls.push(`${method} ${url}`);
+      saveBodies.push(JSON.parse(String(init?.body ?? "{}")) as unknown);
+    }
     return Response.json(batchFor(sessionMatch[1]));
   }
   if (/\/api\/scanner\/scan\/[^/]+$/.test(url)) {
-    return Response.json({ session: { identity_mode: "strict", dpi: 300, paper_size: "A4" }, records: [], examId: 7 });
+    const sessionId = url.match(/\/api\/scanner\/scan\/([^/]+)$/)?.[1] ?? "";
+    const examId = sessionId === "scan-decoy" ? 99 : sessionId === "scan-2" ? 8 : 7;
+    const card_version = sessionId === "scan-decoy" ? decoyVersion : scanVersion;
+    return Response.json({ session: { identity_mode: "strict", dpi: 300, paper_size: "A4", card_version }, records: [], examId });
   }
   if (/\/api\/scanner\/card\/[^/]+\/scans$/.test(url)) {
     return Response.json([
@@ -140,7 +155,16 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
       { recordId: "rec-3", createdAt: "2026-10-17 09:00:03", scanQuality: 90 },
     ]);
   }
-  if (/\/participant-search\?/.test(url)) return Response.json({ ok: true, students: [{ id: 11, name: "张三", student_number: "10002" }] });
+  if (/\/api\/exams\/\d+\/participants$/.test(url)) {
+    participantUrls.push(url);
+    // 错场名单故意包含即将输入的 10002：用了第一场 examId 时徽章会消失，断言才能抓住。
+    if (url.includes("/api/exams/99/")) return Response.json({ known: true, students: [{ studentId: 2, studentNumber: "10002", name: "错场" }] });
+    return Response.json({ known: true, students: [{ studentId: 1, studentNumber: "10001", name: "李四" }] });
+  }
+  if (/\/participant-search\?/.test(url)) {
+    searchUrls.push(url);
+    return Response.json({ ok: true, students: [{ id: 11, name: "张三", student_number: "10002" }] });
+  }
   if (/\/groups\/[^/]+\/correction$/.test(url)) {
     if (method === "PUT") {
       puts.push({ groupId: url.match(/\/groups\/([^/]+)\/correction$/)![1], pages: (JSON.parse(String(init?.body)) as { pages: never[] }).pages });
@@ -161,7 +185,7 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   }
   if (url.endsWith("/retry")) return Response.json(batch());
   if (url.endsWith("/discard")) {
-    discards.push(url);
+    discards.push({ url, body: JSON.parse(String(init?.body ?? "{}")) as unknown });
     // 作废的是「另一份」：组 0 被作废后，重拉批结果时只剩保留下来的组 1
     if (url.includes("/scan-3/")) duplicateKept = true;
     return Response.json(batchFor(url.match(/\/session\/([^/]+)\/groups\/[^/]+\/discard$/)?.[1] ?? ""));
@@ -213,7 +237,8 @@ try {
   await act(async () => {
     root.render(createElement(TooltipProvider, null,
       createElement(ScannerPostprocessPage, {
-        cardId: card.id, cardTitle: card.title, sessions: [{ sessionId: "scan-1", pageCount: 3 }], onBack: () => {},
+        cardId: card.id, cardTitle: card.title,
+        sessions: [{ sessionId: "scan-decoy", pageCount: 0 }, { sessionId: "scan-1", pageCount: 3 }], onBack: () => {},
       })));
   });
   await settle();
@@ -232,6 +257,7 @@ try {
   await settle();
   assert.equal(saveCalls.length, 1, "「保存成绩入库」走 POST results（save 模式）");
   assert.match(saveCalls[0], /POST .*\/session\/scan-1\/results$/, "入库打到本会话的 results 端点");
+  assert.deepEqual(saveBodies[0], { groupIds: ["2"] }, "只入库无异常的组，待复核组和失败组不能跟着 POST");
 
   // ── 多选删除：无 force → 服务端 409 → 代价文案 → 二次确认带 force ──
   await clickText("选择");
@@ -252,6 +278,11 @@ try {
   await clickText("卡查看与改分");
   await settle();
   assert(document.querySelector('[data-question="2"]'), "表格列出多选题");
+  await clickSelector('polygon[aria-label="第 1 题 A，已选"]');
+  await settle();
+  await clickSelector('polygon[aria-label="第 1 题 A"]');
+  await settle();
+  assert(saveButton()?.disabled, "高置信度题目点掉再点回不算确认，保存保持禁用");
   const totalBefore = totalShown();
   await clickSelector('polygon[aria-label="第 2 题 C，已选"]');
   await settle();
@@ -259,13 +290,16 @@ try {
   await clickText("C");
   await settle();
   assert.equal(totalShown(), totalBefore, "表格改回原值同样即时重算");
-  assert(saveButton()?.disabled, "改回原样不再算脏，保存必须禁用");
+  assert(saveButton() && !saveButton()!.disabled, "低置信度原答案点掉再点回是确认，保存必须可用");
   await clickText("D");
   await settle();
   assert(saveButton() && !saveButton()!.disabled, "有真实改动时保存按钮可用");
   await clickText("保存修改");
   await settle();
-  const savedCells = puts.find(entry => entry.groupId === "2")?.pages[0]?.selected ?? [];
+  const savedPage = puts.find(entry => entry.groupId === "2")?.pages[0];
+  const savedCells = savedPage?.selected ?? [];
+  assert(savedPage?.touched?.includes(optionCell(2, "C")), "低置信度确认必须把点过的选项格记入 touched");
+  assert(!savedPage?.touched?.includes(optionCell(1, "A")), "高置信度题目点回原样不得记入 touched");
   assert(savedCells.includes(optionCell(2, "D")), "表格改的选项写进格选集合");
   assert(savedCells.includes(optionCell(1, "A")), "同卡其他题不受影响");
   assert(savedCells.includes(digitCell(0, 1)), "学号格不能被按题改分抹掉");
@@ -290,6 +324,10 @@ try {
   });
   await settle(700);
   assert.match(text(), /张三/, "花名册联想给出考号+姓名");
+  assert.match(text(), /该考号不在应考名单/, "应考名单来自 participants，联想命中也不能当成在名单里");
+  assert.ok(participantUrls.some(entry => entry.includes("/api/exams/7/participants")), "应考名单必须打到当前会话的考试");
+  assert.ok(!participantUrls.some(entry => entry.includes("/api/exams/99/")), "不能拿先加载的另一场会话的 examId 查名单");
+  assert.ok(searchUrls.some(entry => entry.includes("/api/exams/7/participant-search")), "联想搜索也必须用当前会话的考试");
   // 画布点选必须压过输入框里的旧文本：把末位点回 1，输入框要跟着变
   await clickSelector('polygon[aria-label="学号第 5 位 1"]');
   await settle();
@@ -313,7 +351,9 @@ try {
   await act(async () => { confirm.click(); });
   await settle();
   assert.equal(uploads.length, 1, "已处理组按组补传一次");
-  assert.equal(uploads[0].cardVersion, version, "补传必须上报完整卡版本指纹");
+  assert.equal(uploads[0].cardVersion, scanVersion, "补传必须上报扫描当时的卡版本");
+  assert.notEqual(uploads[0].cardVersion, version, "不能改用页面后来拉到的最新卡指纹");
+  assert.notEqual(uploads[0].cardVersion, decoyVersion, "不能改用另一场会话的卡版本");
   assert.equal(uploads[0].kind, "scan");
   assert.equal(uploads[0].pages.length, 1);
 
@@ -362,6 +402,7 @@ try {
   await settle();
   assert.match(deletes[deletes.length - 1].url, /\/session\/scan-1\/groups$/, "删除必须下发到组所属的会话");
   assert.deepEqual(deletes[deletes.length - 1].body.groupIds, ["1"]);
+  assert.equal(deletes[deletes.length - 1].body.previewOnly, true, "远端模式删除后刷新必须走 preview，不能给留下的组写回执");
 
   // ── 正常组（本批已被 ScannerPanel 排队上传）改分保存后绝不再建第二个上传会话 ──
   const uploadsBefore = uploads.length;
@@ -397,7 +438,8 @@ try {
   // 队列项是组 0，这里点的是组 1 卡片上的「保留这份」→ 作废的是组 0
   await act(async () => { keepButtons[1].click(); });
   await settle();
-  assert.match(discards[discards.length - 1], /\/session\/scan-3\/groups\/0\/discard$/, "作废的必须是未被保留的那份");
+  assert.match(discards[discards.length - 1].url, /\/session\/scan-3\/groups\/0\/discard$/, "作废的必须是未被保留的那份");
+  assert.deepEqual(discards[discards.length - 1].body, { previewOnly: true }, "远端模式作废后刷新必须走 preview");
   assert.equal(uploads.length, uploadsBeforeKeep + 1, "保留下来的那份要补传（它只出现在 conflicts 里）");
   assert.equal(uploads[uploads.length - 1].name, "扫描_20002", "补传任务对应保留下来的那份卷");
 

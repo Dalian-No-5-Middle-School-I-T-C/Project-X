@@ -10,7 +10,7 @@ import { replaceScopedSelection } from "../../../../../shared/scanPostprocess";
 import {
   correctionCells, correctionState, toggleCorrectionCell, type CorrectionCell, type CorrectionDocument, type CorrectionEdit,
 } from "../../../../../shared/scanCorrection";
-import { selectObjectiveOptionCells, selectScoreCells } from "../../../../../shared/correctionCellSelect";
+import { matchesCorrectionFocus, selectObjectiveOptionCells, selectScoreCells } from "../../../../../shared/correctionCellSelect";
 import { findObjectiveQuestion, gradeCombinedRecognition, gradeSubjectiveRecognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
 import { isMultiSelectMode, objectiveModeLabel } from "../../../../../shared/objectiveMode";
 import type { CombinedRecognitionResult, SubjectiveQuestionNumber } from "../../../../../shared/types";
@@ -42,6 +42,28 @@ interface Row {
 
 /** Radix Select 的 Item 不接受空串，未答用哨兵值表达。 */
 const UNANSWERED = "__none__";
+
+/** 低置信度客观题被老师点过：即使最终选项与识别结果相同，也要记进 touched，保存时把置信度抬到 1。 */
+function lowConfidenceObjective(page: { layout: CorrectionDocument["pages"][number]["layout"]; recognition: CorrectionDocument["pages"][number]["recognition"] }, cellId: string): boolean {
+  const cell = correctionCells(page.layout).find(entry => entry.id === cellId);
+  if (!cell || cell.type !== "objective_option") return false;
+  const question = page.recognition.questions?.find(item => item.questionNumber === cell.questionNumber);
+  return (question?.confidence ?? 1) < OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD;
+}
+
+function markLowConfidenceConfirmation<T extends { sourceId: string; selected: string[]; touched?: string[] }>(
+  document: CorrectionDocument,
+  pages: T[],
+  picked: readonly string[],
+): T[] {
+  return pages.map(pageEdit => {
+    const page = document.pages.find(item => item.sourceId === pageEdit.sourceId);
+    if (!page) return pageEdit;
+    const extra = picked.filter(id => lowConfidenceObjective(page, id));
+    if (!extra.length) return pageEdit;
+    return { ...pageEdit, touched: [...new Set([...(pageEdit.touched ?? []), ...extra])] };
+  });
+}
 
 /** 卡面选项字母表：A..（optionCount） */
 function optionLetters(count: number | undefined): string[] {
@@ -203,7 +225,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
     if (!picked) { setMessage("该值在卡面上无法表示（缺少对应填涂格）"); return; }
     const scope = new Set(cells.filter(inScope).map(cell => cell.id));
     // 走 setEdits 的函数式形式：同一渲染批次里连续改两题时，读渲染时值的闭包会丢掉前一次
-    setEdits(current => replaceScopedSelection(current, pageOfCell, scope, picked));
+    setEdits(current => markLowConfidenceConfirmation(document, replaceScopedSelection(current, pageOfCell, scope, picked), picked));
     setMessage("");
   }
 
@@ -220,18 +242,16 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
 
   /** 行点击：把画布翻到该题所在的页 */
   function focusRow(row: Row) {
-    const owns = (cell: CorrectionCell) => row.kind === "objective"
-      ? cell.type === "objective_option" && cell.questionNumber === Number(row.questionNumber)
-      : cell.type === "score_cell" && cell.questionId === row.questionId;
-    const sourceId = cells.filter(owns).map(cell => pageOfCell.get(cell.id)).find(Boolean);
+    const sourceId = cells.filter(cell => matchesCorrectionFocus(cell, row)).map(cell => pageOfCell.get(cell.id)).find(Boolean);
     const index = document?.pages.findIndex(p => p.sourceId === sourceId) ?? -1;
     if (index >= 0) setPageIndex(index);
   }
 
   function toggle(cellId: string) {
     if (!document || !page || busy || locked) return;
+    const confirm = page.invalid.includes(cellId) || lowConfidenceObjective(page, cellId);
     setEdits(current => current.map(e => e.sourceId === page.sourceId
-      ? { ...e, selected: toggleCorrectionCell(document.card, page, e.selected, cellId), touched: page.invalid.includes(cellId) ? [...new Set([...(e.touched ?? []), cellId])] : e.touched }
+      ? { ...e, selected: toggleCorrectionCell(document.card, page, e.selected, cellId), touched: confirm ? [...new Set([...(e.touched ?? []), cellId])] : e.touched }
       : e));
     setMessage("");
   }

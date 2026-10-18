@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { evaluateScoreCells, type CorrectionCell } from "../src/shared/scanCorrection";
-import { selectObjectiveOptionCells, selectScoreCells, selectStudentDigitCells } from "../src/shared/correctionCellSelect";
+import { createDefaultCard } from "../src/shared/defaultCard";
+import { buildLayout } from "../src/shared/layout";
+import { correctionState, evaluateScoreCells, recognizedCells, type CorrectionCell } from "../src/shared/scanCorrection";
+import { matchesCorrectionFocus, selectObjectiveOptionCells, selectScoreCells, selectStudentDigitCells } from "../src/shared/correctionCellSelect";
 import { buildPostprocessGroups, buildPostprocessQueue, filterDeletableGroups, missingLayoutPages, replaceScopedSelection } from "../src/shared/scanPostprocess";
 import type { ScanBatchResponse } from "../src/shared/scanPages";
 
@@ -124,5 +126,37 @@ assert.deepEqual(
   replaceScopedSelection([{ sourceId: "p1", selected: [] }, { sourceId: "p2", selected: ["s1"] }], owner, new Set(["s1", "s2"]), ["s2"]),
   [{ sourceId: "p1", selected: [] }, { sourceId: "p2", selected: ["s2"] }],
 );
+
+// ── 主观题聚焦必须连题块一起对上 ──
+const blockA = scoreCell("q", 1, "block-a");
+const blockB = scoreCell("q", 2, "block-b");
+assert.equal(matchesCorrectionFocus(blockA, { kind: "subjective", questionNumber: 21, questionId: "q", blockId: "block-a" }), true);
+assert.equal(matchesCorrectionFocus(blockB, { kind: "subjective", questionNumber: 21, questionId: "q", blockId: "block-a" }), false);
+assert.equal(matchesCorrectionFocus(optionCell(1, "A"), { kind: "objective", questionNumber: "1" }), true);
+assert.equal(matchesCorrectionFocus(blockA, { kind: "objective", questionNumber: 1 }), false);
+
+// ── 低置信度原答案：选项没变，但老师点过这些格，置信度抬到 1 ──
+const confirmCard = createDefaultCard("confirm-low");
+confirmCard.bodyBlocks = [{ id: "c1", type: "objective", title: "单选", questionStart: 1, questionCount: 1,
+  optionCount: 4, mode: "single", scorePerQuestion: 5, answerKey: { "1": ["A"] }, density: "normal" }];
+const confirmLayout = buildLayout(confirmCard).pages[0];
+const confirmRecognition = {
+  status: "ok", pageNumber: 1,
+  studentId: { status: "ok", value: null },
+  questions: [{ questionNumber: 1, selectedOptions: ["A"], confidence: 0.05 }],
+  subjectiveQuestions: [],
+} as Parameters<typeof recognizedCells>[1];
+const confirmPicked = recognizedCells(confirmLayout, confirmRecognition);
+const confirmPage = {
+  sourceType: "twain_scan_record" as const, sourceId: "r", revision: 1, layout: confirmLayout,
+  recognition: confirmRecognition as never, selected: confirmPicked.selected, invalid: confirmPicked.invalid, imageUrl: "/x",
+};
+const optionA = confirmLayout.elements.find(element => element.type === "objective_option" && element.option === "A");
+assert.ok(optionA, "夹具卡面必须有 A 选项格");
+assert.equal(correctionState(confirmCard, confirmPage, confirmPage.selected, []).recognition.questions?.[0].confidence, 0.05,
+  "没点过的低置信度原答案仍要留在复核阈值下");
+const confirmed = correctionState(confirmCard, confirmPage, confirmPage.selected, [optionA.id]);
+assert.equal(confirmed.recognition.questions?.[0].confidence, 1, "点过原答案即确认，置信度抬到 1");
+assert.deepEqual(confirmed.recognition.questions?.[0].selectedOptions, ["A"], "确认不改选项");
 
 console.log("PASS scanner-postprocess-smoke");

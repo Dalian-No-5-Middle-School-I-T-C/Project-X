@@ -1,6 +1,7 @@
 import { authFetch, mediaUrl } from "../../auth/api";
 import { getScannerMode } from "../../lib/scannerMode";
 import { scannerUploadManager } from "../../lib/scannerUploadManager";
+import { parseCardVersion } from "../../../../../shared/cardVersion";
 import type { ScanBatchResponse, ScanBatchResult } from "../../../../../shared/scanPages";
 import type { CorrectionDocument } from "../../../../../shared/scanCorrection";
 
@@ -15,8 +16,8 @@ import type { CorrectionDocument } from "../../../../../shared/scanCorrection";
 export interface PostprocessChannel {
   request(url: string, init?: RequestInit): Promise<Response>;
   results(sessionId: string): Promise<ScanBatchResponse>;
-  /** 仅本地模式的入库通道（= 原 ScannerPanel「保存成绩」按钮的 POST results） */
-  saveResults(sessionId: string): Promise<ScanBatchResponse>;
+  /** 仅本地模式的入库通道（= 原 ScannerPanel「保存成绩」按钮的 POST results）。groupIds 只保存点名的正常组。 */
+  saveResults(sessionId: string, groupIds: readonly string[]): Promise<ScanBatchResponse>;
   correctionUrl(sessionId: string, groupId: string): string;
   imageUrl(recordId: string): string;
   discardUrl(sessionId: string, groupId: string): string;
@@ -41,8 +42,10 @@ export function localChannel(): PostprocessChannel {
         : await authFetch(`/api/scanner/session/${sessionId}/validate`, { method: "POST" });
       return readJson(res);
     },
-    // 与原 ScannerPanel.saveSuccessful 同一端点：POST results = save 模式，写正式成绩
-    saveResults: async sessionId => readJson(await authFetch(`/api/scanner/session/${sessionId}/results`, { method: "POST" })),
+    // 与原 ScannerPanel.saveSuccessful 同一端点，但只提交点名的组：整会话 POST 会把待复核卷一起入库。
+    saveResults: async (sessionId, groupIds) => readJson(await authFetch(`/api/scanner/session/${sessionId}/results`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupIds }),
+    })),
     correctionUrl: (sessionId, groupId) => `/api/scanner/session/${sessionId}/groups/${groupId}/correction`,
     imageUrl: recordId => mediaUrl(`/api/scanner/scan-image/${recordId}`),
     discardUrl: (sessionId, groupId) => `/api/scanner/session/${sessionId}/groups/${groupId}/discard`,
@@ -55,6 +58,8 @@ export interface SessionMeta {
   sessionId: string;
   /** 花名册联想用；本机无法确定考试归属时为 null，改考号降级为纯手输。 */
   examId: number | null;
+  /** 扫描/识别当时写入会话的卡指纹。没有这份就不能补传，不能改用后来拉到的新卡。 */
+  cardVersion: string | null;
   identityMode: "strict" | "legacy";
   dpi: number;
   paperSize: string;
@@ -63,10 +68,11 @@ export interface SessionMeta {
 /** 补传与花名册查询所需的会话元数据。 */
 export async function loadSessionMeta(sessionId: string): Promise<SessionMeta> {
   const data = await readJson(await authFetch(`/api/scanner/scan/${sessionId}`));
-  const session = data.session as { identity_mode?: "strict" | "legacy"; dpi?: number; paper_size?: string };
+  const session = data.session as { identity_mode?: "strict" | "legacy"; dpi?: number; paper_size?: string; card_version?: string | null };
   return {
     sessionId,
     examId: typeof data.examId === "number" ? data.examId : null,
+    cardVersion: parseCardVersion(session.card_version),
     identityMode: session.identity_mode === "legacy" ? "legacy" : "strict",
     dpi: Number(session.dpi) || 300,
     paperSize: session.paper_size || "A4",

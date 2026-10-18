@@ -150,13 +150,13 @@ try {
   for (const status of ["completed", "error", "cancelled"] as const) {
     const s = await store.createSession(`card-race-${status}`, "终态顺序", {});
     warnings.persistSessionWarning(s.id, RACE_WARNING);
-    const started = Date.now();
+    // 计时用单调时钟，并给定时器留 10ms 容差：Date.now() 两端各自截断到毫秒，
+    // 「正好等满 250ms」会量成 249 甚至更低。不排队就写终态的实现这里仍是 ~0ms，照样红。
+    const started = performance.now();
     await warnings.markSessionTerminal(s.id, status, status === "completed" ? undefined : "扫描阶段失败");
-    const waited = Date.now() - started;
-    // Date.now() 只有毫秒精度，注入的 setTimeout(250) 落在 249/250 边界上是常态
-    // （CI 上就跑出过 249ms）。留 5ms 容差不改变这条断言要挡的东西：
-    // 不等队列直接写终态时 waited 是 0ms 量级，与 245ms 相差两个数量级。
-    assert.ok(waited >= DELAY_MS - 5, `${status}：终态必须等告警写完（本次只等了 ${waited}ms）`);
+    const waited = performance.now() - started;
+    assert.ok(waited >= DELAY_MS - 10,
+      `${status}：终态必须等告警写完（本次只等了 ${waited.toFixed(1)}ms，下限 ${DELAY_MS - 10}ms）`);
     assert.deepEqual(await readStored(s.id), [RACE_WARNING],
       `${status}：终态一可见，告警就已经在会话行里`);
     assert.deepEqual(await raceTypes(s.id), ["warning", status === "completed" ? "done" : status],

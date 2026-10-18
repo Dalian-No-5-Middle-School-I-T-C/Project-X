@@ -51,6 +51,14 @@ function enqueuePersist(task: () => Promise<void>): Promise<void> {
   return run;
 }
 
+/** 未带 groupIds：整会话保存（扫描面板原按钮）。带了：只保存点名的组，且调用方要自己排除待复核组。 */
+function parseSaveGroupIds(body: unknown): ReadonlySet<string> | null | "invalid" {
+  if (!body || typeof body !== "object" || !("groupIds" in body) || (body as { groupIds?: unknown }).groupIds === undefined) return null;
+  const raw = (body as { groupIds?: unknown }).groupIds;
+  if (!Array.isArray(raw) || raw.some(id => typeof id !== "string" || id.length === 0)) return "invalid";
+  return new Set(raw);
+}
+
 /** 等纸空闲超时的合法区间：下限 2s（慢于此值几乎必然截断正常进纸），上限 2min。 */
 const PAGE_TIMEOUT_MIN_MS = 2_000;
 const PAGE_TIMEOUT_MAX_MS = 120_000;
@@ -559,7 +567,9 @@ export function createScannerRouter(twainEnabled = true): Router {
     })
     .post(async (req, res, next) => {
       try {
-        await enqueuePersist(async () => { await sessionResults(req.params.sessionId, true, res); });
+        const only = parseSaveGroupIds(req.body);
+        if (only === "invalid") { res.status(400).json({ message: "groupIds 必须是字符串数组" }); return; }
+        await enqueuePersist(async () => { await sessionResults(req.params.sessionId, true, res, false, false, undefined, only ?? undefined); });
       } catch (error) { next(error); }
     });
 
@@ -581,7 +591,8 @@ export function createScannerRouter(twainEnabled = true): Router {
     res: Response,
     validate = false,
     previewOnly = false,
-    warnings?: string[]
+    warnings?: string[],
+    saveGroupIds?: ReadonlySet<string>,
   ) {
     const sessionId = safeId(id);
     const session = await getSession(sessionId);
@@ -590,7 +601,10 @@ export function createScannerRouter(twainEnabled = true): Router {
     // Use the same database card as scan/OCR; synced cards have no legacy JSON file.
     const card = await findCardForLayout(session.card_id);
     if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
-    const result = await processScannerSession(card, sessionId, previewOnly ? "preview" : save ? "save" : validate ? "validate" : "preview");
+    const result = await processScannerSession(
+      card, sessionId, previewOnly ? "preview" : save ? "save" : validate ? "validate" : "preview",
+      undefined, saveGroupIds,
+    );
     res.json(warnings?.length ? { ...result, warnings } : result);
   }
 
@@ -640,7 +654,9 @@ export function createScannerRouter(twainEnabled = true): Router {
       const card = await findCardForLayout(session.card_id);
       if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
       await discardScannerGroup(card, sessionId, String(req.params.groupId));
-      res.json(await processScannerSession(card, sessionId, "validate"));
+      // 远端后处理只读 preview：作废后再 validate 会给同会话其余组写回执，甚至 withdraw 已有成绩。
+      const previewOnly = (req.body ?? {}).previewOnly === true;
+      res.json(await processScannerSession(card, sessionId, previewOnly ? "preview" : "validate"));
     } catch (error) { next(error); }
   });
 
@@ -649,7 +665,7 @@ export function createScannerRouter(twainEnabled = true): Router {
   router.delete("/session/:sessionId/groups", async (req, res, next) => {
     try {
       const sessionId = safeId(req.params.sessionId);
-      const body = (req.body ?? {}) as { groupIds?: unknown; force?: unknown };
+      const body = (req.body ?? {}) as { groupIds?: unknown; force?: unknown; previewOnly?: unknown };
       const groupIds = Array.isArray(body.groupIds)
         ? [...new Set(body.groupIds.filter((g): g is string => typeof g === "string" && g.length > 0))]
         : [];
@@ -661,22 +677,25 @@ export function createScannerRouter(twainEnabled = true): Router {
       if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
       const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
       const groups = groupSessionPages(card, records).groups;
-      const { getMysqlDb } = await import("../../../../server/db");
-      const active = await listActiveReceiptGroups(getMysqlDb(), sessionId, groupIds);
-      const { deletable, blocked } = filterDeletableGroups(groupIds, new Map(active.map(groupId => [groupId, true])), body.force === true);
-      if (blocked.length) {
-        res.status(409).json({ message: "所选卷包含已入库或待老师确认的回执，确认删除远端不受影响后请重试", blocked });
+      // 回执检查必须和删除在同一条提交队列里。先在队列外查、再排队删除时，
+      // 并发的保存可以在两次之间提交 saved/held/conflict，删除就会用不带 force 的过期集合把刚入库的本地页删掉。
+      const decision = await writeScannerSession(sessionId, async tx => {
+        const active = await listActiveReceiptGroups(tx, sessionId, groupIds);
+        const next = filterDeletableGroups(groupIds, new Map(active.map(groupId => [groupId, true])), body.force === true);
+        if (next.blocked.length) return next;
+        const targets = next.deletable.flatMap(groupId => (groups.get(groupId) ?? []).map(row => row.record.id));
+        for (const recordId of targets) await deleteScanRecordInTransaction(tx, recordId);
+        return next;
+      });
+      if (decision.blocked.length) {
+        res.status(409).json({ message: "所选卷包含已入库或待老师确认的回执，确认删除远端不受影响后请重试", blocked: decision.blocked });
         return;
       }
-      // 整批删除走提交队列的同一事务：逐条 deleteScanRecord 会在中途失败时留下半删的组，
-      // validate 随即把它报成新的缺页异常（本文件的串行队列注释已说明并发穿插的成因）
-      const targets = deletable.flatMap(groupId => (groups.get(groupId) ?? []).map(row => row.record.id));
-      await writeScannerSession(sessionId, async tx => {
-        for (const recordId of targets) await deleteScanRecordInTransaction(tx, recordId);
-      });
       const missing = groupIds.filter(groupId => !groups.has(groupId));
-      const result = await processScannerSession(card, sessionId, "validate");
-      res.json({ ...result, deletedGroups: deletable.length - missing.length, missingGroups: missing });
+      // 远端后处理读结果用 previewOnly。删除后若仍 validate，会给留下来的组写回执，并可能 withdraw 已有成绩。
+      const refresh = body.previewOnly === true ? "preview" : "validate";
+      const result = await processScannerSession(card, sessionId, refresh);
+      res.json({ ...result, deletedGroups: decision.deletable.length - missing.length, missingGroups: missing });
     } catch (error) { next(error); }
   });
 

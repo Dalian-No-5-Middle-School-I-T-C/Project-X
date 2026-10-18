@@ -283,13 +283,13 @@ export async function recoverScannerSubmissionSnapshot(examId: number, sessionId
 
 /** Both paths consume Windows recognition records; this service never runs OMR. */
 export async function processScannerSession(card: AnswerCard, sessionId: string,
-  mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string): Promise<ScanBatchResponse> {
-  return enqueueScannerSubmission(() => processScannerSessionInQueue(card, sessionId, mode, saveGroupId));
+  mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string, saveGroupIds?: ReadonlySet<string>): Promise<ScanBatchResponse> {
+  return enqueueScannerSubmission(() => processScannerSessionInQueue(card, sessionId, mode, saveGroupId, saveGroupIds));
 }
 
 /** Caller retains scanner queue ownership through correction and admission. */
 export async function processScannerSessionInQueue(card: AnswerCard, sessionId: string,
-  mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string): Promise<ScanBatchResponse> {
+  mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string, saveGroupIds?: ReadonlySet<string>): Promise<ScanBatchResponse> {
     const db = getMysqlDb();
     const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
     const { groups, pageCount } = groupSessionPages(card, records);
@@ -344,10 +344,15 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
           if (target) targetNumbers.add(target.studentNumber);
           if (prior) targetNumbers.add(prior.student_number);
         }
-        const scopedCandidates = saveGroupId === undefined ? candidates : candidates.filter(c =>
+        // 点名保存只碰这些组。未点名的组连回执都不重写，避免「只入库正常卷」时把待复核组卷进冲突处理。
+        const namedCandidates = saveGroupIds
+          ? candidates.filter(candidate => saveGroupIds.has(candidate.groupId))
+          : candidates;
+        const scopedCandidates = saveGroupId === undefined ? namedCandidates : namedCandidates.filter(c =>
           c.groupId === saveGroupId || targetNumbers.has(c.studentNumber));
         for (const groupId of repeatedGroups) {
           if (discarded.has(groupId)) continue;
+          if (saveGroupIds && !saveGroupIds.has(groupId)) continue;
           const owner = old.find(row => row.session_id === sessionId && row.group_id === groupId && row.state === "saved");
           if (saveGroupId !== undefined && groupId !== saveGroupId && (!owner || !targetNumbers.has(owner.student_number))) continue;
           if (owner) {
@@ -462,7 +467,7 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
       if (!exists) continue;
       // Historical partial saves can have grades and receipts but unbound crops.
       // Replay repairs their ownership without rewriting scores or publication.
-      if (mode === "save" && (saveGroupId === undefined || row.group_id === saveGroupId)) await db.transaction(async tx => {
+      if (mode === "save" && (saveGroupId === undefined || row.group_id === saveGroupId) && (!saveGroupIds || saveGroupIds.has(row.group_id))) await db.transaction(async tx => {
         await lockExam(tx, exam.id);
         await linkSavedScannerCrops(tx, card.id, row);
       });
@@ -475,6 +480,9 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
     const response = await collectSessionResults(card, activeRecords, cached, mode === "save" ? async result => {
       const candidate = candidates.find(c => c.pages.some(p => p.recordId === result.pages[0]?.recordId));
       if (!candidate || discarded.has(candidate.groupId) || (saveGroupId !== undefined && candidate.groupId !== saveGroupId)) return false;
+      // 后处理「保存成绩入库」只点名正常组。整会话 POST 会把 needsReview 的组一起写成正式成绩，
+      // 重载后 initialSaved 把订正视图锁死，异常队列里却不能再改。
+      if (saveGroupIds && (!saveGroupIds.has(candidate.groupId) || result.needsReviewCount > 0)) return false;
       await db.transaction(async tx => {
         await lockExam(tx, exam.id);
         const current = await receipts(tx, exam.id);

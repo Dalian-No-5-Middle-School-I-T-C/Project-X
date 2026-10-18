@@ -3,7 +3,6 @@ import { ArrowLeft } from "lucide-react";
 import { Badge, Button, SegmentedControl, Spinner, notify } from "./ui/v2";
 import { authFetch } from "../auth/api";
 import { fetchCardDetailSynced } from "../lib/scannerSync";
-import { cardFingerprint } from "../../../../shared/cardVersion";
 import { buildLayout } from "../../../../shared/layout";
 import { buildPostprocessGroups, buildPostprocessQueue, type PostprocessGroup } from "../../../../shared/scanPostprocess";
 import type { ScanBatchResponse } from "../../../../shared/scanPages";
@@ -36,10 +35,13 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   const [savingAll, setSavingAll] = useState(false);
   const [error, setError] = useState("");
   /** 本页亲眼见过的异常组（sid/gid）。只有它们处理完才补传：正常组在扫描完成时已被
-   *  ScannerPanel 排队上传，再建一个远端会话会形成同学号第二份回执并撤回正式成绩 */
-  const abnormalSeen = useRef<Set<string>>(new Set());
-  /** 本页已补传过的组，防同组重复入队 */
-  const queuedByPage = useRef<Set<string>>(new Set());
+   *  ScannerPanel 排队上传，再建一个远端会话会形成同学号第二份回执并撤回正式成绩。
+   *  记在 localStorage：刷新后内存清空，已改好但还没补传的组会被当成「本来就正常」而漏传。 */
+  const abnormalKey = `projectx-postprocess-abnormal/${cardId}`;
+  const queuedKey = `projectx-postprocess-queued/${cardId}`;
+  const abnormalSeen = useRef<Set<string>>(readIdSet(abnormalKey));
+  /** 本页已补传过的组，防同组重复入队。入队成功才写入；startUpload 抛错时允许再试。 */
+  const queuedByPage = useRef<Set<string>>(readIdSet(queuedKey));
 
   // 通道唯一为本地（spec §5 通道裁定）：远端语义只经 queueGroupUpload 补传承担
   const channel: PostprocessChannel = useMemo(() => localChannel(), []);
@@ -72,6 +74,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
         }
         for (const review of next.reviewCards ?? []) abnormalSeen.current.add(`${review.sessionId}/${review.groupId}`);
       }
+      writeIdSet(abnormalKey, abnormalSeen.current);
       const scanList = await authFetch(`/api/scanner/card/${cardId}/scans`);
       if (scanList.ok) {
         const rows = (await scanList.json()) as Array<{ recordId: string; createdAt: string; scanQuality: number | null }>;
@@ -84,7 +87,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
     } finally {
       setLoading(false);
     }
-  }, [cardId, sessions, channel]);
+  }, [cardId, sessions, channel, abnormalKey]);
 
   useEffect(() => { void reload(); }, [reload]);
 
@@ -96,7 +99,6 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   const queue = useMemo(() => buildPostprocessQueue(groups), [groups]);
   const issueGroups = useMemo(() => new Set(queue.map(item => `${item.sessionId}/${item.groupId}`)).size, [queue]);
   const uploaded = useMemo(() => Object.values(batches).flatMap(b => b.results).filter(r => r.saved).length, [batches]);
-  const examId = useMemo(() => Object.values(metas).find(meta => meta.examId !== null)?.examId ?? null, [metas]);
 
   /**
    * 仅本地模式的「保存成绩入库」：扫描完成后本页会自动接管工作台视图，
@@ -107,11 +109,21 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
     setSavingAll(true);
     try {
       let failures = 0;
+      let savedGroups = 0;
       for (const { sessionId } of sessions) {
-        const saved = await channel.saveResults(sessionId);
+        const groupIds = (batches[sessionId]?.results ?? [])
+          .filter(row => !row.saved && row.needsReviewCount === 0)
+          .map(row => row.groupId);
+        if (!groupIds.length) continue;
+        const saved = await channel.saveResults(sessionId, groupIds);
         failures += saved.failures.length;
+        savedGroups += groupIds.length;
       }
-      notify.success(failures ? `已保存正常卷，仍有 ${failures} 份待处理` : "本批正常卷已写成本机正式成绩");
+      if (!savedGroups) {
+        notify.info("没有可入库的正常卷");
+      } else {
+        notify.success(failures ? `已保存正常卷，仍有 ${failures} 份待处理` : "本批正常卷已写成本机正式成绩");
+      }
       await reload();
     } catch (e) {
       notify.error(e instanceof Error ? e.message : "保存成绩失败");
@@ -123,27 +135,35 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   async function handleDelete(targets: Array<{ sessionId: string; groupIds: string[] }>, force: boolean) {
     if (!targets.length) { notify.error("没有选中的卷子"); return; }
     let deleted = 0;
+    let finished = false;
     const blocked: string[] = [];
+    const previewOnly = isRemoteUploadOn();
     // 逐会话下发：groupId 只在单个 session 内有意义，混在一起删会删掉另一批的同名组。
     // 先不带 force 问一遍服务端，遇到拦截就停下（本会话一枚页面都不删），让老师看清代价再重来。
-    for (const target of targets) {
-      const res = await channel.request(channel.deleteGroupsUrl(target.sessionId), {
-        method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupIds: target.groupIds, force }),
-      });
-      const data = await res.json();
-      if (res.status === 409) {
-        blocked.push(...(data.blocked as string[] ?? []).map((groupId: string) => {
-          const group = groups.find(entry => entry.sessionId === target.sessionId && entry.groupId === groupId);
-          return group?.studentId ?? `组 ${groupId}`;
-        }));
-        break;
+    try {
+      for (const target of targets) {
+        const res = await channel.request(channel.deleteGroupsUrl(target.sessionId), {
+          method: "DELETE", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ groupIds: target.groupIds, force, ...(previewOnly ? { previewOnly: true } : {}) }),
+        });
+        const data = await res.json();
+        if (res.status === 409) {
+          blocked.push(...(data.blocked as string[] ?? []).map((groupId: string) => {
+            const group = groups.find(entry => entry.sessionId === target.sessionId && entry.groupId === groupId);
+            return group?.studentId ?? `组 ${groupId}`;
+          }));
+          break;
+        }
+        if (!res.ok) throw new Error(data.message || "删除失败");
+        deleted += data.deletedGroups ?? target.groupIds.length;
       }
-      if (!res.ok) throw new Error(data.message || "删除失败");
-      deleted += data.deletedGroups ?? target.groupIds.length;
+      if (blocked.length) throw Object.assign(new Error("所选卷包含已入库或待老师确认的回执"), { blocked });
+      notify.success(`已删除 ${deleted} 组扫描记录`);
+      finished = true;
+    } finally {
+      // 前面的会话可能已经删掉，后面的 409 不能让界面还停在旧列表上。
+      if (finished || deleted > 0) await reload();
     }
-    if (blocked.length) throw Object.assign(new Error("所选卷包含已入库或待老师确认的回执"), { blocked });
-    notify.success(`已删除 ${deleted} 组扫描记录`);
-    await reload();
   }
 
   /**
@@ -162,11 +182,35 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
       return;
     }
     if (queuedByPage.current.has(key)) return;
-    const result = fresh.batches[sessionId]?.results.find(entry => entry.groupId === groupId);
-    const meta = fresh.metas[sessionId];
-    if (!result || !meta) return;
+    let batch = fresh.batches[sessionId];
+    let meta = fresh.metas[sessionId];
+    // 保留下来的冲突副本可能属于另一场会话，不在本页 sessions 里。只查已加载的批次会静默跳过补传。
+    if (!batch || !meta) {
+      try {
+        batch = await channel.results(sessionId);
+        meta = await loadSessionMeta(sessionId);
+      } catch (error) {
+        notify.error(error instanceof Error ? error.message : "读取保留卷失败，未能补传");
+        return;
+      }
+    }
+    const result = batch?.results.find(entry => entry.groupId === groupId);
+    if (!result || !meta) {
+      notify.error("没有找到可补传的识别结果");
+      return;
+    }
+    if (!meta.cardVersion) {
+      notify.error("本机会话没有扫描时的答题卡版本，已停止补传，避免按新版面上传旧识别结果");
+      return;
+    }
+    try {
+      queueGroupUpload({ ...meta, cardId: card.id, cardVersion: meta.cardVersion }, sessionId, result);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : "加入上传队列失败");
+      return;
+    }
     queuedByPage.current.add(key);
-    queueGroupUpload({ ...meta, cardId: card.id, cardVersion: cardFingerprint(card) }, sessionId, result);
+    writeIdSet(queuedKey, queuedByPage.current);
     notify.info("已加入上传队列，图片后台续传");
   }
 
@@ -229,7 +273,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
         <PostprocessQueueView
           queue={queue}
           channel={channel}
-          examId={examId}
+          examIdForSession={sessionId => metas[sessionId]?.examId ?? null}
           scans={scans}
           layoutPageCount={layoutPageCount}
           focus={focusIssue}
@@ -245,4 +289,17 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
       )}
     </main>
   );
+}
+
+function readIdSet(key: string): Set<string> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) ?? "[]") as unknown;
+    return new Set(Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeIdSet(key: string, values: Set<string>): void {
+  try { localStorage.setItem(key, JSON.stringify([...values])); } catch { /* 配额满时仍保留内存集合 */ }
 }

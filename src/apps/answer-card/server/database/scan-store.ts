@@ -107,6 +107,19 @@ export async function listSessions(cardId?: string): Promise<ScanSession[]> {
   return await db().all("SELECT * FROM twain_scan_sessions ORDER BY created_at DESC") as ScanSession[];
 }
 
+/**
+ * 记下这次识别实际使用的答题卡指纹。只在会话还没有版本时写入：
+ * 后处理补传必须报扫描当时的版本，不能在卡面后来被改过之后改用最新指纹。
+ */
+export async function rememberSessionCardVersion(id: string, version: string): Promise<void> {
+  await db().run(
+    `UPDATE twain_scan_sessions
+     SET card_version = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND (card_version IS NULL OR card_version = '')`,
+    version, id,
+  );
+}
+
 export async function updateSessionStatus(
   id: string, status: ScanSession["status"], errorMsg?: string
 ): Promise<void> {
