@@ -227,6 +227,33 @@ try {
      WHERE ss.exam_id = ? AND u.student_number IN ('92011','92012') ORDER BY u.student_number`, exam.lastInsertRowid);
   assert.deepEqual(scored.map(row => row.student_number), ["92011"], "只有正常组写入正式成绩");
 
+  // 预览重卡：每份副本带上自己的判分。保留低置信度的那份时，复核计数不能变成 0。
+  await addStudent("92021");
+  await addStudent("92022");
+  const { processScannerSession } = await import("../src/server/services/scannerSubmissions");
+  const { omitPreviewDiscardedGroups, buildPostprocessGroups, buildPostprocessQueue } = await import("../src/shared/scanPostprocess");
+  const duplicate = await seedPapers("dup-review", [
+    { studentNumber: "92021", confidence: 0.05 },
+    { studentNumber: "92021", confidence: 0.05 },
+  ]);
+  const preview = await processScannerSession((await cards.findById(card.id))!, duplicate.id, "preview");
+  const copies = preview.failures.flatMap(failure => failure.conflicts ?? []);
+  assert.equal(copies.length >= 2, true, "同考号两份卷在预览里成为重卡");
+  assert.equal(copies.every(copy => copy.needsReviewCount === 1), true, "置信度 0.05 的副本要带上真实复核计数");
+  assert.equal(copies.every(copy => (copy.maxScore ?? 0) > 0), true, "副本满分不能是占位 0");
+  const kept = omitPreviewDiscardedGroups(preview, [{ sessionId: duplicate.id, groupId: "1" }], duplicate.id);
+  assert.equal(kept.results.find(row => row.groupId === "0")?.needsReviewCount, 1, "保留份不能绕过存疑复核");
+  assert.equal(buildPostprocessQueue(buildPostprocessGroups(kept, duplicate.id, 1)).some(item => item.kind === "low_confidence" && item.groupId === "0"), true);
+
+  const unreviewed = await seedPapers("unreviewed-save", [{ studentNumber: "92022", confidence: 0.05 }]);
+  const blockedSave = await processScannerSession((await cards.findById(card.id))!, unreviewed.id, "save", undefined, undefined, true);
+  assert.equal(blockedSave.results[0]?.needsReviewCount, 1);
+  assert.equal(blockedSave.results[0]?.saved, false, "上传完成的整会话保存不能把未确认卷入库");
+  const leaked = await db.get<{ student_number: string }>(
+    `SELECT u.student_number FROM student_scores ss JOIN users u ON u.id = ss.student_id
+     WHERE ss.exam_id = ? AND u.student_number = '92022'`, exam.lastInsertRowid);
+  assert.equal(leaked, null, "未确认卷不能写入正式成绩");
+
   console.log("PASS scanner-postprocess-delete-smoke");
 } finally {
   // 必须等 close 回调：不等待时监听套接字仍开着；MariaDB 连接池也要 resetAdapter +

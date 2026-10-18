@@ -670,10 +670,15 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
         res.status(409).json({ message: "图片已保存，但缺少本机识别结果；请使用新版扫描端重试上传，成绩尚未入库" });
         return;
       }
-      const batch = await processScannerSession(card, String(sessionId), "save");
+      const batch = await processScannerSession(card, String(sessionId), "save", undefined, undefined, true);
       reviewCards = batch.reviewCards ?? [];
-      if (batch.failures.length) {
-        res.status(409).json({ ok: false, message: "部分答题卡未入库，请处理以下问题后重试", ...batch });
+      const unreviewed = batch.results.filter(result => result.needsReviewCount > 0 && !result.saved);
+      if (batch.failures.length || unreviewed.length) {
+        res.status(409).json({
+          ok: false,
+          message: unreviewed.length ? "仍有存疑题未确认，成绩尚未入库" : "部分答题卡未入库，请处理以下问题后重试",
+          ...batch,
+        });
         return;
       }
       const { exam: savedExam } = await resolveScannerExam(fullSession!.card_id, String(sessionId));

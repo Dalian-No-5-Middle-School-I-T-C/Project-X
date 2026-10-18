@@ -138,16 +138,19 @@ function synthesizeKeptResult(card: ScanConflictCard): ScanBatchResult {
     totalScore: 0,
     totalMaxScore: 0,
   }));
+  // 预览重卡在判分前就被收成冲突，这里只能用服务端已经算好的复核和分数。
+  // 没带 needsReviewCount 时不能写成 0，否则未确认的低置信度卷会离开异常队列并自动上传。
+  const needsReviewCount = typeof card.needsReviewCount === "number" ? card.needsReviewCount : 1;
   return {
     groupId: card.groupId,
     studentId: card.studentId,
     totalScore: card.totalScore ?? 0,
-    maxScore: 0,
-    objectiveScore: 0,
+    maxScore: card.maxScore ?? 0,
+    objectiveScore: card.objectiveScore ?? 0,
     objectiveMaxScore: 0,
-    subjectiveScore: 0,
+    subjectiveScore: card.subjectiveScore ?? 0,
     subjectiveMaxScore: 0,
-    needsReviewCount: 0,
+    needsReviewCount,
     pageCount: pages.length,
     saved: false,
     pages,

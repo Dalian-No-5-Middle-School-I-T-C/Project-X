@@ -241,14 +241,27 @@ const duplicatePreview: ScanBatchResponse = {
   failures: [{ groupId: "0", studentId: "20002", stage: "saving", message: "重复学号",
     pages: [{ recordId: "rec-4", pageNum: 4, side: "front", layoutPage: 1 }],
     conflicts: [
-      { sessionId: "scan-3", groupId: "0", studentId: "20002", previouslySaved: false, totalScore: 10, pages: [{ recordId: "rec-4", pageNum: 4, side: "front", layoutPage: 1 }] },
-      { sessionId: "scan-3", groupId: "1", studentId: "20002", previouslySaved: false, totalScore: 10, pages: [{ recordId: "rec-6", pageNum: 6, side: "front", layoutPage: 1 }] },
+      { sessionId: "scan-3", groupId: "0", studentId: "20002", previouslySaved: false, totalScore: 10, maxScore: 10, needsReviewCount: 0, pages: [{ recordId: "rec-4", pageNum: 4, side: "front", layoutPage: 1 }] },
+      { sessionId: "scan-3", groupId: "1", studentId: "20002", previouslySaved: false, totalScore: 10, maxScore: 10, needsReviewCount: 0, pages: [{ recordId: "rec-6", pageNum: 6, side: "front", layoutPage: 1 }] },
     ] }],
 };
 const keptPreview = omitPreviewDiscardedGroups(duplicatePreview, [{ sessionId: "scan-3", groupId: "0" }], "scan-3");
 assert.deepEqual(keptPreview.failures, [], "作废决定拿掉之后，不再是一条重卡失败");
 assert.deepEqual(keptPreview.results.map(result => result.studentId), ["20003", "20002"], "保留份从冲突副本提升成可上传的结果");
 assert.equal(keptPreview.results[1]?.needsReviewCount, 0);
+assert.equal(keptPreview.results[1]?.maxScore, 10, "保留份沿用真实满分，不用 0 分占位");
+const doubtfulCopy = structuredClone(duplicatePreview);
+for (const failure of doubtfulCopy.failures) for (const copy of failure.conflicts ?? []) {
+  if (copy.groupId === "1") { copy.needsReviewCount = 1; copy.totalScore = 4; copy.maxScore = 10; }
+}
+const keptDoubt = omitPreviewDiscardedGroups(doubtfulCopy, [{ sessionId: "scan-3", groupId: "0" }], "scan-3");
+assert.equal(keptDoubt.results.find(result => result.groupId === "1")?.needsReviewCount, 1, "保留份的存疑题不能被清零");
+assert.equal(keptDoubt.results.find(result => result.groupId === "1")?.totalScore, 4);
+assert.equal(buildPostprocessQueue(buildPostprocessGroups(keptDoubt, "scan-3", 1)).some(item => item.kind === "low_confidence"), true, "未确认的保留份继续留在异常队列");
+const ungraded = structuredClone(duplicatePreview);
+for (const failure of ungraded.failures) for (const copy of failure.conflicts ?? []) delete copy.needsReviewCount;
+const keptUngraded = omitPreviewDiscardedGroups(ungraded, [{ sessionId: "scan-3", groupId: "0" }], "scan-3");
+assert.equal(keptUngraded.results[1]?.needsReviewCount, 1, "预览没带回复核计数时，不能当成已经确认");
 assert.equal(observedLayoutPageCount(duplicatePreview), 1);
 const symmetric: ScanBatchResponse = {
   results: [],
