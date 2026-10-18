@@ -5,6 +5,7 @@
  * 使用隔离 SQLite，不碰现有业务库。
  */
 import assert from "node:assert/strict";
+import { createBackgroundOpacityQueue } from "../src/apps/answer-card/client/lib/backgroundOpacityWrites";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -42,7 +43,33 @@ type SettingsRow = {
   show_tab_bar: number;
 };
 
+/** 在途的旧透明度 PATCH 必须先结束，DELETE 归零排在它后面，不能被晚到的旧值盖掉。 */
+async function assertLateOpacityPatchCannotFinishAfterDelete(): Promise<void> {
+  const queue = createBackgroundOpacityQueue();
+  const events: string[] = [];
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const stale = queue.enqueue(async () => {
+    events.push("patch-start");
+    await gate;
+    events.push("patch-end");
+  });
+  const removed = queue.enqueue(async () => { events.push("delete"); });
+  assert.deepEqual(events, ["patch-start"], "删除要等已经发出的透明度请求，不能和它并行");
+  release();
+  await stale;
+  await removed;
+  assert.deepEqual(events, ["patch-start", "patch-end", "delete"], "归零必须是最后一次写入");
+
+  const recovered = createBackgroundOpacityQueue();
+  const afterFailure: string[] = [];
+  await recovered.enqueue(async () => { throw new Error("stale patch failed"); }).catch(() => {});
+  await recovered.enqueue(async () => { afterFailure.push("delete"); });
+  assert.deepEqual(afterFailure, ["delete"], "前一条透明度请求失败也不能卡住移除");
+}
+
 async function main(): Promise<void> {
+  await assertLateOpacityPatchCannotFinishAfterDelete();
   const { initializeDatabase, closeDatabase, getDatabase, ensureDefaultAdmin } = await import("../src/server/db/index");
   const { createApp } = await import("../src/apps/answer-card/server/index");
   const { UserRepository } = await import("../src/server/repositories/UserRepository");

@@ -14,6 +14,7 @@ import { useAuth } from "../auth/AuthContext";
 import { PERMISSIONS } from "../auth/types";
 import { useWorkspace } from "../WorkspaceContext";
 import { fetchJson, authFetch } from "../auth/api";
+import { createBackgroundOpacityQueue } from "../lib/backgroundOpacityWrites";
 import { cn } from "../lib/utils";
 import { SkinSwitcher, SKIN_OPTIONS } from "../components/SkinSwitcher";
 import {
@@ -166,6 +167,8 @@ export function AccountSettingsPage() {
   const [bgLimit, setBgLimit] = useState("");
   const bgFileRef = useRef<HTMLInputElement | null>(null);
   const bgSaveTimer = useRef<number | null>(null);
+  const bgOpacityWrites = useRef<ReturnType<typeof createBackgroundOpacityQueue> | null>(null);
+  if (!bgOpacityWrites.current) bgOpacityWrites.current = createBackgroundOpacityQueue();
   const [bgMsg, setBgMsg] = useState("");
   const [bgMsgTone, setBgMsgTone] = useState<"success" | "error">("success");
   const [removeBgOpen, setRemoveBgOpen] = useState(false);
@@ -257,8 +260,14 @@ export function AccountSettingsPage() {
     }
   }
 
+  function clearPendingBgOpacity() {
+    if (bgSaveTimer.current) window.clearTimeout(bgSaveTimer.current);
+    bgSaveTimer.current = null;
+  }
+
   async function saveSettings() {
     setSettingsMsg("");
+    clearPendingBgOpacity();
     try {
       // 越权字段一出现，后端整单 403。学生不提交阅卷字段和背景透明度，
       // 否则「客户端设置」的保存会被连坐失败。
@@ -270,11 +279,12 @@ export function AccountSettingsPage() {
         payload.scoreDisplayMode = displayMode;
         payload.reviewConfidenceThreshold = reviewThreshold;
       }
-      await fetchJson("/api/users/me/settings", {
+      // 跟滑块 PATCH、移除 DELETE 排进同一条队列，避免保存与在途透明度写交错。
+      await bgOpacityWrites.current!.enqueue(() => fetchJson("/api/users/me/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
-      });
+      }).then(() => undefined));
       setSettingsMsg("已保存");
       // v1.9.0: 刷新用户状态使 Tab 栏开关即时生效
       await refreshUser();
@@ -284,16 +294,18 @@ export function AccountSettingsPage() {
     }
   }
 
-  // v1.9.5: 滑动背景图透明度时防抖持久化，避免刷新后被重置为 0
+  // v1.9.5: 滑动背景图透明度时防抖持久化，避免刷新后被重置为 0。
+  // 真正发出的请求进 bgOpacityWrites，移除背景时可以排在它后面把透明度归零。
   const persistBgOpacity = (v: number) => {
     if (isStudent) return;
-    if (bgSaveTimer.current) window.clearTimeout(bgSaveTimer.current);
+    clearPendingBgOpacity();
     bgSaveTimer.current = window.setTimeout(() => {
-      fetchJson("/api/users/me/settings", {
+      bgSaveTimer.current = null;
+      void bgOpacityWrites.current!.enqueue(() => fetchJson("/api/users/me/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ backgroundOpacity: v }),
-      }).catch(() => {});
+      }).then(() => undefined)).catch(() => {});
     }, 400);
   };
 
@@ -324,12 +336,17 @@ export function AccountSettingsPage() {
   }
 
   async function handleRemoveBackground() {
+    clearPendingBgOpacity();
+    // 先把 Workspace 透明度拉回 0，并清掉滑块直接写过的浮层。
+    // 进入本页时 showBg 已是 0 的话，setShowBg(0) 不会触发 App 的 effect。
+    setBgOpacity(0);
+    setShowBg(0);
+    document.documentElement.style.setProperty("--bg-opacity", "0");
+    document.body.classList.remove("has-bg-image");
     setRemoveBgBusy(true);
     setBgMsg("");
     try {
-      await fetchJson("/api/users/me/background", { method: "DELETE" });
-      setBgOpacity(0);
-      setShowBg(0);
+      await bgOpacityWrites.current!.enqueue(() => fetchJson("/api/users/me/background", { method: "DELETE" }).then(() => undefined));
       setBgMsgTone("success");
       setBgMsg("已移除背景图");
       setRemoveBgOpen(false);
@@ -576,9 +593,8 @@ export function AccountSettingsPage() {
                   onChange={(e) => {
                     const v = Number(e.target.value);
                     setBgOpacity(v);
-                    document.documentElement.style.setProperty("--bg-opacity", String(v));
-                    if (v > 0) document.body.classList.add("has-bg-image");
-                    else document.body.classList.remove("has-bg-image");
+                    // 浮层只跟 Workspace 的 showBg 走。直接改 DOM 时，删除若把 showBg 从 0 设回 0，浮层关不掉。
+                    setShowBg(v);
                     persistBgOpacity(v);
                   }}
                   className="w-full"
