@@ -130,8 +130,8 @@
 
 - `GET /api/app/background` 按 Cookie 身份返回不同正文（学生 404、本人自定义图、随包默认图）。
   默认图原先是 `Cache-Control: public, max-age=86400` 且没有 `Vary`，共享缓存或同一浏览器换账号后会把教师看到的默认图交给学生，
-  或把学生的 404 留给下一位教师。现在每条响应都带 `Vary: Cookie`：学生与缺图 404 为 `private, no-store`，
-  自定义图为 `private, no-cache`，默认图为 `private, max-age=86400`。
+  或把学生的 404 留给下一位教师。现在该接口的每一条响应都是 `Cache-Control: private, no-store`，
+  并带 `Vary: Cookie, Authorization`（学生 404、自定义图、默认图、缺图 404 同一口径）。
 - 免登录模式（`PROJECTX_AUTH_ENFORCE=0`）下，无令牌请求能进入这两条处理器，但不再匿名写库：
   `PATCH /api/users/me/settings` 没有用户 id 时 401；`POST /api/users/me/background` 同样 401，并删掉临时上传文件，
   避免落成 `backgrounds/undefined.jpg`。`ACCOUNT-CONTROL.md` §6 按这个行为改写，不再写「这两条变成匿名可写」。

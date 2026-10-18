@@ -572,7 +572,9 @@ export function isStudentAccount(user?: { role_name?: string } | null): boolean 
 /**
  * 当前身份能否写自助设置里的阅卷字段。与 `requirePermissionCompat` 同口径：
  * 有身份时查角色权限表（学生默认只有 `score:read` → 拒绝；教师持 `grade:write`、
- * 管理员持 `*` → 放行，管理员还可在「角色权限」里按角色调整），
+ * 管理员持 `*` → 放行）。角色位来自建库播种的 `roles.permissions`，
+ * 当前没有管理界面或 API 可改；要改得改播种数据并重启，让 `initPermissionCache()` 重新载入。
+ * 教师权限矩阵 `teacher_permissions` 不参与这个门。
  * 未开启强制鉴权的单机模式没有身份，保持放行。
  */
 export function canWriteGradingSelfSettings(user?: { role_id: number } | null): boolean {

@@ -124,7 +124,7 @@ async function main(): Promise<void> {
     const studentBackground = await fetch(`${base}/api/app/background`, { headers: studentAuth });
     assert.equal(studentBackground.status, 404, "学生请求背景图必须 404，即使磁盘上已有自定义图");
     assert.equal(studentBackground.headers.get("cache-control"), "private, no-store", "学生 404 不能被缓存");
-    assert.equal(studentBackground.headers.get("vary"), "Cookie", "背景响应必须按 Cookie 区分身份");
+    assert.equal(studentBackground.headers.get("vary"), "Cookie, Authorization", "背景响应必须按登录态区分");
 
     for (const body of [
       { backgroundOpacity: 0.2 },
@@ -180,8 +180,8 @@ async function main(): Promise<void> {
 
     const teacherDefault = await fetch(`${base}/api/app/background`, { headers: teacherAuth });
     assert.equal(teacherDefault.status, 200, "未上传自定义图时教师应拿到随包默认背景");
-    assert.equal(teacherDefault.headers.get("cache-control"), "private, max-age=86400");
-    assert.equal(teacherDefault.headers.get("vary"), "Cookie");
+    assert.equal(teacherDefault.headers.get("cache-control"), "private, no-store");
+    assert.equal(teacherDefault.headers.get("vary"), "Cookie, Authorization");
     assert.equal(/public/.test(teacherDefault.headers.get("cache-control") ?? ""), false);
     await teacherDefault.arrayBuffer();
 
@@ -196,8 +196,8 @@ async function main(): Promise<void> {
     assert.ok(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), "教师背景图应写入 backgrounds/<id>.jpg");
     const teacherBackground = await fetch(`${base}/api/app/background`, { headers: teacherAuth });
     assert.equal(teacherBackground.status, 200, "教师应能读取自己的背景图");
-    assert.equal(teacherBackground.headers.get("cache-control"), "private, no-cache", "自定义背景不能按天公共缓存");
-    assert.equal(teacherBackground.headers.get("vary"), "Cookie");
+    assert.equal(teacherBackground.headers.get("cache-control"), "private, no-store", "自定义背景不能被缓存");
+    assert.equal(teacherBackground.headers.get("vary"), "Cookie, Authorization");
     assert.ok((await teacherBackground.arrayBuffer()).byteLength > 0);
 
     const studentBackgroundAgain = await fetch(`${base}/api/app/background`, { headers: studentAuth });

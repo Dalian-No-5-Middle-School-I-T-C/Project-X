@@ -1022,36 +1022,34 @@ export async function createApp(): Promise<express.Express> {
   // v1.4.6: 背景图 — GET 返回背景图，POST 上传自定义背景
   const backgroundsDir = path.join(dataDir, "backgrounds");
 
-  // 同一 URL 按 Cookie 身份返回不同正文。Vary 让浏览器按登录态分条目；
-  // private 阻止共享缓存把教师的默认图或学生的 404 发给下一位用户。
-  const setBackgroundCache = (res: express.Response, cacheControl: string): void => {
-    res.setHeader("Vary", "Cookie");
-    res.setHeader("Cache-Control", cacheControl);
+  // 同一 URL 按登录态返回不同正文。全部 no-store，避免默认图被缓存一天后
+  // 换账号仍命中；Vary 同时覆盖 Cookie 与跨域 Bearer。
+  const setBackgroundCache = (res: express.Response): void => {
+    res.setHeader("Vary", "Cookie, Authorization");
+    res.setHeader("Cache-Control", "private, no-store");
   };
 
   app.get("/api/app/background", optionalAuth, (req, res) => {
     // 学生账号网页端始终不提供背景图（自定义图与默认图都不下发）。历史文件保留。
     if (isStudentAccount(req.user)) {
-      setBackgroundCache(res, "private, no-store");
+      setBackgroundCache(res);
       res.status(404).json({ error: "background image not found" });
       return;
     }
-    // 用户自定义背景优先。上传后内容会变，不能按天缓存。
     if (req.user) {
       const customBg = path.join(backgroundsDir, `${req.user?.id}.jpg`);
       if (existsSync(customBg)) {
-        setBackgroundCache(res, "private, no-cache");
+        setBackgroundCache(res);
         res.sendFile(customBg);
         return;
       }
     }
-    // 默认背景只属于当前登录态，可在该 Cookie 下缓存一天。
     const bgPath = path.join(rootDir, "resources", "background.jpg");
     if (existsSync(bgPath)) {
-      setBackgroundCache(res, "private, max-age=86400");
+      setBackgroundCache(res);
       res.sendFile(bgPath);
     } else {
-      setBackgroundCache(res, "private, no-store");
+      setBackgroundCache(res);
       res.status(404).json({ error: "background image not found" });
     }
   });

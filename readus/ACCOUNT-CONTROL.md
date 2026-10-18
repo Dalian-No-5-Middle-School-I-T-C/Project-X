@@ -152,8 +152,8 @@ system:manage               系统维护（仅管理员）
 
 | 门 | 管住的字段 / 动作 | 判定口径 | 拒绝时 |
 |------|------------------|----------|--------|
-| `canWriteGradingSelfSettings(user)` | `scoreDisplayMode`、`reviewConfidenceThreshold`（常量表 `GRADING_SELF_SETTING_FIELDS`） | **角色权限位** `grade:write`——管理员可在权限矩阵里调整，不在代码里写死 role 名单 | 整单 403，仅当请求确实带了这两个字段 |
-| `isStudentAccount(user)` | `backgroundOpacity`；`GET /api/users/me/settings` 的透明度读数；`GET /api/app/background` | **角色身份**：`student` 一律按「没有背景」处理。故意不看权限位 | 读：透明度改写成 0，背景图 404，且 `Cache-Control: private, no-store`、`Vary: Cookie`。写：PATCH 带 `backgroundOpacity` 则整单 403。历史文件不删 |
+| `canWriteGradingSelfSettings(user)` | `scoreDisplayMode`、`reviewConfidenceThreshold`（常量表 `GRADING_SELF_SETTING_FIELDS`） | **角色权限位** `grade:write`，读建库播种的 `roles.permissions`。当前没有界面或 API 可改这个列；教师权限矩阵 `teacher_permissions` 不改变这个门 | 整单 403，仅当请求确实带了这两个字段 |
+| `isStudentAccount(user)` | `backgroundOpacity`；`GET /api/users/me/settings` 的透明度读数；`GET /api/app/background` | **角色身份**：`student` 一律按「没有背景」处理。故意不看权限位 | 读：透明度改写成 0，背景图 404。该接口每条响应都是 `Cache-Control: private, no-store`、`Vary: Cookie, Authorization`。写：PATCH 带 `backgroundOpacity` 则整单 403。历史文件不删 |
 | `requireBackgroundUploadAccess` | `POST /api/users/me/background`（上传自定义背景图） | **角色身份**：`student` 一律拒绝。故意不看权限位——给某人放开壁纸不应连带给他改分权限 | 403；门挂在 multer **之前**，被拒请求不会先落盘 |
 
 学生仍保留的自助能力：界面皮肤 / 明暗模式 / Tab 栏显隐，以及本人 AI 服务商配置
