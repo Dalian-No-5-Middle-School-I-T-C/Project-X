@@ -20,6 +20,8 @@ const homeTokenSha = existsSync(homeTokenPath)
   ? createHash("sha256").update(readFileSync(homeTokenPath)).digest("hex")
   : null;
 process.env.PROJECTX_ENABLE_SCANNER = "false";
+// #335：把生效上限收到 1 MiB，才能用一份刚过线的请求断言 413 文案，不必造 5 MiB 的夹具。
+process.env.PROJECTX_BACKGROUND_UPLOAD_MIB = "1";
 for (const key of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
   "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST"
@@ -205,9 +207,99 @@ async function main(): Promise<void> {
     assert.equal(teacherBackground.headers.get("vary"), "Cookie, Authorization");
     assert.ok((await teacherBackground.arrayBuffer()).byteLength > 0);
 
+    const teacherSettingsLimit = await fetch(`${base}/api/users/me/settings`, { headers: teacherAuth });
+    const teacherLimitBody = await teacherSettingsLimit.json() as { backgroundUploadLimit?: string };
+    assert.equal(teacherLimitBody.backgroundUploadLimit, "1 MiB", "设置接口应返回当前生效的背景图上限");
+
+    const oversize = Buffer.alloc(1024 * 1024 + 64, 7);
+    const overForm = new FormData();
+    overForm.append("file", new Blob([oversize], { type: "image/png" }), "big.png");
+    const tooBig = await fetch(`${base}/api/users/me/background`, {
+      method: "POST",
+      headers: teacherAuth,
+      body: overForm
+    });
+    const tooBigBody = await tooBig.json() as { code?: string; message?: string };
+    assert.equal(tooBig.status, 413, "超过 PROJECTX_BACKGROUND_UPLOAD_MIB 必须 413");
+    assert.equal(tooBigBody.code, "UPLOAD_ERROR");
+    assert.equal(tooBigBody.message, "上传文件超过大小限制（≤1 MiB）", "413 文案要带上当前生效上限");
+    assert.deepEqual(
+      readdirSync(backgroundsDir).filter((name) => name.startsWith("upload_")),
+      [],
+      "超限请求不能在 backgrounds 目录留下临时文件"
+    );
+    assert.ok(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), "超限不得覆盖已经上传成功的背景");
+
     const studentBackgroundAgain = await fetch(`${base}/api/app/background`, { headers: studentAuth });
     assert.equal(studentBackgroundAgain.status, 404, "教师上传成功后，学生背景接口仍必须 404");
     assert.equal(studentBackgroundAgain.headers.get("cache-control"), "private, no-store");
+
+    const teacherDeniedPurge = await fetch(`${base}/api/admin/backgrounds/purge-students`, {
+      method: "POST",
+      headers: teacherAuth
+    });
+    assert.equal(teacherDeniedPurge.status, 403, "教师不能清退学生历史背景");
+    const studentDeniedPurge = await fetch(`${base}/api/admin/backgrounds/purge-students`, {
+      method: "POST",
+      headers: studentAuth
+    });
+    assert.equal(studentDeniedPurge.status, 403, "学生不能清退历史背景");
+
+    const studentDelete = await fetch(`${base}/api/users/me/background`, { method: "DELETE", headers: studentAuth });
+    assert.equal(studentDelete.status, 200, "学生可以删除自己的历史背景文件");
+    const studentDeleteBody = await studentDelete.json() as { removed?: boolean; opacityReset?: boolean };
+    assert.equal(studentDeleteBody.removed, true);
+    assert.equal(studentDeleteBody.opacityReset, true);
+    assert.equal(existsSync(path.join(backgroundsDir, `${student.id}.jpg`)), false, "学生历史背景文件应被删掉");
+    assert.equal(readRow(student.id).background_opacity, 0, "学生历史透明度应归零");
+    assert.equal(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), true, "学生删除不得动教师文件");
+
+    const teacherDelete = await fetch(`${base}/api/users/me/background`, { method: "DELETE", headers: teacherAuth });
+    assert.equal(teacherDelete.status, 200, "教师可以移除自己的背景图");
+    assert.equal(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), false);
+    assert.equal(readRow(teacher.id).background_opacity, 0, "移除背景图时透明度归零");
+    const teacherAfterDelete = await fetch(`${base}/api/app/background`, { headers: teacherAuth });
+    assert.equal(teacherAfterDelete.status, 200, "删掉自定义图后教师回到随包默认背景");
+    const defaultBg = readFileSync(path.resolve("resources/background.jpg"));
+    const served = Buffer.from(await teacherAfterDelete.arrayBuffer());
+    assert.equal(createHash("sha256").update(served).digest("hex"), createHash("sha256").update(defaultBg).digest("hex"));
+
+    writeFileSync(path.join(backgroundsDir, `${student.id}.jpg`), PNG);
+    writeFileSync(path.join(backgroundsDir, `${teacher.id}.jpg`), PNG);
+    writeFileSync(path.join(backgroundsDir, "keep-me.png"), PNG);
+    writeFileSync(path.join(backgroundsDir, "999999.jpg"), PNG);
+    db.prepare("UPDATE users SET background_opacity = 0.4 WHERE id = ?").run(student.id);
+    db.prepare("UPDATE users SET background_opacity = 0.2 WHERE id = ?").run(teacher.id);
+    const adminLogin = await fetch(`${base}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier: "admin", password: ADMIN_PASSWORD })
+    });
+    assert.equal(adminLogin.status, 200, "管理员重新登录失败");
+    const adminToken = ((await adminLogin.json()) as { token?: string }).token;
+    assert.ok(adminToken, "管理员登录未返回 token");
+    const purged = await fetch(`${base}/api/admin/backgrounds/purge-students`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(purged.status, 200, "管理员可以清退学生历史背景");
+    const purgedBody = await purged.json() as { removedFiles?: number; opacityReset?: number };
+    assert.equal(purgedBody.removedFiles, 1, "清退只删学生文件");
+    assert.equal(purgedBody.opacityReset, 1, "清退只把学生透明度归零");
+    assert.equal(existsSync(path.join(backgroundsDir, `${student.id}.jpg`)), false);
+    assert.equal(readRow(student.id).background_opacity, 0);
+    assert.equal(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), true, "清退不得删除教师背景");
+    assert.equal(readRow(teacher.id).background_opacity, 0.2, "清退不得改教师透明度");
+    assert.equal(existsSync(path.join(backgroundsDir, "keep-me.png")), true, "清退不得删除非 <学生id>.jpg 的文件");
+    assert.equal(existsSync(path.join(backgroundsDir, "999999.jpg")), true, "清退不得删除没有对应用户的文件");
+    const purgedAgain = await fetch(`${base}/api/admin/backgrounds/purge-students`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    const purgedAgainBody = await purgedAgain.json() as { removedFiles?: number; opacityReset?: number };
+    assert.equal(purgedAgain.status, 200);
+    assert.equal(purgedAgainBody.removedFiles, 0, "重复清退不再删文件");
+    assert.equal(purgedAgainBody.opacityReset, 0, "重复清退不再改透明度");
 
     const { setAuthEnforced } = await import("../src/apps/answer-card/server/middleware");
     process.env.PROJECTX_AUTH_ENFORCE = "0";
@@ -228,6 +320,11 @@ async function main(): Promise<void> {
     assert.equal(names.includes("undefined.jpg"), false, "匿名上传不能落成 undefined.jpg");
     assert.deepEqual(names.filter((name) => name.startsWith("upload_")), [], "匿名上传被拒后不能留下临时文件");
     assert.equal(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), true, "匿名上传不得覆盖教师背景");
+    const anonDelete = await fetch(`${base}/api/users/me/background`, { method: "DELETE" });
+    assert.equal(anonDelete.status, 401, "免登录模式下没有用户 id 时不能删除背景图");
+    const anonPurge = await fetch(`${base}/api/admin/backgrounds/purge-students`, { method: "POST" });
+    assert.equal(anonPurge.status, 401, "免登录模式下匿名请求不能清退学生背景");
+    assert.equal(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), true, "匿名删除不得带走教师背景");
 
     await new Promise((resolve) => setImmediate(resolve));
     const isolatedTokenPath = path.join(process.env.PROJECTX_TOKEN_DIR!, "tokens.json");
@@ -237,7 +334,7 @@ async function main(): Promise<void> {
       : null;
     assert.equal(homeTokenShaAfter, homeTokenSha, "本脚本不得改写运行账户的 ~/.projectx/tokens.json");
 
-    console.log("verify:student-web-settings 通过（学生无背景图、不能改阅卷/评分、不能上传；教师能力保留；缓存按 Cookie 隔离；匿名不能写设置）");
+    console.log("verify:student-web-settings 通过（学生无背景图、不能改阅卷/评分、不能上传；上限 413 带生效值；本人可删、管理员可清退学生历史背景且不动教师文件；匿名不能写或删）");
   } finally {
     if (server) {
       server.closeAllConnections?.();

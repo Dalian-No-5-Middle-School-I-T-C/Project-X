@@ -19,6 +19,7 @@ import { SkinSwitcher, SKIN_OPTIONS } from "../components/SkinSwitcher";
 import {
   Button,
   Checkbox,
+  ConfirmDialog,
   ControlRow,
   Switch,
   Dialog,
@@ -139,8 +140,9 @@ function AiProviderForm({
  * 由 AccountMenu 的设置 Dialog 迁移为独立页面（v2 UI 重构 P6）。
  *
  * #322: 「阅卷设置」页签只对持 grade:write 的账号渲染。学生账号不提供背景图透明度，
- * 也不能上传背景图；网页端始终不挂背景浮层。后端（阅卷字段门、背景透明度门、
+ * 也不能上传或移除背景图；网页端始终不挂背景浮层。后端（阅卷字段门、背景透明度门、
  * 上传门、背景 GET 404）是同一规则的强制层，这里只是不再把不可用的控件摆出来。
+ * 学生清自己的历史文件走 DELETE 接口，批量清退在管理员的全局设置里。
  *
  * P6 重写：放弃 vertical Tabs 左栏列布局（v2 Tabs 对 vertical 支持不佳时内容列塌缩），
  * 改为 v2 Tabs 默认「横向顶部 Tab 条 + 内容区全宽自然排布」，页面容器放宽为 max-w-5xl。
@@ -154,16 +156,20 @@ export function AccountSettingsPage() {
   const canEditGradingSettings = !user || hasPermission(PERMISSIONS.GRADE_WRITE);
   const canUploadBackground = !isStudent;
   // v2.1.0: 皮肤/明暗状态由 App 顶层持有（WorkspaceContext 下发），此处直接读改即时生效
-  const { theme, setTheme, skin, setSkin } = useWorkspace();
+  const { theme, setTheme, skin, setSkin, setShowBg } = useWorkspace();
   // v1.6.0: 非 Electron 环境（WEB 端）不显示扫描端选项和数据库设置
   const isElectron = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
 
   const [displayMode, setDisplayMode] = useState("zscore");
   const [reviewThreshold, setReviewThreshold] = useState(0.12);
   const [bgOpacity, setBgOpacity] = useState(0);
+  const [bgLimit, setBgLimit] = useState("");
   const bgFileRef = useRef<HTMLInputElement | null>(null);
   const bgSaveTimer = useRef<number | null>(null);
   const [bgMsg, setBgMsg] = useState("");
+  const [bgMsgTone, setBgMsgTone] = useState<"success" | "error">("success");
+  const [removeBgOpen, setRemoveBgOpen] = useState(false);
+  const [removeBgBusy, setRemoveBgBusy] = useState(false);
   const [settingsMsg, setSettingsMsg] = useState("");
 
   // Multi-provider AI management
@@ -198,13 +204,14 @@ export function AccountSettingsPage() {
   const [dbLoading, setDbLoading] = useState(false);
 
   useEffect(() => {
-    fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number; showTabBar?: number }>("/api/users/me/settings")
+    fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number; showTabBar?: number; backgroundUploadLimit?: string }>("/api/users/me/settings")
       .then((s) => {
         if (!s || typeof s !== "object") return;
         setDisplayMode(s.scoreDisplayMode || "zscore");
         setReviewThreshold(s.reviewConfidenceThreshold ?? 0.12);
         setBgOpacity(s.backgroundOpacity ?? 0);
         setShowTabBar(s.showTabBar === 1);
+        if (typeof s.backgroundUploadLimit === "string") setBgLimit(s.backgroundUploadLimit);
       })
       .catch(() => {});
     loadProviders();
@@ -302,16 +309,37 @@ export function AccountSettingsPage() {
         body: form
       });
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "上传失败" }));
-        throw new Error(err.error || "上传失败");
+        const err = await res.json().catch(() => ({} as { error?: string; message?: string }));
+        throw new Error(err.message || err.error || "上传失败");
       }
+      setBgMsgTone("success");
       setBgMsg("上传成功，刷新后生效");
       setTimeout(() => setBgMsg(""), 3000);
     } catch (err) {
+      setBgMsgTone("error");
       setBgMsg(err instanceof Error ? err.message : "上传失败");
     }
     // Reset input so same file can be re-uploaded
     e.target.value = "";
+  }
+
+  async function handleRemoveBackground() {
+    setRemoveBgBusy(true);
+    setBgMsg("");
+    try {
+      await fetchJson("/api/users/me/background", { method: "DELETE" });
+      setBgOpacity(0);
+      setShowBg(0);
+      setBgMsgTone("success");
+      setBgMsg("已移除背景图");
+      setRemoveBgOpen(false);
+      setTimeout(() => setBgMsg(""), 3000);
+    } catch (err) {
+      setBgMsgTone("error");
+      setBgMsg(err instanceof Error ? err.message : "移除失败");
+    } finally {
+      setRemoveBgBusy(false);
+    }
   }
 
   // ── AI 服务商管理 ──────────────────────────────────
@@ -555,7 +583,10 @@ export function AccountSettingsPage() {
                   }}
                   className="w-full"
                 />
-                <span className="text-xs text-muted-foreground">0% = 关闭，建议 5%~15%（浮层叠加，不影响阅读）</span>
+                <span className="text-xs text-muted-foreground">
+                  0% = 关闭，建议 5%~15%（浮层叠加，不影响阅读）
+                  {bgLimit ? `。单张不超过 ${bgLimit}` : ""}
+                </span>
                 <div className="flex items-center gap-1.5">
                   {/* 学生整段背景区不渲染。上传仍按学生身份单独判断，不看 grade:write。 */}
                   {canUploadBackground && (
@@ -563,11 +594,14 @@ export function AccountSettingsPage() {
                       <Button variant="ghost" size="sm" onClick={() => bgFileRef.current?.click()}>
                         上传背景图
                       </Button>
+                      <Button variant="ghost" size="sm" onClick={() => setRemoveBgOpen(true)}>
+                        移除背景图
+                      </Button>
                       <input ref={bgFileRef} type="file" accept="image/*" className="hidden" onChange={handleBgUpload} />
                     </>
                   )}
                   {bgMsg && (
-                    <span className={cn("text-xs", bgMsg.includes("失败") ? "text-primary" : "text-success")}>{bgMsg}</span>
+                    <span className={cn("text-xs", bgMsgTone === "error" ? "text-primary" : "text-success")}>{bgMsg}</span>
                   )}
                 </div>
               </section>
@@ -858,6 +892,16 @@ export function AccountSettingsPage() {
           </DialogBody>
         </DialogContent>
       </Dialog>
+      <ConfirmDialog
+        open={removeBgOpen}
+        onOpenChange={setRemoveBgOpen}
+        title="移除背景图"
+        description="将删除你上传的背景图，并把透明度调回关闭。此操作不能恢复。"
+        confirmLabel="移除"
+        tone="danger"
+        loading={removeBgBusy}
+        onConfirm={() => { void handleRemoveBackground(); }}
+      />
     </div>
   );
 }

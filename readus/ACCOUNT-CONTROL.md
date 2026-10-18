@@ -153,12 +153,16 @@ system:manage               系统维护（仅管理员）
 | 门 | 管住的字段 / 动作 | 判定口径 | 拒绝时 |
 |------|------------------|----------|--------|
 | `canWriteGradingSelfSettings(user)` | `scoreDisplayMode`、`reviewConfidenceThreshold`（常量表 `GRADING_SELF_SETTING_FIELDS`） | **角色权限位** `grade:write`，读建库播种的 `roles.permissions`。当前没有界面或 API 可改这个列；教师权限矩阵 `teacher_permissions` 不改变这个门 | 整单 403，仅当请求确实带了这两个字段 |
-| `isStudentAccount(user)` | `backgroundOpacity`；`GET /api/users/me/settings` 的透明度读数；`GET /api/app/background` | **角色身份**：`student` 一律按「没有背景」处理。故意不看权限位 | 读：透明度改写成 0，背景图 404。该接口每条响应都是 `Cache-Control: private, no-store`、`Vary: Cookie, Authorization`。写：PATCH 带 `backgroundOpacity` 则整单 403。历史文件不删 |
+| `isStudentAccount(user)` | `backgroundOpacity`；`GET /api/users/me/settings` 的透明度读数；`GET /api/app/background` | **角色身份**：`student` 一律按「没有背景」处理。故意不看权限位 | 读：透明度改写成 0，背景图 404。该接口每条响应都是 `Cache-Control: private, no-store`、`Vary: Cookie, Authorization`。写：PATCH 带 `backgroundOpacity` 则整单 403。读取不删历史文件 |
 | `requireBackgroundUploadAccess` | `POST /api/users/me/background`（上传自定义背景图） | **角色身份**：`student` 一律拒绝。故意不看权限位——给某人放开壁纸不应连带给他改分权限 | 403；门挂在 multer **之前**，被拒请求不会先落盘 |
 
 学生仍保留的自助能力：界面皮肤 / 明暗模式 / Tab 栏显隐，以及本人 AI 服务商配置
 （`/api/ai/providers` 按 `user_id` 隔离、密钥加密存储）。背景图不在此列：学生网页端不挂浮层，
-也不能改透明度或上传。前端同步隐藏阅卷 Tab 与整段背景区（`AccountSettingsPage.tsx`），
+也不能改透明度或上传。已经传过的文件不在启动时清掉。`DELETE /api/users/me/background`
+让登录用户删掉自己的 `<userId>.jpg` 并把 `background_opacity` 归零——学生可以调这个接口，
+设置页不给他们按钮。管理员在全局设置里点「清除学生历史背景」，对应
+`POST /api/admin/backgrounds/purge-students`（`system:manage`）：只删学生角色的文件、
+只把学生的透明度归零，教师和管理员的图不动。前端同步隐藏阅卷 Tab 与整段背景区（`AccountSettingsPage.tsx`），
 并在保存时只提交允许的字段，避免夹带被禁字段时整单 403 把底部导航一起打断——
 但**授权口径始终以上表的后端门为准**。
 页签回退只在「请求的正是被隐藏的阅卷设置」时发生（`!canEditGradingSettings && settingsTab === "grading"`），

@@ -6,6 +6,7 @@ import { tokens } from "../theme";
 import {
   Badge,
   Button,
+  ConfirmDialog,
   Input,
   Field,
   Switch,
@@ -140,6 +141,10 @@ export function GlobalSettingsPage({ onBack }: Props) {
   const [devBusy, setDevBusy] = useState(false);
   const [devMsg, setDevMsg] = useState<string | null>(null);
   const [devMsgTone, setDevMsgTone] = useState<"success" | "error">("error");
+  const [purgeOpen, setPurgeOpen] = useState(false);
+  const [purgeBusy, setPurgeBusy] = useState(false);
+  const [purgeMsg, setPurgeMsg] = useState<string | null>(null);
+  const [purgeTone, setPurgeTone] = useState<"success" | "error">("success");
 
   // 微信订阅消息部署自检。不自动拉取：诊断接口会绕过服务端 token 缓存向微信实取一次
   // access_token，而该接口有日调用上限，管理员每次打开设置都烧一次不合适。
@@ -192,6 +197,31 @@ export function GlobalSettingsPage({ onBack }: Props) {
       setDevMsgTone("error");
     } finally {
       setDevBusy(false);
+    }
+  }
+
+  async function handlePurgeStudentBackgrounds() {
+    setPurgeBusy(true);
+    setPurgeMsg(null);
+    try {
+      const result = await fetchJson<{ removedFiles: number; opacityReset: number }>(
+        "/api/admin/backgrounds/purge-students",
+        { method: "POST" }
+      );
+      const files = result.removedFiles ?? 0;
+      const opacity = result.opacityReset ?? 0;
+      setPurgeTone("success");
+      setPurgeMsg(
+        files === 0 && opacity === 0
+          ? "没有需要清除的学生背景"
+          : `已删除 ${files} 个背景文件，${opacity} 个账号的透明度已归零`
+      );
+      setPurgeOpen(false);
+    } catch (err: any) {
+      setPurgeTone("error");
+      setPurgeMsg(err?.message || "清除失败");
+    } finally {
+      setPurgeBusy(false);
     }
   }
 
@@ -444,6 +474,28 @@ export function GlobalSettingsPage({ onBack }: Props) {
         )}
       </div>
 
+      <div className="flex flex-col gap-3 border-t border-border-subtle pt-5">
+        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+          <Trash2 size={15} className="shrink-0" />
+          学生历史背景图
+        </div>
+        <p className="text-xs text-muted-foreground">
+          学生网页端已经不再显示或上传背景图。这里清掉他们以前传过的文件，并把账号里保存的透明度归零。教师和管理员的背景图不会动。
+        </p>
+        <div>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={<Trash2 />}
+            className="text-destructive-fg"
+            onClick={() => setPurgeOpen(true)}
+          >
+            清除学生历史背景
+          </Button>
+        </div>
+        {purgeMsg && <Banner tone={purgeTone}>{purgeMsg}</Banner>}
+      </div>
+
       {/* v1.9.6+: 开发者工具（演示数据导入/清除）。即时执行，不参与底部保存。 */}
       <div className="flex flex-col gap-3 border-t border-border-subtle pt-5">
         <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -496,6 +548,16 @@ export function GlobalSettingsPage({ onBack }: Props) {
       <Button variant="primary" size="lg" block onClick={handleSave} disabled={saving}>
         {saving ? "保存中..." : "保存全局设置"}
       </Button>
+      <ConfirmDialog
+        open={purgeOpen}
+        onOpenChange={setPurgeOpen}
+        title="清除学生历史背景"
+        description="将删除所有学生账号的自定义背景文件，并把这些账号的背景透明度归零。教师和管理员的图保留。此操作不能恢复。"
+        confirmLabel="清除"
+        tone="danger"
+        loading={purgeBusy}
+        onConfirm={() => { void handlePurgeStudentBackgrounds(); }}
+      />
     </Card>
   );
 }

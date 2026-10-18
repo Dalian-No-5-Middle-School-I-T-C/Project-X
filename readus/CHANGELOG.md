@@ -1,5 +1,17 @@
 # Project-X CHANGELOG
 
+## 2026-10-18：#336 学生历史背景的清退入口
+
+- 不在启动或迁移时删文件。学生已经看不到这些图，静默清盘会让人分不清教师的图有没有被一起带走。
+- `DELETE /api/users/me/background`：登录用户删除自己的 `backgrounds/<userId>.jpg`，并把 `background_opacity` 归零。学生可以调，账号设置页不显示按钮；教师和管理员在背景区有「移除背景图」。
+- `POST /api/admin/backgrounds/purge-students`（`system:manage`）：只删除当前学生角色的 `<id>.jpg`，只把这些账号的透明度归零。教师、管理员、临时文件和随包默认图都不动。全局设置页有确认对话框。
+
+## 2026-10-18：#335 背景图上传上限改为三档
+
+- `POST /api/users/me/background` 的体积闸门不再写死 5 MiB。`PROJECTX_BACKGROUND_UPLOAD_MIB` 默认 5、天花板 32；非法值回落默认并打印 `[background-upload-limits]`，超过天花板则夹紧。单一来源 `src/shared/backgroundUploadLimits.ts`。
+- 超限仍是 413 `UPLOAD_ERROR`，文案带上当前生效上限，例如「上传文件超过大小限制（≤5 MiB）」。这句只属于背景图上传，其它 multer 闸门的文案不变。
+- 账号设置接口多返回 `backgroundUploadLimit`，设置页在背景区注明「单张不超过 N MiB」。学生账号仍然不能上传。
+
 ## 2026-10-17：PR #332 —— 双面批次收尾、红笔分数格强制彩色与告警可恢复、DPI 逐轴取证
 
 - **批次结束按单双面分别判定**：单面时 `MSG_ENDXFER` 的码 7（随包 `twain.h` 2.5.1 的 `TWRC_ENDOFLIST`）且 `Count==0` 才收批；双面时该组合仍继续等待当前张背面，背面到达才成功，未到达则保留正面并报部分失败，不再出现「只出一面却报整批成功」。收尾码与 `Count` 的组合由假 DSM 夹具编译真实扫描循环回归，只在 CI（Linux + g++）执行。
