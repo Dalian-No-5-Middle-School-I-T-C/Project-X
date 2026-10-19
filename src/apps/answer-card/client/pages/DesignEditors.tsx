@@ -72,6 +72,7 @@ import { ESSAY_DEFAULT_LINE_COLOR, ESSAY_GRID_INSET_X, essayGridGeometry, essayW
 import { formatBlankLabel } from "../../../../shared/blankLabels";
 import { shouldRenderScoreGrid } from "../../../../shared/scoreGrid";
 import {
+  applyScorePerQuestion,
   answerBlankItems,
   answerLineCount,
   answerText,
@@ -336,7 +337,7 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
             min={0}
             step={0.5}
             value={block.scorePerQuestion}
-            onChange={(event) => onChange((draft) => void ((draft as ObjectiveBlock).scorePerQuestion = Number(event.target.value)))}
+            onChange={(event) => onChange((draft) => { applyScorePerQuestion(draft as ObjectiveBlock, Number(event.target.value)); })}
           />
         </Field>
       </div>

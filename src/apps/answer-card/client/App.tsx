@@ -133,6 +133,7 @@ import type {
 import {
   normalizeObjectiveAnswerKey,
   normalizeObjectiveQuestions,
+  objectiveBlockTotalScore,
   objectiveQuestionDefinitions,
   objectiveQuestionNumbers,
   optionLabelsForQuestion
@@ -1210,7 +1211,7 @@ function App() {
         const typeName = modeName[obj.mode] ?? "客观题";
         const prefix = toChineseBlockIndex(index + 1);
         const count = obj.questionCount ?? 0;
-        const total = count * (obj.scorePerQuestion ?? 0);
+        const total = objectiveBlockTotalScore(obj);
         block.title = buildAutoBlockTitle(prefix, typeName, count, total);
       } else if (block.type === "subjective") {
         const sub = block as SubjectiveBlock;
