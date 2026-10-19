@@ -6,15 +6,15 @@ import { correctionState, isUnconfirmedCorrectionCell, toggleCorrectionCell, typ
 import { CorrectionCanvas } from "./scanner-postprocess/CorrectionCanvas";
 
 type Request = (url: string, init?: RequestInit) => Promise<Response>;
-export function CardCorrectionButton({ url, request = authFetch, onSaved, disabled = false }: {
-  url: string; request?: Request; onSaved?: () => void | Promise<void>; disabled?: boolean;
+export function CardCorrectionButton({ url, request = authFetch, onSaved, disabled = false, allowUnchangedSave = false }: {
+  url: string; request?: Request; onSaved?: () => void | Promise<void>; disabled?: boolean; allowUnchangedSave?: boolean;
 }) {
   const [open,setOpen] = useState(false);
   return <><Button size="sm" variant="outline" disabled={disabled} onClick={() => setOpen(true)}>整卡改分</Button>
-    {open && <CardCorrectionEditor url={url} request={request} onClose={() => setOpen(false)} onSaved={onSaved} />}</>;
+    {open && <CardCorrectionEditor url={url} request={request} onClose={() => setOpen(false)} onSaved={onSaved} allowUnchangedSave={allowUnchangedSave} />}</>;
 }
-export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved}: {
-  url:string; request?:Request; onClose:()=>void; onSaved?:()=>void|Promise<void>;
+export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved,allowUnchangedSave=false}: {
+  url:string; request?:Request; onClose:()=>void; onSaved?:()=>void|Promise<void>; allowUnchangedSave?:boolean;
 }) {
   const [send] = useState(() => request);
   const [document,setDocument] = useState<CorrectionDocument|null>(null);
@@ -115,7 +115,7 @@ export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved}: 
       <DialogFooter className="flex-wrap">
         <div className="min-w-0 flex-1 text-sm" role="status">{message || (errors.length ? <span className="text-destructive-fg">{[...new Set(errors)].slice(0,3).join("；")}{errors.length>3 ? "…" : ""}</span> : dirty ? "修改尚未保存" : missing ? "请先重新识别旧卷" : "点击填涂格开始修改")}</div>
         <Button variant="outline" disabled={busy} onClick={close}>取消</Button>
-        <Button variant="primary" disabled={!dirty || busy || missing || errors.length>0} loading={busy && !!document} onClick={() => void save()}>保存修改</Button>
+        <Button variant="primary" disabled={!document || (!dirty && !allowUnchangedSave) || busy || missing || errors.length>0} loading={busy && !!document} onClick={() => void save()}>保存修改</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;

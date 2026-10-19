@@ -171,6 +171,7 @@ export function PendingScanBanner({
               </Button>
               <CardCorrectionButton
                 disabled={busy}
+                allowUnchangedSave
                 url={`/api/scanner/upload/sessions/${encodeURIComponent(item.sessionId)}/groups/${encodeURIComponent(item.groupId)}/correction`}
                 onSaved={() => { void load(); onChanged?.(); }}
               />
