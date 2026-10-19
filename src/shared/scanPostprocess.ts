@@ -117,7 +117,8 @@ export function omitPreviewDiscardedGroups(
       if (ownDropped) {
         for (const copy of conflicts) if (copy.sessionId === sessionId) remember(synthesizeKeptResult(copy));
       } else if (failure.studentId) {
-        remember(synthesizeKeptResult({
+        const kept = conflicts.find(copy => copy.sessionId === sessionId && copy.groupId === failure.groupId);
+        remember(synthesizeKeptResult(kept ?? {
           sessionId, groupId: failure.groupId, studentId: failure.studentId,
           previouslySaved: false, pages: failure.pages,
         }));

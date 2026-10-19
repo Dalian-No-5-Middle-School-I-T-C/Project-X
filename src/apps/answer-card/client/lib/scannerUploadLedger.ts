@@ -1,8 +1,40 @@
 /**
- * 同一原卷只允许进一次上传队列。
- * 上传任务列表是内存态，进度卡关掉或进程重进后就没了；扫描面板和后处理页共用这份名单，
- * 避免两边各 startUpload 一次，在服务端形成同学号的第二份回执。
+ * 完成名单阻止重复回执；未完成任务保留会话及逐页进度，重新打开本机原卷时续传。
  */
+import { z } from "zod";
+
+const recoverySchema = z.object({
+  remoteBase: z.string(), remoteSessionId: z.string().min(1), cardVersion: z.string().min(1),
+  completed: z.boolean(), dpi: z.number(), paperSize: z.string(), identityMode: z.enum(["strict", "legacy"]),
+  pendingStudentId: z.string().optional(),
+  pages: z.array(z.object({
+    pageNum: z.number(), side: z.enum(["front", "back"]), layoutPage: z.number().optional(),
+    recordId: z.string().optional(), token: z.string().min(1), done: z.boolean(),
+    studentId: z.string().optional(), recognizedStudentId: z.object({ status: z.string(), value: z.string() }).optional(),
+  })).min(1),
+});
+export type ScanUploadRecovery = z.infer<typeof recoverySchema>;
+
+const recoveryKey = (cardId: string, sessionId: string, groupId: string) =>
+  `projectx-scanner-upload-recovery/${JSON.stringify([cardId, sessionId, groupId])}`;
+
+export function readScanUploadRecovery(cardId: string, sessionId: string, groupId: string): ScanUploadRecovery | null {
+  if (typeof localStorage === "undefined") return null;
+  const raw = localStorage.getItem(recoveryKey(cardId, sessionId, groupId));
+  if (!raw) return null;
+  const parsed = recoverySchema.safeParse(JSON.parse(raw));
+  if (!parsed.success) throw new Error("上传恢复记录不完整，请保留本机原卷并核对服务器会话");
+  return parsed.data;
+}
+
+export function writeScanUploadRecovery(cardId: string, sessionId: string, groupId: string, recovery: ScanUploadRecovery): void {
+  try { localStorage.setItem(recoveryKey(cardId, sessionId, groupId), JSON.stringify(recovery)); }
+  catch { throw new Error("无法保存上传恢复记录，请释放本机存储空间后重试"); }
+}
+
+export function forgetScanUploadRecovery(cardId: string, sessionId: string, groupId: string): void {
+  try { localStorage.removeItem(recoveryKey(cardId, sessionId, groupId)); } catch { /* Completion receipt still protects this group. */ }
+}
 
 export interface PreviewDiscardRef {
   sessionId: string;
@@ -26,8 +58,8 @@ function readStringSet(key: string): Set<string> {
   }
 }
 
-function writeStringSet(key: string, values: Set<string>): void {
-  try { localStorage.setItem(key, JSON.stringify([...values])); } catch { /* 配额满时仍保留调用方的内存集合 */ }
+function writeStringSet(key: string, values: Set<string>): boolean {
+  try { localStorage.setItem(key, JSON.stringify([...values])); return true; } catch { return false; }
 }
 
 export function queuedGroupKey(sessionId: string, groupId: string): string {
@@ -39,13 +71,14 @@ export function readQueuedGroups(cardId: string): Set<string> {
 }
 
 export function isGroupQueued(cardId: string, sessionId: string, groupId: string): boolean {
-  return readQueuedGroups(cardId).has(queuedGroupKey(sessionId, groupId));
+  return readQueuedGroups(cardId).has(queuedGroupKey(sessionId, groupId))
+    || readScanUploadRecovery(cardId, sessionId, groupId)?.completed === true;
 }
 
-export function rememberQueuedGroup(cardId: string, sessionId: string, groupId: string): void {
+export function rememberQueuedGroup(cardId: string, sessionId: string, groupId: string): boolean {
   const values = readQueuedGroups(cardId);
   values.add(queuedGroupKey(sessionId, groupId));
-  writeStringSet(queuedKey(cardId), values);
+  return writeStringSet(queuedKey(cardId), values);
 }
 
 /** 尚未在远端建出会话的任务被取消或删除时，把入队资格还回去。 */

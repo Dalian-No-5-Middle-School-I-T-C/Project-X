@@ -2,7 +2,7 @@ import { recoverCorrectionDocument } from "../lib/scanCorrectionRecovery";
 import { useEffect, useState } from "react";
 import { authFetch } from "../auth/api";
 import { Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter } from "./ui/v2";
-import { correctionState, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../shared/scanCorrection";
+import { correctionState, isUnconfirmedCorrectionCell, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../shared/scanCorrection";
 import { CorrectionCanvas } from "./scanner-postprocess/CorrectionCanvas";
 
 type Request = (url: string, init?: RequestInit) => Promise<Response>;
@@ -87,7 +87,7 @@ export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved}: 
   }
   function toggle(id:string) {
     if (!document || !page || busy) return;
-    setEdits(current => current.map(e => e.sourceId === page.sourceId ? {...e, selected:toggleCorrectionCell(document.card,page,e.selected,id),touched:page.invalid.includes(id) ? [...new Set([...(e.touched ?? []),id])] : e.touched} : e));
+    setEdits(current => current.map(e => e.sourceId === page.sourceId ? {...e, selected:toggleCorrectionCell(document.card,page,e.selected,id),touched:page.invalid.includes(id) || isUnconfirmedCorrectionCell(page,id) ? [...new Set([...(e.touched ?? []),id])] : e.touched} : e));
     setMessage("");
   }
   return <Dialog open onOpenChange={open => {if (!open) close();}}>

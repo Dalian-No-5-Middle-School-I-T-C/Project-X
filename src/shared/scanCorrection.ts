@@ -1,4 +1,4 @@
-import { findObjectiveQuestion } from "./grading";
+import { findObjectiveQuestion, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "./grading";
 import { isMultiSelectMode } from "./objectiveMode";
 import type { AnswerCard, CombinedRecognitionResult, LayoutElement, PageLayout, Rect } from "./types";
 
@@ -35,6 +35,21 @@ export function lowConfidenceTouchedIds(
 
 export function correctionCells(page: PageLayout): CorrectionCell[] {
   return page.elements.filter((e): e is CorrectionCell => ["student_digit", "objective_option", "score_cell"].includes(e.type));
+}
+
+/** An explicit interaction with this cell confirms its question, even if the final marks are unchanged. */
+export function isUnconfirmedCorrectionCell(page: Pick<CorrectionPage, "layout" | "recognition">, id: string): boolean {
+  const cell = correctionCells(page.layout).find(entry => entry.id === id);
+  if (cell?.type === "objective_option") {
+    return (page.recognition.questions?.find(q => q.questionNumber === cell.questionNumber)?.confidence ?? 1)
+      < OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD;
+  }
+  if (cell?.type === "score_cell") {
+    const question = page.recognition.subjectiveQuestions?.find(q => q.questionId === cell.questionId
+      && (!q.blockId || q.blockId === cell.blockId));
+    return !!question && question.status !== "ok";
+  }
+  return false;
 }
 const sameRect = (a: Rect | undefined, b: Rect) => a && Math.abs(a.x - b.x) < .01 && Math.abs(a.y - b.y) < .01;
 export function recognizedCells(layout: PageLayout, recognition: CombinedRecognitionResult) {
@@ -121,6 +136,10 @@ export function correctionState(card: AnswerCard, page: CorrectionPage, selected
     evaluated.invalid.forEach(id => invalid.add(id));
     const bad = hits.filter(c => invalid.has(c.id));
     if (!evaluated.valid || bad.length) errors.push(`第 ${q.questionNumber} 题分数格无效`);
+    const changed = all.some(c => selected.includes(c.id) !== page.selected.includes(c.id));
+    const confirmed = all.some(c => touched.includes(c.id));
+    // Rendering or saving another question must preserve this question's review status.
+    if (!changed && !confirmed) return q;
     const toCell = (c: typeof hits[number]) => ({ blockId: c.blockId, questionId: c.questionId, questionNumber: c.questionNumber, score: c.score, rect: c.rect });
     return { ...q, score: evaluated.score, status: evaluated.valid && !bad.length ? "ok" : "invalid", confidence: 1,
       validCells: hits.filter(c => !invalid.has(c.id)).map(toCell), invalidCells: bad.map(toCell) };

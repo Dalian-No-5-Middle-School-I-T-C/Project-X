@@ -773,7 +773,7 @@ async function main() {
       releaseBlocker();
       assert((await waitTerminal(mgr, imported)).status === "done");
       assert((await waitTerminal(mgr, again)).status === "done");
-      assert(isGroupQueued("card_1", "scan-new", "0") === true, "远端会话建立后才记下入队资格");
+      assert(isGroupQueued("card_1", "scan-new", "0") === true, "远端会话提交完成后记下完成标记");
 
       let releasePages: () => void = () => {};
       const pagesGate = new Promise<void>(resolve => { releasePages = resolve; });
@@ -797,6 +797,60 @@ async function main() {
       assert(blocked.ok === false, "正在读取原图的上传不能被删除打断");
       releasePages();
       assert((await waitTerminal(live, uploading)).status === "done");
+
+      // Closing an error card or restarting the manager must keep the same remote session and page tokens.
+      for (const successfulPrefix of [0, 1, 2]) {
+        let recover = false;
+        let creates = 0, completes = 0;
+        const sent: string[] = [];
+        const localSessionId = `restart-${successfulPrefix}`;
+        const remoteFetch = async (url: string, init?: RequestInit) => {
+          if (url.endsWith("/sessions")) {
+            creates++;
+            return jsonRes({ sessionId: localSessionId, uploadTokens: ["front-token", "back-token"] });
+          }
+          assert(url.includes(`/sessions/${localSessionId}/`), "恢复请求必须复用原会话");
+          if (url.endsWith("/pages")) {
+            const token = String((init!.body as FormData).get("token"));sent.push(token);
+            if (!recover && (successfulPrefix === 0 || (successfulPrefix === 1 && token === "back-token"))) {
+              return jsonRes({ message: "controlled page failure" },400);
+            }
+          }
+          if (url.endsWith("/complete")) {
+            completes++;
+            if (!recover && successfulPrefix === 2) return jsonRes({ message: "lost complete response" },500);
+          }
+          return jsonRes({ ok: true });
+        };
+        const makeInput = (): StartUploadInput => ({
+          kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "recovery", localSessionId,
+          pages: ["front", "back"].map((side, i) => ({ pageNum:1,side:side as "front"|"back",layoutPage:i+1,
+            recordId:`source-${i}`,groupId:"0",getBlob:async()=>blob() })),
+        });
+        const original = createScannerUploadManager(deps({remoteFetch}));
+        const id = original.startUpload(makeInput());
+        const error = await waitTerminal(original,id);
+        assert(error.status === "error" && error.uploaded === successfulPrefix,"初次失败保留实际逐页进度");
+        assert(!isGroupQueued("card_1",localSessionId,"0"),"未完成任务不写永久完成标记");
+        assert(original.dismissJob(id),"失败卡可以关闭");
+        assert(original.localGroupDeleteBlock("card_1","0",localSessionId) !== null,"关闭卡后仍保护续传需要的原图");
+        const restored = createScannerUploadManager(deps({remoteFetch}));
+        let rejected = false;
+        try { restored.startUpload({...makeInput(),cardVersion:"ffffffffffffffffffffffff"}); } catch { rejected = true; }
+        assert(rejected,"变更版式不能复用原上传会话");
+        values.set("projectx_server_url","https://other.test");rejected = false;
+        try { restored.startUpload(makeInput()); } catch { rejected = true; }
+        assert(rejected,"切换服务器不得向新服务器发送旧会话");values.delete("projectx_server_url");
+        const before = sent.length;
+        recover = true;
+        const recoveredId = restored.startUpload(makeInput());
+        assert((await waitTerminal(restored,recoveredId)).status === "done","重建 manager 后可完成续传");
+        assert(creates === 1,"续传不新建第二份远端回执");
+        assert(sent.length - before === 2 - successfulPrefix,"已成功的页不重传");
+        if (successfulPrefix === 1) assert(sent.at(-1) === "back-token","续传失败背面复用原 token");
+        assert(completes >= 1 && isGroupQueued("card_1",localSessionId,"0"),"完成后保留去重凭据");
+        assert(restored.localGroupDeleteBlock("card_1","0",localSessionId) === null,"完成后可以删除本机原图");
+      }
     } finally {
       if (previous) Object.defineProperty(globalThis, "localStorage", previous);
       else Reflect.deleteProperty(globalThis, "localStorage");

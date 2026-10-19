@@ -6,7 +6,7 @@ import { act, createElement } from "react";
 import { createDefaultCard } from "../src/shared/defaultCard";
 import { buildLayout } from "../src/shared/layout";
 import { cardFingerprint } from "../src/shared/cardVersion";
-import { recognizedCells, type CorrectionDocument } from "../src/shared/scanCorrection";
+import { correctionCells, correctionState, recognizedCells, type CorrectionDocument, type CorrectionEdit } from "../src/shared/scanCorrection";
 import type { StartUploadInput } from "../src/apps/answer-card/client/lib/scannerUploadManager";
 import type { ScanBatchResponse } from "../src/shared/scanPages";
 
@@ -213,6 +213,7 @@ const root = createRoot(document.getElementById("root")!);
 let root2: ReturnType<typeof createRoot> | null = null;
 let root3: ReturnType<typeof createRoot> | null = null;
 let root4: ReturnType<typeof createRoot> | null = null;
+let root5: ReturnType<typeof createRoot> | null = null;
 async function settle(ms = 12) { await act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); }); }
 async function clickNode(node: Element) {
   await act(async () => {
@@ -494,11 +495,61 @@ try {
   assert(document.querySelector('[aria-label="返回扫描"]'), "加载失败时仍能返回扫描");
   assert([...document.querySelectorAll("button")].some(el => el.textContent?.includes("重试")), "加载失败时可以重试");
 
+  // A valid score-cell combination still needs explicit teacher confirmation when recognition says review.
+  await act(async () => { root4!.unmount(); });
+  const reviewCard = createDefaultCard("subjective-review");
+  reviewCard.bodyBlocks = [{id:"review-block",type:"subjective",title:"待确认",questions:[
+    {id:"review-question",number:2,score:30,style:"manual_score_grid",kind:"plain_box",minHeightMm:30},
+  ]}];
+  const reviewLayout = buildLayout(reviewCard).pages[0];
+  const ten = correctionCells(reviewLayout).find(c => c.type === "score_cell" && c.score === 10)!;
+  const reviewRecognition = {...recognition,questions:[],subjectiveQuestions:[{
+    blockId:"review-block",questionId:"review-question",questionNumber:2,maxScore:30,score:10,
+    status:"review" as const,confidence:0.05,validCells:[{score:10,rect:ten.rect}],invalidCells:[],
+  }]};
+  const reviewDoc: CorrectionDocument = {card:reviewCard,version:cardFingerprint(reviewCard),pages:[{
+    sourceType:"twain_scan_record",sourceId:"review-record",revision:0,layout:reviewLayout,
+    recognition:reviewRecognition,...recognizedCells(reviewLayout,reviewRecognition),imageUrl:"/review-image",
+  }]};
+  const {localChannel} = await import("../src/apps/answer-card/client/components/scanner-postprocess/postprocessChannel");
+  const {PostprocessQueueView} = await import("../src/apps/answer-card/client/components/scanner-postprocess/PostprocessQueueView");
+  const {PostprocessCorrectionView} = await import("../src/apps/answer-card/client/components/scanner-postprocess/PostprocessCorrectionView");
+  let reviewed = false, jumped = false;
+  const reviewChannel = {...localChannel(),request:async (url:string,init?:RequestInit) => {
+    if (url === "/review-image") return new Response("image");
+    if (init?.method === "PUT") {
+      const body = JSON.parse(String(init.body)) as {pages:CorrectionEdit[];draft:boolean};
+      assert.equal(body.draft,true);assert(body.pages[0].touched?.includes(ten.id));
+      reviewDoc.pages[0].recognition = correctionState(reviewCard,reviewDoc.pages[0],body.pages[0].selected,body.pages[0].touched).recognition;
+      assert.equal(reviewDoc.pages[0].recognition.subjectiveQuestions[0].status,"ok");
+      assert.equal(reviewDoc.pages[0].recognition.subjectiveQuestions[0].score,10);
+      reviewed = true;return Response.json({saved:false,drafted:true});
+    }
+    return Response.json(reviewDoc);
+  }};
+  const reviewHost = document.createElement("div");document.body.append(reviewHost);root5 = createRoot(reviewHost);
+  await act(async()=>root5!.render(createElement(TooltipProvider,null,createElement(PostprocessQueueView,{
+    channel:reviewChannel,queue:[{id:"subjective",kind:"low_confidence",sessionId:"review",groupId:"0",studentId:"10001",
+      label:"10001",conflicts:[],missingLayoutPages:[],needsReviewCount:1}],scans:[],examIdForSession:()=>null,
+    layoutPageCountFor:()=>1,onResolved:()=>{},onPreviewDiscard:()=>{},onDelete:async()=>{},
+    onJumpToCorrection:(_sid,_gid,question)=>{assert.equal(question,2);jumped=true;},
+  }))));
+  await settle();assert.match(text(),/第 2 题（主观 review）/);assert(!text().includes("没有低于阈值的题"));
+  await clickText("去改这题");assert(jumped);
+  await act(async()=>root5!.render(createElement(TooltipProvider,null,createElement(PostprocessCorrectionView,{
+    channel:reviewChannel,sessionId:"review",groupId:"0",draftOnly:true,onSaved:()=>{},
+  }))));
+  await settle();assert(saveButton()?.disabled,"打开待确认卷不会自动确认");
+  const scoreCell = () => document.querySelector(`[data-cell-id="${ten.id}"]`)!;
+  await clickNode(scoreCell());await clickNode(scoreCell());await settle();
+  assert(saveButton() && !saveButton()!.disabled,"点回原分数同样可以明确确认");
+  await clickText("保存修改");assert(reviewed);
+
   console.log("PASS scanner-postprocess-ui-smoke");
 } catch (error) {
   failure = error;
 } finally {
-  await act(async () => { root.unmount(); root2?.unmount(); root3?.unmount(); root4?.unmount(); });
+  await act(async () => { root.unmount(); root2?.unmount(); root3?.unmount(); root4?.unmount(); root5?.unmount(); });
   scannerUploadManager.startUpload = realStartUpload;
   // 不关掉 jsdom 的 window，其定时器与观察者会让进程一直挂着
   dom.window.close();

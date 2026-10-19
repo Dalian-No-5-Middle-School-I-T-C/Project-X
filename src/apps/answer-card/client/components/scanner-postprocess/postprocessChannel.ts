@@ -116,6 +116,7 @@ export function queueGroupUpload(meta: UploadMeta, sessionId: string, result: Sc
     paperSize: meta.paperSize,
     cardVersion: meta.cardVersion,
     pages: result.pages.map(page => ({
+      recordId: page.recordId,
       pageNum: page.pageNum,
       side: page.side,
       groupId: result.groupId,

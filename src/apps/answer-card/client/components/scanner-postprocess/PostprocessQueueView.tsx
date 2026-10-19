@@ -11,7 +11,7 @@ import { getScannerMode, isRemoteServerConfigured } from "../../lib/scannerMode"
 import { replaceScopedSelection, type PostprocessQueueItem } from "../../../../../shared/scanPostprocess";
 import { selectStudentDigitCells } from "../../../../../shared/correctionCellSelect";
 import { uniqueScanConflictCards, type ScanConflictCard } from "../../../../../shared/scanPages";
-import { correctionCells, correctionState, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../../shared/scanCorrection";
+import { correctionCells, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../../shared/scanCorrection";
 import { OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
 import type { SubjectiveQuestionNumber } from "../../../../../shared/types";
 
@@ -603,7 +603,7 @@ function LowConfidencePanel({ item, channel, onJump }: {
     if (!document) return [];
     const list: Array<{ questionNumber: SubjectiveQuestionNumber; label: string; confidence: number; value: string }> = [];
     for (const page of document.pages) {
-      const recognition = correctionState(document.card, page, page.selected).recognition;
+      const recognition = page.recognition;
       for (const question of recognition.questions ?? []) {
         if ((question.confidence ?? 0) >= OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD) continue;
         list.push({ questionNumber: question.questionNumber, label: `第 ${question.questionNumber} 题（客观）`, confidence: question.confidence ?? 0, value: question.selectedOptions.join(",") || "未答" });

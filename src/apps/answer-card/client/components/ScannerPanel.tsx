@@ -477,6 +477,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         localSessionId: sid,
         dpi: metadata.dpi, paperSize: metadata.paperSize, cardVersion: metadata.cardVersion,
         pages: result.pages.map(page => ({
+          recordId: page.recordId,
           pageNum: page.pageNum, side: page.side, groupId: result.groupId,
           layoutPage: page.layoutPage, studentId: result.studentId,
           getCorrection: async () => {

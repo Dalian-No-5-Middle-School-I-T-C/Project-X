@@ -8,7 +8,7 @@ import { CorrectionCanvas } from "./CorrectionCanvas";
 import type { PostprocessChannel } from "./postprocessChannel";
 import { replaceScopedSelection } from "../../../../../shared/scanPostprocess";
 import {
-  correctionCells, correctionState, lowConfidenceTouchedIds, toggleCorrectionCell,
+  correctionCells, correctionState, isUnconfirmedCorrectionCell, lowConfidenceTouchedIds, toggleCorrectionCell,
   type CorrectionCell, type CorrectionDocument, type CorrectionEdit,
 } from "../../../../../shared/scanCorrection";
 import { matchesCorrectionFocus, selectObjectiveOptionCells, selectScoreCells } from "../../../../../shared/correctionCellSelect";
@@ -46,14 +46,6 @@ interface Row {
 /** Radix Select 的 Item 不接受空串，未答用哨兵值表达。 */
 const UNANSWERED = "__none__";
 
-/** 低置信度客观题被老师点过：即使最终选项与识别结果相同，也要记进 touched，保存时把置信度抬到 1。 */
-function lowConfidenceObjective(page: { layout: CorrectionDocument["pages"][number]["layout"]; recognition: CorrectionDocument["pages"][number]["recognition"] }, cellId: string): boolean {
-  const cell = correctionCells(page.layout).find(entry => entry.id === cellId);
-  if (!cell || cell.type !== "objective_option") return false;
-  const question = page.recognition.questions?.find(item => item.questionNumber === cell.questionNumber);
-  return (question?.confidence ?? 1) < OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD;
-}
-
 function markLowConfidenceConfirmation<T extends { sourceId: string; selected: string[]; touched?: string[] }>(
   document: CorrectionDocument,
   pages: T[],
@@ -63,7 +55,7 @@ function markLowConfidenceConfirmation<T extends { sourceId: string; selected: s
   return pages.map(pageEdit => {
     const page = document.pages.find(item => item.sourceId === pageEdit.sourceId);
     if (!page) return pageEdit;
-    const extra = lowConfidenceTouchedIds([...scope], picked, id => lowConfidenceObjective(page, id));
+    const extra = lowConfidenceTouchedIds([...scope], picked, id => isUnconfirmedCorrectionCell(page, id));
     if (!extra.length) return pageEdit;
     return { ...pageEdit, touched: [...new Set([...(pageEdit.touched ?? []), ...extra])] };
   });
@@ -253,7 +245,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
 
   function toggle(cellId: string) {
     if (!document || !page || busy || locked) return;
-    const confirm = page.invalid.includes(cellId) || lowConfidenceObjective(page, cellId);
+    const confirm = page.invalid.includes(cellId) || isUnconfirmedCorrectionCell(page, cellId);
     setEdits(current => current.map(e => e.sourceId === page.sourceId
       ? { ...e, selected: toggleCorrectionCell(document.card, page, e.selected, cellId), touched: confirm ? [...new Set([...(e.touched ?? []), cellId])] : e.touched }
       : e));

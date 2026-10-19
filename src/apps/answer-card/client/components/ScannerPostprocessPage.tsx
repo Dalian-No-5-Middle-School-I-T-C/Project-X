@@ -46,7 +46,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
    *  它们订正干净后才允许补传一次。已经进过上传名单的组不再建第二份回执。 */
   const abnormalKey = `projectx-postprocess-abnormal/${cardId}`;
   const abnormalSeen = useRef<Set<string>>(readIdSet(abnormalKey));
-  /** 与扫描面板共用的上传名单。远端会话建出来之后才写入；取消尚未开始的任务不会占住资格。 */
+  /** 完成名单持久化；未完成上传由 manager 恢复原远端会话。 */
   const queuedByPage = useRef<Set<string>>(readQueuedGroups(cardId));
 
   // 通道唯一为本地（spec §5 通道裁定）：远端语义只经 queueGroupUpload 补传承担
@@ -424,7 +424,8 @@ function queueCleanGroup(
   if (!meta?.cardVersion) return "missing-version";
   try {
     queueGroupUpload({ ...meta, cardId: uploadCardId, cardVersion: meta.cardVersion }, sessionId, result);
-  } catch {
+  } catch (error) {
+    notify.error(error instanceof Error ? error.message : "创建或恢复上传任务失败");
     return "error";
   }
   queued.add(key);

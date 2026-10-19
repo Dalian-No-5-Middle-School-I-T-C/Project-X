@@ -245,6 +245,21 @@ try {
   assert.equal(kept.results.find(row => row.groupId === "0")?.needsReviewCount, 1, "保留份不能绕过存疑复核");
   assert.equal(buildPostprocessQueue(buildPostprocessGroups(kept, duplicate.id, 1)).some(item => item.kind === "low_confidence" && item.groupId === "0"), true);
 
+  await addStudent("92023");
+  const cleanDuplicate = await seedPapers("dup-clean", [
+    { studentNumber: "92023", confidence: 1 }, { studentNumber: "92023", confidence: 1 },
+  ]);
+  const cleanPreview = await processScannerSession((await cards.findById(card.id))!, cleanDuplicate.id, "preview");
+  for (const keep of ["0", "1"]) {
+    const cleanKept = omitPreviewDiscardedGroups(cleanPreview,
+      [{ sessionId: cleanDuplicate.id, groupId: keep === "0" ? "1" : "0" }], cleanDuplicate.id);
+    const source = cleanPreview.failures.flatMap(f => f.conflicts ?? []).find(c => c.groupId === keep)!;
+    assert.equal(cleanKept.results[0].needsReviewCount, 0, `保留第 ${keep} 份正常卷都不能制造存疑题`);
+    assert.equal(cleanKept.results[0].totalScore, source.totalScore);
+    assert.equal(cleanKept.results[0].maxScore, source.maxScore);
+    assert.equal(buildPostprocessQueue(buildPostprocessGroups(cleanKept, cleanDuplicate.id, 1)).length, 0);
+  }
+
   const unreviewed = await seedPapers("unreviewed-save", [{ studentNumber: "92022", confidence: 0.05 }]);
   const blockedSave = await processScannerSession((await cards.findById(card.id))!, unreviewed.id, "save", undefined, undefined, true);
   assert.equal(blockedSave.results[0]?.needsReviewCount, 1);

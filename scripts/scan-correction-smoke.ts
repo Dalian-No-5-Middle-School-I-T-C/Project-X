@@ -222,6 +222,18 @@ try {
   Object.assign(noisy,recognizedCells(noisy.layout,noisy.recognition));
   assert(correctionState(current,noisy,noisy.selected).invalid.has(ten.id));
   assert(!correctionState(current,noisy,noisy.selected,[ten.id]).invalid.has(ten.id),"explicit selection repairs detected invalid line");
+  for (const status of ["review", "partial"] as const) {
+    const unconfirmed = structuredClone(page);
+    unconfirmed.recognition.subjectiveQuestions[0].status = status;
+    unconfirmed.recognition.subjectiveQuestions[0].confidence = 0.05;
+    assert.equal(correctionState(current,unconfirmed,unconfirmed.selected).recognition.subjectiveQuestions[0].status,status,
+      "rendering valid score cells must not confirm a subjective review");
+    const otherEdited = toggleCorrectionCell(current,unconfirmed,unconfirmed.selected,a.id);
+    assert.equal(correctionState(current,unconfirmed,otherEdited,[a.id]).recognition.subjectiveQuestions[0].status,status,
+      "confirming an objective answer must preserve unrelated subjective review");
+    const confirmed = correctionState(current,unconfirmed,unconfirmed.selected,[ten.id]).recognition.subjectiveQuestions[0];
+    assert.equal(confirmed.status,"ok");assert.equal(confirmed.score,10);
+  }
   // Saving one corrected card must not admit unrelated siblings to the receipt
   // conflict pass, even when a sibling duplicates an already-saved student.
   async function correctionBatch(numbers:string[]) {
@@ -239,6 +251,25 @@ try {
     const document = await sessionCorrection(current,batchId,"0",false), p=document.pages[0];
     return saveSessionCorrection(current,batchId,"0",[{sourceId:p.sourceId,revision:p.revision,selected:toggleCorrectionCell(current,p,p.selected,a.id)}],null);
   }
+  const subjectiveReview = await correctionBatch(["91002"]);
+  const reviewRecord = (await store.listScanRecords(subjectiveReview.id))[0];
+  const reviewRecognition = structuredClone(recognition);
+  reviewRecognition.studentId = {status:"ok",value:"91002"};
+  reviewRecognition.subjectiveQuestions[0].status = "review";
+  reviewRecognition.subjectiveQuestions[0].confidence = 0.05;
+  await store.upsertRecognitionResult({scanRecordId:reviewRecord.id,objectiveJson:JSON.stringify(reviewRecognition.questions),
+    subjectiveJson:JSON.stringify(reviewRecognition.subjectiveQuestions)});
+  await storeCorrectionPage(current,"twain_scan_record",reviewRecord.id,reviewRecognition);
+  const beforeSubjective = await sessionCorrection(current,subjectiveReview.id,"0",false);
+  await saveSessionCorrection(current,subjectiveReview.id,"0",beforeSubjective.pages.map(p=>({sourceId:p.sourceId,revision:p.revision,
+    selected:toggleCorrectionCell(current,p,p.selected,a.id)})),null,false,true);
+  const stillReview = await sessionCorrection(current,subjectiveReview.id,"0",false);
+  assert.equal(stillReview.pages[0].recognition.subjectiveQuestions[0].status,"review","保存另一题后主观题仍待确认");
+  await saveSessionCorrection(current,subjectiveReview.id,"0",stillReview.pages.map(p=>({sourceId:p.sourceId,revision:p.revision,
+    selected:p.selected,touched:[ten.id]})),null,false,true);
+  const afterSubjective = await sessionCorrection(current,subjectiveReview.id,"0",false);
+  assert.equal(afterSubjective.pages[0].recognition.subjectiveQuestions[0].status,"ok","显式确认持久化到真实订正文档");
+  assert.equal(afterSubjective.pages[0].recognition.subjectiveQuestions[0].score,10);
   const protectedOriginal = async()=>JSON.stringify(await Promise.all([
     db.all("SELECT objective_score,subjective_score,total_score,manually_modified,modified_by,modified_at FROM student_scores WHERE exam_id=? AND student_id=?",exam.id,student.id),
     db.all("SELECT * FROM question_scores WHERE exam_id=? AND student_id=? ORDER BY id",exam.id,student.id),
