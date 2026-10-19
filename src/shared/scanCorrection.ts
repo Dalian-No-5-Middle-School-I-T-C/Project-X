@@ -1,4 +1,4 @@
-import { findObjectiveQuestion } from "./grading";
+import { findObjectiveQuestion, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "./grading";
 import { isMultiSelectMode } from "./objectiveMode";
 import type { AnswerCard, CombinedRecognitionResult, LayoutElement, PageLayout, Rect } from "./types";
 
@@ -16,8 +16,40 @@ export type CorrectionPage = {
 };
 export type CorrectionDocument = { card: AnswerCard; pages: CorrectionPage[]; version: string };
 export type CorrectionEdit = { sourceId: string; revision: number; selected: string[]; touched?: string[]; recovery?: { fingerprint: string; signature?: string; recognition: CombinedRecognitionResult } };
+/**
+ * 低置信度客观题被老师处理过时，要记进 touched 的格。
+ * 有选中格就记那些格；清空为未答时选中集是空的，改记作用域里的低置信度选项格。
+ * 高置信度格由 isLowConfidence 排除，原答案不会因此变成一次确认。
+ */
+export function lowConfidenceTouchedIds(
+  scope: readonly string[],
+  picked: readonly string[],
+  isLowConfidence: (id: string) => boolean,
+): string[] {
+  const extra = picked.filter(isLowConfidence);
+  if (picked.length === 0) {
+    for (const id of scope) if (isLowConfidence(id) && !extra.includes(id)) extra.push(id);
+  }
+  return extra;
+}
+
 export function correctionCells(page: PageLayout): CorrectionCell[] {
   return page.elements.filter((e): e is CorrectionCell => ["student_digit", "objective_option", "score_cell"].includes(e.type));
+}
+
+/** An explicit interaction with this cell confirms its question, even if the final marks are unchanged. */
+export function isUnconfirmedCorrectionCell(page: Pick<CorrectionPage, "layout" | "recognition">, id: string): boolean {
+  const cell = correctionCells(page.layout).find(entry => entry.id === id);
+  if (cell?.type === "objective_option") {
+    return (page.recognition.questions?.find(q => q.questionNumber === cell.questionNumber)?.confidence ?? 1)
+      < OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD;
+  }
+  if (cell?.type === "score_cell") {
+    const question = page.recognition.subjectiveQuestions?.find(q => q.questionId === cell.questionId
+      && (!q.blockId || q.blockId === cell.blockId));
+    return !!question && question.status !== "ok";
+  }
+  return false;
 }
 const sameRect = (a: Rect | undefined, b: Rect) => a && Math.abs(a.x - b.x) < .01 && Math.abs(a.y - b.y) < .01;
 export function recognizedCells(layout: PageLayout, recognition: CombinedRecognitionResult) {
@@ -90,7 +122,11 @@ export function correctionState(card: AnswerCard, page: CorrectionPage, selected
     if (!isMultiSelectMode(def?.mode ?? "single") && hits.length > 1) { hits.forEach(c => invalid.add(c.id)); errors.push(`第 ${q.questionNumber} 题为单选`); }
     for (const c of hits) if (def?.answerKey?.length && !def.answerKey.includes(c.option)) invalid.add(c.id);
     const changed = hits.map(c => c.option).sort().join() !== [...q.selectedOptions].sort().join();
-    return { ...q, selectedOptions: hits.map(c => c.option), confidence: changed ? 1 : q.confidence };
+    // 老师点过这些格（含「点掉再点回原答案」）即是确认：低置信度不能因为选项没变就一直停在复核阈值下。
+    // 未答没有选中格，确认落在该题任一选项格上（点选后再清空、或直接选「未答」）。
+    const confirmed = hits.some(c => touched.includes(c.id))
+      || (hits.length === 0 && available.some(c => touched.includes(c.id)));
+    return { ...q, selectedOptions: hits.map(c => c.option), confidence: changed || confirmed ? 1 : q.confidence };
   });
   recognition.subjectiveQuestions = (recognition.subjectiveQuestions ?? []).map(q => {
     const all = cells.filter((c): c is Extract<CorrectionCell,{type:"score_cell"}> => c.type === "score_cell" && c.questionId === q.questionId && (!q.blockId || c.blockId === q.blockId));
@@ -100,6 +136,10 @@ export function correctionState(card: AnswerCard, page: CorrectionPage, selected
     evaluated.invalid.forEach(id => invalid.add(id));
     const bad = hits.filter(c => invalid.has(c.id));
     if (!evaluated.valid || bad.length) errors.push(`第 ${q.questionNumber} 题分数格无效`);
+    const changed = all.some(c => selected.includes(c.id) !== page.selected.includes(c.id));
+    const confirmed = all.some(c => touched.includes(c.id));
+    // Rendering or saving another question must preserve this question's review status.
+    if (!changed && !confirmed) return q;
     const toCell = (c: typeof hits[number]) => ({ blockId: c.blockId, questionId: c.questionId, questionNumber: c.questionNumber, score: c.score, rect: c.rect });
     return { ...q, score: evaluated.score, status: evaluated.valid && !bad.length ? "ok" : "invalid", confidence: 1,
       validCells: hits.filter(c => !invalid.has(c.id)).map(toCell), invalidCells: bad.map(toCell) };

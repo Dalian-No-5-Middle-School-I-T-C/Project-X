@@ -727,6 +727,135 @@ async function main() {
     assert(latest.pageNum === 1 && latest.side === "front", "刷新结果按物理页与正反面对应原行");
     assert(saves === 1, "成绩刷新只读，不重新保存已公布成绩");
   }
+  {
+    const values = new Map<string, string>();
+    const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    } });
+    try {
+      const { isGroupQueued } = await import("../src/apps/answer-card/client/lib/scannerUploadLedger");
+      let releaseBlocker: () => void = () => {};
+      const blockerGate = new Promise<void>(resolve => { releaseBlocker = resolve; });
+      let sessions = 0;
+      const mgr = createScannerUploadManager(deps({
+        remoteFetch: async (url) => {
+          if (url.endsWith("/sessions")) {
+            sessions += 1;
+            if (sessions === 1) await blockerGate;
+            return jsonRes({ sessionId: `remote-${sessions}`, uploadTokens: ["t"] });
+          }
+          return jsonRes({ ok: true });
+        },
+      }));
+      const page = { pageNum: 1, side: "front" as const, groupId: "0", getBlob: async () => blob() };
+      const imported = mgr.startUpload({ ...baseInput(1), kind: "import", pages: [page] });
+      await sleepReal(15);
+      assert(mgr.hasGroupUpload("card_1", "0", "scan-new") === false, "导入任务不能挡住另一场扫描的同组编号");
+      const scan = mgr.startUpload({
+        kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "扫描_91001",
+        localSessionId: "scan-new", pages: [{ ...page }],
+      });
+      assert(mgr.getState().jobs.find(job => job.id === scan)?.status === "queued", "新扫描停在排队，还没请求远端");
+      assert(mgr.hasGroupUpload("card_1", "0", "scan-other") === false, "不同扫描会话的同组编号不是同一份原卷");
+      const released = mgr.releaseGroupForLocalDelete("card_1", "0", "scan-new");
+      if (!released.ok) throw new Error(released.message);
+      assert(released.forgetLedger === true, "尚未建远端会话的排队任务删除后应释放入队资格");
+      assert(mgr.getState().jobs.some(job => job.id === scan) === false, "删除前取消尚未开始的上传");
+      assert(mgr.hasGroupUpload("card_1", "0", "scan-new") === false, "取消后不再占住新扫描");
+      assert(isGroupQueued("card_1", "scan-new", "0") === false, "取消排队任务不得留下持久入队标记");
+      const again = mgr.startUpload({
+        kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "扫描_91001",
+        localSessionId: "scan-new", pages: [{ ...page, getBlob: async () => blob() }],
+      });
+      releaseBlocker();
+      assert((await waitTerminal(mgr, imported)).status === "done");
+      assert((await waitTerminal(mgr, again)).status === "done");
+      assert(isGroupQueued("card_1", "scan-new", "0") === true, "远端会话提交完成后记下完成标记");
+
+      let releasePages: () => void = () => {};
+      const pagesGate = new Promise<void>(resolve => { releasePages = resolve; });
+      const live = createScannerUploadManager(deps({
+        remoteFetch: async (url) => {
+          if (url.endsWith("/sessions")) return jsonRes({ sessionId: "live", uploadTokens: ["t"] });
+          if (url.endsWith("/pages")) { await pagesGate; return jsonRes({ ok: true }); }
+          return jsonRes({ ok: true });
+        },
+      }));
+      const uploading = live.startUpload({
+        kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "扫描_91002",
+        localSessionId: "scan-live", pages: [{ ...page, getBlob: async () => blob() }],
+      });
+      const deadline = Date.now() + 3_000;
+      while (live.getState().jobs.find(job => job.id === uploading)?.status !== "uploading") {
+        if (Date.now() > deadline) throw new Error("等待上传中超时");
+        await sleepReal(5);
+      }
+      const blocked = live.releaseGroupForLocalDelete("card_1", "0", "scan-live");
+      assert(blocked.ok === false, "正在读取原图的上传不能被删除打断");
+      releasePages();
+      assert((await waitTerminal(live, uploading)).status === "done");
+
+      // Closing an error card or restarting the manager must keep the same remote session and page tokens.
+      for (const successfulPrefix of [0, 1, 2]) {
+        let recover = false;
+        let creates = 0, completes = 0;
+        const sent: string[] = [];
+        const localSessionId = `restart-${successfulPrefix}`;
+        const remoteFetch = async (url: string, init?: RequestInit) => {
+          if (url.endsWith("/sessions")) {
+            creates++;
+            return jsonRes({ sessionId: localSessionId, uploadTokens: ["front-token", "back-token"] });
+          }
+          assert(url.includes(`/sessions/${localSessionId}/`), "恢复请求必须复用原会话");
+          if (url.endsWith("/pages")) {
+            const token = String((init!.body as FormData).get("token"));sent.push(token);
+            if (!recover && (successfulPrefix === 0 || (successfulPrefix === 1 && token === "back-token"))) {
+              return jsonRes({ message: "controlled page failure" },400);
+            }
+          }
+          if (url.endsWith("/complete")) {
+            completes++;
+            if (!recover && successfulPrefix === 2) return jsonRes({ message: "lost complete response" },500);
+          }
+          return jsonRes({ ok: true });
+        };
+        const makeInput = (): StartUploadInput => ({
+          kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "recovery", localSessionId,
+          pages: ["front", "back"].map((side, i) => ({ pageNum:1,side:side as "front"|"back",layoutPage:i+1,
+            recordId:`source-${i}`,groupId:"0",getBlob:async()=>blob() })),
+        });
+        const original = createScannerUploadManager(deps({remoteFetch}));
+        const id = original.startUpload(makeInput());
+        const error = await waitTerminal(original,id);
+        assert(error.status === "error" && error.uploaded === successfulPrefix,"初次失败保留实际逐页进度");
+        assert(!isGroupQueued("card_1",localSessionId,"0"),"未完成任务不写永久完成标记");
+        assert(original.dismissJob(id),"失败卡可以关闭");
+        assert(original.localGroupDeleteBlock("card_1","0",localSessionId) !== null,"关闭卡后仍保护续传需要的原图");
+        const restored = createScannerUploadManager(deps({remoteFetch}));
+        let rejected = false;
+        try { restored.startUpload({...makeInput(),cardVersion:"ffffffffffffffffffffffff"}); } catch { rejected = true; }
+        assert(rejected,"变更版式不能复用原上传会话");
+        values.set("projectx_server_url","https://other.test");rejected = false;
+        try { restored.startUpload(makeInput()); } catch { rejected = true; }
+        assert(rejected,"切换服务器不得向新服务器发送旧会话");values.delete("projectx_server_url");
+        const before = sent.length;
+        recover = true;
+        const recoveredId = restored.startUpload(makeInput());
+        assert((await waitTerminal(restored,recoveredId)).status === "done","重建 manager 后可完成续传");
+        assert(creates === 1,"续传不新建第二份远端回执");
+        assert(sent.length - before === 2 - successfulPrefix,"已成功的页不重传");
+        if (successfulPrefix === 1) assert(sent.at(-1) === "back-token","续传失败背面复用原 token");
+        assert(completes >= 1 && isGroupQueued("card_1",localSessionId,"0"),"完成后保留去重凭据");
+        assert(restored.localGroupDeleteBlock("card_1","0",localSessionId) === null,"完成后可以删除本机原图");
+      }
+    } finally {
+      if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+      else Reflect.deleteProperty(globalThis, "localStorage");
+    }
+  }
   console.log("scanner-upload-manager-smoke: 全部通过");
 }
 

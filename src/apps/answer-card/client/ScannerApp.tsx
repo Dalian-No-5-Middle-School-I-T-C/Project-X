@@ -10,17 +10,19 @@ import { LoginPageScanner } from "./components/LoginPageScanner";
 import { UploadProgressCard } from "./components/UploadProgressCard";
 import { CardSelectPage } from "./components/CardSelectPage";
 import { ScannerWorkspace } from "./components/ScannerWorkspace";
+import { ScannerPostprocessPage } from "./components/ScannerPostprocessPage";
 import { SkinOnboarding, shouldShowSkinOnboarding } from "./components/SkinOnboarding";
 import { notify, Spinner } from "./components/ui/v2";
 import { DEFAULT_SKIN, SKIN_CHOSEN_KEY } from "./components/SkinSwitcher";
 import { skinPatchDecision } from "./lib/skinPatchGuard";
 import { useSkinPreferenceWriter } from "./lib/skinSync";
 
-// ── ScannerApp：双屏容器 ──
+// ── ScannerApp：三屏容器 ──
 // page="select" → CardSelectPage（答题卡选择，含单科/大考双Tab）
 // page="workspace" → ScannerWorkspace（TWAIN扫描 + 文件导入阅卷）
+// page="postprocess" → ScannerPostprocessPage（每批扫完自动进入，可返回工作台续扫）
 
-type Page = "select" | "workspace";
+type Page = "select" | "workspace" | "postprocess";
 
 function ScannerAppInner() {
   const { user, loading, patchUserLocal, refreshUser } = useAuth();
@@ -30,6 +32,8 @@ function ScannerAppInner() {
   const [page, setPage] = useState<Page>("select");
   const [selectedCardId, setSelectedCardId] = useState<string>("");
   const [selectedCardTitle, setSelectedCardTitle] = useState<string>("");
+  // v2.7.2：本卡已扫完的批次会话；返回工作台续扫后新批次累加进来，异常队列共用同一份
+  const [postSessions, setPostSessions] = useState<Array<{ sessionId: string; pageCount: number }>>([]);
   // 安全 R35：离线用缓存卡进入时的工作台提示（版本 + 缓存时间），空串表示版本与服务器一致
   const [cardVersionNote, setCardVersionNote] = useState<string>("");
   // v2.1.0: 皮肤 = 风格维度（与明暗正交），同步策略与 web 端 App 保持一致。
@@ -116,6 +120,17 @@ function ScannerAppInner() {
     return <LoginPageScanner skin={skin} onSkinChange={setSkin} />;
   }
 
+  if (page === "postprocess" && selectedCardId && postSessions.length) {
+    return (
+      <ScannerPostprocessPage
+        cardId={selectedCardId}
+        cardTitle={selectedCardTitle}
+        sessions={postSessions}
+        onBack={() => setPage("workspace")}
+      />
+    );
+  }
+
   if (page === "workspace" && selectedCardId) {
     return (
       <ScannerWorkspace
@@ -123,6 +138,10 @@ function ScannerAppInner() {
         cardTitle={selectedCardTitle}
         cardVersionNote={cardVersionNote}
         onBack={() => setPage("select")}
+        onScansComplete={(sid, pageCount) => {
+          setPostSessions(prev => [...prev.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }]);
+          setPage("postprocess");
+        }}
         skin={skin}
         onSkinChange={setSkin}
       />
@@ -157,6 +176,7 @@ function ScannerAppInner() {
               setCardVersionNote(`本机缓存版本 ${version}（未连上服务器，${updatedAt}）`);
               setSelectedCardId(cardId);
               setSelectedCardTitle(card?.title || cardId);
+              setPostSessions([]);
               setPage("workspace");
               return;
             }
@@ -167,6 +187,7 @@ function ScannerAppInner() {
             setCardVersionNote("");
             setSelectedCardId(cardId);
             setSelectedCardTitle(card?.title || cardId);
+            setPostSessions([]);
             setPage("workspace");
           } catch (e: unknown) {
             const err = e as { status?: number; message?: string };

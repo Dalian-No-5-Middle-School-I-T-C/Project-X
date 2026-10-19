@@ -79,3 +79,6 @@ gui-test-screenshots/
 .worktrees/
 
 .DS_Store
+
+# brainstorming visual companion (local mockups)
+.superpowers/

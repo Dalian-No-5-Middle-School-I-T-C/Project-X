@@ -5,8 +5,9 @@ import { dataDir } from "../storage";
 import {
   createSession, createScanRecord, getSession, listScanRecords,
   updateScanOcrResult, updateScanQuality, updateSessionStatus,
-  incrementPageCount, upsertRecognitionResult
+  incrementPageCount, upsertRecognitionResult, rememberSessionCardVersion
 } from "../database/scan-store";
+import { cardFingerprint } from "../../../../shared/cardVersion";
 import type { ScanProgressEvent, ScanSessionConfig } from "./scanner-types";
 import { markSessionTerminal } from "./sessionWarnings";
 import { listSources, scan } from "./twain-bridge";
@@ -247,6 +248,8 @@ async function runOcrOnSessionInQueue(
     throw new Error("答题卡不存在，无法识别扫描结果");
   }
   const { card, layout, layoutPath: currentLayoutPath } = prepared;
+  // 识别用的就是这一版卡。补传若改报「现在库里的卡」，版本守卫会把旧版面识别当成新版放行。
+  await rememberSessionCardVersion(sessionId, cardFingerprint(card));
   const session = await getSession(sessionId);
   const studentIdsByGroup = new Map<number, string>();
   // ③（issue #331）：整批一张红笔分数都没读到，说明色彩模式或笔迹出了问题，

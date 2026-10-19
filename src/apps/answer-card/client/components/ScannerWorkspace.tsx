@@ -57,6 +57,8 @@ interface Props {
   onSkinChange?: (skin: string) => void;
   /** 安全 R35：离线用本机缓存卡进入时的版本提示；空/未传表示版本与服务器一致 */
   cardVersionNote?: string;
+  /** v2.7.2：本批扫描完成时上抛给 ScannerApp，自动进入扫描后处理页 */
+  onScansComplete?: (sessionId: string, pageCount: number) => void;
 }
 
 const directoryInputProps = {
@@ -68,7 +70,7 @@ function isImageFile(file: File): boolean {
   return file.type.startsWith("image/") || /\.(png|jpe?g|bmp|webp|tiff?)$/i.test(file.name);
 }
 
-export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange, cardVersionNote }: Props) {
+export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange, cardVersionNote, onScansComplete }: Props) {
   const [cfgOpen, setCfgOpen] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [status, setStatus] = useState("");
@@ -227,9 +229,10 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
             {scanning ? (
               <ScannerPanel
                 cardId={cardId}
-                onScansComplete={(_sId, pageCount) => {
-                  // v2.5.1: 保持面板挂在 done 视图（成绩表可见、上传由全局卡片接管）；退出走面板内按钮
+                onScansComplete={(sid, pageCount) => {
+                  // v2.5.1: 保持面板挂在 done 视图；v2.7.2: 同时上抛给 ScannerApp 自动跳后处理页
                   setStatus(`扫描完成：${pageCount} 张`);
+                  onScansComplete?.(sid, pageCount);
                 }}
                 onClose={() => setScanning(false)}
               />

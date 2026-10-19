@@ -107,6 +107,19 @@ export async function listSessions(cardId?: string): Promise<ScanSession[]> {
   return await db().all("SELECT * FROM twain_scan_sessions ORDER BY created_at DESC") as ScanSession[];
 }
 
+/**
+ * 记下这次识别实际使用的答题卡指纹。只在会话还没有版本时写入：
+ * 后处理补传必须报扫描当时的版本，不能在卡面后来被改过之后改用最新指纹。
+ */
+export async function rememberSessionCardVersion(id: string, version: string): Promise<void> {
+  await db().run(
+    `UPDATE twain_scan_sessions
+     SET card_version = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND (card_version IS NULL OR card_version = '')`,
+    version, id,
+  );
+}
+
 export async function updateSessionStatus(
   id: string, status: ScanSession["status"], errorMsg?: string
 ): Promise<void> {
@@ -240,11 +253,14 @@ export async function updateScanQuality(id: string, quality: number): Promise<vo
   await db().run("UPDATE twain_scan_records SET scan_quality = ? WHERE id = ?", quality, id);
 }
 
+/** 单条删除的格选清理，供批量删除复用（同一事务内，别再各写一套 SQL）。 */
+export async function deleteScanRecordInTransaction(tx: DbAdapter, id: string): Promise<void> {
+  await tx.run("DELETE FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?", id);
+  await tx.run("DELETE FROM twain_scan_records WHERE id = ?", id);
+}
+
 export async function deleteScanRecord(id: string): Promise<void> {
-  await db().transaction(async tx => {
-    await tx.run("DELETE FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?", id);
-    await tx.run("DELETE FROM twain_scan_records WHERE id = ?", id);
-  });
+  await db().transaction(async tx => deleteScanRecordInTransaction(tx, id));
 }
 
 // ── Recognition Result CRUD ────────────────────────────

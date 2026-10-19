@@ -68,5 +68,10 @@ try {
   assert.equal((await db.all("SELECT * FROM scanner_submissions WHERE state='saved'")).length, 1);
   assert.deepEqual(events, ["upload:front", "correct:91002", "correct:91003", "upload:back"]);
   assert.equal(frontReads, 1, "Released successful front must stay released");
+  const replay = await manager.saveSession(id,completed.remoteSessionId!);
+  assert.equal(replay.status,200,await replay.clone().text());
+  assert.equal((await db.all("SELECT * FROM scanner_submissions WHERE state='saved'")).length,1,"恢复完成请求不产生第二份回执");
+  assert.deepEqual(await db.all("SELECT u.student_number,ss.total_score FROM student_scores ss JOIN users u ON u.id=ss.student_id"),scores,
+    "complete 成功但响应丢失时，重放同一会话保留成绩");
   console.log(`PASS duplex correction: ${db.dialect}, released front / rejected correction / retry / paired records / one correct grade`);
 } finally { await fixture.close(); }

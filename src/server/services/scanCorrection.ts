@@ -179,7 +179,7 @@ function changedScores(card: AnswerCard, page: CorrectionPage, edit: CorrectionE
 }
 
 /** Commit corrected marks, then admit only this card through the existing receipt and duplicate checks. */
-export async function saveSessionCorrection(card: AnswerCard, sessionId: string, groupId: string, raw: unknown, userId: number | null, allowRecovery = false) {
+export async function saveSessionCorrection(card: AnswerCard, sessionId: string, groupId: string, raw: unknown, userId: number | null, allowRecovery = false, draft = false) {
   return enqueueScannerSubmission(async () => {
     const db = getMysqlDb(), document = await sessionCorrection(card,sessionId,groupId,false,allowRecovery);
     const edits = validateEdits(document,raw);
@@ -219,12 +219,19 @@ export async function saveSessionCorrection(card: AnswerCard, sessionId: string,
         await tx.run("UPDATE scanner_submissions SET score_snapshot=? WHERE exam_id=? AND session_id=? AND group_id=?",JSON.stringify(snapshot),receipt.exam_id,sessionId,groupId);
       }
     });
+    // 远端上传模式只把订正留在本机识别结果里。本机考试能解析时若直接入库，
+    // 后处理页会把 saved 当成远端回执，确认过的卷不再上传。
+    if (draft) return { saved: false, drafted: true, message: "填涂订正已保存，等待上传到服务器" };
     // Retain queue ownership until this card has passed normal admission checks;
     // retry previews must not observe corrected marks with a still-pending receipt.
     const admission = await resolveScannerExam(card.id,sessionId);
     if (!admission.exam) return {saved:false,message:"填涂订正已保存，等待上传到关联考试"};
     const batch = await processScannerSessionInQueue(card,sessionId,"save",groupId);
-    const saved = Boolean(batch.results.find(r => r.groupId === groupId)?.saved);
+    const row = batch.results.find(r => r.groupId === groupId);
+    const saved = Boolean(row?.saved);
+    if (row && !saved && row.needsReviewCount > 0) {
+      return {saved:false,message:"仍有存疑题，本次订正已留下，全部确认后再入库"};
+    }
     return {saved,message:saved ? "改分已保存" : batch.failures.find(f=>f.groupId===groupId)?.message ?? "订正已保存，请继续处理重复卷"};
   });
 }
