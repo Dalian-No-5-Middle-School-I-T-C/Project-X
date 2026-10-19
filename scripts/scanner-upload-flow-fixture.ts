@@ -4,7 +4,7 @@ import { mkdtemp, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 
-export async function startScannerFlowFixture(port = 0, host = "127.0.0.1", options: { duplex?: boolean } = {}) {
+export async function startScannerFlowFixture(port = 0, host = "127.0.0.1", options: { duplex?: boolean; localScanner?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "projectx-scanner-flow-"));
   process.env.PROJECTX_DB_PATH = path.join(root, "scanner.db");
   process.env.ANSWER_CARD_DATA_DIR = path.join(root, "cards");
@@ -75,6 +75,11 @@ export async function startScannerFlowFixture(port = 0, host = "127.0.0.1", opti
       receipts: await db.all("SELECT session_id,group_id,student_number,state FROM scanner_submissions WHERE exam_id=?", exam.lastInsertRowid) });
   });
   app.use("/api/scanner/upload", router);
+  if (options.localScanner) {
+    const { authMiddleware } = await import("../src/server/middleware/auth");
+    const { createScannerRouter } = await import("../src/apps/answer-card/server/scanner");
+    app.use("/api/scanner", authMiddleware, createScannerRouter(false));
+  }
   app.use((error: Error, _req: unknown, res: import("express").Response, _next: unknown) => res.status(409).json({ message: error.message }));
   const server = app.listen(port, host);
   await new Promise<void>(resolve => server.once("listening", resolve));

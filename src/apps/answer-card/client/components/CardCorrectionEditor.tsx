@@ -107,7 +107,7 @@ export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved}: 
       <DialogBody className="min-h-0 flex-1 overflow-auto bg-muted p-3">
         {busy && !document && <p role="status">正在加载完整答题卡…</p>}
         {missing && <div className="mb-3 flex flex-wrap items-center gap-3 text-sm">
-          <span>此卷缺少坐标数据，请重新识别，核对后保存。</span>
+          <span>{document?.pages.some(p=>p.recovery?.reason==="provenance") ? "此旧卷尚未完成原图与答题卡版本核验，请重新识别，核对后保存。" : "此卷缺少坐标数据，请重新识别，核对后保存。"}</span>
           <Button variant="outline" disabled={busy} onClick={()=>void recover()}>重新识别旧卷</Button>
         </div>}
         {page && edit && <CorrectionCanvas document={document} pageIndex={pageIndex} edit={edit} images={images} zoom={zoom} busy={busy} onToggle={toggle} />}

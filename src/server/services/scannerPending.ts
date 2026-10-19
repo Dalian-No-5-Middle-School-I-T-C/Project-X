@@ -21,6 +21,7 @@ import {
 import { persistScannerResultToMainDb } from "./scannerResultPersistence";
 import { recomputeExamRankings } from "./rankingUpdate";
 import { analysisCache } from "./analysisCache";
+import { assertCorrectionGroupVersion } from "./scanCorrectionProvenance";
 
 type PendingRow = {
   exam_id: number;
@@ -70,14 +71,9 @@ async function evidence(db: DbAdapter, row: PendingRow) {
     group = grouped.groups.get(row.group_id);
   let result: ReturnType<typeof gradeSessionGroup> | undefined,
     issue: string | undefined;
+  let recoveryFingerprints: string[] = [];
   try {
-    if (
-      !session ||
-      session.card_id !== card.id ||
-      session.card_version !== cardFingerprint(card) ||
-      session.version_source === "legacy_verified"
-    )
-      throw new Error("答题卡版本变化或来源未验证，请重新上传");
+    recoveryFingerprints = await assertCorrectionGroupVersion(db, card, session, group?.map(p => p.record.id) ?? []);
     if (!group) throw new Error("原卷已变更，请重新上传");
     if (
       legacySessionBlockReason({
@@ -131,6 +127,7 @@ async function evidence(db: DbAdapter, row: PendingRow) {
         related,
         version: cardFingerprint(card),
         session,
+        recoveryFingerprints,
       }),
     )
     .digest("hex");
@@ -139,7 +136,7 @@ async function evidence(db: DbAdapter, row: PendingRow) {
 export async function listPendingScans(examId: number) {
   const db = getMysqlDb();
   const rows = await db.all<PendingRow>(
-    "SELECT * FROM scanner_submissions WHERE exam_id=? AND (state IN ('held','roster','conflict') OR (state='pending' AND previously_saved=1)) ORDER BY session_id,group_id",
+    "SELECT * FROM scanner_submissions WHERE exam_id=? AND state IN ('held','roster','conflict','pending') ORDER BY session_id,group_id",
     examId,
   );
   return Promise.all(

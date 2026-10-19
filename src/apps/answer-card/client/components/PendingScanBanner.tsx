@@ -122,7 +122,7 @@ export function PendingScanBanner({
   if (!items.length && !error && !choice) return null;
   return (
     <section
-      className="m-4 rounded-lg border border-warning-border bg-warning-soft p-4"
+      className="m-4 max-h-[50vh] shrink-0 overflow-y-auto rounded-lg border border-warning-border bg-warning-soft p-4"
       aria-label="异常扫描卷"
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
