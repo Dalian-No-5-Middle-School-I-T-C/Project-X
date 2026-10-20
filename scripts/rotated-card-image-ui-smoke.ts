@@ -13,7 +13,7 @@ function install(name: string, value: unknown) {
   globals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
   Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
 }
-for (const name of ["window", "document", "navigator", "HTMLElement", "HTMLImageElement", "DocumentFragment", "Element", "Node", "Event", "CustomEvent", "getComputedStyle"]) {
+for (const name of ["window", "document", "navigator", "HTMLElement", "HTMLImageElement", "HTMLButtonElement", "HTMLInputElement", "HTMLSelectElement", "HTMLTextAreaElement", "DocumentFragment", "Element", "Node", "NodeFilter", "Event", "CustomEvent", "getComputedStyle", "MutationObserver"]) {
   install(name, name === "window" ? dom.window : (dom.window as unknown as Record<string, unknown>)[name]);
 }
 install("IS_REACT_ACT_ENVIRONMENT", true);
@@ -82,7 +82,7 @@ try {
   assert.equal(page.svg()!.getAttribute("viewBox"), "0 0 1414 1000", "90° 视口宽高互换");
   assert.equal(ratio(page.svg()!), "1414 / 1000", "90° 容器宽高比同步互换，不留白");
   assert.equal(page.svg()!.querySelector("image")?.getAttribute("width"), "1000", "图片本体仍是原始宽度");
-  assert(page.svg()!.querySelector("g")?.getAttribute("transform")?.includes("rotate(-90)"), "内容整组旋转");
+  assert.equal(page.svg()!.querySelector("g")?.getAttribute("transform"), "translate(1414 0) rotate(90)", "顺时针 90° 使用 SVG 正角度，方向与按钮一致");
 
   await page.rotate("顺时针旋转 90 度");
   assert.equal(page.svg()!.getAttribute("viewBox"), "0 0 1000 1414", "180° 回到原始宽高");
@@ -91,7 +91,7 @@ try {
   await page.rotate("顺时针旋转 90 度");
   assert.equal(page.svg()!.getAttribute("viewBox"), "0 0 1414 1000", "270° 同样互换");
   assert.equal(ratio(page.svg()!), "1414 / 1000", "270° 容器比例同步互换");
-  assert(page.svg()!.querySelector("g")?.getAttribute("transform")?.includes("rotate(90)"), "270° 反向旋转");
+  assert.equal(page.svg()!.querySelector("g")?.getAttribute("transform"), "translate(0 1000) rotate(-90)", "再转两下到 270°，与顺时针相反");
 
   await page.rotate("逆时针旋转 90 度");
   assert.equal(page.svg()!.getAttribute("viewBox"), "0 0 1000 1414", "270° 逆时针回退到 180°");
@@ -131,12 +131,48 @@ try {
   assert.equal(rotateImageBy(90, -90), 0);
   assert.equal(rotateImageBy(270, 90), 0);
 
+  // ── 放大框：90° 走交换宽高的容器，缩放留在外层，不再对 img 做 CSS rotate ──
+  const { AnswerCardLightbox } = await import("../src/apps/answer-card/client/components/AnswerCardLightbox");
+  const lightHost = document.createElement("div");
+  document.body.append(lightHost);
+  const lightRoot = createRoot(lightHost);
+  mounted.push({ host: lightHost, root: lightRoot, render: async () => {}, img: () => null, svg: () => null, rotate: async () => {} });
+  await act(async () => lightRoot.render(createElement(AnswerCardLightbox, {
+    items: [{ id: "p1", title: "原卷", imageUrl: "/api/card/lightbox.png" }],
+    index: 0,
+    zoom: 1.5,
+    onIndexChange: () => {},
+    onZoomChange: () => {},
+    onClose: () => {},
+  })));
+  await settle();
+  const lightDialog = () => document.querySelector("[aria-label='答题卡放大查看']");
+  const lightImg = () => lightDialog()?.querySelector("img") as HTMLImageElement | null;
+  assert(lightImg(), "放大框先按普通图片装入视口");
+  assert(!String(lightImg()!.getAttribute("style") ?? "").includes("rotate"), "未旋转时缩放不再夹带 rotate");
+  fireLoad(lightImg()!, 1000, 1414);
+  await settle();
+  const lightRotate = [...(lightDialog()?.querySelectorAll("button") ?? [])].find(el => el.getAttribute("aria-label") === "顺时针旋转 90 度");
+  assert(lightRotate, "放大框带顺时针旋转");
+  await act(async () => { lightRotate!.click(); });
+  await settle();
+  const lightSvg = lightDialog()?.querySelector("svg[role=img]") as SVGSVGElement | null;
+  assert(lightSvg, "放大框旋转后改用交换宽高的 SVG 容器");
+  assert.equal(lightSvg!.getAttribute("viewBox"), "0 0 1414 1000", "放大框 90° 视口宽高互换");
+  assert.equal(ratio(lightSvg!), "1414 / 1000", "放大框 90° 布局盒跟着交换，不再沿用原图比例");
+  assert.equal(lightSvg!.style.transform, "scale(1.5)", "缩放留在旋转容器外层");
+  assert(!lightSvg!.style.transform.includes("rotate"), "放大框不再用 CSS rotate 代替布局旋转");
+  assert.equal(lightSvg!.querySelector("g")?.getAttribute("transform"), "translate(1414 0) rotate(90)", "放大框顺时针与 SVG 正角度一致");
+
   console.log("PASS rotated-card-image-ui-smoke");
 } catch (error) {
   console.error(error);
   process.exitCode = 1;
 } finally {
   for (const instance of mounted) await act(async () => instance.root.unmount());
+  // Radix 焦点陷阱的 0ms 定时器必须在 jsdom 的 Event 还在时跑完，否则进程会在断言通过后崩掉。
+  await new Promise(resolve => setTimeout(resolve, 40));
+  dom.window.close();
   for (const [name, descriptor] of globals) {
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
     else delete (globalThis as unknown as Record<string, unknown>)[name];

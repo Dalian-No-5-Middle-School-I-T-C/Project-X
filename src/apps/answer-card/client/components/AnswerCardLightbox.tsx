@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from "lucide-react";
 import { cn } from "../lib/utils";
-import { RotationButtons, type ImageRotation } from "./RotatedCardImage";
+import { RotatedCardImage, RotationButtons, type ImageRotation } from "./RotatedCardImage";
 import {
   Button,
   Dialog,
@@ -136,11 +136,14 @@ export function AnswerCardLightbox({
               <ChevronLeft />
             </Button>
           )}
-          <img
+          <RotatedCardImage
             src={current.imageUrl}
             alt={current.title}
-            className="max-h-full max-w-full object-contain transition-transform duration-(--px-dur-1) ease-standard"
-            style={{ transform: `scale(${zoom}) rotate(${rotation}deg)` }}
+            rotation={rotation}
+            frame="contain"
+            scale={zoom}
+            loading="eager"
+            className="transition-transform duration-(--px-dur-1) ease-standard"
           />
           {hasNext && (
             <Button

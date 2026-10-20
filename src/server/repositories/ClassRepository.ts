@@ -316,6 +316,26 @@ export class ClassRepository {
     });
   }
 
+  /**
+   * 源班班主任资格按班级关系判断，不看全局 `teacher_role` 是否叫班主任。
+   * 按班标记优先；全局班主任角色只在「该班还没有按班标记」时兼容旧的空科目关联。
+   */
+  async isSourceClassHead(teacherId: number, classId: number, teacherRole: string | null): Promise<boolean> {
+    const row = await this.db.get<{ ok: number }>(
+      `SELECT 1 AS ok FROM teacher_classes tc
+        WHERE tc.teacher_id = ? AND tc.class_id = ? AND (
+          tc.is_head_teacher = 1 OR (
+            ? = 'head_teacher' AND tc.subject IS NULL AND NOT EXISTS (
+              SELECT 1 FROM teacher_classes h
+               WHERE h.class_id = tc.class_id AND h.is_head_teacher = 1
+            )
+          )
+        )`,
+      teacherId, classId, teacherRole
+    );
+    return Boolean(row);
+  }
+
   async listTeacherClasses(teacherId: number): Promise<Array<{
     class_id: number; class_name: string; grade_name: string; subject: string | null;
   }>> {

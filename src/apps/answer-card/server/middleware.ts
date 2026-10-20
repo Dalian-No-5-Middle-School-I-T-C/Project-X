@@ -266,15 +266,19 @@ export function makeViewPermissionGate(flag: ViewPermissionFlag) {
  * 因此 `grade_id` 维度从 `classes` 表解析；`subject` 维度以调用者自身任教学科比对
  * （班级表无学科列，花名册本身也不是按学科切分的数据）。
  * 矩阵表不存在或教师无任何记录 → 兼容放行。
+ *
+ * 花名册读取对学年主任保持放行（与成绩可见范围一致）。调班会回溯改写历次考试归属，
+ * 调用方传 `enforceMatrix: true` 时学年主任也要过源班矩阵，显式 `can_view_students = 0` 不得被角色短路。
  */
 export async function hasClassViewPermission(
   user: express.Request["user"],
   classId: number,
-  flag: ViewPermissionFlag
+  flag: ViewPermissionFlag,
+  options?: { enforceMatrix?: boolean }
 ): Promise<boolean> {
   if (!user) return false;
   if (user.role_name === "admin") return true;
-  if (user.role_name === "teacher" && user.teacher_role === "grade_leader") return true;
+  if (!options?.enforceMatrix && user.role_name === "teacher" && user.teacher_role === "grade_leader") return true;
   if (user.role_name !== "teacher") return false;
   const teacherId = (user as { id?: number }).id;
   if (!teacherId) return false;

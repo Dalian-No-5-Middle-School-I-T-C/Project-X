@@ -165,6 +165,47 @@ async function main(): Promise<void> {
   await send(`/api/classes/${classB}/students/${sids["9001"]}/move`, "POST", tokenHead, { targetClassId: classA });
   ok(Number(db.prepare("SELECT COUNT(*) AS c FROM class_students WHERE class_id = ? AND student_id = ?").get(classA, sids["9001"])?.c) === 1, "调班回归用例已还原花名册");
 
+  const leader = await users.createUser({ username: "t-grade", password: "pass-1234", name: "学年主任", role_id: 2, teacher_role: "grade_leader" });
+  const tokenLeader = (await authService.login("t-grade", "pass-1234")).token!;
+  matrix(leader.id, { class_id: classA, can_view_students: 0 });
+  const leaderDenied = await send(`/api/classes/${classA}/students/${sids["9001"]}/move`, "POST", tokenLeader, { targetClassId: classB });
+  ok(leaderDenied.status === 403 && String(leaderDenied.body?.message).includes("学生名单"), `学年主任在源班名单被显式关闭时调班被 403（实际 ${leaderDenied.status}）`);
+  ok(snapshot(sids["9001"]) === String(classA), "学年主任被名单门拒绝时不得重写历史归属");
+  clearMatrix(leader.id);
+  const leaderMove = await send(`/api/classes/${classA}/students/${sids["9001"]}/move`, "POST", tokenLeader, { targetClassId: classB });
+  ok(leaderMove.status === 200, `未关闭名单的学年主任仍可调班（实际 ${leaderMove.status}）`);
+  ok(snapshot(sids["9001"]) === String(classB), "学年主任调班成功后历次考试归属跟随现班");
+  await send(`/api/classes/${classB}/students/${sids["9001"]}/move`, "POST", tokenLeader, { targetClassId: classA });
+  ok(snapshot(sids["9001"]) === String(classA), "学年主任用例已把考试归属还原");
+
+  db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, '语文')").run(teacherB.id, classA);
+  db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, '语文')").run(teacherB.id, classB);
+  const teachOnly = await send(`/api/classes/${classA}/students/${sids["9001"]}/move`, "POST", tokenB, { targetClassId: classB });
+  ok(teachOnly.status === 403 && String(teachOnly.body?.message).includes("班主任"), `只任课、不是源班班主任的教师调班被 403（实际 ${teachOnly.status}）`);
+  ok(snapshot(sids["9001"]) === String(classA), "任课教师被拒时不得重写历史归属");
+  db.prepare("DELETE FROM teacher_classes WHERE teacher_id = ?").run(teacherB.id);
+
+  const subjectHeadDenied = await send(`/api/classes/${classA}/students/${sids["9001"]}/move`, "POST", tokenA, { targetClassId: classB });
+  ok(subjectHeadDenied.status === 403, `学科老师尚未被指定为班主任时调班被 403（实际 ${subjectHeadDenied.status}）`);
+  const { ClassRepository } = await import("../src/server/repositories/ClassRepository");
+  const classAdmin = new ClassRepository();
+  await classAdmin.replaceClassHeadTeacher(classA, teacherA.id);
+  await classAdmin.replaceClassHeadTeacher(classB, teacherA.id);
+  ok(db.prepare("SELECT teacher_role FROM users WHERE id = ?").get(teacherA.id)?.teacher_role === "subject_teacher", "指定班主任不改全局角色");
+  ok(Number(db.prepare("SELECT is_head_teacher FROM teacher_classes WHERE teacher_id = ? AND class_id = ?").get(teacherA.id, classA)?.is_head_teacher) === 1, "源班按班班主任标记已写上");
+  const sourceOnly = await send(`/api/classes/${classA}/students/${sids["9001"]}/move`, "POST", tokenA, { targetClassId: 9999 });
+  ok(sourceOnly.status === 403, `按班班主任的目标班越界被 403（实际 ${sourceOnly.status}）`);
+  ok(snapshot(sids["9001"]) === String(classA), "目标班越界时按班班主任也不改写历史归属");
+  const subjectHeadMove = await send(`/api/classes/${classA}/students/${sids["9001"]}/move`, "POST", tokenA, { targetClassId: classB });
+  ok(subjectHeadMove.status === 200, `全局角色仍是学科老师、但两班都是班主任时调班成功（实际 ${subjectHeadMove.status}）`);
+  ok(snapshot(sids["9001"]) === String(classB), "按班班主任调班后历次考试归属跟随现班");
+  await send(`/api/classes/${classB}/students/${sids["9001"]}/move`, "POST", tokenA, { targetClassId: classA });
+  await classAdmin.replaceClassHeadTeacher(classA, head.id);
+  await classAdmin.replaceClassHeadTeacher(classB, head.id);
+  ok(Number(db.prepare("SELECT is_head_teacher FROM teacher_classes WHERE teacher_id = ? AND class_id = ?").get(teacherA.id, classA)?.is_head_teacher) === 0, "学科老师的班主任标记已还原");
+  ok(db.prepare("SELECT 1 FROM teacher_classes WHERE teacher_id = ? AND class_id = ?").get(teacherA.id, classB) === undefined, "临时加上的目标班关联已移除");
+  ok(Number(db.prepare("SELECT is_head_teacher FROM teacher_classes WHERE teacher_id = ? AND class_id = ?").get(head.id, classA)?.is_head_teacher) === 1, "原班主任标记已恢复");
+
   console.log("\n== R29 应考名单读取与整体替换 ==");
   ok((await get(`/api/exams/${examA}/participants`, tokenS1)).status === 403, "学生读取应考名单被 403");
   ok((await get(`/api/exams/${examA}/participants`, tokenA)).status === 200, "任教教师读取应考名单成功");

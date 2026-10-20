@@ -556,7 +556,8 @@ try {
   assert.equal(rotatedCanvas!.getAttribute("viewBox"), "0 0 1414 1000", "旋转 90° 后视口宽高互换");
   assert(rotatedCanvas!.getAttribute("aria-label")?.includes("已旋转 90°"), "画布告知当前方向");
   assert.equal(scoreCell()!.getAttribute("points"), rotatedPoints, "热区坐标不随显示旋转改写");
-  assert(scoreCell()!.parentElement?.getAttribute("transform")?.includes("rotate(-90)"), "热区随图片一起旋转");
+  assert(scoreCell()!.parentElement?.getAttribute("transform")?.includes("rotate(90)"), "热区随图片按顺时针方向旋转");
+  assert(!scoreCell()!.parentElement?.getAttribute("transform")?.includes("rotate(-90)"), "顺时针按钮不再生成逆时针的 rotate(-90)");
   await clickNode(scoreCell());await settle();
   assert.notEqual(scoreCell()!.getAttribute("aria-pressed"), pressedBefore, "旋转后点选仍命中同一格");
   await clickNode(scoreCell());await settle();

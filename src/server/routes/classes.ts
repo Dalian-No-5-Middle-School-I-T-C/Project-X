@@ -53,12 +53,14 @@ const canReadClassRoster = async (req: Request, res: Response, next: express.Nex
 
 /**
  * 调班门（issue #347）：调班会回溯重写该生历次考试的班级归属，属于跨组织写操作，
- * 因此比花名册读取更严格。管理员保持 `class:manage`；教师侧只放行显式的
- * 班主任 / 学年主任（`teacher_role`），未配置细分角色的旧数据教师即使在
- * `getAccessibleClassIds` 里被兼容成全校可见，也不获得调班权。
- * 源班与目标班都必须在自己的范围内（学年主任为全校），并且**任何一条分支都要**
- * 过源班的 `can_view_students` 开关——「不限制班级集合」不等于「跳过其他权限检查」。
- * 两端同范围可避免把学生调出自己可见的组织后失去跟踪。
+ * 因此比花名册读取更严格。
+ * - 管理员保持 `class:manage`。
+ * - 学年主任范围是全校，但源班 `can_view_students` 仍要读权限矩阵本身；
+ *   `hasClassViewPermission` 对学年主任的读取放行不能用在这里。
+ * - 班主任资格看源班关系（`teacher_classes.is_head_teacher`，含旧数据兼容），
+ *   不要求全局 `teacher_role` 恰好是班主任。学科老师被指定为源班班主任后可以调班。
+ * - 未配置细分角色的旧数据教师即使在读取侧被兼容成全校可见，也不获得调班权。
+ * - 非学年主任还要目标班落在本人可见班级里。每一条放行分支都过源班名单门。
  */
 const canMoveStudent = async (req: Request, res: Response, next: express.NextFunction): Promise<void> => {
   const user = req.user;
@@ -74,22 +76,26 @@ const canMoveStudent = async (req: Request, res: Response, next: express.NextFun
     res.status(403).json({ message: `权限不足：缺少 ${PERMISSIONS.CLASS_MANAGE}` });
     return;
   }
-  if (user.teacher_role !== TEACHER_ROLES.HEAD_TEACHER && user.teacher_role !== TEACHER_ROLES.GRADE_LEADER) {
-    res.status(403).json({ message: "权限不足：调班只能由管理员、源班班主任或学年主任操作" });
-    return;
-  }
   const fromId = Number(req.params.id);
   const targetId = Number((req.body as { targetClassId?: unknown } | undefined)?.targetClassId);
   if (!Number.isInteger(fromId) || fromId <= 0 || !Number.isInteger(targetId) || targetId <= 0) {
     res.status(400).json({ message: "无效的班级 ID" });
     return;
   }
-  const accessible = await getAccessibleClassIds(user);
-  if (accessible !== null && (!accessible.includes(fromId) || !accessible.includes(targetId))) {
-    res.status(403).json({ message: "无权调班：源班级与目标班级都必须是你任教或担任班主任的班级" });
-    return;
+  const isGradeLeader = user.teacher_role === TEACHER_ROLES.GRADE_LEADER;
+  const scopedTeacher = user.teacher_role === TEACHER_ROLES.HEAD_TEACHER || user.teacher_role === TEACHER_ROLES.SUBJECT_TEACHER;
+  if (!isGradeLeader) {
+    if (!scopedTeacher || !await classRepo.isSourceClassHead(user.id, fromId, user.teacher_role ?? null)) {
+      res.status(403).json({ message: "权限不足：调班只能由管理员、源班班主任或学年主任操作" });
+      return;
+    }
+    const accessible = await getAccessibleClassIds(user);
+    if (accessible === null || !accessible.includes(fromId) || !accessible.includes(targetId)) {
+      res.status(403).json({ message: "无权调班：源班级与目标班级都必须是你任教或担任班主任的班级" });
+      return;
+    }
   }
-  if (!(await hasClassViewPermission(user, fromId, "can_view_students"))) {
+  if (!(await hasClassViewPermission(user, fromId, "can_view_students", { enforceMatrix: true }))) {
     res.status(403).json({ message: "权限不足：管理员已关闭你对该班级「学生名单」的查看权限" });
     return;
   }
