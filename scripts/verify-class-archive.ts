@@ -162,8 +162,8 @@ try {
   console.log('PASS: 当前班级在读优先，归档班（id 更大、同刻）不选中');
   await repo.deleteClass(residue.id);
 
-  // 历史曲线按考试时班级，不能在调班后改用新班同学的成绩。
-  // 旧考试原班只有本人 90 分；新考试在读班的两人均分为 60。
+  // 调班回溯（#347）：历史考试的班级归属跟学生一起搬到现班，班均分按现班算。
+  // 旧考试里本人 90 分、现班陪跑 30 分 → 现班均分 60，不再是原班单人 90。
   await db.run('UPDATE exams SET score_published = 1 WHERE id = ?', e);
   const trendMate = (await db.run("INSERT INTO users(username,password_hash,name,role_id,student_number) VALUES ('trend_mate','disabled','班均分陪跑',3,'ARC003')")).lastInsertRowid;
   await db.run('INSERT INTO class_students(class_id, student_id) VALUES (?,?)', second.id, trendMate);
@@ -172,7 +172,7 @@ try {
   const trendRows = await new ScoreRepository().getStudentTrendData(Number(student));
   const trendRow = trendRows.find(p => Number(p.examId) === Number(e));
   assert.ok(trendRow, '已公布考试应进入学生成长曲线');
-  assert.equal(Number(trendRow!.classAvg), 90, '历史考试班均分保留原班，不使用调班后的新班');
+  assert.equal(Number(trendRow!.classAvg), 60, '历史考试班均分按调班后的现班计算');
   const currentExam = await exam('在读新考试');
   await db.run('UPDATE exams SET score_published = 1 WHERE id = ?', currentExam);
   await db.transaction(async tx => {
@@ -182,7 +182,7 @@ try {
   });
   const currentTrend = (await new ScoreRepository().getStudentTrendData(Number(student))).find(p => Number(p.examId) === Number(currentExam));
   assert.equal(Number(currentTrend?.classAvg), 60, '新考试班均分取在读班，归档班不得污染新考试');
-  console.log('PASS: 成长曲线旧考试保留原班，新考试使用在读班');
+  console.log('PASS: 成长曲线新旧考试都按调班后的现班统计，归档班不再留住已调走的学生');
 
   // Reusing the name must create a new identity, never revive history.
   const replacement = await repo.createClass(g.id, '高二1班');

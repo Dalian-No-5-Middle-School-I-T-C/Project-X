@@ -1040,6 +1040,9 @@ export function ClassManagement() {
             <p className="text-sm text-muted-foreground">
               将 {moveTarget?.name}（{moveTarget?.student_number ?? moveTarget?.username}）迁移到：
             </p>
+            <p className="text-sm text-muted-foreground">
+              迁移后该学生历次考试的班级归属与班级统计均按新班级计算，考号无需改动。
+            </p>
             <Field label="年级">
               <Select
                 value={moveGradeId != null ? String(moveGradeId) : NONE}

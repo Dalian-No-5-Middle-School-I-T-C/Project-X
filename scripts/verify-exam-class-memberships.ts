@@ -105,7 +105,7 @@ try {
   assert.deepEqual(await membership(e1, a), [], "Migration must not invent historical membership");
   console.log("PASS: populated pre-v59 upgrade, idempotence and legacy fallback");
 
-  // Move a normal single-class student; verify visible consumers, not only rows.
+  // Move a normal single-class student; #347 makes the move retroactive.
   const absent = await student("缺考学生"); await classes.addStudent(old.id, absent);
   const rosterExam = await exam("缺考后补录", old.id);
   const future = await exam("尚未开始的年级考试", null, grade.id);
@@ -115,50 +115,57 @@ try {
   assert.deepEqual(await membership(future, b), [], "Empty drafts must not freeze before the exam begins");
   await score(future, b, 70);
   assert.deepEqual(await membership(future, b), [selected.id]);
-  assert.deepEqual(await membership(e1, b), [old.id]);
-  await assertKnowledgeClasses();
-  assert.deepEqual(await membership(rosterExam, absent), [old.id]);
-  assert.equal((await ensureExamParticipants(db, rosterExam)).participantCount, 3);
+  assert.deepEqual(await membership(e1, b), [selected.id], "A move re-anchors every past exam to the new class");
+  const movedStats = await analysis.getClassKnowledgeStats(e1);
+  assert.equal(movedStats.matrix.find(r => r.knowledgePoint === '函数')?.byClass.find(r => r.classId === old.id)?.scoreRate, 100);
+  assert.equal(Math.round((movedStats.matrix.find(r => r.knowledgePoint === '函数')?.byClass.find(r => r.classId === selected.id)?.scoreRate ?? 0) * 10) / 10, 66.7);
+  assert.deepEqual(await membership(rosterExam, absent), [selected.id], "缺考名单里的学生调班后同样归到新班");
+  assert.equal((await ensureExamParticipants(db, rosterExam)).participantCount, 3, "应考名单保持调班时的成员，不随回溯改写");
   await score(rosterExam, absent, 50);
-  assert.equal((await analysis.getScoreTableData(rosterExam)).rows[0].classId, old.id);
-  assert.equal((await analysis.getExportData(e1, old.id)).students.some(r => r.studentNumber === "H2"), true);
-  assert.equal((await analysis.getScoreSummary(e1, old.id))?.count, 2);
-  assert.equal((await analysis.getScoreTableData(e1, selected.id)).rows.some((r: any) => r.studentId === b), false);
-  assert.equal((await analysis.getQuestionStudentScores(e1, 1, old.id)).find(r => r.studentId === b)?.className, old.name);
-  assert.equal((await analysis.getWrongQuestionRows(e1, {classId: old.id, threshold: 0.7})).find(r => r.studentId === b)?.className, old.name);
-  assert.equal((await analysis.getStudentTrend(b)).find(r => r.examId === e1)?.classAvg, 80);
-  assert.equal((await new ScoreRepository().getStudentTrendData(b)).find(r => r.examId === e1)?.classAvg, 80);
+  assert.equal((await analysis.getScoreTableData(rosterExam)).rows[0].classId, selected.id);
+  assert.equal((await analysis.getExportData(e1, old.id)).students.some(r => r.studentNumber === "H2"), false);
+  assert.equal((await analysis.getExportData(e1, selected.id)).students.some(r => r.studentNumber === "H2"), true);
+  assert.equal((await analysis.getScoreSummary(e1, old.id))?.count, 1);
+  assert.equal((await analysis.getScoreSummary(e1, selected.id))?.count, 3);
+  assert.equal((await analysis.getScoreTableData(e1, selected.id)).rows.some((r: any) => r.studentId === b), true);
+  assert.equal((await analysis.getQuestionStudentScores(e1, 1, selected.id)).find(r => r.studentId === b)?.className, selected.name);
+  assert.equal((await analysis.getQuestionStudentScores(e1, 1, old.id)).find(r => r.studentId === b), undefined);
+  assert.equal((await analysis.getWrongQuestionRows(e1, {classId: selected.id, threshold: 0.7})).find(r => r.studentId === b)?.className, selected.name);
+  assert.equal((await analysis.getStudentTrend(b)).find(r => r.examId === e1)?.classAvg, 66.7);
+  assert.equal((await new ScoreRepository().getStudentTrendData(b)).find(r => r.examId === e1)?.classAvg, 66.7);
   const afterMove = await exam("分班后数学", null, grade.id); await score(afterMove, b, 75);
   assert.deepEqual(await membership(afterMove, b), [selected.id]);
   await db.transaction(tx => new ExamRepository(tx).saveStudentScore(e1, b, 60, 0));
-  assert.deepEqual(await membership(e1, b), [old.id], "Regrading must retain the original class");
-  console.log("PASS: subject selection preserves historic tables/export/filter/drilldown/trends, absent roster and regrading");
+  assert.deepEqual(await membership(e1, b), [selected.id], "Regrading keeps the score in the class the student moved to");
+  console.log("PASS: a move re-anchors historic tables, exports, filters, drilldown, trends and regrading");
 
   const mixed = await group([e1, afterMove]);
-  assert.equal((await analysis.getGroupClassComparison(mixed)).classes.find(r => r.classId === old.id)?.count, 2);
-  assert.equal((await analysis.getGroupClassComparison(mixed)).classes.find(r => r.classId === selected.id)?.count, 2);
-  assert.equal((await analysis.getGroupDistribution(mixed, "class")).find(r => r.scopeId === String(old.id))?.sampleSize, 2);
+  assert.equal((await analysis.getGroupClassComparison(mixed)).classes.find(r => r.classId === old.id)?.count, 1);
+  assert.equal((await analysis.getGroupClassComparison(mixed)).classes.find(r => r.classId === selected.id)?.count, 3);
+  assert.equal((await analysis.getGroupDistribution(mixed, "class")).find(r => r.scopeId === String(old.id))?.sampleSize, 1);
   const full = await group([e1, afterMove], true);
   assert.equal((await analysis.getGroupParticipantIds(full)).size, 1);
-  assert.deepEqual((await analysis.getGroupClassComparison(full)).classes.map(r => [r.classId, r.count]), [[old.id, 1]]);
-  console.log("PASS: groups spanning a move use reference-exam membership; complete-participant gate remains intact");
+  assert.deepEqual((await analysis.getGroupClassComparison(full)).classes.map(r => [r.classId, r.count]), [[selected.id, 1]]);
+  console.log("PASS: groups spanning a move follow the re-anchored class; complete-participant gate remains intact");
 
   await classes.moveStudent(selected.id, promoted.id, b);
   await classes.deleteGrade(grade.id);
   const afterPromotion = await exam("高二数学", null, nextGrade.id); await score(afterPromotion, b, 80);
   assert.deepEqual(await membership(afterPromotion, b), [promoted.id]);
-  assert.equal((await analysis.getScoreTableData(e1)).rows.find((r: any) => r.studentId === b)?.classId, old.id);
-  assert.equal((await analysis.getScoreTableData(afterMove)).rows[0].classId, selected.id);
-  assert.equal((await analysis.getStudentTrend(b)).find(r => r.examId === e1)?.classAvg, 80);
-  console.log("PASS: grade promotion and archival retain exam-time classes");
+  assert.equal((await analysis.getScoreTableData(e1)).rows.find((r: any) => r.studentId === b)?.classId, promoted.id, "跨年级调班同样回溯到现班");
+  assert.equal((await analysis.getScoreTableData(afterMove)).rows[0].classId, promoted.id);
+  assert.equal((await analysis.getStudentTrend(b)).find(r => r.examId === e1)?.classAvg, 60);
+  console.log("PASS: grade promotion and archival move the student's whole history to the current class");
 
   const unknown = await student("原无班级"), unknownExam = await exam("无班级考试"); await score(unknownExam, unknown, 30);
-  await classes.addStudent(promoted.id, unknown);
   assert.deepEqual(await membership(unknownExam, unknown), [0]);
   assert.equal((await analysis.getScoreTableData(unknownExam, 0)).totalCount, 1);
-  assert.equal((await analysis.getScoreSummary(unknownExam, promoted.id)), null);
-  assert.equal((await analysis.getGroupClassComparison(await group([unknownExam]))).classes[0].classId, 0);
-  console.log("PASS: later class assignment cannot relabel an unknown historic class");
+  await classes.addStudent(promoted.id, unknown);
+  assert.deepEqual(await membership(unknownExam, unknown), [promoted.id], "补上班级后，此前记为未知班级的考试改按该班统计");
+  assert.equal((await analysis.getScoreTableData(unknownExam, 0)).totalCount, 0);
+  assert.equal((await analysis.getScoreSummary(unknownExam, promoted.id))?.count, 1);
+  assert.equal((await analysis.getGroupClassComparison(await group([unknownExam]))).classes[0].classId, promoted.id);
+  console.log("PASS: assigning a class relabels an unknown historic class");
 
   const imported = await student("重导入"), importExam = await exam("导入前考试");
   await classes.addStudent(promoted.id, imported);
@@ -166,23 +173,26 @@ try {
   const other = await classes.createClass(nextGrade.id, "补充班");
   const result = await new UserRepository().batchImportFromCsv([["年级", "班级", "学号", "姓名"], ["高二", other.name, `H${serial}`, "重导入"]]);
   assert.deepEqual(result.students.errors, []);
-  assert.deepEqual(await membership(importExam, imported), [promoted.id]);
+  assert.deepEqual(await membership(importExam, imported), [promoted.id, other.id].sort((x, y) => x - y), "CSV 重导入是增量：多班在读的学生历次考试在两个班各计一次");
   await classes.removeStudent(promoted.id, imported);
-  assert.equal((await analysis.getScoreTableData(importExam)).rows[0].classId, promoted.id);
-  console.log("PASS: CSV additions and withdrawal preserve historic classes");
+  assert.deepEqual(await membership(importExam, imported), [other.id]);
+  assert.equal((await analysis.getScoreTableData(importExam)).rows[0].classId, other.id);
+  console.log("PASS: CSV additions and withdrawal follow the current class links");
 
-  // Archive-first then new-grade import: retained old links must not contaminate new exams.
+  // Archive-first then new-grade import: the retired class must not keep the student.
   const g3 = await classes.createGrade("毕业测试"), archived = await classes.createClass(g3.id, "旧班");
   const staying = await classes.createClass(g3.id, "新班"), transferred = await student("先归档再加入");
   await classes.addStudent(archived.id, transferred); const oldExam = await exam("归档前", null, g3.id);
   await db.run("INSERT INTO student_scores(exam_id,student_id,total_score) VALUES (?,?,70)", oldExam, transferred);
-  await classes.deleteClass(archived.id); await classes.addStudent(staying.id, transferred);
+  await classes.deleteClass(archived.id);
+  assert.deepEqual(await membership(oldExam, transferred), [archived.id], "全部关联被归档时保持原归属，不改写成未知班级");
+  await classes.addStudent(staying.id, transferred);
   const newExam = await exam("归档后", null, g3.id); await score(newExam, transferred, 80);
-  assert.deepEqual(await membership(oldExam, transferred), [archived.id]);
+  assert.deepEqual(await membership(oldExam, transferred), [staying.id], "加入新班后历次考试改按新班统计");
   assert.deepEqual(await membership(newExam, transferred), [staying.id]);
   await setExplicitParticipants(db, oldExam, [transferred]);
-  assert.deepEqual(await membership(oldExam, transferred), [archived.id]);
-  console.log("PASS: archived links excluded from new grade exams; roster edits cannot rewrite historical classes");
+  assert.deepEqual(await membership(oldExam, transferred), [staying.id], "名单编辑不再改动班级归属");
+  console.log("PASS: archived links are replaced by the new class; roster edits follow the move rule");
 
   // Exercise actual routes with an injected administrator identity. This tests
   // history consumers; authentication/authorization is covered by verify:auth
@@ -205,22 +215,24 @@ try {
     const rankingResponse = await fetch(`${base}/groups/${one}/rankings`);
     assert.equal(rankingResponse.status, 200);
     const ranking = await rankingResponse.json() as any;
-    assert.equal(ranking.rows.find((r: any) => r.studentId === b)?.classId, old.id);
+    assert.equal(ranking.rows.find((r: any) => r.studentId === b)?.classId, promoted.id, "调班后历次考试的班级按现班返回");
     assert.equal(ranking.rows.find((r: any) => r.studentId === b)?.subjects[0].gradeRank, 2);
     const filteredResponse = await fetch(`${base}/groups/${one}/rankings?classId=${old.id}`);
     assert.equal(filteredResponse.status, 200);
     const filtered = await filteredResponse.json() as any;
-    assert.equal(filtered.totalStudents, 2, "All historical members must remain visible in the selected class");
-    assert.equal(filtered.rows.find((r: any) => r.studentId === b)?.totalClassRank, 2);
+    assert.equal(filtered.totalStudents, 1, "已调走的学生不再计入原班筛选");
+    assert.equal(filtered.rows.find((r: any) => r.studentId === b), undefined);
+    assert.equal(filtered.rows.find((r: any) => r.studentId === a)?.totalClassRank, 1);
     const ladderResponse = await fetch(`${base}/ladder/exam-groups/${two}`);
     assert.equal(ladderResponse.status, 200);
     const ladder = await ladderResponse.json() as any;
     assert.equal(ladder.rows.find((r: any) => r.studentId === a)?.totalScore, 200, "A's total must not double because of multi-class joins");
-    assert.equal(ladder.rows.find((r: any) => r.studentId === b)?.classId, old.id);
+    assert.equal(ladder.rows.find((r: any) => r.studentId === b)?.classId, promoted.id);
     const comparisonResponse = await fetch(`${base}/groups/${one}/class-comparison`);
     assert.equal(comparisonResponse.status, 200);
     const comparison = await comparisonResponse.json() as any;
-    assert.equal(comparison.classes.find((r: any) => r.classId === old.id)?.count, 2);
+    assert.equal(comparison.classes.find((r: any) => r.classId === old.id)?.count, 1);
+    assert.equal(comparison.classes.find((r: any) => r.classId === promoted.id)?.count, 1);
     const exported = await fetch(`${base}/groups/${one}/export`, {method: "POST", signal: AbortSignal.timeout(10000), headers: {"Content-Type": "application/json"}, body: JSON.stringify({includeOverview: true})});
     assert.equal(exported.status, 200);
     const zip = XLSX.CFB.read(Buffer.from(await exported.arrayBuffer()), {type: "buffer"});
@@ -231,7 +243,7 @@ try {
     const workbook = XLSX.read(overview.content, {type: "buffer"});
     assert.equal(workbook.SheetNames[0], "总览");
     const exportedRows = XLSX.utils.sheet_to_json<any>(workbook.Sheets[workbook.SheetNames[0]]);
-    assert.equal(exportedRows.find(row => row["姓名"] === "原班B")?.["班级"], old.name);
+    assert.equal(exportedRows.find(row => row["姓名"] === "原班B")?.["班级"], promoted.name);
     const hiddenExam = await exam("未参加的考试");
     await score(hiddenExam, c, 99);
     const mixedGroup = await group([e1, hiddenExam]);
@@ -240,8 +252,8 @@ try {
     assert.equal(studentLadderResponse.status, 200);
     const studentLadder = await studentLadderResponse.json() as any;
     assert.equal(studentLadder.rows.find((r: any) => r.studentId === a)?.totalScore, 100);
-    assert.equal(studentLadder.rows.find((r: any) => r.studentId === b)?.classId, old.id,
-      "Student scope filtering must retain historical class display");
+    assert.equal(studentLadder.rows.find((r: any) => r.studentId === b)?.classId, promoted.id,
+      "Student scope filtering follows the re-anchored class");
     assert.equal(studentLadder.rows.find((r: any) => r.studentId === c)?.totalScore, 40,
       "Unparticipated exams must not contribute scores to the group ladder");
     assert.ok(studentLadder.rows.every((r: any) => r.subjectScores.every((s: any) => s.examId === e1)),
@@ -250,6 +262,6 @@ try {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
   }
-  console.log("PASS: actual group ranking, comparison and ladder routes retain historical classes and unique scores");
+  console.log("PASS: actual group ranking, comparison and ladder routes follow the re-anchored class and keep unique scores");
   console.log(`ALL PASS (${db.dialect})`);
 } finally { await resetAdapter(); if (!maria) closeDatabase(); }

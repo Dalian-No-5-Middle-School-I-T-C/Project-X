@@ -1,7 +1,7 @@
 import { buildInsertIgnore, buildUpsertSQL, getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { ensureExamParticipants, preserveStudentExamHistory } from "../services/examParticipants";
-import { captureExistingExamClasses } from "../services/examClassMemberships";
+import { captureExistingExamClasses, reanchorStudentExamClasses } from "../services/examClassMemberships";
 import { analysisCache } from "../services/analysisCache";
 
 export interface GradeRecord {
@@ -198,6 +198,7 @@ export class ClassRepository {
     const sql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
     if (!existing) await preserveStudentExamHistory(tx, studentId);
     await tx.run(sql, classId, studentId);
+    if (!existing) await reanchorStudentExamClasses(tx, studentId);
     return !existing;
   }
 
@@ -205,6 +206,7 @@ export class ClassRepository {
     await this.db.transaction(async (tx) => {
       await preserveStudentExamHistory(tx, studentId);
       await tx.run("DELETE FROM class_students WHERE class_id = ? AND student_id = ?", classId, studentId);
+      await reanchorStudentExamClasses(tx, studentId);
     });
     analysisCache.clear();
   }
@@ -218,6 +220,8 @@ export class ClassRepository {
       await tx.run("DELETE FROM class_students WHERE class_id = ? AND student_id = ?", fromClassId, studentId);
       const sql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
       await tx.run(sql, toClassId, studentId);
+      // 一经调班即回溯：该生每次考试都改到新班统计（issue #347）。
+      await reanchorStudentExamClasses(tx, studentId);
     });
     analysisCache.clear();
   }

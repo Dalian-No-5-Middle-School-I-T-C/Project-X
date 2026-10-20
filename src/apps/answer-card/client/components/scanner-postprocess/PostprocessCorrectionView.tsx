@@ -5,6 +5,7 @@ import {
   Spinner, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableWrap,
 } from "../ui/v2";
 import { CorrectionCanvas } from "./CorrectionCanvas";
+import { RotationButtons, type ImageRotation } from "../RotatedCardImage";
 import type { PostprocessChannel } from "./postprocessChannel";
 import { replaceScopedSelection } from "../../../../../shared/scanPostprocess";
 import {
@@ -89,6 +90,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
   const [images, setImages] = useState<Record<string, string>>({});
   const [pageIndex, setPageIndex] = useState(0);
   const [zoom, setZoom] = useState(1);
+  const [rotation, setRotation] = useState<ImageRotation>(0);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -298,12 +300,13 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
           <Button size="sm" variant="outline" disabled={zoom <= 1} onClick={() => setZoom(z => Math.max(1, z - 0.5))}>缩小</Button>
           <span className="tabular-nums">{Math.round(zoom * 100)}%</span>
           <Button size="sm" variant="outline" disabled={zoom >= 4} onClick={() => setZoom(z => Math.min(4, z + 0.5))}>放大</Button>
+          <RotationButtons rotation={rotation} onChange={setRotation} disabled={saving} />
           <Button variant="primary" size="sm" icon={<Save />} disabled={!dirty || saving || errors.length > 0 || locked} loading={saving} onClick={() => void save()}>保存修改</Button>
         </div>
       </div>
       <div className="flex min-h-0 flex-1 gap-4 p-4">
         <div className="min-w-0 flex-1 overflow-auto rounded-md bg-muted p-3">
-          <CorrectionCanvas document={document} pageIndex={pageIndex} edit={edit} images={images} zoom={zoom} busy={busy || locked} reviewQuestions={reviewQuestions} onToggle={toggle} />
+          <CorrectionCanvas document={document} pageIndex={pageIndex} edit={edit} images={images} zoom={zoom} rotation={rotation} busy={busy || locked} reviewQuestions={reviewQuestions} onToggle={toggle} />
         </div>
         <div ref={tableRef} className="min-w-0 flex-1 overflow-auto">
           <TableWrap>

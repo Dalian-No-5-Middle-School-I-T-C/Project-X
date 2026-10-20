@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from "lucide-react";
 import { cn } from "../lib/utils";
+import { RotationButtons, type ImageRotation } from "./RotatedCardImage";
 import {
   Button,
   Dialog,
@@ -53,6 +55,9 @@ export function AnswerCardLightbox({
   onClose,
 }: AnswerCardLightboxProps) {
   const current = index >= 0 && index < items.length ? items[index] : null;
+  const [rotation, setRotation] = useState<ImageRotation>(0);
+  /** 关闭后复位方向，下一批原卷不带着上次的旋转打开 */
+  useEffect(() => { if (index < 0) setRotation(0); }, [index]);
   if (!current) return null;
 
   const hasPrev = index > 0;
@@ -112,6 +117,8 @@ export function AnswerCardLightbox({
             >
               <ZoomIn />
             </Button>
+            <div className="h-5 w-px bg-border" aria-hidden />
+            <RotationButtons size="icon-sm" variant="ghost" rotation={rotation} onChange={setRotation} />
           </div>
         </DialogHeader>
 
@@ -133,7 +140,7 @@ export function AnswerCardLightbox({
             src={current.imageUrl}
             alt={current.title}
             className="max-h-full max-w-full object-contain transition-transform duration-(--px-dur-1) ease-standard"
-            style={{ transform: `scale(${zoom})` }}
+            style={{ transform: `scale(${zoom}) rotate(${rotation}deg)` }}
           />
           {hasNext && (
             <Button
