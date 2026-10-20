@@ -5,11 +5,12 @@
 - **调班即回溯考试归属**：`reanchorStudentExamClasses` 在人工调班（迁移学生、加入班级、移出班级、导入新建班级关联）后，把该生全部考试的 `exam_class_memberships` 重写为调班后的班级，考号保持不变。此前 `captureExamClasses` 一旦为某场考试落过快照就永不改写，`preserveStudentExamHistory` 又把改动前的旧班级冻结进历史表，所以强基班调整、转班、留级跳级之后，历次考试与班级统计仍停在原班（issue #347 ①）。
 - **回溯的取值口径**：优先取该生仍在读的班级，其次取已归档关联；考试范围（班级或年级）与学生现班不再重合时（跨年级调班、原班专属考试）仍归到现班，不让历史成绩落进筛选盲区。学生已无任何班级关联时保持原样，不把历史改成「未知班级」；反过来，归属为「未知班级」的历史考试在被分配班级后会一并补上。班级排名与分数本身不在回溯范围内重算，按现有口径随成绩变化重算。
 - **跟随归属的下游口径**：班级汇总、班级对比、梯队与年级梯子、成长曲线的班均分、成绩导出、按班筛选与钻取、重新判分后的归属全部按调班后的现班；实际参加名单（`exam_participants`）仍按考试记录存在与否判定，回溯班级不改名单人数。
-- **调班接口的权限**：`POST /api/classes/:id/students/:studentId/move` 从只允许 `class:manage` 改为复用现有范围判断——管理员与持 `class:manage` 者直通，教师需源班级与目标班级都在其任教/担任班主任的范围内，越界返回 403；前端隐藏按钮不作为授权依据。
+- **调班接口的权限**：`POST /api/classes/:id/students/:studentId/move` 从只允许 `class:manage` 改为复用现有范围判断——管理员与持 `class:manage` 者直通；教师侧只放行显式的班主任与学年主任（`teacher_role`），源班级与目标班级都必须落在 `getAccessibleClassIds` 的范围内，并且无论范围是否为全校都要过源班级的 `can_view_students` 开关。未配置细分角色的旧数据教师即使在读取侧被兼容成全校可见，也不获得调班权；前端隐藏按钮不作为授权依据。
 - **原卷旋转（issue #347 ③④）**：新增 `RotatedCardImage` / `RotationButtons`，扫描端「查看与订正异常卷」的改分画布、学号点选、整卡改分弹窗，以及网页端扫描原卷预览、答题卡放大查看和学生端「查看原卷」都可 90° 步进旋转。改分画布把图片与填涂格热区放进同一个 SVG 变换，旋转后点选坐标不变；旋转只影响显示，不写回图片、坐标或识别结果，弹窗关闭后复位。
 - **#347 ②「无法确定考试归属」**：报告人复核为本场重复送卡，不是归属缺陷，本次不改代码。
+- **PR #348 评审修复**：① 调班门不再把「范围不受限」当成「跳过其他权限检查」（上述角色与名单门，并补显式拒绝的 POST 回归）；② `RotatedCardImage` 在图片加载成功时就记录尺寸——原先只在已请求旋转时才记录，导致「先看图再点旋转」的正常流程里同一个 `<img>` 不会再触发 load，旋转永远不生效；③ 90°/270° 时容器宽高比与 `viewBox` 同源互换（`rotationBox`），否则竖卷转正后留大片空白、布局错位。新增 `scripts/rotated-card-image-ui-smoke.ts`（`npm run verify:card-rotation-ui`）做组件级挂载回归：真实 `load` 事件驱动、点按钮切状态、同一实例换页重测尺寸、加载失败回调透传，改前该脚本按旧实现即失败。
 - **文档**：`AGENTS.md` 的班级口径、`readus/整卡改分说明.md`、`readus/原卷与逐题答案-使用说明.md` 同步改写。
-- **验证**：`npm run typecheck`、`vite build --mode web`、`vite build --mode scanner` 通过；`verify:exam-class-memberships`（含回溯后的排名、对比、梯队、趋势、导出、筛选与重新判分断言）、`verify:class-archive`、`verify:permission-scope`、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-postprocess-all` 均 ALL PASS。
+- **验证**：`npm run typecheck`、`vite build --mode web`、`vite build --mode scanner` 通过；`verify:exam-class-memberships`（含回溯后的排名、对比、梯队、趋势、导出、筛选与重新判分断言）、`verify:class-archive`、`verify:permission-scope`（131/0，含调班三条显式拒绝与成功路径）、`verify:card-rotation-ui`、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-postprocess-all` 均 ALL PASS。
 - **已知限制**：以上验证只在 SQLite 上执行，本机没有 MariaDB 实例，MariaDB 方言分支未跑；调班入口目前只在「账号管理 → 班级管理」下（受 `user:manage` 门禁），教师虽已被接口允许，仍缺可见入口；真机扫描仪与浏览器端人工验收未做。
 
 ## 2026-10-17：PR #332 —— 双面批次收尾、红笔分数格强制彩色与告警可恢复、DPI 逐轴取证

@@ -16,8 +16,14 @@ export function rotateImageBy(rotation: ImageRotation, delta: 90 | -90): ImageRo
   return ((((rotation + delta) % 360) + 360) % 360) as ImageRotation;
 }
 
+/** 90°/270° 之后视觉盒的宽高互换：viewBox 与容器宽高比必须同源，否则转完留大片空白。 */
+export function rotationBox(width: number, height: number, rotation: ImageRotation): { width: number; height: number } {
+  return rotation === 90 || rotation === 270 ? { width: height, height: width } : { width, height };
+}
+
 export function rotationViewBox(width: number, height: number, rotation: ImageRotation): string {
-  return rotation === 90 || rotation === 270 ? `0 0 ${height} ${width}` : `0 0 ${width} ${height}`;
+  const box = rotationBox(width, height, rotation);
+  return `0 0 ${box.width} ${box.height}`;
 }
 
 /** SVG 变换从右往左作用，所以先 rotate 再把内容平移回交换后的视口内。 */
@@ -55,19 +61,22 @@ export function RotatedCardImage({ src, alt, rotation = 0, className, loading = 
         onError={onError}
         onLoad={(event) => {
           const { naturalWidth: width, naturalHeight: height } = event.currentTarget;
-          if (rotation !== 0 && width > 0 && height > 0) setDims({ width, height });
+          // 尺寸与旋转请求无关，加载成功就记下来：图片加载完成后才点旋转按钮时，
+          // 同一个 <img> 不会再触发 load，缺了这一步就永远进不了 SVG 分支。
+          if (width > 0 && height > 0) setDims({ width, height });
         }}
         className={cn("block h-auto w-full", className)}
       />
     );
   }
+  const box = rotationBox(dims.width, dims.height, rotation);
   return (
     <svg
       viewBox={rotationViewBox(dims.width, dims.height, rotation)}
       width="100%"
       role="img"
       aria-label={alt}
-      style={{ aspectRatio: `${dims.width} / ${dims.height}` }}
+      style={{ aspectRatio: `${box.width} / ${box.height}` }}
       className={cn("block h-auto max-w-none", className)}
     >
       <g transform={rotationTransform(dims.width, dims.height, rotation)}>

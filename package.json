@@ -131,6 +131,7 @@
     "verify:scanner-postprocess": "tsx scripts/scanner-postprocess-smoke.ts",
     "verify:scanner-postprocess-ui": "tsx scripts/scanner-postprocess-ui-smoke.ts",
     "verify:scanner-postprocess-delete": "tsx scripts/scanner-postprocess-delete-smoke.ts",
+    "verify:card-rotation-ui": "tsx scripts/rotated-card-image-ui-smoke.ts",
     "verify:scanner-postprocess-all": "tsx scripts/scanner-postprocess-smoke.ts && tsx scripts/scanner-postprocess-delete-smoke.ts && tsx scripts/scanner-postprocess-ui-smoke.ts"
   },
   "browserslist": [

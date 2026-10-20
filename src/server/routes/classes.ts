@@ -3,7 +3,7 @@ import type { Request, Response } from "express";
 import { ClassRepository } from "../repositories/ClassRepository";
 import { UserRepository } from "../repositories/UserRepository";
 import { authMiddleware, requirePermission, requireRole } from "../middleware/auth";
-import { PERMISSIONS, ROLE_IDS, ROLE_NAMES, roleHasPermission } from "../auth/permissions";
+import { PERMISSIONS, ROLE_IDS, ROLE_NAMES, TEACHER_ROLES, roleHasPermission } from "../auth/permissions";
 import { isTeacherSubject } from "../../shared/subjects";
 import { hasClassViewPermission } from "../../apps/answer-card/server/middleware";
 import { getAccessibleClassIds } from "./scores";
@@ -52,9 +52,12 @@ const canReadClassRoster = async (req: Request, res: Response, next: express.Nex
 };
 
 /**
- * 调班范围门（issue #347）：管理员保持 `class:manage`；班主任 / 学年主任也允许，
- * 但源班与目标班都必须落在 `getAccessibleClassIds` 的范围内（学年主任与未配置
- * 精细角色的旧数据教师返回 null 即全校），并叠加源班级的 `can_view_students` 开关。
+ * 调班门（issue #347）：调班会回溯重写该生历次考试的班级归属，属于跨组织写操作，
+ * 因此比花名册读取更严格。管理员保持 `class:manage`；教师侧只放行显式的
+ * 班主任 / 学年主任（`teacher_role`），未配置细分角色的旧数据教师即使在
+ * `getAccessibleClassIds` 里被兼容成全校可见，也不获得调班权。
+ * 源班与目标班都必须在自己的范围内（学年主任为全校），并且**任何一条分支都要**
+ * 过源班的 `can_view_students` 开关——「不限制班级集合」不等于「跳过其他权限检查」。
  * 两端同范围可避免把学生调出自己可见的组织后失去跟踪。
  */
 const canMoveStudent = async (req: Request, res: Response, next: express.NextFunction): Promise<void> => {
@@ -71,15 +74,18 @@ const canMoveStudent = async (req: Request, res: Response, next: express.NextFun
     res.status(403).json({ message: `权限不足：缺少 ${PERMISSIONS.CLASS_MANAGE}` });
     return;
   }
-  const accessible = await getAccessibleClassIds(user);
-  if (accessible === null) {
-    next();
+  if (user.teacher_role !== TEACHER_ROLES.HEAD_TEACHER && user.teacher_role !== TEACHER_ROLES.GRADE_LEADER) {
+    res.status(403).json({ message: "权限不足：调班只能由管理员、源班班主任或学年主任操作" });
     return;
   }
   const fromId = Number(req.params.id);
   const targetId = Number((req.body as { targetClassId?: unknown } | undefined)?.targetClassId);
-  const inScope = (classId: number) => Number.isInteger(classId) && classId > 0 && accessible.includes(classId);
-  if (!inScope(fromId) || !inScope(targetId)) {
+  if (!Number.isInteger(fromId) || fromId <= 0 || !Number.isInteger(targetId) || targetId <= 0) {
+    res.status(400).json({ message: "无效的班级 ID" });
+    return;
+  }
+  const accessible = await getAccessibleClassIds(user);
+  if (accessible !== null && (!accessible.includes(fromId) || !accessible.includes(targetId))) {
     res.status(403).json({ message: "无权调班：源班级与目标班级都必须是你任教或担任班主任的班级" });
     return;
   }
