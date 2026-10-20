@@ -28,16 +28,34 @@ export async function correctionSourceFingerprint(db: DbAdapter, card: AnswerCar
   return hash.digest("hex");
 }
 
-async function verifiedCorrectionFingerprint(db: DbAdapter, card: AnswerCard, sourceId: string): Promise<string | null> {
+export const STALE_CORRECTION_PROVENANCE = "旧卷恢复凭据已失效，请重新核验原图与识别结果后再保存";
+
+export type CorrectionProvenanceState = "absent" | "valid" | "invalid";
+
+/**
+ * 没有恢复指纹的页按普通扫描处理。已经写过指纹、但原图或识别结果对不上的页
+ * 不能再当成普通扫描改正式成绩，调用方必须要求重新核验。
+ */
+export async function correctionProvenanceState(db: DbAdapter, card: AnswerCard, sourceId: string): Promise<CorrectionProvenanceState> {
   const row = await db.get<{ recovery_fingerprint: string | null }>(
     "SELECT recovery_fingerprint FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?", sourceId);
-  if (!row?.recovery_fingerprint) return null;
-  try { return row.recovery_fingerprint === await correctionSourceFingerprint(db, card, sourceId) ? row.recovery_fingerprint : null; }
-  catch { return null; }
+  if (!row?.recovery_fingerprint) return "absent";
+  try {
+    return row.recovery_fingerprint === await correctionSourceFingerprint(db, card, sourceId) ? "valid" : "invalid";
+  } catch {
+    return "invalid";
+  }
+}
+
+async function verifiedCorrectionFingerprint(db: DbAdapter, card: AnswerCard, sourceId: string): Promise<string | null> {
+  if (await correctionProvenanceState(db, card, sourceId) !== "valid") return null;
+  const row = await db.get<{ recovery_fingerprint: string | null }>(
+    "SELECT recovery_fingerprint FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?", sourceId);
+  return row?.recovery_fingerprint ?? null;
 }
 
 export async function hasCorrectionProvenance(db: DbAdapter, card: AnswerCard, sourceId: string): Promise<boolean> {
-  return !!await verifiedCorrectionFingerprint(db, card, sourceId);
+  return await correctionProvenanceState(db, card, sourceId) === "valid";
 }
 
 export async function assertCorrectionGroupVersion(db: DbAdapter, card: AnswerCard,

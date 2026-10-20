@@ -99,6 +99,19 @@ try {
   const a = correctionCells(manualPage.layout).find(c=>c.type==="objective_option" && c.option==="A")!;
   await saveStudentCorrection(card,exam.id,student.id,[{sourceId:manualPage.sourceId,revision:manualPage.revision,selected:toggleCorrectionCell(card,manualPage,manualPage.selected,a.id)}],admin.lastInsertRowid);
   assert(await hasCorrectionProvenance(db,card,records[0].id),"later grade editing retains valid recovery evidence");
+  const admittedScore = Number((await db.get<{total_score:number}>("SELECT total_score FROM student_scores WHERE exam_id=? AND student_id=?",exam.id,student.id))!.total_score);
+  const proof = (await db.get<{recovery_fingerprint:string}>("SELECT recovery_fingerprint FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?",records[0].id))!.recovery_fingerprint;
+  await db.run("UPDATE scan_correction_pages SET recovery_fingerprint=? WHERE source_type='twain_scan_record' AND source_id=?", "f".repeat(64), records[0].id);
+  const staleDoc = await studentCorrection(card,exam.id,student.id), stalePage = staleDoc.pages[0];
+  const optionB = correctionCells(stalePage.layout).find(c=>c.type==="objective_option" && c.option==="B")!;
+  await assert.rejects(
+    () => saveStudentCorrection(card,exam.id,student.id,[{sourceId:stalePage.sourceId,revision:stalePage.revision,selected:toggleCorrectionCell(card,stalePage,stalePage.selected,optionB.id)}],admin.lastInsertRowid),
+    /凭据已失效/,
+  );
+  assert.equal(Number((await db.get<{total_score:number}>("SELECT total_score FROM student_scores WHERE exam_id=? AND student_id=?",exam.id,student.id))!.total_score), admittedScore, "stale recovery proof must not change the formal grade");
+  assert.equal(await hasCorrectionProvenance(db,card,records[0].id), false);
+  await db.run("UPDATE scan_correction_pages SET recovery_fingerprint=? WHERE source_type='twain_scan_record' AND source_id=?", proof, records[0].id);
+  assert.equal(await hasCorrectionProvenance(db,card,records[0].id), true, "restoring the matching fingerprint makes the page editable again");
   assert.match((await current("1")).issue!,/版本核验/);
   const second = await recover("1","91009"); assert.equal((await put("1",second)).status,200);
   item = await current("1"); assert.equal(item.issue,undefined);

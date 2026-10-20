@@ -18,7 +18,7 @@ import { markScoreMutated } from "./examPublishEvents";
 import { resolveScannerExam } from "./scannerExam";
 import { analysisCache } from "./analysisCache";
 import { CardRepository } from "../repositories/CardRepository";
-import { assertCorrectionGroupVersion, correctionSourceFingerprint, hasCorrectionProvenance, needsCorrectionProvenance } from "./scanCorrectionProvenance";
+import { assertCorrectionGroupVersion, correctionProvenanceState, correctionSourceFingerprint, hasCorrectionProvenance, needsCorrectionProvenance, STALE_CORRECTION_PROVENANCE } from "./scanCorrectionProvenance";
 
 export async function storeCorrectionPage(card: AnswerCard, sourceType: CorrectionPage["sourceType"], sourceId: string | number,
   recognition: CombinedRecognitionResult, db = getMysqlDb()) {
@@ -286,7 +286,12 @@ export async function saveStudentCorrection(card: AnswerCard, examId: number, st
     await db.transaction(async tx => {
       await tx.run("UPDATE exams SET id=id WHERE id=?",examId);
       const recoveredIds: string[] = [];
-      for (const page of document.pages) if (page.sourceType === "twain_scan_record" && await hasCorrectionProvenance(tx,card,page.sourceId)) recoveredIds.push(page.sourceId);
+      for (const page of document.pages) {
+        if (page.sourceType !== "twain_scan_record") continue;
+        const provenance = await correctionProvenanceState(tx, card, page.sourceId);
+        if (provenance === "invalid") throw new Error(STALE_CORRECTION_PROVENANCE);
+        if (provenance === "valid") recoveredIds.push(page.sourceId);
+      }
       const results = await writePages(tx,document,edits,userId);
       const student = await tx.get<{student_number:string}>("SELECT student_number FROM users WHERE id=?",studentId);
       const number = results.find(r => r.page.layout.studentArea)?.recognition.studentId?.value;
