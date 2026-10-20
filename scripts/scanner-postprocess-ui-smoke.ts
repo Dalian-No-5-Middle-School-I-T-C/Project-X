@@ -545,6 +545,23 @@ try {
   assert(saveButton() && !saveButton()!.disabled,"点回原分数同样可以明确确认");
   await clickText("保存修改");assert(reviewed);
 
+  // issue #347：横放原卷旋转到正向再点选，热区必须仍落在同一格上
+  const rotatedPoints = scoreCell()!.getAttribute("points");
+  const pressedBefore = scoreCell()!.getAttribute("aria-pressed");
+  const rotateButton = [...reviewHost.querySelectorAll("button")].find(el => el.getAttribute("aria-label") === "顺时针旋转 90 度");
+  assert(rotateButton, "改分视图带旋转按钮");
+  await clickNode(rotateButton!);await settle();
+  const rotatedCanvas = reviewHost.querySelector('svg[aria-label^="第 1 页答题卡"]') as SVGSVGElement | null;
+  assert(rotatedCanvas, "旋转后仍渲染点选画布");
+  assert.equal(rotatedCanvas!.getAttribute("viewBox"), "0 0 1414 1000", "旋转 90° 后视口宽高互换");
+  assert(rotatedCanvas!.getAttribute("aria-label")?.includes("已旋转 90°"), "画布告知当前方向");
+  assert.equal(scoreCell()!.getAttribute("points"), rotatedPoints, "热区坐标不随显示旋转改写");
+  assert(scoreCell()!.parentElement?.getAttribute("transform")?.includes("rotate(-90)"), "热区随图片一起旋转");
+  await clickNode(scoreCell());await settle();
+  assert.notEqual(scoreCell()!.getAttribute("aria-pressed"), pressedBefore, "旋转后点选仍命中同一格");
+  await clickNode(scoreCell());await settle();
+  assert.equal(scoreCell()!.getAttribute("aria-pressed"), pressedBefore, "再点一次回到原状态");
+
   console.log("PASS scanner-postprocess-ui-smoke");
 } catch (error) {
   failure = error;
