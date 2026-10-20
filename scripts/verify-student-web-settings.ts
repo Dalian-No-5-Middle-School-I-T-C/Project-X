@@ -69,8 +69,127 @@ async function assertLateOpacityPatchCannotFinishAfterDelete(): Promise<void> {
   assert.deepEqual(afterFailure, ["delete"], "前一条透明度请求失败也不能卡住移除");
 }
 
+/** 初始关闭 → 滑块打开浮层 → 移除：浮层必须关掉，未发出的旧 PATCH 不能排在删除后面。 */
+async function assertRemoveClearsOverlayAndDropsPendingOpacity(): Promise<void> {
+  const { JSDOM } = await import("jsdom");
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", { url: "https://web.test" });
+  const previous = new Map<string, PropertyDescriptor | undefined>();
+  const install = (name: string, value: unknown) => {
+    previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+  };
+  for (const name of ["window", "document", "navigator", "localStorage", "sessionStorage", "HTMLElement", "HTMLInputElement", "HTMLButtonElement", "HTMLFormElement", "HTMLSelectElement", "HTMLTextAreaElement", "DocumentFragment", "Element", "Node", "NodeFilter", "Event", "CustomEvent", "MutationObserver", "getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"]) {
+    install(name, name === "window" ? dom.window : (dom.window as unknown as Record<string, unknown>)[name]);
+  }
+  install("IS_REACT_ACT_ENVIRONMENT", true);
+  install("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  install("requestAnimationFrame", (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0) as unknown as number);
+  install("cancelAnimationFrame", (id: number) => clearTimeout(id));
+  const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
+  const nativeSetTimeout = setTimeout;
+  const nativeClearTimeout = clearTimeout;
+  install("setTimeout", ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+    const id = nativeSetTimeout(handler, timeout, ...args);
+    pendingTimers.add(id);
+    return id;
+  }) as typeof setTimeout);
+  install("clearTimeout", ((id: ReturnType<typeof setTimeout>) => {
+    pendingTimers.delete(id);
+    nativeClearTimeout(id);
+  }) as typeof clearTimeout);
+  const writes: string[] = [];
+  install("fetch", async (input: unknown, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+    if (url.includes("/api/auth/me")) {
+      return json({
+        id: 2, username: "teacher", name: "教师", role_id: 2, role_name: "teacher",
+        permissions: [], teacher_role: "subject_teacher", subject: "数学", password_change_required: false,
+      });
+    }
+    if (url.includes("/api/users/me/settings") && method === "PATCH") {
+      writes.push(`patch:${String(init?.body ?? "")}`);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return json({ ok: true });
+    }
+    if (url.includes("/api/users/me/background") && method === "DELETE") {
+      writes.push("delete");
+      return json({ ok: true, removed: true, opacityReset: true });
+    }
+    if (url.includes("/api/users/me/settings")) return json({ scoreDisplayMode: "zscore", reviewConfidenceThreshold: 0.12, backgroundOpacity: 0, showTabBar: 1, backgroundUploadLimit: "5 MiB" });
+    if (url.includes("/api/ai/providers")) return json([]);
+    return json({});
+  });
+  const { createElement, useEffect, useState } = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { act } = await import("react");
+  const { AuthProvider } = await import("../src/apps/answer-card/client/auth/AuthContext");
+  const { WorkspaceProvider } = await import("../src/apps/answer-card/client/WorkspaceContext");
+  const { AccountSettingsPage } = await import("../src/apps/answer-card/client/pages/AccountSettingsPage");
+
+  function Harness() {
+    const [showBg, setShowBg] = useState(0);
+    useEffect(() => {
+      if (showBg > 0) {
+        document.documentElement.style.setProperty("--bg-opacity", String(showBg));
+        document.body.classList.add("has-bg-image");
+      } else {
+        document.documentElement.style.setProperty("--bg-opacity", "0");
+        document.body.classList.remove("has-bg-image");
+      }
+    }, [showBg]);
+    const value = new Proxy({ theme: "light", setTheme() {}, skin: "paper-edge", setSkin() {}, showBg, setShowBg }, {
+      get(target, prop) {
+        if (prop in target) return (target as Record<string | symbol, unknown>)[prop];
+        return () => {};
+      },
+    });
+    return createElement(WorkspaceProvider, { value: value as never }, createElement(AccountSettingsPage));
+  }
+
+  const host = document.getElementById("root")!;
+  const root = createRoot(host);
+  try {
+    await act(async () => { root.render(createElement(AuthProvider, null, createElement(Harness))); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    const slider = () => document.querySelector('input[type="range"]') as HTMLInputElement | null;
+    assert.ok(slider(), "教师客户端设置里有背景透明度滑块");
+    assert.equal(document.body.classList.contains("has-bg-image"), false, "进入页面时浮层是关的");
+    const proto = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+    await act(async () => {
+      proto?.set?.call(slider(), "0.2");
+      slider()!.dispatchEvent(new window.Event("input", { bubbles: true }));
+      slider()!.dispatchEvent(new window.Event("change", { bubbles: true }));
+    });
+    assert.equal(document.body.classList.contains("has-bg-image"), true, "滑块打开透明度后浮层开启");
+    assert.equal(document.documentElement.style.getPropertyValue("--bg-opacity"), "0.2");
+    const click = async (label: string) => {
+      const button = [...document.querySelectorAll("button")].find((el) => el.textContent?.replace(/\s+/g, "") === label);
+      assert.ok(button, `找不到按钮 ${label}`);
+      await act(async () => { button!.click(); });
+    };
+    await click("移除背景图");
+    await click("移除");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 80)); });
+    assert.equal(document.body.classList.contains("has-bg-image"), false, "从关闭态打开后再移除，浮层必须关掉");
+    assert.equal(document.documentElement.style.getPropertyValue("--bg-opacity"), "0");
+    assert.deepEqual(writes, ["delete"], "400ms 内移除要取消还没发出的透明度 PATCH，删除是唯一写入");
+  } finally {
+    for (const id of pendingTimers) nativeClearTimeout(id);
+    pendingTimers.clear();
+    await act(async () => { root.unmount(); });
+    dom.window.close();
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+  }
+}
+
 async function main(): Promise<void> {
   await assertLateOpacityPatchCannotFinishAfterDelete();
+  await assertRemoveClearsOverlayAndDropsPendingOpacity();
   const { initializeDatabase, closeDatabase, getDatabase, ensureDefaultAdmin } = await import("../src/server/db/index");
   const { createApp } = await import("../src/apps/answer-card/server/index");
   const { UserRepository } = await import("../src/server/repositories/UserRepository");
