@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { CalendarRange, TrendingDown, TrendingUp } from "lucide-react";
+import { CalendarRange, Minus, TrendingDown, TrendingUp } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { StudentSemesterComparison as SemesterComparison } from "../../../../shared/types";
 import { cn } from "../lib/utils";
@@ -38,6 +38,23 @@ const SUBJECT_BORDER_CLASS: Record<string, string> = {
   "历史": "border-chart-8", "地理": "border-chart-2", "政治": "border-chart-5",
 };
 const FALLBACK_BORDER_CLASS = "border-chart-8";
+
+/** 学期得分率差：0 是持平，不用上升色和「+0 pp」。与 judgeProgress(0) === "stable" 一致。 */
+export function SemesterRateDelta({ change }: { change: number }) {
+  const tone = change > 0 ? "good" : change < 0 ? "bad" : "neutral";
+  return (
+    <SemesterStat
+      tone={tone}
+      label="较上学期得分率"
+      value={
+        <>
+          {change > 0 ? <TrendingUp className="size-5" aria-hidden /> : change < 0 ? <TrendingDown className="size-5" aria-hidden /> : <Minus className="size-5" aria-hidden />}
+          <span>{change === 0 ? "持平" : `${change > 0 ? "+" : ""}${change} pp`}</span>
+        </>
+      }
+    />
+  );
+}
 
 /** 学期概览统计块：大数值 + 指标名，语气色（好/差）走语义令牌类 */
 function SemesterStat({
@@ -132,18 +149,7 @@ export function StudentSemesterComparison() {
             value={current.avgScoreRate == null ? "—" : `${current.avgScoreRate}%`}
             label="学期得分率"
           />
-          {avgScoreRateChange != null && (
-            <SemesterStat
-              tone={avgScoreRateChange >= 0 ? "good" : "bad"}
-              label="较上学期得分率"
-              value={
-                <>
-                  {avgScoreRateChange >= 0 ? <TrendingUp className="size-5" /> : <TrendingDown className="size-5" />}
-                  {avgScoreRateChange >= 0 ? "+" : ""}{avgScoreRateChange} pp
-                </>
-              }
-            />
-          )}
+          {avgScoreRateChange != null && <SemesterRateDelta change={avgScoreRateChange} />}
         </div>
 
         {current.avgScoreRate == null && (

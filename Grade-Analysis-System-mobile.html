@@ -189,6 +189,7 @@ body { font-family: 'Noto Sans SC', sans-serif; background: #f1f5f9; }
   <div id="mobileTabBar" class="mobile-tab-bar"></div>
 </div>
 
+<script src="src/shared/scoreProgress.global.js"></script>
 <script>
 // ==================== 全局配置 ====================
 const urlParams = new URLSearchParams(location.search);
@@ -281,21 +282,13 @@ const API = {
 };
 
 // ==================== 得分率口径（issue #345）====================
-// 不同卷子的满分不一样，绝对分之间不可比：150 分卷涨 6 分（4%）不等于 100 分卷涨 6 分（6%），
-// 满分越大的卷子越容易触发「进步」标签。因此进步/退步一律按得分率差（百分点，pp）判定。
-// 阈值与后端 src/shared/scoreProgress.ts 保持一致，改一处要改两处。
-const PROGRESS_THRESHOLD_PP = 3;
-const NOTABLE_PROGRESS_PP = 10;
-
-function roundRate(value) {
-  return Number.isFinite(value) ? Math.round(value * 10) / 10 : null;
-}
+// 阈值、舍入和进退步判定只在 src/shared/scoreProgress.ts。本页通过
+// scoreProgress.global.js 使用同一份实现，不再手写第二套数字或舍入。
+const NOTABLE_PROGRESS_PP = ScoreProgress.NOTABLE_PROGRESS_RATE_PP;
 
 /** 得分率 0-100；分母缺失或非正数时返回 null，绝不假设「满分 100」 */
 function rateOf(score, fullScore) {
-  if (!Number.isFinite(score)) return null;
-  if (!Number.isFinite(fullScore) || fullScore <= 0) return null;
-  return roundRate(score / fullScore * 100);
+  return ScoreProgress.scoreRateOf(score, fullScore);
 }
 
 /**
@@ -326,10 +319,7 @@ function examFullScore(exam, scoreRow) {
 
 /** 得分率变化（百分点）；任一侧没有满分依据即为不可判定 */
 function rateChangePP(curScore, curFull, prevScore, prevFull) {
-  const cur = rateOf(curScore, curFull);
-  const prev = rateOf(prevScore, prevFull);
-  if (cur == null || prev == null) return null;
-  return roundRate(cur - prev);
+  return ScoreProgress.scoreRateChange(rateOf(curScore, curFull), rateOf(prevScore, prevFull));
 }
 
 function formatPP(value) {
@@ -1559,8 +1549,9 @@ async function renderStudentAnalysis() {
       prevScoreRow.subjectScores[s.name], fullScoreFor(prevExam, s.name)
     );
     if (change == null) { unjudgedSubjects.push(s.name); continue; }
-    if (change >= PROGRESS_THRESHOLD_PP) improvedSubjects.push({name: s.name, change: change});
-    else if (change <= -PROGRESS_THRESHOLD_PP) declinedSubjects.push({name: s.name, change: change});
+    const direction = ScoreProgress.judgeProgress(change);
+    if (direction === "up") improvedSubjects.push({name: s.name, change: change});
+    else if (direction === "down") declinedSubjects.push({name: s.name, change: change});
   }
 
   let totalTrend = '稳定';
@@ -1574,11 +1565,11 @@ async function renderStudentAnalysis() {
       totalTrend = '无法判定（缺少满分依据）';
       totalTrendColor = 'text-slate-400';
     }
-    // 边界含等号，与上方学科循环和后端 judgeProgress 一致：恰好 ±3 pp 即算进步/退步（评审 P2）
+    // 显著档仍用共享常量；±3 pp 边界交给 judgeProgress，不再在页面里写第二套比较。
     else if (change >= NOTABLE_PROGRESS_PP) { totalTrend = '显著进步'; totalTrendColor = 'text-emerald-600'; }
-    else if (change >= PROGRESS_THRESHOLD_PP) { totalTrend = '有所进步'; totalTrendColor = 'text-emerald-500'; }
+    else if (ScoreProgress.judgeProgress(change) === "up") { totalTrend = '有所进步'; totalTrendColor = 'text-emerald-500'; }
     else if (change <= -NOTABLE_PROGRESS_PP) { totalTrend = '明显退步'; totalTrendColor = 'text-red-600'; }
-    else if (change <= -PROGRESS_THRESHOLD_PP) { totalTrend = '略有下滑'; totalTrendColor = 'text-amber-600'; }
+    else if (ScoreProgress.judgeProgress(change) === "down") { totalTrend = '略有下滑'; totalTrendColor = 'text-amber-600'; }
   }
 
   let html = '<div class="max-w-4xl mx-auto space-y-6 fade-in">' +

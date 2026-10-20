@@ -17,10 +17,13 @@
  *   阈值边界含等号，恰好 ±3 pp 即判进步/退步（1.9）。
  *   题块得分率不得用整卷满分兜底，属独立移动端页面的纯前端逻辑，
  *   由该页面自身的判定循环保证（见 Grade-Analysis-System-mobile.html 的 fullScoreFor）。
+ *   移动端阈值与舍入必须来自 scoreProgress 的生成包，不能再手写第二份（9）。
+ *   学期得分率变化为 0 时显示持平，不用上升色（10）。
  *
  * 用法: npx tsx scripts/verify-progress-score-rate.ts
  */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import vm from "node:vm";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer, type Server } from "node:http";
@@ -313,6 +316,72 @@ async function main() {
   server.close();
   closeDatabase();
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+
+  console.log("\n[9] 移动端得分率与共享模块是同一份");
+  {
+    const { buildScoreProgressBrowser, SCORE_PROGRESS_BROWSER } = await import("./sync-score-progress-browser");
+    const built = await buildScoreProgressBrowser();
+    const committed = readFileSync(SCORE_PROGRESS_BROWSER, "utf8");
+    ok(committed === built, "9.1 scoreProgress.global.js 与当前 scoreProgress.ts 一致（不一致时运行 sync-score-progress-browser.ts）");
+    const sandbox: { ScoreProgress?: {
+      PROGRESS_RATE_THRESHOLD_PP: number;
+      NOTABLE_PROGRESS_RATE_PP: number;
+      judgeProgress: (change: number | null) => string;
+      scoreRateOf: (score: number, full: number) => number | null;
+      scoreRateChange: (current: number | null, previous: number | null) => number | null;
+    } } = {};
+    vm.runInNewContext(built, sandbox);
+    const shared = sandbox.ScoreProgress!;
+    ok(shared.PROGRESS_RATE_THRESHOLD_PP === PROGRESS_RATE_THRESHOLD_PP && shared.NOTABLE_PROGRESS_RATE_PP > shared.PROGRESS_RATE_THRESHOLD_PP, "9.2 生成包里的阈值就是共享常量，显著档高于进退步档");
+    ok(shared.judgeProgress(0) === "stable" && shared.judgeProgress(3) === "up" && shared.judgeProgress(-3) === "down", "9.3 生成包的边界判定与 judgeProgress 一致");
+    ok(shared.scoreRateChange(shared.scoreRateOf(40, 40), shared.scoreRateOf(40, 40)) === 0, "9.4 生成包的舍入：两次满分客观题变化是 0 pp");
+    const html = readFileSync("Grade-Analysis-System-mobile.html", "utf8");
+    ok(html.includes('src="src/shared/scoreProgress.global.js"')
+      && html.includes("ScoreProgress.scoreRateOf")
+      && html.includes("ScoreProgress.scoreRateChange")
+      && html.includes("ScoreProgress.judgeProgress")
+      && html.includes("ScoreProgress.NOTABLE_PROGRESS_RATE_PP"), "9.5 页面改调生成包，不再内嵌第二套实现");
+    ok(!/function roundRate\(/.test(html) && !/const PROGRESS_THRESHOLD_PP = \d+/.test(html), "9.6 页面里没有手写舍入函数或写死的 3 pp 常量");
+  }
+
+  console.log("\n[10] 学期得分率零变化显示为持平");
+  {
+    const { JSDOM } = await import("jsdom");
+    const dom = new JSDOM("<div id=\"root\"></div>", { url: "https://web.test" });
+    const previous = new Map<string, PropertyDescriptor | undefined>();
+    const install = (name: string, value: unknown) => {
+      previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+      Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    };
+    for (const name of ["window", "document", "navigator", "HTMLElement", "DocumentFragment", "Element", "Node"]) {
+      install(name, name === "window" ? dom.window : (dom.window as unknown as Record<string, unknown>)[name]);
+    }
+    install("IS_REACT_ACT_ENVIRONMENT", true);
+    try {
+      const { createElement } = await import("react");
+      const { createRoot } = await import("react-dom/client");
+      const { act } = await import("react");
+      const { SemesterRateDelta } = await import("../src/apps/answer-card/client/components/StudentSemesterComparison");
+      const host = document.createElement("div");
+      document.body.append(host);
+      const root = createRoot(host);
+      await act(async () => { root.render(createElement(SemesterRateDelta, { change: 0 })); });
+      ok(host.textContent?.includes("持平") === true && !host.textContent?.includes("+0"), "10.1 变化为 0 时显示持平，不显示 +0 pp");
+      const value = host.querySelector("span.inline-flex");
+      ok(Boolean(value?.className.includes("text-foreground")) && !value?.className.includes("text-success"), "10.2 零变化用中性色，不用上升色");
+      await act(async () => { root.render(createElement(SemesterRateDelta, { change: 3 })); });
+      ok(host.textContent?.includes("+3 pp") === true && Boolean(host.querySelector("span.inline-flex")?.className.includes("text-success")), "10.3 正变化仍是上升色和加号");
+      await act(async () => { root.render(createElement(SemesterRateDelta, { change: -3 })); });
+      ok(host.textContent?.includes("-3 pp") === true && Boolean(host.querySelector("span.inline-flex")?.className.includes("text-destructive")), "10.4 负变化仍是下降色");
+      await act(async () => { root.unmount(); });
+    } finally {
+      dom.window.close();
+      for (const [name, descriptor] of previous) {
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else Reflect.deleteProperty(globalThis, name);
+      }
+    }
+  }
 
   console.log("");
   if (failed === 0) console.log(`\x1b[32m全部通过：${passed} 项\x1b[0m`);

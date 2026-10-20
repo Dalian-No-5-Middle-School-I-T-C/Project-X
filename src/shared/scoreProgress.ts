@@ -13,6 +13,14 @@
 /** 进退步阈值：得分率变化 ±3 个百分点，等价于百分制卷上的 ±3 分。 */
 export const PROGRESS_RATE_THRESHOLD_PP = 3;
 
+/**
+ * 显著变化档：±10 个百分点。移动端总体趋势在 `judgeProgress` 已经判成
+ * 进步/退步之后，再用这一档区分「显著进步 / 明显退步」。
+ * 必须大于 PROGRESS_RATE_THRESHOLD_PP。浏览器副本由
+ * `scripts/sync-score-progress-browser.ts` 从本文件生成，不要在页面里再写一份数字。
+ */
+export const NOTABLE_PROGRESS_RATE_PP = 10;
+
 export type ProgressDirection = "up" | "down" | "stable" | "unknown";
 
 function round1(value: number): number {
