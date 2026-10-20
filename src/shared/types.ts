@@ -611,10 +611,10 @@ export type StudentTrendPoint = {
   classSize: number;
   rank: number;
   percentile: number;
-  /** 该场满分（建议 3 教师端端点补充，用于得分率） */
-  fullScore?: number;
-  /** 得分率 0-100（totalScore / fullScore） */
-  scoreRate?: number;
+  /** 该场满分（建议 3 教师端端点补充，用于得分率）；无法解析时为 null，不虚构 */
+  fullScore?: number | null;
+  /** 得分率 0-100（totalScore / fullScore）；满分不可解析时为 null */
+  scoreRate?: number | null;
 };
 
 /** 学科薄弱分析结果 */
@@ -626,7 +626,11 @@ export type SubjectWeaknessItem = {
   gapToClass: number;
   bestScore: number;
   worstScore: number;
-  trend: "up" | "down" | "stable";
+  /**
+   * 最近两场考试的得分率变化方向（issue #345：不再用绝对分判定）。
+   * `unknown` = 这两场中有一场解析不出满分，无法比较，界面应显示「—」而不是「稳定」。
+   */
+  trend: "up" | "down" | "stable" | "unknown";
 };
 
 /** 学生个人 AI 分析请求 */
@@ -1138,7 +1142,10 @@ export interface PreviousExamComparison {
   prevAvgScore: number | null;
   /** 上届无成绩或满分未知时不可用。 */
   prevPassRate: number | null;
+  /** 绝对均分差（分）。仅作参考展示，不用于进退步判定（issue #345）。 */
   avgScoreChange: number | null;
+  /** 均分得分率变化（百分点）。任一届满分不可解析时为 null。 */
+  avgScoreRateChange: number | null;
   /** 任一届无成绩或满分未知时不可用。 */
   passRateChange: number | null;
 }
@@ -1148,6 +1155,8 @@ export interface SemesterSubjectSummary {
   subject: string;
   examCount: number;
   avgScore: number;
+  /** 该学科各场考试得分率的均值；任一场满分不可解析时为 null。 */
+  avgScoreRate: number | null;
   bestScore: number;
   avgClassGap: number;
 }
@@ -1159,16 +1168,33 @@ export interface SemesterSummary {
   endDate: string;
   examCount: number;
   avgScore: number;
+  /** 本学期各场考试得分率的均值；任一场满分不可解析时为 null。 */
+  avgScoreRate: number | null;
   subjects: SemesterSubjectSummary[];
+}
+
+/** 同一学科在本学期与上学期的得分率对比（进退步判定的唯一依据） */
+export interface SemesterSubjectComparison {
+  subject: string;
+  /** 两侧任一缺满分即为 null */
+  currentScoreRate: number | null;
+  previousScoreRate: number | null;
+  /** 得分率变化（百分点）；不可判定时为 null */
+  scoreRateChange: number | null;
+  direction: "up" | "down" | "stable" | "unknown";
 }
 
 /** 学生本学期 vs 上学期对比 */
 export interface StudentSemesterComparison {
   current: SemesterSummary | null;
   previous: SemesterSummary | null;
+  /** 绝对均分差（分）：展示用，判定不用（issue #345）。 */
   avgScoreChange: number | null;
+  /** 学期均分得分率变化（百分点）；任一学期缺满分时为 null。 */
+  avgScoreRateChange: number | null;
   improvedSubjects: string[];
   declinedSubjects: string[];
+  subjectComparisons: SemesterSubjectComparison[];
 }
 
 /** 考试筛选列表项（考试选择页用） */

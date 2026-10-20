@@ -118,7 +118,8 @@ export function StudentSemesterComparison() {
     );
   }
 
-  const { current, previous, avgScoreChange, improvedSubjects, declinedSubjects } = data;
+  const { current, previous, avgScoreRateChange, improvedSubjects, declinedSubjects, subjectComparisons } = data;
+  const comparisonBySubject = new Map(subjectComparisons.map((item) => [item.subject, item]));
 
   return (
     <Card>
@@ -127,20 +128,29 @@ export function StudentSemesterComparison() {
         <div className="grid gap-3 sm:grid-cols-3">
           <SemesterStat value={current.label} label="当前学期" tone="good" />
           <SemesterStat value={current.examCount} label="考试场次" />
-          <SemesterStat value={current.avgScore} label="学期均分" />
-          {avgScoreChange != null && (
+          <SemesterStat
+            value={current.avgScoreRate == null ? "—" : `${current.avgScoreRate}%`}
+            label="学期得分率"
+          />
+          {avgScoreRateChange != null && (
             <SemesterStat
-              tone={avgScoreChange >= 0 ? "good" : "bad"}
-              label="较上学期均分"
+              tone={avgScoreRateChange >= 0 ? "good" : "bad"}
+              label="较上学期得分率"
               value={
                 <>
-                  {avgScoreChange >= 0 ? <TrendingUp className="size-5" /> : <TrendingDown className="size-5" />}
-                  {avgScoreChange >= 0 ? "+" : ""}{avgScoreChange}
+                  {avgScoreRateChange >= 0 ? <TrendingUp className="size-5" /> : <TrendingDown className="size-5" />}
+                  {avgScoreRateChange >= 0 ? "+" : ""}{avgScoreRateChange} pp
                 </>
               }
             />
           )}
         </div>
+
+        {current.avgScoreRate == null && (
+          <p className="text-xs text-muted-foreground">
+            部分考试缺少满分依据，得分率与进步/退步判定不可用，此处不做估算。
+          </p>
+        )}
 
         {previous && (
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-md border border-border-subtle bg-secondary px-3.5 py-2.5 text-sm">
@@ -148,7 +158,9 @@ export function StudentSemesterComparison() {
               对比上学期（{previous.label}，<span className="tabular-nums">{previous.startDate}</span> ~ <span className="tabular-nums">{previous.endDate}</span>）：
             </span>
             <span className="text-foreground">
-              上学期均分 <span className="tabular-nums">{previous.avgScore}</span> · <span className="tabular-nums">{previous.examCount}</span> 场考试
+              上学期均分 <span className="tabular-nums">{previous.avgScore}</span>
+              {" · "}得分率 <span className="tabular-nums">{previous.avgScoreRate == null ? "—" : `${previous.avgScoreRate}%`}</span>
+              {" · "}<span className="tabular-nums">{previous.examCount}</span> 场考试
             </span>
           </div>
         )}
@@ -187,14 +199,17 @@ export function StudentSemesterComparison() {
                   <TableHead>学科</TableHead>
                   <TableHead numeric>考试次数</TableHead>
                   <TableHead numeric>平均分</TableHead>
+                  <TableHead numeric>得分率</TableHead>
                   <TableHead numeric>最高分</TableHead>
                   {previous && <TableHead numeric>上学期均分</TableHead>}
+                  {previous && <TableHead numeric>较上学期</TableHead>}
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {current.subjects.map((subject) => {
                   const prevSubject = previous?.subjects.find((item) => item.subject === subject.subject);
-                  const delta = prevSubject ? Math.round((subject.avgScore - prevSubject.avgScore) * 10) / 10 : null;
+                  const comparison = comparisonBySubject.get(subject.subject);
+                  const delta = comparison?.scoreRateChange ?? null;
                   return (
                     <TableRow key={subject.subject}>
                       <TableCell>
@@ -211,28 +226,31 @@ export function StudentSemesterComparison() {
                       </TableCell>
                       <TableCell numeric>{subject.examCount}</TableCell>
                       <TableCell numeric>{subject.avgScore}</TableCell>
+                      <TableCell numeric>
+                        {subject.avgScoreRate == null ? "—" : `${subject.avgScoreRate}%`}
+                      </TableCell>
                       <TableCell numeric>{subject.bestScore}</TableCell>
+                      {previous && (
+                        <TableCell numeric>
+                          {prevSubject
+                            ? `${prevSubject.avgScore}${prevSubject.avgScoreRate == null ? "" : `（${prevSubject.avgScoreRate}%）`}`
+                            : "—"}
+                        </TableCell>
+                      )}
                       {previous && (
                         <TableCell
                           numeric
                           className={cn(
-                            delta == null
+                            comparison?.direction == null || comparison.direction === "unknown"
                               ? "text-muted-foreground"
-                              : delta >= 0
+                              : comparison.direction === "up"
                                 ? "text-success-foreground"
-                                : "text-destructive-fg",
+                                : comparison.direction === "down"
+                                  ? "text-destructive-fg"
+                                  : "text-muted-foreground",
                           )}
                         >
-                          {prevSubject ? (
-                            <>
-                              {prevSubject.avgScore}
-                              {delta != null && (
-                                <span className="ml-2 text-xs">
-                                  ({delta >= 0 ? "+" : ""}{delta})
-                                </span>
-                              )}
-                            </>
-                          ) : "—"}
+                          {delta == null ? "—" : `${delta > 0 ? "+" : ""}${delta} pp`}
                         </TableCell>
                       )}
                     </TableRow>

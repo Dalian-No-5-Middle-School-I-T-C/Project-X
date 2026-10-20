@@ -280,6 +280,66 @@ const API = {
   getClassStudents: (id) => apiGet('/api/classes/' + id + '/students')
 };
 
+// ==================== 得分率口径（issue #345）====================
+// 不同卷子的满分不一样，绝对分之间不可比：150 分卷涨 6 分（4%）不等于 100 分卷涨 6 分（6%），
+// 满分越大的卷子越容易触发「进步」标签。因此进步/退步一律按得分率差（百分点，pp）判定。
+// 阈值与后端 src/shared/scoreProgress.ts 保持一致，改一处要改两处。
+const PROGRESS_THRESHOLD_PP = 3;
+const NOTABLE_PROGRESS_PP = 10;
+
+function roundRate(value) {
+  return Number.isFinite(value) ? Math.round(value * 10) / 10 : null;
+}
+
+/** 得分率 0-100；分母缺失或非正数时返回 null，绝不假设「满分 100」 */
+function rateOf(score, fullScore) {
+  if (!Number.isFinite(score)) return null;
+  if (!Number.isFinite(fullScore) || fullScore <= 0) return null;
+  return roundRate(score / fullScore * 100);
+}
+
+/**
+ * 某科/某题块的满分依据：
+ * - 演示数据的 exam.subjects[].maxScore 是真实分值，直接采用；
+ * - 线上接口只给整卷满分（/api/scores/me 的 full_score），客观题/主观题按整卷满分归一，
+ *   此时两块得分率之和恰等于总分得分率；
+ * - 两处都拿不到时返回 null：不虚构分母，相应判定跳过并在界面上说明。
+ */
+function fullScoreFor(exam, scoreRow, subjectName) {
+  const subject = (exam && exam.subjects) ? exam.subjects.find(s => s.name === subjectName) : null;
+  if (subject && Number.isFinite(subject.maxScore) && subject.maxScore > 0) return subject.maxScore;
+  if (scoreRow && Number.isFinite(scoreRow.fullScore) && scoreRow.fullScore > 0) return scoreRow.fullScore;
+  return null;
+}
+
+/** 整卷满分：优先用接口给的 full_score，演示数据则按各科真实分值合计 */
+function examFullScore(exam, scoreRow) {
+  if (scoreRow && Number.isFinite(scoreRow.fullScore) && scoreRow.fullScore > 0) return scoreRow.fullScore;
+  if (exam && exam.subjects) {
+    const sum = exam.subjects.reduce((total, s) => total + (Number.isFinite(s.maxScore) ? s.maxScore : 0), 0);
+    if (sum > 0) return sum;
+  }
+  return null;
+}
+
+/** 得分率变化（百分点）；任一侧没有满分依据即为不可判定 */
+function rateChangePP(curScore, curFull, prevScore, prevFull) {
+  const cur = rateOf(curScore, curFull);
+  const prev = rateOf(prevScore, prevFull);
+  if (cur == null || prev == null) return null;
+  return roundRate(cur - prev);
+}
+
+function formatPP(value) {
+  if (value == null) return '—';
+  return (value > 0 ? '+' : '') + value + ' pp';
+}
+
+/** 得分率展示；无满分依据时显示「—」而不是凭空百分比 */
+function formatRate(value) {
+  return value == null ? '—' : value + '%';
+}
+
 // ==================== 演示数据生成器 ====================
 function generateDemoData() {
   const subjects = [{name:'语文',maxScore:150},{name:'数学',maxScore:150},{name:'英语',maxScore:150},{name:'物理',maxScore:100},{name:'化学',maxScore:100},{name:'生物',maxScore:100}];
@@ -361,9 +421,11 @@ async function fetchExams() {
     id: String(e.id),
     name: e.name || '未命名考试',
     date: e.start_time || e.created_at || '',
+    // 线上接口不给客观题/主观题的分块满分，这里留 null 而不是假设 100：
+    // 写死 100 会把任意卷子的题块得分率算成「得分/100」，满分不是 100 分时就全是错的（issue #345）。
     subjects: [
-      { name: '客观题', maxScore: 100 },
-      { name: '主观题', maxScore: 100 }
+      { name: '客观题', maxScore: null },
+      { name: '主观题', maxScore: null }
     ],
     _raw: e
   }));
@@ -520,6 +582,8 @@ async function fetchStudentScores(studentId) {
         examId: String(s.examId || s.exam_id),
         studentId: studentId,
         totalScore: s.totalScore || s.total_score || 0,
+        // /api/scores/me 带真实满分（来自答题卡分值投影/逐题满分合计），解析不出来时为 null
+        fullScore: (s.full_score != null ? s.full_score : (s.fullScore != null ? s.fullScore : null)),
         subjectScores: {
           '客观题': s.objectiveScore || s.objective_score || 0,
           '主观题': s.subjectiveScore || s.subjective_score || 0
@@ -939,7 +1003,8 @@ function renderStudentRow(stu, exam) {
     '<td class="px-6 py-4 font-bold text-blue-600">' + stu.totalScore + '</td>' +
     exam.subjects.map(s => {
       const score = stu.subjectScores ? stu.subjectScores[s.name] : 0;
-      const color = score >= s.maxScore * 0.8 ? 'text-emerald-600' : score >= s.maxScore * 0.6 ? 'text-slate-700' : 'text-amber-600';
+      const rate = rateOf(score, fullScoreFor(exam, stu, s.name));
+      const color = rate == null ? 'text-slate-700' : rate >= 80 ? 'text-emerald-600' : rate >= 60 ? 'text-slate-700' : 'text-amber-600';
       return '<td class="px-4 py-4 ' + color + ' font-medium">' + score + '</td>';
     }).join('') +
     '<td class="px-6 py-4"><button onclick="showStudentDetail(\'' + stu.studentId + '\')" class="text-blue-600 hover:text-blue-800 text-sm font-medium">详情</button></td>' +
@@ -999,12 +1064,12 @@ async function showStudentDetail(studentId) {
         '<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">' +
           latestExam.subjects.map(s => {
             const score = stu.subjectScores ? stu.subjectScores[s.name] : 0;
-            const pct = Math.round(score / s.maxScore * 100);
-            const color = pct >= 80 ? 'bg-emerald-100 text-emerald-700' : pct >= 60 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700';
+            const pct = rateOf(score, fullScoreFor(latestExam, stu, s.name));
+            const color = pct == null ? 'bg-slate-100 text-slate-700' : pct >= 80 ? 'bg-emerald-100 text-emerald-700' : pct >= 60 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700';
             return '<div class="' + color + ' rounded-lg p-3 text-center">' +
               '<div class="text-xs opacity-70">' + s.name + '</div>' +
               '<div class="text-xl font-bold">' + score + '</div>' +
-              '<div class="text-xs opacity-70">' + pct + '%</div>' +
+              '<div class="text-xs opacity-70">' + formatRate(pct) + '</div>' +
             '</div>';
           }).join('') +
         '</div>' +
@@ -1320,8 +1385,8 @@ async function renderStudentDashboard() {
           const diff = score - avg;
           const diffClass = diff >= 0 ? 'text-emerald-600' : 'text-amber-600';
           const diffIcon = diff >= 0 ? '&#x2191;' : '&#x2193;';
-          const pct = Math.round(score / s.maxScore * 100);
-          const barColor = pct >= 80 ? 'bg-emerald-500' : pct >= 60 ? 'bg-blue-500' : 'bg-amber-500';
+          const pct = rateOf(score, fullScoreFor(latestExam, latestScore, s.name));
+          const barColor = pct == null ? 'bg-slate-300' : pct >= 80 ? 'bg-emerald-500' : pct >= 60 ? 'bg-blue-500' : 'bg-amber-500';
           return '<div class="bg-slate-50 rounded-xl p-4">' +
             '<div class="flex justify-between items-center mb-2">' +
               '<span class="text-sm font-medium text-slate-700">' + s.name + '</span>' +
@@ -1329,9 +1394,9 @@ async function renderStudentDashboard() {
             '</div>' +
             '<div class="text-2xl font-bold text-slate-800 mb-2">' + score + '</div>' +
             '<div class="w-full bg-slate-200 rounded-full h-2">' +
-              '<div class="' + barColor + ' h-2 rounded-full transition-all" style="width: ' + pct + '%"></div>' +
+              '<div class="' + barColor + ' h-2 rounded-full transition-all" style="width: ' + (pct == null ? 0 : pct) + '%"></div>' +
             '</div>' +
-            '<div class="text-xs text-slate-400 mt-1">班均 ' + avg + '</div>' +
+            '<div class="text-xs text-slate-400 mt-1">班均 ' + avg + (pct == null ? ' · 满分未知' : ' · ' + formatRate(pct)) + '</div>' +
           '</div>';
         }).join('') +
       '</div>' +
@@ -1475,28 +1540,42 @@ async function renderStudentAnalysis() {
   let improvedSubjects = [];
   let declinedSubjects = [];
 
+  const prevScoreRow = scores.length >= 2 ? scores[scores.length - 2] : null;
+  const prevExam = prevScoreRow ? exams.find(e => e.id === prevScoreRow.examId) : null;
+  let unjudgedSubjects = [];
+
   for (const s of subjects) {
     const current = latestScore.subjectScores[s.name];
     const classMean = classAvg ? classAvg.subjectAvgs[s.name] : 0;
     if (current >= classMean + 10) strongSubjects.push(s.name);
     else if (current <= classMean - 10) weakSubjects.push(s.name);
 
-    if (scores.length >= 2) {
-      const prev = scores[scores.length - 2].subjectScores[s.name];
-      const change = current - prev;
-      if (change >= 8) improvedSubjects.push({name: s.name, change: change});
-      else if (change <= -8) declinedSubjects.push({name: s.name, change: change});
-    }
+    if (!prevScoreRow) continue;
+    // issue #345：进步/待加强按得分率差判定，绝对分差会被两卷满分的大小带偏
+    const change = rateChangePP(
+      current, fullScoreFor(latestExam, latestScore, s.name),
+      prevScoreRow.subjectScores[s.name], fullScoreFor(prevExam, prevScoreRow, s.name)
+    );
+    if (change == null) { unjudgedSubjects.push(s.name); continue; }
+    if (change >= PROGRESS_THRESHOLD_PP) improvedSubjects.push({name: s.name, change: change});
+    else if (change <= -PROGRESS_THRESHOLD_PP) declinedSubjects.push({name: s.name, change: change});
   }
 
   let totalTrend = '稳定';
   let totalTrendColor = 'text-slate-600';
-  if (scores.length >= 2) {
-    const diff = scores[scores.length-1].totalScore - scores[scores.length-2].totalScore;
-    if (diff > 20) { totalTrend = '显著进步'; totalTrendColor = 'text-emerald-600'; }
-    else if (diff > 5) { totalTrend = '有所进步'; totalTrendColor = 'text-emerald-500'; }
-    else if (diff < -20) { totalTrend = '明显退步'; totalTrendColor = 'text-red-600'; }
-    else if (diff < -5) { totalTrend = '略有下滑'; totalTrendColor = 'text-amber-600'; }
+  if (prevScoreRow) {
+    const change = rateChangePP(
+      latestScore.totalScore, examFullScore(latestExam, latestScore),
+      prevScoreRow.totalScore, examFullScore(prevExam, prevScoreRow)
+    );
+    if (change == null) {
+      totalTrend = '无法判定（缺少满分依据）';
+      totalTrendColor = 'text-slate-400';
+    }
+    else if (change > NOTABLE_PROGRESS_PP) { totalTrend = '显著进步'; totalTrendColor = 'text-emerald-600'; }
+    else if (change > PROGRESS_THRESHOLD_PP) { totalTrend = '有所进步'; totalTrendColor = 'text-emerald-500'; }
+    else if (change < -NOTABLE_PROGRESS_PP) { totalTrend = '明显退步'; totalTrendColor = 'text-red-600'; }
+    else if (change < -PROGRESS_THRESHOLD_PP) { totalTrend = '略有下滑'; totalTrendColor = 'text-amber-600'; }
   }
 
   let html = '<div class="max-w-4xl mx-auto space-y-6 fade-in">' +
@@ -1550,8 +1629,10 @@ async function renderStudentAnalysis() {
         '<p>在最近的 <strong>' + latestExam.name + '</strong> 中，你的总分为 <strong>' + latestScore.totalScore + '</strong> 分，在班级中排名第 <strong>' + (await fetchRankings(latestExam.id, 'class', stu.id)).rank + '</strong>，在年级中排名第 <strong>' + (await fetchRankings(latestExam.id, 'grade', stu.id)).rank + '</strong>。</p>' +
         '<p class="mt-2">与班级平均分（' + (classAvg ? classAvg.totalAvg : '-') + '）相比，你' + (latestScore.totalScore > (classAvg ? classAvg.totalAvg : 0) ? '高于' : '低于') + '班级平均 <strong>' + Math.abs(latestScore.totalScore - (classAvg ? classAvg.totalAvg : 0)).toFixed(1) + '</strong> 分。</p>' +
         '<p class="mt-2">成绩总体趋势：<strong class="' + totalTrendColor + '">' + totalTrend + '</strong>。</p>' +
-        (improvedSubjects.length > 0 ? '<p class="mt-2 text-emerald-600">&#x1F4C8; 进步明显的科目：' + improvedSubjects.map(s => s.name + '(+' + s.change + ')').join('、') + '，继续保持！</p>' : '') +
-        (declinedSubjects.length > 0 ? '<p class="mt-2 text-amber-600">&#x1F4C9; 需要关注的科目：' + declinedSubjects.map(s => s.name + '(' + s.change + ')').join('、') + '，建议分析原因。</p>' : '') +
+        (improvedSubjects.length > 0 ? '<p class="mt-2 text-emerald-600">&#x1F4C8; 进步明显的科目：' + improvedSubjects.map(s => s.name + '(' + formatPP(s.change) + ')').join('、') + '，继续保持！</p>' : '') +
+        (declinedSubjects.length > 0 ? '<p class="mt-2 text-amber-600">&#x1F4C9; 需要关注的科目：' + declinedSubjects.map(s => s.name + '(' + formatPP(s.change) + ')').join('、') + '，建议分析原因。</p>' : '') +
+        '<p class="mt-2 text-xs text-slate-400">进步/退步按得分率（得分 ÷ 满分）的变化比较，不受各科满分不同影响。</p>' +
+        (unjudgedSubjects.length > 0 ? '<p class="mt-2 text-xs text-slate-500">' + unjudgedSubjects.join('、') + ' 缺少满分依据，未参与进步/退步判定。</p>' : '') +
       '</div>' +
     '</div>' +
     '<div class="bg-blue-50 rounded-xl p-6 border border-blue-100">' +
