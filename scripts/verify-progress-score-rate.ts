@@ -12,6 +12,12 @@
  *   数学 60/100 → 90/150：绝对 +30 分（旧口径判进步），得分率 0.0 pp（新口径判稳定）
  *   生物 60/100 → 70/满分未知：得分率不可算（新口径 unknown，不出现在进/退步名单）
  *
+ * PR #346 评审补的两条也在覆盖范围内：
+ *   比较基准必须锚定「所选考试」，不能固定取趋势数组的最后两场（1.13–1.15、7.9–7.11）；
+ *   阈值边界含等号，恰好 ±3 pp 即判进步/退步（1.9）。
+ *   题块得分率不得用整卷满分兜底，属独立移动端页面的纯前端逻辑，
+ *   由该页面自身的判定循环保证（见 Grade-Analysis-System-mobile.html 的 fullScoreFor）。
+ *
  * 用法: npx tsx scripts/verify-progress-score-rate.ts
  */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -83,7 +89,7 @@ async function main() {
   const { AnalysisRepository } = await import("../src/server/repositories/AnalysisRepository");
   const {
     judgeProgress, meanScoreRate, scoreRateChange, scoreRateOf, hasResolvableFullScore,
-    PROGRESS_RATE_THRESHOLD_PP,
+    examPairInTrend, PROGRESS_RATE_THRESHOLD_PP,
   } = await import("../src/shared/scoreProgress");
 
   // ── 1. 纯函数：统一口径本身 ──
@@ -101,6 +107,15 @@ async function main() {
     ok(judgeProgress(null) === "unknown", "1.10 不可判定 → unknown（不是 stable）");
     ok(meanScoreRate([70, 60, 60]) === 63.3, `1.11 均值 63.3（实际 ${meanScoreRate([70, 60, 60])}）`);
     ok(meanScoreRate([70, null]) === null && meanScoreRate([]) === null, "1.12 任一成员缺满分 → 整体不可判定");
+
+    // 评审 P2：比较基准必须跟着「所选考试」走，不能固定取数组末尾两场
+    const seq = [{ examId: 1, tag: "第一场" }, { examId: 2, tag: "第二场" }, { examId: 3, tag: "第三场" }];
+    const pairMiddle = examPairInTrend(seq, 2);
+    ok(pairMiddle?.current.tag === "第二场" && pairMiddle?.previous?.tag === "第一场",
+      `1.13 选第二场时与该场的前一场比较（实际 ${pairMiddle?.current.tag} vs ${pairMiddle?.previous?.tag}）`);
+    const pairFirst = examPairInTrend(seq, 1);
+    ok(pairFirst?.current.tag === "第一场" && pairFirst?.previous === null, "1.14 最早一场没有上一场，不虚构比较对象");
+    ok(examPairInTrend(seq, 99) === null, "1.15 所选考试不在趋势内 → null，调用方不显示判定");
   }
 
   initializeDatabase();
@@ -272,6 +287,15 @@ async function main() {
     const trend = await repo.getStudentTrend(sBio);
     ok(trend.every((t) => typeof t.scoreRate === "number" || t.scoreRate === null), "7.7 getStudentTrend 的 scoreRate 为数值或 null");
     ok(trend.find((t) => t.examId === eB2)?.scoreRate === null, "7.8 无满分场次 scoreRate=null（不是 0）");
+
+    // 打印报告单的比较基准：必须是「该场 vs 它的前一场」
+    const trendP = await repo.getStudentTrend(sPhysics);
+    const pairLatest = examPairInTrend(trendP, eP2);
+    ok(pairLatest?.current.examId === eP2 && pairLatest?.previous?.examId === eP1,
+      `7.9 本学期那场的上一场识别正确（实际 ${pairLatest?.previous?.examId}）`);
+    const pairEarliest = examPairInTrend(trendP, eP1);
+    ok(pairEarliest?.current.examId === eP1 && pairEarliest?.previous === null, "7.10 打印最早一场时没有上一场可比较");
+    ok(examPairInTrend(trendP, eC1) === null, "7.11 该生没参加这场 → 不显示判定");
   }
 
   // ── 8. 旧口径不复现：确认判定不再受满分大小带偏 ──

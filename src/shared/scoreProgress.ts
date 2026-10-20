@@ -64,3 +64,19 @@ export function judgeProgress(
   if (changePP <= -thresholdPP) return "down";
   return "stable";
 }
+
+/**
+ * 在按时间升序的趋势数组中定位某场考试，返回「该场」与「它的上一场」。
+ *
+ * 比较基准必须跟着所选考试走：直接取数组末尾两项会把「较上次」算到更晚的考试上，
+ * 表头是选中的那场、变化量却描述另一场（历史考卷打印即为此）。
+ * 所选考试不在数组里（未公布、不在可见范围）时返回 null，调用方不显示判定。
+ */
+export function examPairInTrend<T extends { examId: number }>(
+  trend: T[],
+  examId: number
+): { current: T; previous: T | null } | null {
+  const index = trend.findIndex((point) => Number(point.examId) === examId);
+  if (index < 0) return null;
+  return { current: trend[index], previous: index > 0 ? trend[index - 1] : null };
+}

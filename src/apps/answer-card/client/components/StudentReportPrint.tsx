@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Printer, X } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { formatScore } from "../util/format";
-import { scoreRateChange } from "../../../../shared/scoreProgress";
+import { examPairInTrend, scoreRateChange } from "../../../../shared/scoreProgress";
 import type { StudentTrendPoint } from "../../../../shared/types";
 
 interface WeakRow { point_text: string; question_numbers: string; rate: number }
@@ -45,8 +45,11 @@ export function StudentReportPrint({
       .catch(() => setWeak([]));
   }, [examId, studentId]);
 
-  const current = trend && trend.length > 0 ? trend[trend.length - 1] : null;
-  const previous = trend && trend.length > 1 ? trend[trend.length - 2] : null;
+  // 报告单必须描述「所选的那一场」：打印历史考试时若固定取趋势数组的最后两项，
+  // 表头和总分是所选场，排名/得分率/较上次却描述更晚的考试（评审 P2）。
+  const pair = trend ? examPairInTrend(trend, examId) : null;
+  const current = pair?.current ?? null;
+  const previous = pair?.previous ?? null;
   const scoreChange = current && previous ? Math.round((current.totalScore - previous.totalScore) * 10) / 10 : null;
   // issue #345：两场考试满分不同则绝对分不可比，进退步按得分率变化（百分点）
   const scoreRateDelta = scoreRateChange(current?.scoreRate, previous?.scoreRate);
