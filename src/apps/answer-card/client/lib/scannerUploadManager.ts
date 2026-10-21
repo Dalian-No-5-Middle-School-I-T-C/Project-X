@@ -991,7 +991,7 @@ if (j.cancelled) throw cancelledError(j);
       retryFailed(id);
     },
     refreshResults,
-    saveSession: async (id: string, sessionId: string) => {
+    saveSession: async (id: string, sessionId: string, groupId?: string) => {
       const source = jobs.find(j => j.id === id);
       const owner = source && jobs.find(j => j.remoteSessionId === sessionId && j.remoteBase === source.remoteBase
         && j.apiKey === source.apiKey && j.cardId === source.cardId);
@@ -1000,7 +1000,7 @@ if (j.cancelled) throw cancelledError(j);
       for (const job of jobs) if (job.remoteBase === source.remoteBase && job.cardId === source.cardId) job.resultRevision = (job.resultRevision ?? 0) + 1;
       return jobFetch(owner ?? source)(`/api/scanner/upload/sessions/${encodeURIComponent(sessionId)}/complete`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(version ? { cardVersion: version } : {}), signal: timeoutSignal(pageTimeoutMs),
+        body: JSON.stringify({ ...(version ? { cardVersion: version } : {}), ...(groupId !== undefined ? { groupId } : {}) }), signal: timeoutSignal(pageTimeoutMs),
       });
     },
     requestJob: (id: string, url: string, init?: RequestInit) => {

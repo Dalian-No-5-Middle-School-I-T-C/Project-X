@@ -611,6 +611,9 @@ router.post("/sessions/:sessionId/groups/:groupId/discard", dualAuth, async (req
 router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
+    const selected = z.string().regex(/^\d+$/).max(64).optional().safeParse(req.body?.groupId);
+    if (!selected.success) { res.status(400).json({ message: "groupId 必须是有效的答题卡组编号" }); return; }
+    const saveGroupId = selected.data;
     const db = await getMysqlDb();
 
     const session = await db.get<{ id: string; card_id: string; page_count: number; status: string; card_version: string | null; version_source: string }>(
@@ -670,11 +673,14 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
         res.status(409).json({ message: "图片已保存，但缺少本机识别结果；请使用新版扫描端重试上传，成绩尚未入库" });
         return;
       }
+      if (saveGroupId !== undefined && !groupSessionPages(card, groups.flatMap(group => group.records)).groups.has(saveGroupId)) {
+        res.status(404).json({ message: "答题卡分组不存在" }); return;
+      }
       // 不传 blockUnreviewed。上传管理器没有「先确认存疑题再提交」的步骤，
       // 低置信度或未配答案的题仍按原协议入库，并在结果里带 needsReviewCount。
       // 若这里改成 409，双面订正等既有完成流程会停在 error，成绩也写不进去。
       // 后处理页自己在 needsReviewCount > 0 时不入队。
-      const batch = await processScannerSession(card, String(sessionId), "save");
+      const batch = await processScannerSession(card, String(sessionId), "save", saveGroupId);
       reviewCards = batch.reviewCards ?? [];
       if (batch.failures.length) {
         res.status(409).json({ ok: false, message: "部分答题卡未入库，请处理以下问题后重试", ...batch });

@@ -52,7 +52,7 @@ export async function startScannerFlowFixture(port = 0, host = "127.0.0.1", opti
   await db.run("INSERT INTO api_keys (name,api_key,scope,is_active) VALUES (?,?,?,1)", "flow-test", hashSecret(key), "scanner");
   const { default: sharp } = await import("sharp");
   const images: Record<string, string> = {};
-  for (const [index, name] of ["original", "different", "normal", "blank", "replacement", "unknown", "after", "discard"].entries()) {
+  for (const [index, name] of ["original", "different", "normal", "blank", "replacement", "unknown", "after", "discard", "duplicate-a", "duplicate-b", "unrelated"].entries()) {
     images[name] = (await sharp({ create: { width: 24, height: 24, channels: 3, background: { r: index * 25, g: 120, b: 200 } } }).png().toBuffer()).toString("base64");
   }
   images.unreadable = Buffer.from("not-a-readable-scan").toString("base64");

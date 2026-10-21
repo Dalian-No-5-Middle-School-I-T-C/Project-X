@@ -512,6 +512,9 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
         if (current.filter(r => r.student_number === result.studentId).length > 1) throw new Error("重复学号：所有相关答题卡需订正后重新保存");
         const receipt = current.find(r => r.session_id === sessionId && r.group_id === candidate.groupId);
         if (!receipt) throw new Error("扫描成绩回执缺失，无法保存");
+        // Completion retries are automatic; resolved duplicates still require a named teacher save.
+        const explicitlySelected = saveGroupId === candidate.groupId || saveGroupIds?.has(candidate.groupId);
+        if (receipt.state === "correction" && !explicitlySelected) throw new Error("此卷待核对，请在整卡改分或异常卷列表中显式保存此卷");
         if (receipt.state === "held" || receipt.state === "roster") throw new Error("此卷待老师确认，已有正式成绩保持不变，请在考试或成绩分析页面处理");
         if (receipt?.score_snapshot && receipt.previously_saved && receipt.state !== "saved") {
           await restoreScoreSnapshot(tx, receipt);
