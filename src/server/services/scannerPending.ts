@@ -136,7 +136,7 @@ async function evidence(db: DbAdapter, row: PendingRow) {
 export async function listPendingScans(examId: number) {
   const db = getMysqlDb();
   const rows = await db.all<PendingRow>(
-    "SELECT * FROM scanner_submissions WHERE exam_id=? AND state IN ('held','roster','conflict','pending') ORDER BY session_id,group_id",
+    "SELECT * FROM scanner_submissions WHERE exam_id=? AND (state IN ('held','roster','conflict','correction') OR (state='pending' AND previously_saved=1)) ORDER BY session_id,group_id",
     examId,
   );
   return Promise.all(
@@ -146,7 +146,7 @@ export async function listPendingScans(examId: number) {
         sessionId: row.session_id,
         groupId: row.group_id,
         studentNumber: row.student_number,
-        reason: row.state === "roster" ? "roster" : row.state === "pending" ? "correction" : "duplicate",
+        reason: row.state === "roster" ? "roster" : ["pending","correction"].includes(row.state) ? "correction" : "duplicate",
         existingScore: e.score?.total_score ?? null,
         proposedScore: e.result?.totalScore ?? null,
         token: e.token,

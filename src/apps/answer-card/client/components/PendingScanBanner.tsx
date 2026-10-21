@@ -129,7 +129,7 @@ export function PendingScanBanner({
         <div>
           <strong>{items.length} 份扫描卷待处理</strong>
           <p className="m-0 text-sm">
-            重复学号的相关卷均转为异常卷，已入库成绩撤回，请订正后保存。名单外学生需核对后加入名单。
+            请按各卷提示核对并保存。重复学号需先订正，名单外学生需核对后加入名单。
           </p>
         </div>
         <Button

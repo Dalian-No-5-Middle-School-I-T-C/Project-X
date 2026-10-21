@@ -58,10 +58,14 @@ export async function hasCorrectionProvenance(db: DbAdapter, card: AnswerCard, s
   return await correctionProvenanceState(db, card, sourceId) === "valid";
 }
 
-export async function assertCorrectionGroupVersion(db: DbAdapter, card: AnswerCard,
-  session: { card_id: string; card_version: string | null; version_source: string } | null | undefined, sourceIds: string[]) {
+type CorrectionSession = { card_id: string; card_version: string | null; version_source: string };
+export function assertCorrectionSessionVersion(card: AnswerCard, session: CorrectionSession | null | undefined): asserts session is CorrectionSession {
   if (!session || session.card_id !== card.id) throw new Error("原扫描会话与考试答题卡不匹配");
   if (session.card_version && session.card_version !== cardFingerprint(card)) throw new Error("答题卡版本已变化，请核对原卷版本后重新扫描");
+}
+export async function assertCorrectionGroupVersion(db: DbAdapter, card: AnswerCard,
+  session: CorrectionSession | null | undefined, sourceIds: string[]) {
+  assertCorrectionSessionVersion(card, session);
   const fingerprints: string[] = [];
   if (needsCorrectionProvenance(session)) {
     if (!sourceIds.length) throw new Error("原卷不存在，请刷新");

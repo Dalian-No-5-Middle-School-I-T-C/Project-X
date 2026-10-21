@@ -4,7 +4,7 @@ import { mkdtemp, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 
-export async function startScannerFlowFixture(port = 0, host = "127.0.0.1", options: { duplex?: boolean; localScanner?: boolean } = {}) {
+export async function startScannerFlowFixture(port = 0, host = "127.0.0.1", options: { duplex?: boolean; localScanner?: boolean; scoreEditing?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "projectx-scanner-flow-"));
   process.env.PROJECTX_DB_PATH = path.join(root, "scanner.db");
   process.env.ANSWER_CARD_DATA_DIR = path.join(root, "cards");
@@ -75,6 +75,11 @@ export async function startScannerFlowFixture(port = 0, host = "127.0.0.1", opti
       receipts: await db.all("SELECT session_id,group_id,student_number,state FROM scanner_submissions WHERE exam_id=?", exam.lastInsertRowid) });
   });
   app.use("/api/scanner/upload", router);
+  if (options.scoreEditing) {
+    const { authMiddleware } = await import("../src/server/middleware/auth");
+    const { default: scoreEditing } = await import("../src/server/routes/score-editing");
+    app.use("/api/exams", authMiddleware, scoreEditing);
+  }
   if (options.localScanner) {
     const { authMiddleware } = await import("../src/server/middleware/auth");
     const { createScannerRouter } = await import("../src/apps/answer-card/server/scanner");

@@ -7,14 +7,14 @@ import { startScannerFlowFixture } from "./scanner-upload-flow-fixture";
 import { cardFingerprint } from "../src/shared/cardVersion";
 import { correctionCells, toggleCorrectionCell, type CorrectionDocument } from "../src/shared/scanCorrection";
 
-const fixture = await startScannerFlowFixture();
+const fixture = await startScannerFlowFixture(0,"127.0.0.1",{scoreEditing:true});
 try {
   const info = await (await fetch(`${fixture.baseUrl}/test/fixture`)).json();
   const { getMysqlDb, getDatabase, initMariadbSchema } = await import("../src/server/db");
   const { runMigrations } = await import("../src/server/db/migrations");
   const { CardRepository } = await import("../src/server/repositories/CardRepository");
   const store = await import("../src/apps/answer-card/server/database/scan-store");
-  const { recognizeSessionCorrection, sessionCorrection, storeCorrectionPage, studentCorrection, saveStudentCorrection } = await import("../src/server/services/scanCorrection");
+  const { recognizeSessionCorrection, recognizeStudentCorrection, sessionCorrection, storeCorrectionPage, studentCorrection, saveStudentCorrection } = await import("../src/server/services/scanCorrection");
   const { hasCorrectionProvenance } = await import("../src/server/services/scanCorrectionProvenance");
   const { processScannerSession } = await import("../src/server/services/scannerSubmissions");
   const { listPendingScans, confirmPendingScan } = await import("../src/server/services/scannerPending");
@@ -112,6 +112,53 @@ try {
   assert.equal(await hasCorrectionProvenance(db,card,records[0].id), false);
   await db.run("UPDATE scan_correction_pages SET recovery_fingerprint=? WHERE source_type='twain_scan_record' AND source_id=?", proof, records[0].id);
   assert.equal(await hasCorrectionProvenance(db,card,records[0].id), true, "restoring the matching fingerprint makes the page editable again");
+  // A saved legacy paper can re-verify through its existing, authorized score editor.
+  const { hashPassword } = await import("../src/server/db");
+  const { authService } = await import("../src/server/services/AuthService");
+  const password = "Legacy-Reverify-Test-2026!", passwordHash = await hashPassword(password);
+  await db.run("UPDATE users SET password_hash=? WHERE id IN (?,?)",passwordHash,admin.lastInsertRowid,student.id);
+  const adminToken = (await authService.login("legacy_admin",password)).token!;
+  const studentToken = (await authService.login("flow_91010",password)).token!;
+  await db.run("INSERT INTO users(username,password_hash,name,role_id) VALUES ('legacy_outsider',?,'无关教师',2)",passwordHash);
+  const outsiderToken = (await authService.login("legacy_outsider",password)).token!;
+  const scoreUrl = `${fixture.baseUrl}/api/exams/${exam.id}/student/${student.id}/correction`;
+  const scoreRequest = (method="GET",body?:unknown,token=adminToken,suffix="") => fetch(scoreUrl+suffix,{method,
+    headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},...(body?{body:JSON.stringify(body)}:{})});
+  assert.equal((await fetch(scoreUrl+"/recognize",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})).status,401);
+  assert.equal((await scoreRequest("POST",{},studentToken,"/recognize")).status,403);
+  assert.equal((await scoreRequest("POST",{},outsiderToken,"/recognize")).status,403);
+  await writeFile(records[0].image_path,await sharp({create:{width:2100,height:2970,channels:3,background:"red"}}).png().toBuffer());
+  const reverifyRead = await scoreRequest(); assert.equal(reverifyRead.status,200);
+  const reverifyDoc = await reverifyRead.json() as CorrectionDocument;
+  assert.equal(reverifyDoc.pages[0].recovery?.reason,"provenance");assert.equal(reverifyDoc.pages[0].recognition.geometry,undefined);
+  assert.equal((await scoreRequest("POST",{},adminToken,"/recognize")).status,409,"recognition endpoint checks the requested source before running native work");
+  assert.equal((await fetch(url("0"),{headers:{"X-Api-Key":info.key}})).status,409,"session recovery cannot bypass saved ownership");
+  const recoverStudent = async () => {
+    const doc = await studentCorrection(card,exam.id,student.id);
+    return recognizeStudentCorrection(card,exam.id,student.id,{version:doc.version,pages:doc.pages.filter(p=>p.recovery).map(p=>({sourceId:p.sourceId,fingerprint:p.recovery!.fingerprint}))},async()=>recognition("91010"));
+  };
+  const reverifyEdits = (doc:CorrectionDocument) => ({pages:doc.pages.map(p=>({sourceId:p.sourceId,revision:p.revision,selected:p.selected,
+    ...(p.recovery?{recovery:{fingerprint:p.recovery.fingerprint,signature:p.recovery.signature,recognition:p.recognition}}:{})}))});
+  let reverified = await recoverStudent();
+  const tampered = reverifyEdits(reverified);tampered.pages[0].recovery!.signature="0".repeat(64);
+  assert.equal((await scoreRequest("PUT",tampered)).status,409);
+  await writeFile(records[0].image_path,bytes);
+  assert.equal((await scoreRequest("PUT",reverifyEdits(reverified))).status,409,"source replacement invalidates a signed saved-paper draft");
+  // Force another real mismatch so re-verification is needed again.
+  await writeFile(records[0].image_path,await sharp({create:{width:2100,height:2970,channels:3,background:"blue"}}).png().toBuffer());
+  reverified = await recoverStudent();
+  await db.run("UPDATE scanner_submissions SET state='discarded' WHERE session_id=? AND group_id='0'",session.id);
+  assert.equal((await scoreRequest("PUT",reverifyEdits(reverified))).status,409,"a recovered draft cannot revive a discarded receipt");
+  await db.run("UPDATE scanner_submissions SET state='saved' WHERE session_id=? AND group_id='0'",session.id);
+  const beforeReverify = JSON.stringify(await db.all("SELECT * FROM question_scores WHERE exam_id=? AND student_id=?",exam.id,student.id));
+  await db.run("UPDATE exams SET score_published=1 WHERE id=?",exam.id);
+  const reverifySaved = await scoreRequest("PUT",reverifyEdits(reverified));assert.equal(reverifySaved.status,200,await reverifySaved.clone().text());
+  assert.equal(JSON.stringify(await db.all("SELECT * FROM question_scores WHERE exam_id=? AND student_id=?",exam.id,student.id)),beforeReverify,"re-verification alone preserves existing manual grades");
+  assert.equal(Number((await db.get<{score_published:number}>("SELECT score_published FROM exams WHERE id=?",exam.id))!.score_published),1);
+  assert(await hasCorrectionProvenance(db,card,records[0].id));
+  assert.equal((await studentCorrection(card,exam.id,student.id)).pages[0].recovery,undefined);
+  assert(await db.get("SELECT id FROM answer_overrides WHERE exam_id=? AND new_value LIKE '%correction_reverify%'",exam.id));
+  assert.equal((await scoreRequest("PUT",reverifyEdits(reverified))).status,409,"re-verification increments the revision");
   assert.match((await current("1")).issue!,/版本核验/);
   const second = await recover("1","91009"); assert.equal((await put("1",second)).status,200);
   item = await current("1"); assert.equal(item.issue,undefined);
@@ -136,12 +183,26 @@ try {
     if(groupId===0) {
       const remaining=(await items()).find(x=>x.sessionId===duplicates.id&&x.groupId==="1");
       assert(remaining,"remaining never-saved original stays in the web queue");assert.equal(remaining.reason,"correction");
+      assert.equal((await db.get<{state:string}>("SELECT state FROM scanner_submissions WHERE session_id=? AND group_id='1'",duplicates.id))!.state,"correction");
     }
   }
   assert.equal((await items()).length,0);
+  // Ordinary validation and partial saves do not create false exception warnings.
+  const normal = await store.createSession(card.id,"validate without exceptions");
+  await db.run("UPDATE twain_scan_sessions SET card_version=?,version_source='upload',status='completed' WHERE id=?",cardFingerprint(card),normal.id);
+  for (const [index,number] of ["91001","91002"].entries()) {
+    const imagePath=path.join(process.env.ANSWER_CARD_DATA_DIR!,`normal-${index}.png`);await writeFile(imagePath,bytes);
+    const record=await store.createScanRecord({sessionId:normal.id,cardId:card.id,pageNum:index+1,imagePath});
+    await db.run("UPDATE twain_scan_records SET student_id=?,identity_json=?,ocr_status='done' WHERE id=?",number,JSON.stringify(identity),record.id);
+    await store.upsertRecognitionResult({scanRecordId:record.id,objectiveJson:JSON.stringify(recognition(number).questions),subjectiveJson:"[]"});
+  }
+  assert.equal((await processScannerSession(card,normal.id,"validate")).failures.length,0);
+  assert.equal((await items()).length,0,"validate-only pending receipts stay out of exception list");
+  await processScannerSession(card,normal.id,"save",undefined,new Set(["0"]));
+  assert.equal((await items()).length,0,"unselected ordinary papers stay out of exception list after partial save");
   const complete = await fetch(`${fixture.baseUrl}/api/scanner/upload/sessions/${session.id}/complete`,{method:"POST",headers:{"X-Api-Key":info.key,"Content-Type":"application/json"},body:"{}"});
   assert.equal(complete.status,409); assert.equal((await complete.json()).code,"SESSION_CARD_VERSION_UNKNOWN");
   await db.run("UPDATE twain_scan_sessions SET card_version=?,version_source='upload' WHERE id=?","0".repeat(24),session.id);
   await assert.rejects(sessionCorrection(card,session.id,"0",true),/版本已变化/);
-  console.log(`PASS legacy correction (${db.dialect}): v63 upgrade, existing snapshot recovery, signed save, per-paper proof, original replacement rejection, edit refresh, roster admission, scores and unknown-session upload guard`);
+  console.log(`PASS legacy correction (${db.dialect}): v63 upgrade, signed recovery, saved-paper re-verification and authorization, stale source/receipt rejection, grade preservation, ordinary pending exclusion, resolved duplicate retention and unknown-session upload guard`);
 } finally { await fixture.close(); }
