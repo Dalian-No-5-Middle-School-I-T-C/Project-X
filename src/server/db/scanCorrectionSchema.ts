@@ -8,6 +8,7 @@ export function scanCorrectionSchema(dialect: "sqlite" | "mariadb"): string {
     revision BIGINT NOT NULL DEFAULT 0,
     modified_by INTEGER,
     modified_at VARCHAR(32),
+    recovery_fingerprint VARCHAR(64),
     PRIMARY KEY (source_type, source_id)
   )`;
 }

@@ -338,6 +338,12 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
       response.discardedGroups = discarded.size;
       response.results = response.results.filter(r => !discarded.has(r.groupId));
       response.failures = response.failures.filter(r => !discarded.has(r.groupId));
+      // A group-scoped save reports only the selected paper. Other groups stay
+      // queued and must not turn the selected paper's successful save into a 409.
+      if (saveGroupId !== undefined) {
+        response.results = response.results.filter(r => r.groupId === saveGroupId);
+        response.failures = response.failures.filter(r => r.groupId === saveGroupId);
+      }
       return response;
     };
     const candidates = [...groups].filter(([groupId]) => !discarded.has(groupId) && !invalidGroups.has(groupId) && !legacyBlock).flatMap(([groupId, rows]) => {

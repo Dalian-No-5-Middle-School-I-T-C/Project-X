@@ -1,5 +1,14 @@
 # Project-X CHANGELOG
 
+## 2026-10-21：PR #344 旧卷订正凭据与异常卷队列收口
+
+- **v64 之前保存的旧卷也要重新核验**：已入库旧卷的订正快照没有 `recovery_fingerprint` 时，不再当成普通扫描直接改正式成绩；打开成绩修改会返回「待核验」草稿，必须走签名补识别并保存后才能继续。`loadSessionCorrection` 与 `saveStudentCorrection` 共用同一判断，避免只在保存时才发现。
+- **异常卷列表不再被 validate 回执灌满**：只保留 `held/roster/conflict/correction` 与「曾经入库过」的 pending；同一会话的页面、会话、卡片与分组在一次刷新内缓存，避免逐行重复读整会话。仅点过「校验」、尚未保存的正常卷仍留在扫描端待保存，不进教师异常队列。
+- **单卷保存只回报本卷**：`saveGroupId` 指定时，`/complete` 与整卡订正返回的 results/failures 只包含该组；同会话其他组的名单或重复卷问题留给各自处理，不再把已成功保存的卷报成失败。
+- **建表事实源补齐**：`scanCorrectionSchema()` 的 SQLite / MariaDB 共用 DDL 增加 `recovery_fingerprint`，v64 迁移继续做幂等补列；新库、老库升级与重放迁移走同一份列定义。
+- **保留必要的一致性读取**：指纹包含保存后的 `revision`，因此写后加注仍要重新计算一次；没有复用写前哈希，避免把旧 revision 的指纹写回。
+- **验证**：`verify:scanner-legacy-correction`（含迁移前无指纹→签名重识别→恢复可信）、`verify:scanner-batch-results`（新增双组单卷保存隔离）、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-upload-flow`、`verify:scanner-pending`（本机在切图回滚清理断言处既有失败，已在干净 PR head 复现，与本次改动无关）与 `typecheck` 通过；MariaDB 方言未在本机运行。
+
 ## 2026-10-17：PR #332 —— 双面批次收尾、红笔分数格强制彩色与告警可恢复、DPI 逐轴取证
 
 - **批次结束按单双面分别判定**：单面时 `MSG_ENDXFER` 的码 7（随包 `twain.h` 2.5.1 的 `TWRC_ENDOFLIST`）且 `Count==0` 才收批；双面时该组合仍继续等待当前张背面，背面到达才成功，未到达则保留正面并报部分失败，不再出现「只出一面却报整批成功」。收尾码与 `Count` 的组合由假 DSM 夹具编译真实扫描循环回归，只在 CI（Linux + g++）执行。

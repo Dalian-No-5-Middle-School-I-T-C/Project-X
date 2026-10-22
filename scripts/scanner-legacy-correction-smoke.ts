@@ -158,6 +158,19 @@ try {
   assert(await hasCorrectionProvenance(db,card,records[0].id));
   assert.equal((await studentCorrection(card,exam.id,student.id)).pages[0].recovery,undefined);
   assert(await db.get("SELECT id FROM answer_overrides WHERE exam_id=? AND new_value LIKE '%correction_reverify%'",exam.id));
+  // A saved legacy page from before v64 has no fingerprint. It must not be editable
+  // as an ordinary scan; signed re-recognition is the only way back.
+  await db.run("UPDATE scan_correction_pages SET recovery_fingerprint=NULL WHERE source_type='twain_scan_record' AND source_id=?", records[0].id);
+  const preMigration = await studentCorrection(card,exam.id,student.id);
+  assert.equal(preMigration.pages[0].recovery?.reason,"provenance","pre-v64 saved legacy page needs signed re-recognition");
+  const preMigrationCell = correctionCells(preMigration.pages[0].layout).find(c=>c.type==="objective_option" && c.option==="B")!;
+  await assert.rejects(
+    () => saveStudentCorrection(card,exam.id,student.id,[{sourceId:preMigration.pages[0].sourceId,revision:preMigration.pages[0].revision,selected:toggleCorrectionCell(card,preMigration.pages[0],preMigration.pages[0].selected,preMigrationCell.id)}],admin.lastInsertRowid),
+    /凭据已失效/,
+  );
+  const preMigrationRecovered = await recoverStudent();
+  await saveStudentCorrection(card,exam.id,student.id,reverifyEdits(preMigrationRecovered).pages,admin.lastInsertRowid);
+  assert(await hasCorrectionProvenance(db,card,records[0].id),"signed re-recognition restores provenance for pre-v64 saved pages");
   assert.equal((await scoreRequest("PUT",reverifyEdits(reverified))).status,409,"re-verification increments the revision");
   assert.match((await current("1")).issue!,/版本核验/);
   const second = await recover("1","91009"); assert.equal((await put("1",second)).status,200);

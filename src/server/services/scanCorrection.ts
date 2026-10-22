@@ -18,7 +18,7 @@ import { markScoreMutated } from "./examPublishEvents";
 import { resolveScannerExam } from "./scannerExam";
 import { analysisCache } from "./analysisCache";
 import { CardRepository } from "../repositories/CardRepository";
-import { assertCorrectionGroupVersion, assertCorrectionSessionVersion, correctionProvenanceState, correctionSourceFingerprint, hasCorrectionProvenance, needsCorrectionProvenance, STALE_CORRECTION_PROVENANCE } from "./scanCorrectionProvenance";
+import { assertCorrectionGroupVersion, assertCorrectionSessionVersion, correctionProvenanceState, correctionSourceFingerprint, needsCorrectionProvenance, STALE_CORRECTION_PROVENANCE } from "./scanCorrectionProvenance";
 
 export async function storeCorrectionPage(card: AnswerCard, sourceType: CorrectionPage["sourceType"], sourceId: string | number,
   recognition: CombinedRecognitionResult, db = getMysqlDb()) {
@@ -66,9 +66,12 @@ async function loadSessionCorrection(card: AnswerCard, sessionId: string, groupI
   for (const { record, page: mapped } of group) {
     const url = remote ? `/api/scanner/upload/records/${encodeURIComponent(record.id)}/image` : `/api/scanner/scan-image/${encodeURIComponent(record.id)}`;
     let page = await loadCorrectionPage("twain_scan_record", record.id, url);
+    const provenance = allowRecovery ? await correctionProvenanceState(getMysqlDb(),card,record.id) : null;
+    // 已入库旧卷同样要按会话口径判断：v64 之前留下的快照没有指纹，
+    // 不能因为「不是 invalid」就当成普通扫描直接改正式成绩。
     const unverified = allowRecovery && (savedOwner
-      ? await correctionProvenanceState(getMysqlDb(),card,record.id) === "invalid"
-      : needsCorrectionProvenance(session) && !await hasCorrectionProvenance(getMysqlDb(),card,record.id));
+      ? provenance === "invalid" || (provenance === "absent" && needsCorrectionProvenance(session))
+      : needsCorrectionProvenance(session) && provenance !== "valid");
     if (!page || unverified) {
       if (!allowRecovery) throw new Error("此卷缺少坐标映射，请在服务器异常卷处理中重新识别");
       if (!savedOwner && await getMysqlDb().get("SELECT exam_id FROM scanner_submissions WHERE session_id=? AND group_id=? AND state IN ('saved','discarded')",sessionId,groupId)) throw new Error("此卷已入库或已作废，请从成绩修改进入整卡改分");
@@ -255,6 +258,7 @@ export async function saveSessionCorrection(card: AnswerCard, sessionId: string,
       }
       // Stamp only the pages verified by signed recovery, or carrying a verified
       // recovery into a subsequent edit. Other originals in this session stay unknown.
+      // The fingerprint binds the post-write revision, so it must be computed after writePages.
       for (const {page} of results) {
         const prior = await tx.get<{recovery_fingerprint:string|null}>("SELECT recovery_fingerprint FROM scan_correction_pages WHERE source_type=? AND source_id=?",page.sourceType,page.sourceId);
         if (page.recovery || prior?.recovery_fingerprint) {
@@ -323,6 +327,14 @@ export async function saveStudentCorrection(card: AnswerCard, examId: number, st
         }
         const provenance = await correctionProvenanceState(tx, card, page.sourceId);
         if (provenance === "invalid") throw new Error(STALE_CORRECTION_PROVENANCE);
+        if (provenance === "absent") {
+          const session = await tx.get<{ card_version: string | null; version_source: string }>(
+            "SELECT s.card_version,s.version_source FROM twain_scan_records r JOIN twain_scan_sessions s ON s.id=r.session_id WHERE r.id=?",
+            page.sourceId,
+          );
+          // v64 之前保存的旧卷没有指纹；要求先走签名补识别，不能直接改正式成绩。
+          if (session && needsCorrectionProvenance(session)) throw new Error(STALE_CORRECTION_PROVENANCE);
+        }
         if (provenance === "valid") recoveredIds.push(page.sourceId);
       }
       const results = await writePages(tx,document,edits,userId);

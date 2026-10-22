@@ -22,6 +22,7 @@ import { persistScannerResultToMainDb } from "./scannerResultPersistence";
 import { recomputeExamRankings } from "./rankingUpdate";
 import { analysisCache } from "./analysisCache";
 import { assertCorrectionGroupVersion } from "./scanCorrectionProvenance";
+import type { AnswerCard } from "../../shared/types";
 
 type PendingRow = {
   exam_id: number;
@@ -34,40 +35,56 @@ type PendingRow = {
   result_json: string | null;
   score_snapshot: string | null;
 };
-async function evidence(db: DbAdapter, row: PendingRow) {
-  const exam = await db.get<{
-    card_id: string;
-    class_id: number | null;
-    grade_id: number | null;
-  }>("SELECT card_id,class_id,grade_id FROM exams WHERE id=?", row.exam_id);
-  const card = exam && (await new CardRepository(db).findById(exam.card_id));
+type SessionEvidence = {
+  exam: { card_id: string; class_id: number | null; grade_id: number | null } | null;
+  card: AnswerCard | null;
+  session: { card_id: string; card_version: string | null; version_source: string } | null;
+  raw: Array<ScanRecordWithResult & { objective_json: string | null; subjective_json: string | null }>;
+  grouped?: ReturnType<typeof groupSessionPages>;
+};
+/** 同一会话的整页记录只读一次；异常列表每次刷新都会逐个回执算 evidence。 */
+type EvidenceCache = Map<string, SessionEvidence>;
+async function evidence(db: DbAdapter, row: PendingRow, cache?: EvidenceCache) {
+  const cacheKey = `${row.exam_id}:${row.session_id}`;
+  let cached = cache?.get(cacheKey);
+  if (!cached) {
+    const exam = await db.get<{
+      card_id: string;
+      class_id: number | null;
+      grade_id: number | null;
+    }>("SELECT card_id,class_id,grade_id FROM exams WHERE id=?", row.exam_id);
+    const card = exam && (await new CardRepository(db).findById(exam.card_id));
+    const session = await db.get<{
+      card_id: string;
+      card_version: string | null;
+      version_source: string;
+    }>(
+      "SELECT card_id,card_version,version_source FROM twain_scan_sessions WHERE id=?",
+      row.session_id,
+    );
+    const raw = await db.all<
+      ScanRecordWithResult & {
+        objective_json: string | null;
+        subjective_json: string | null;
+      }
+    >(
+      `SELECT r.*,s.identity_mode,g.objective_json,g.subjective_json
+      FROM twain_scan_records r JOIN twain_scan_sessions s ON s.id=r.session_id
+      LEFT JOIN twain_recognition_results g ON g.scan_record_id=r.id WHERE r.session_id=? ORDER BY r.page_num,r.side,r.id`,
+      row.session_id,
+    );
+    cached = { exam, card, session, raw };
+    cache?.set(cacheKey, cached);
+  }
+  const { exam, card, session, raw } = cached;
   if (!exam || !card) throw new Error("考试或答题卡不存在");
-  const session = await db.get<{
-    card_id: string;
-    card_version: string | null;
-    version_source: string;
-  }>(
-    "SELECT card_id,card_version,version_source FROM twain_scan_sessions WHERE id=?",
-    row.session_id,
-  );
-  const raw = await db.all<
-    ScanRecordWithResult & {
-      objective_json: string | null;
-      subjective_json: string | null;
-    }
-  >(
-    `SELECT r.*,s.identity_mode,g.objective_json,g.subjective_json
-    FROM twain_scan_records r JOIN twain_scan_sessions s ON s.id=r.session_id
-    LEFT JOIN twain_recognition_results g ON g.scan_record_id=r.id WHERE r.session_id=? ORDER BY r.page_num,r.side,r.id`,
-    row.session_id,
-  );
   const records = raw.map((r) => ({
     ...r,
     recognition: r.objective_json
       ? { objective_json: r.objective_json, subjective_json: r.subjective_json }
       : null,
   })) as ScanRecordWithResult[];
-  const grouped = groupSessionPages(card, records),
+  const grouped = cached.grouped ?? (cached.grouped = groupSessionPages(card, records)),
     group = grouped.groups.get(row.group_id);
   let result: ReturnType<typeof gradeSessionGroup> | undefined,
     issue: string | undefined;
@@ -139,9 +156,10 @@ export async function listPendingScans(examId: number) {
     "SELECT * FROM scanner_submissions WHERE exam_id=? AND (state IN ('held','roster','conflict','correction') OR (state='pending' AND previously_saved=1)) ORDER BY session_id,group_id",
     examId,
   );
+  const cache: EvidenceCache = new Map();
   return Promise.all(
     rows.map(async (row) => {
-      const e = await evidence(db, row);
+      const e = await evidence(db, row, cache);
       return {
         sessionId: row.session_id,
         groupId: row.group_id,

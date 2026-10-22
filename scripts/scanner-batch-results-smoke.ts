@@ -512,6 +512,18 @@ try {
   const rosterSaved = await processScannerSession(card, unmatched.id, "save", "0");
   assert.equal(rosterSaved.failures.length, 0, JSON.stringify(rosterSaved.failures));
   assert.equal(rosterSaved.results.find(r => r.groupId === "0")?.saved, true, "Explicit save after roster repair persists the grade");
+  {
+    const scopedUser = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)", "92904", "test", "92904", role.id, "92904");
+    await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, scopedUser.lastInsertRowid);
+    const scopedSession = await makeSession(["92904", "92999"]);
+    const scoped = await processScannerSession(card, scopedSession.id, "save", "0");
+    assert.equal(scoped.results.find(r => r.groupId === "0")?.saved, true, JSON.stringify(scoped));
+    assert.equal(scoped.failures.length, 0, "A group-scoped save must not surface another group's roster failure");
+    const queued = await db.get<{ state: string }>("SELECT state FROM scanner_submissions WHERE session_id=? AND group_id='1'", scopedSession.id);
+    assert(queued?.state !== "saved", "The unrelated group is not saved by the scoped call");
+    const retry = await processScannerSession(card, scopedSession.id, "save");
+    assert(retry.failures.some(f => f.groupId === "1"), "The unrelated group stays queued for its own review");
+  }
 
   const newCard = createDefaultCard("91512002");
   const noExam = await store.createSession(newCard.id, "unlinked");
