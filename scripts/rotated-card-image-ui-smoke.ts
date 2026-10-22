@@ -126,6 +126,16 @@ try {
   fireError(broken.img()!);
   assert.equal(errored, 1, "未旋转分支的加载失败回调透传给调用方");
 
+  // ── 旋转后 SVG <image> 的加载失败也要透传，否则重签成功后仍无机会换地址 ──
+  let svgErrored = 0;
+  const rotatedBroken = opened({ src: "/api/card/page-5.png", initialRotation: 90, onError: () => { svgErrored++; } });
+  await rotatedBroken.render();
+  fireLoad(rotatedBroken.img()!, 1000, 1414);
+  await settle();
+  assert(rotatedBroken.svg(), "旋转分支已建立");
+  fireError(rotatedBroken.svg()!.querySelector("image")!);
+  assert.equal(svgErrored, 1, "SVG 分支的加载失败回调透传给调用方");
+
   // ── 步进闭合：连点不出现负角度或非法值 ──
   assert.equal(rotateImageBy(0, -90), 270);
   assert.equal(rotateImageBy(90, -90), 0);
@@ -159,6 +169,8 @@ try {
   const lightSvg = lightDialog()?.querySelector("svg[role=img]") as SVGSVGElement | null;
   assert(lightSvg, "放大框旋转后改用交换宽高的 SVG 容器");
   assert.equal(lightSvg!.getAttribute("viewBox"), "0 0 1414 1000", "放大框 90° 视口宽高互换");
+  assert.equal(lightSvg!.getAttribute("width"), "1414", "放大框 contain 模式给出旋转后的固有宽度，不落到 SVG 默认尺寸");
+  assert.equal(lightSvg!.getAttribute("height"), "1000", "放大框 contain 模式给出旋转后的固有高度");
   assert.equal(ratio(lightSvg!), "1414 / 1000", "放大框 90° 布局盒跟着交换，不再沿用原图比例");
   assert.equal(lightSvg!.style.transform, "scale(1.5)", "缩放留在旋转容器外层");
   assert(!lightSvg!.style.transform.includes("rotate"), "放大框不再用 CSS rotate 代替布局旋转");

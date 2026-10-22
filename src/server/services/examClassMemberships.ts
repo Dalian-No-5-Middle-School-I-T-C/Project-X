@@ -52,7 +52,8 @@ export async function captureExistingExamClasses(db: DbAdapter, examId: number):
  * 学校口径（issue #347）：考号不变的学生一经调班，他的每次考试都按新班统计，
  * 因此回溯覆盖既有快照，而不是只影响之后的考试。快照的常规不可变性仍由
  * {@link captureExamClasses} 保证——只有显式的班级变更才走这里。
- * 学生已无任何班级关联时保持原样：没有更好的归属可写，不得把历史改成「未知班级」。
+ * 学生已无在读班级时保持原样：只剩归档关联时也没有更好的归属可写，
+ * 不能把历次考试整体改挂到旧归档班。
  */
 export async function reanchorStudentExamClasses(db: DbAdapter, studentId: number): Promise<void> {
   const links = await db.all<{ class_id: number; joined_at: string | null; grade_id: number; active: number }>(`
@@ -60,9 +61,9 @@ export async function reanchorStudentExamClasses(db: DbAdapter, studentId: numbe
       CASE WHEN c.archived_at IS NULL AND g.archived_at IS NULL THEN 1 ELSE 0 END AS active
     FROM class_students cs JOIN classes c ON c.id = cs.class_id JOIN grades g ON g.id = c.grade_id
     WHERE cs.student_id = ? ORDER BY cs.joined_at, cs.class_id`, studentId);
-  if (links.length === 0) return;
   const active = links.filter(link => Number(link.active) === 1);
-  const preferred = active.length > 0 ? active : links;
+  if (active.length === 0) return;
+  const preferred = active;
   const exams = await db.all<{ exam_id: number; class_id: number | null; grade_id: number | null }>(
     `SELECT e.id AS exam_id, e.class_id, e.grade_id FROM exams e
      WHERE e.id IN (SELECT DISTINCT exam_id FROM exam_class_memberships WHERE student_id = ?)

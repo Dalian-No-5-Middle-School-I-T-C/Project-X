@@ -54,7 +54,7 @@ export interface RotatedCardImageProps {
   className?: string;
   loading?: "eager" | "lazy";
   /** 未旋转或尚未取到尺寸时回落到普通 <img>，此时把加载失败交给调用方（如媒体票据重签）。 */
-  onError?: (event: { currentTarget: HTMLImageElement }) => void;
+  onError?: (event: { currentTarget: HTMLImageElement | SVGImageElement }) => void;
 }
 
 /** 只读展示用的原卷图片：rotation 为 0 时保持原来的 <img> 渲染，不引入额外布局。 */
@@ -84,17 +84,20 @@ export function RotatedCardImage({ src, alt, rotation = 0, frame = "fill", scale
     );
   }
   const box = rotationBox(dims.width, dims.height, rotation);
+  // contain 必须给出固有尺寸：只有 viewBox 的 SVG 会落到替换元素的默认 300×150。
+  // 用交换后的像素宽高与未旋转 <img> 的自然尺寸同构，再由 max-h/max-w 等比收缩。
   return (
     <svg
       viewBox={rotationViewBox(dims.width, dims.height, rotation)}
-      width={contain ? undefined : "100%"}
+      width={contain ? box.width : "100%"}
+      height={contain ? box.height : undefined}
       role="img"
       aria-label={alt}
       style={{ aspectRatio: `${box.width} / ${box.height}`, ...scaleStyle }}
       className={cn(contain ? "block h-auto w-auto max-h-full max-w-full" : "block h-auto max-w-none", className)}
     >
       <g transform={rotationTransform(dims.width, dims.height, rotation)}>
-        <image href={src} width={dims.width} height={dims.height} preserveAspectRatio="none" />
+        <image href={src} width={dims.width} height={dims.height} preserveAspectRatio="none" onError={onError} />
       </g>
     </svg>
   );

@@ -60,8 +60,12 @@ interface Props {
 
 /** 原卷页图片：加载失败时不留破图，也不谎报成功 */
 function PaperImage({ src, alt, rotation }: { src: string; alt: string; rotation: ImageRotation }) {
+  const [resolvedSrc, setResolvedSrc] = useState(src);
   const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [src]);
+  useEffect(() => {
+    setResolvedSrc(src);
+    setFailed(false);
+  }, [src]);
   if (failed) {
     return (
       <div className="flex h-40 items-center justify-center rounded-md border border-border-subtle bg-secondary text-sm text-muted-foreground">
@@ -71,13 +75,13 @@ function PaperImage({ src, alt, rotation }: { src: string; alt: string; rotation
   }
   return (
     <RotatedCardImage
-      src={src}
+      src={resolvedSrc}
       alt={alt}
       rotation={rotation}
       loading="lazy"
       onError={(event) => {
-        // 票据被服务端淘汰时先静默重签一次；仍然失败才落到「加载失败」占位
-        if (retryMediaTicketImage(event.currentTarget)) return;
+        // 票据被服务端淘汰时先静默重签一次；新地址写回状态，旋转后的 SVG 也用它
+        if (retryMediaTicketImage(event.currentTarget, setResolvedSrc)) return;
         setFailed(true);
       }}
       className="rounded-md border border-border-subtle bg-card"

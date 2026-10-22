@@ -194,6 +194,24 @@ try {
   assert.deepEqual(await membership(oldExam, transferred), [staying.id], "名单编辑不再改动班级归属");
   console.log("PASS: archived links are replaced by the new class; roster edits follow the move rule");
 
+  // Removing the last active class must keep history as-is even when an archived link remains.
+  {
+    const g4 = await classes.createGrade("归档移出测试");
+    const retired = await classes.createClass(g4.id, "已归档班");
+    const current = await classes.createClass(g4.id, "当前班");
+    const movedOut = await student("从当前班移出");
+    await classes.addStudent(retired.id, movedOut);
+    await classes.deleteClass(retired.id);
+    await classes.addStudent(current.id, movedOut);
+    const archivedExam = await exam("归档关联在位", null, g4.id);
+    await score(archivedExam, movedOut, 66);
+    assert.deepEqual(await membership(archivedExam, movedOut), [current.id], "归档关联不参与在读快照");
+    await classes.removeStudent(current.id, movedOut);
+    assert.deepEqual(await membership(archivedExam, movedOut), [current.id], "移出最后一个在读班后，归档关联不得顶上改写历史归属");
+    assert.equal((await analysis.getScoreTableData(archivedExam)).rows.find((r: any) => r.studentId === movedOut)?.classId, current.id, "成绩表读取也保持移出前的班级");
+    console.log("PASS: removing the last active class keeps history when only archived links remain");
+  }
+
   // Exercise actual routes with an injected administrator identity. This tests
   // history consumers; authentication/authorization is covered by verify:auth
   // and verify:security-critical, which run with real tokens.
