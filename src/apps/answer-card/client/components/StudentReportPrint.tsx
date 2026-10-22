@@ -111,7 +111,7 @@ export function StudentReportPrint({
   );
 }
 
-function ReportBody({
+export function ReportBody({
   examName, studentName, studentNumber, totalScore, objectiveScore, subjectiveScore,
   current, previousName, scoreChange, scoreRateDelta, rankChange, weakRows,
 }: {
@@ -162,8 +162,12 @@ function ReportBody({
           <p className="m-0 mt-1 text-[#333]">
             得分率{scoreRateDelta == null
               ? "—（缺少满分依据，不做进退步判定）"
-              : `${scoreRateDelta >= 0 ? "↑ +" : "↓ "}${scoreRateDelta} pp`}；
-            总分{scoreChange == null ? "—" : scoreChange >= 0 ? `↑ ${scoreChange}` : `↓ ${Math.abs(scoreChange)}`} 分；
+              : scoreRateDelta > 0
+                ? `↑ +${scoreRateDelta} pp`
+                : scoreRateDelta < 0
+                  ? `↓ ${scoreRateDelta} pp`
+                  : "持平"}；
+            总分{scoreChange == null ? "—" : scoreChange > 0 ? `↑ ${scoreChange}` : scoreChange < 0 ? `↓ ${Math.abs(scoreChange)}` : "持平"} 分；
             名次{rankChange == null ? "—" : rankChange > 0 ? `↑ ${rankChange}` : rankChange < 0 ? `↓ ${Math.abs(rankChange)}` : "持平"}
           </p>
         </div>

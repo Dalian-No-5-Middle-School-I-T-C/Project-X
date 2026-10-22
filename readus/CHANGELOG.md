@@ -1,5 +1,14 @@
 # Project-X CHANGELOG
 
+## 2026-10-20：#345/#346 进步/退步按得分率判定 + 独立分析页交付收口
+
+- **判定口径**：跨考试与跨学期的进步/退步一律按得分率变化（百分点）判定，阈值 ±3 pp，显著档 ±10 pp；缺满分时返回 null 并显示「—」，不虚构分母、不退回绝对分。服务端学生自助路径、React 页面、打印报告与独立分析页共用 `src/shared/scoreProgress.ts`。
+- **独立分析页单文件交付**：`Grade-Analysis-System-mobile.html` 不再通过 `<script src="src/shared/scoreProgress.global.js">` 引用仓库内路径，生成包直接内联进页面；`scripts/sync-score-progress-browser.ts` 负责生成并内联，`verify:progress-score-rate` 校验内联内容与源码一致。按文档只复制 HTML 的部署方式不会再因 404 整页不初始化。
+- **live 数据顺序**：`/api/exams` 与 `/api/scores/me` 都是最新在前，页面在 `fetchExams` / `fetchStudentScores` 统一整理为按考试时间升序；学生分析以该生实际有成绩的最近一场为锚点，缺考最新一场不再抛错或把方向算反。
+- **零变化展示**：打印报告单与学期对比的得分率、总分、名次零变化统一显示「持平」，不再出现「↑ +0 pp」。
+- **题块满分**：独立页题块判定只用题块自身满分，取不到即跳过并说明原因，不用整卷满分兜底。
+- **验证**：`verify:progress-score-rate` 77 项通过，其中新增执行页面真实内联脚本的 live 顺序、缺考回退断言，以及打印报告单零变化的结构断言；`typecheck`、`build` 通过。未运行浏览器端到端与 MariaDB 专项。
+
 ## 2026-10-17：PR #332 —— 双面批次收尾、红笔分数格强制彩色与告警可恢复、DPI 逐轴取证
 
 - **批次结束按单双面分别判定**：单面时 `MSG_ENDXFER` 的码 7（随包 `twain.h` 2.5.1 的 `TWRC_ENDOFLIST`）且 `Count==0` 才收批；双面时该组合仍继续等待当前张背面，背面到达才成功，未到达则保留正面并报部分失败，不再出现「只出一面却报整批成功」。收尾码与 `Count` 的组合由假 DSM 夹具编译真实扫描循环回归，只在 CI（Linux + g++）执行。

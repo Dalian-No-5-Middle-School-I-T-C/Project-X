@@ -317,12 +317,14 @@ async function main() {
   closeDatabase();
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 
-  console.log("\n[9] 移动端得分率与共享模块是同一份");
+  console.log("\n[9] 移动端得分率与共享模块是同一份（内联交付）");
   {
-    const { buildScoreProgressBrowser, SCORE_PROGRESS_BROWSER } = await import("./sync-score-progress-browser");
+    const { buildScoreProgressBrowser, extractInlinedScoreProgress } = await import("./sync-score-progress-browser");
     const built = await buildScoreProgressBrowser();
-    const committed = readFileSync(SCORE_PROGRESS_BROWSER, "utf8");
-    ok(committed === built, "9.1 scoreProgress.global.js 与当前 scoreProgress.ts 一致（不一致时运行 sync-score-progress-browser.ts）");
+    const html = readFileSync("Grade-Analysis-System-mobile.html", "utf8");
+    const inlined = extractInlinedScoreProgress(html);
+    ok(inlined === built.replace(/\r\n/g, "\n"), "9.1 页面内联的生成包与当前 scoreProgress.ts 一致（不一致时运行 sync-score-progress-browser.ts）");
+    ok(!html.includes('src="src/shared/scoreProgress.global.js"'), "9.2 页面不再引用单文件部署拿不到的外部脚本");
     const sandbox: { ScoreProgress?: {
       PROGRESS_RATE_THRESHOLD_PP: number;
       NOTABLE_PROGRESS_RATE_PP: number;
@@ -330,18 +332,16 @@ async function main() {
       scoreRateOf: (score: number, full: number) => number | null;
       scoreRateChange: (current: number | null, previous: number | null) => number | null;
     } } = {};
-    vm.runInNewContext(built, sandbox);
+    vm.runInNewContext(inlined!, sandbox);
     const shared = sandbox.ScoreProgress!;
-    ok(shared.PROGRESS_RATE_THRESHOLD_PP === PROGRESS_RATE_THRESHOLD_PP && shared.NOTABLE_PROGRESS_RATE_PP > shared.PROGRESS_RATE_THRESHOLD_PP, "9.2 生成包里的阈值就是共享常量，显著档高于进退步档");
-    ok(shared.judgeProgress(0) === "stable" && shared.judgeProgress(3) === "up" && shared.judgeProgress(-3) === "down", "9.3 生成包的边界判定与 judgeProgress 一致");
-    ok(shared.scoreRateChange(shared.scoreRateOf(40, 40), shared.scoreRateOf(40, 40)) === 0, "9.4 生成包的舍入：两次满分客观题变化是 0 pp");
-    const html = readFileSync("Grade-Analysis-System-mobile.html", "utf8");
-    ok(html.includes('src="src/shared/scoreProgress.global.js"')
-      && html.includes("ScoreProgress.scoreRateOf")
+    ok(shared.PROGRESS_RATE_THRESHOLD_PP === PROGRESS_RATE_THRESHOLD_PP && shared.NOTABLE_PROGRESS_RATE_PP > shared.PROGRESS_RATE_THRESHOLD_PP, "9.3 生成包里的阈值就是共享常量，显著档高于进退步档");
+    ok(shared.judgeProgress(0) === "stable" && shared.judgeProgress(3) === "up" && shared.judgeProgress(-3) === "down", "9.4 生成包的边界判定与 judgeProgress 一致");
+    ok(shared.scoreRateChange(shared.scoreRateOf(40, 40), shared.scoreRateOf(40, 40)) === 0, "9.5 生成包的舍入：两次满分客观题变化是 0 pp");
+    ok(html.includes("ScoreProgress.scoreRateOf")
       && html.includes("ScoreProgress.scoreRateChange")
       && html.includes("ScoreProgress.judgeProgress")
-      && html.includes("ScoreProgress.NOTABLE_PROGRESS_RATE_PP"), "9.5 页面改调生成包，不再内嵌第二套实现");
-    ok(!/function roundRate\(/.test(html) && !/const PROGRESS_THRESHOLD_PP = \d+/.test(html), "9.6 页面里没有手写舍入函数或写死的 3 pp 常量");
+      && html.includes("ScoreProgress.NOTABLE_PROGRESS_RATE_PP"), "9.6 页面改调生成包，不再内嵌第二套实现");
+    ok(!/function roundRate\(/.test(html) && !/const PROGRESS_THRESHOLD_PP = \d+/.test(html), "9.7 页面里没有手写舍入函数或写死的 3 pp 常量");
   }
 
   console.log("\n[10] 学期得分率零变化显示为持平");
@@ -381,6 +381,87 @@ async function main() {
         else Reflect.deleteProperty(globalThis, name);
       }
     }
+  }
+
+  console.log("\n[11] 移动端成绩分析按实际考试顺序执行");
+  {
+    const html = readFileSync("Grade-Analysis-System-mobile.html", "utf8");
+    const inline = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
+      .map(m => m[1])
+      .find(s => s.includes("async function renderStudentAnalysis"));
+    ok(Boolean(inline), "11.1 找到页面主内联脚本");
+    const elements = new Map<string, { innerHTML: string; textContent: string }>();
+    const documentStub = {
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      addEventListener: () => {},
+      createElement: () => ({ style: {}, classList: { add() {}, remove() {} }, appendChild() {}, remove() {}, setAttribute() {}, click() {} }),
+      body: { appendChild() {} },
+      getElementById: (id: string) => {
+        let el = elements.get(id);
+        if (!el) { el = { innerHTML: "", textContent: "" }; elements.set(id, el); }
+        return el;
+      },
+    };
+    const sandbox: Record<string, any> = {
+      console, setTimeout, clearTimeout, Date, JSON, Math, Map, Set, String, Number, Object, Array, Promise, URL, URLSearchParams,
+      location: { search: "", href: "https://mobile.test/", protocol: "https:" },
+      localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+      document: documentStub,
+      alert: () => {},
+      fetch: async () => { throw new Error("no network in test"); },
+      Chart: class { destroy() {} },
+    };
+    sandbox.window = sandbox;
+    sandbox.globalThis = sandbox;
+    vm.createContext(sandbox);
+    const { extractInlinedScoreProgress } = await import("./sync-score-progress-browser");
+    vm.runInContext(extractInlinedScoreProgress(html)!, sandbox, { filename: "scoreProgress.inline.js" });
+    vm.runInContext(inline!, sandbox, { filename: "Grade-Analysis-System-mobile.html" });
+    vm.runInContext(`apiMode = "live"; currentRole = "student"; currentStudent = { id: 42, name: "测试", student_number: "S1", className: "一班" }; studentCache.clear(); studentCache.set("S1", { id: 42, name: "测试", className: "一班" });`, sandbox);
+    const setApi = (withLatestScore: boolean) => vm.runInContext(`
+      API.getExams = async () => ([
+        { id: 2, name: "第二次", start_time: "2026-02-01T00:00:00Z" },
+        { id: 1, name: "第一次", start_time: "2026-01-01T00:00:00Z" }
+      ]);
+      API.getClasses = async () => ([{ classId: 1, className: "一班" }]);
+      API.getOverview = async () => ({ gradedCount: 1, avgScore: 100 });
+      API.getStudents = async () => ([{ studentNumber: "S1", student_id: 42, name: "测试", totalScore: 120, objectiveScore: 50, subjectiveScore: 70 }]);
+      apiGet = async (path) => path === "/api/scores/me" ? ({ scores: ${withLatestScore ? `[
+        { examId: 2, totalScore: 120, full_score: 150, objectiveScore: 50, subjectiveScore: 70 },
+        { examId: 1, totalScore: 60, full_score: 100, objectiveScore: 30, subjectiveScore: 30 }
+      ]` : `[
+        { examId: 1, totalScore: 60, full_score: 100, objectiveScore: 30, subjectiveScore: 30 }
+      ]`} }) : ({});
+    `, sandbox);
+    setApi(true);
+    const examsAsc = await vm.runInContext("fetchExams()", sandbox) as Array<{ id: string }>;
+    ok(examsAsc.map(e => e.id).join(",") === "1,2", "11.2 live 倒序考试列表按时间整理为升序");
+    const scoresAsc = await vm.runInContext("fetchStudentScores(42)", sandbox) as Array<{ examId: string }>;
+    ok(scoresAsc.map(s => s.examId).join(",") === "1,2", "11.3 /api/scores/me 倒序成绩按考试顺序整理为升序");
+    await vm.runInContext("renderStudentAnalysis()", sandbox);
+    const output = elements.get("mainContent")?.innerHTML ?? "";
+    ok(output.includes("在最近的 <strong>第二次</strong>") && output.includes("显著进步"), "11.4 以最近一场实际成绩为锚点，进步方向不反转");
+    setApi(false);
+    elements.get("mainContent")!.innerHTML = "";
+    let threw = false;
+    try { await vm.runInContext("renderStudentAnalysis()", sandbox); } catch { threw = true; }
+    ok(!threw, "11.5 学生缺考最新一场时不抛错");
+    ok((elements.get("mainContent")?.innerHTML ?? "").includes("在最近的 <strong>第一次</strong>"), "11.6 回落为该生最近一次有成绩的考试");
+  }
+
+  console.log("\n[12] 打印报告单零变化显示为持平");
+  {
+    const { createElement } = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { ReportBody } = await import("../src/apps/answer-card/client/components/StudentReportPrint");
+    const markup = renderToStaticMarkup(createElement(ReportBody, {
+      examName: "期中考试", studentName: "测试", studentNumber: "S1",
+      totalScore: 100, objectiveScore: 50, subjectiveScore: 50,
+      current: null, previousName: "上次考试", scoreChange: 0, scoreRateDelta: 0, rankChange: 0, weakRows: [],
+    }));
+    ok(markup.includes("持平") && !markup.includes("↑ +0"), "12.1 得分率零变化显示持平，不显示 ↑ +0 pp");
+    ok((markup.match(/持平/g) ?? []).length >= 3, "12.2 总分、名次与得分率的零变化都显示持平");
   }
 
   console.log("");

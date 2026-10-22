@@ -189,7 +189,80 @@ body { font-family: 'Noto Sans SC', sans-serif; background: #f1f5f9; }
   <div id="mobileTabBar" class="mobile-tab-bar"></div>
 </div>
 
-<script src="src/shared/scoreProgress.global.js"></script>
+<script>
+/* SCORE_PROGRESS_BROWSER_START */
+/* Generated from src/shared/scoreProgress.ts — do not edit.
+   Regenerate: npx tsx scripts/sync-score-progress-browser.ts */
+"use strict";
+var ScoreProgress = (() => {
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+  // src/shared/scoreProgress.ts
+  var scoreProgress_exports = {};
+  __export(scoreProgress_exports, {
+    NOTABLE_PROGRESS_RATE_PP: () => NOTABLE_PROGRESS_RATE_PP,
+    PROGRESS_RATE_THRESHOLD_PP: () => PROGRESS_RATE_THRESHOLD_PP,
+    examPairInTrend: () => examPairInTrend,
+    hasResolvableFullScore: () => hasResolvableFullScore,
+    judgeProgress: () => judgeProgress,
+    meanScoreRate: () => meanScoreRate,
+    scoreRateChange: () => scoreRateChange,
+    scoreRateOf: () => scoreRateOf
+  });
+  var PROGRESS_RATE_THRESHOLD_PP = 3;
+  var NOTABLE_PROGRESS_RATE_PP = 10;
+  function round1(value) {
+    return Math.round(value * 10) / 10;
+  }
+  function hasResolvableFullScore(fullScore) {
+    return typeof fullScore === "number" && Number.isFinite(fullScore) && fullScore > 0;
+  }
+  function scoreRateOf(score, fullScore) {
+    if (!hasResolvableFullScore(fullScore)) return null;
+    if (typeof score !== "number" || !Number.isFinite(score)) return null;
+    return round1(score / fullScore * 100);
+  }
+  function meanScoreRate(rates) {
+    if (rates.length === 0) return null;
+    if (rates.some((rate) => typeof rate !== "number" || !Number.isFinite(rate))) return null;
+    return round1(rates.reduce((sum, rate) => sum + rate, 0) / rates.length);
+  }
+  function scoreRateChange(current, previous) {
+    if (typeof current !== "number" || !Number.isFinite(current)) return null;
+    if (typeof previous !== "number" || !Number.isFinite(previous)) return null;
+    return round1(current - previous);
+  }
+  function judgeProgress(changePP, thresholdPP = PROGRESS_RATE_THRESHOLD_PP) {
+    if (typeof changePP !== "number" || !Number.isFinite(changePP)) return "unknown";
+    if (changePP >= thresholdPP) return "up";
+    if (changePP <= -thresholdPP) return "down";
+    return "stable";
+  }
+  function examPairInTrend(trend, examId) {
+    const index = trend.findIndex((point) => Number(point.examId) === examId);
+    if (index < 0) return null;
+    return { current: trend[index], previous: index > 0 ? trend[index - 1] : null };
+  }
+  return __toCommonJS(scoreProgress_exports);
+})();
+/* SCORE_PROGRESS_BROWSER_END */
+</script>
 <script>
 // ==================== 全局配置 ====================
 const urlParams = new URLSearchParams(location.search);
@@ -282,8 +355,8 @@ const API = {
 };
 
 // ==================== 得分率口径（issue #345）====================
-// 阈值、舍入和进退步判定只在 src/shared/scoreProgress.ts。本页通过
-// scoreProgress.global.js 使用同一份实现，不再手写第二套数字或舍入。
+// 阈值、舍入和进退步判定只在 src/shared/scoreProgress.ts。本页使用内联的
+// 生成包（scripts/sync-score-progress-browser.ts），不再手写第二套数字或舍入。
 const NOTABLE_PROGRESS_PP = ScoreProgress.NOTABLE_PROGRESS_RATE_PP;
 
 /** 得分率 0-100；分母缺失或非正数时返回 null，绝不假设「满分 100」 */
@@ -407,7 +480,7 @@ async function fetchExamWithScores(examId) {
 }
 
 async function fetchExams() {
-  if (apiMode === 'demo') return appData.exams;
+  if (apiMode === 'demo') return [...appData.exams].sort(compareExamChronology);
   const exams = await API.getExams();
   return exams.map(e => ({
     id: String(e.id),
@@ -420,7 +493,22 @@ async function fetchExams() {
       { name: '主观题', maxScore: null }
     ],
     _raw: e
-  }));
+  })).sort(compareExamChronology);
+}
+
+/** 考试时间升序；时间缺失时用 ID 兜底。演示数据与线上接口都统一到这里。 */
+function examTimeValue(exam) {
+  const raw = exam && (exam.date || exam.start_time || exam.created_at);
+  const value = raw ? Date.parse(raw) : NaN;
+  return Number.isFinite(value) ? value : null;
+}
+function compareExamChronology(a, b) {
+  const ta = examTimeValue(a), tb = examTimeValue(b);
+  if (ta != null && tb != null && ta !== tb) return ta - tb;
+  const na = Number(String((a && a.id) ?? '').replace(/\D/g, ''));
+  const nb = Number(String((b && b.id) ?? '').replace(/\D/g, ''));
+  if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+  return 0;
 }
 
 async function fetchOverview(examId) {
@@ -570,6 +658,7 @@ async function fetchStudentScores(studentId) {
       const res = await apiGet('/api/scores/me');
       const raw = res.scores || [];
       const exams = await fetchExams();
+      const order = new Map(exams.map((e, i) => [String(e.id), i]));
       return raw.map(s => ({
         examId: String(s.examId || s.exam_id),
         studentId: studentId,
@@ -580,7 +669,7 @@ async function fetchStudentScores(studentId) {
           '客观题': s.objectiveScore || s.objective_score || 0,
           '主观题': s.subjectiveScore || s.subjective_score || 0
         }
-      })).filter(s => s.examId);
+      })).filter(s => s.examId).sort((a, b) => (order.get(a.examId) ?? 0) - (order.get(b.examId) ?? 0));
     } catch (e) { console.warn('[Scores] /api/scores/me 失败，回退到逐考试查询:', e); }
   }
   const exams = await fetchExams();
@@ -1519,21 +1608,26 @@ async function renderStudentAnalysis() {
   const stu = currentStudent;
   const scores = await fetchStudentScores(stu.id);
   const exams = await fetchExams();
-  const latestExam = exams[exams.length - 1];
-  const latestScore = scores.find(s => s.examId === latestExam.id);
+  // 以学生实际有成绩的最近一场为锚点：全局最新一场可能缺考或未公布。
+  const scoreByExam = new Map(scores.map(s => [String(s.examId), s]));
+  const attended = exams.filter(e => scoreByExam.has(String(e.id)));
+  const latestExam = attended[attended.length - 1] || null;
+  document.getElementById('pageTitle').textContent = '成绩分析';
+  if (!latestExam) {
+    document.getElementById('mainContent').innerHTML = '<div class="max-w-4xl mx-auto bg-white rounded-xl p-8 text-center text-slate-500">暂无可用于分析的已公布成绩。</div>';
+    return;
+  }
+  const latestScore = scoreByExam.get(String(latestExam.id));
+  const prevExam = attended.length >= 2 ? attended[attended.length - 2] : null;
+  const prevScoreRow = prevExam ? scoreByExam.get(String(prevExam.id)) : null;
   const classStats = await fetchClassStats(latestExam.id);
   const classAvg = classStats.find(c => c.className === stu.className);
-
-  document.getElementById('pageTitle').textContent = '成绩分析';
 
   const subjects = latestExam.subjects;
   let strongSubjects = [];
   let weakSubjects = [];
   let improvedSubjects = [];
   let declinedSubjects = [];
-
-  const prevScoreRow = scores.length >= 2 ? scores[scores.length - 2] : null;
-  const prevExam = prevScoreRow ? exams.find(e => e.id === prevScoreRow.examId) : null;
   let unjudgedSubjects = [];
 
   for (const s of subjects) {
