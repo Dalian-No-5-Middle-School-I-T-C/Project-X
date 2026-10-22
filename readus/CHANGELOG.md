@@ -1,5 +1,12 @@
 # Project-X CHANGELOG
 
+## 2026-10-22：#340 评审收口——背景上传与移除串行、单机清退入口隐藏
+
+- **上传与移除不再交错**：`handleBgUpload` 与透明度 PATCH、移除 DELETE 进同一条队列；上传或移除进行中两个按钮与文件选择都禁用。避免 rename 晚于 DELETE 时「已移除」却仍有文件，或旧上传带走刚移除的图。
+- **移除失败回填**：DELETE 失败时把本地透明度与浮层恢复到移除前，不再显示「已关闭」而服务端仍保留背景；删除文件改用 `rm(..., { force: true })`，双标签页并发删除不再因 ENOENT 返回 500。
+- **免登录单机模式隐藏清退入口**：`GET /api/system-settings` 返回 `authenticated`，全局设置页只在有登录身份时渲染「清除学生历史背景」；后端匿名 401 保留。`ACCOUNT-CONTROL.md` 登记该边界与「已注销账号残留文件不在清退范围」。
+- **验证**：`verify:student-web-settings` 新增管理员 `authenticated=true` 与免登录 `authenticated=false` 断言；`verify:auth`、`verify:security-critical`、`typecheck`、`build` 通过。未做真实浏览器与 iOS15 验收。
+
 ## 2026-10-18：#336 学生历史背景的清退入口
 
 - 不在启动或迁移时删文件。学生已经看不到这些图，静默清盘会让人分不清教师的图有没有被一起带走。

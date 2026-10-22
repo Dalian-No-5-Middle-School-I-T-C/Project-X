@@ -67,6 +67,23 @@ async function assertLateOpacityPatchCannotFinishAfterDelete(): Promise<void> {
   await recovered.enqueue(async () => { throw new Error("stale patch failed"); }).catch(() => {});
   await recovered.enqueue(async () => { afterFailure.push("delete"); });
   assert.deepEqual(afterFailure, ["delete"], "前一条透明度请求失败也不能卡住移除");
+
+  const uploadQueue = createBackgroundOpacityQueue();
+  const uploadEvents: string[] = [];
+  let releaseUpload: () => void = () => {};
+  const uploadGate = new Promise<void>((resolve) => { releaseUpload = resolve; });
+  const upload = uploadQueue.enqueue(async () => {
+    uploadEvents.push("upload-start");
+    await uploadGate;
+    uploadEvents.push("upload-end");
+  });
+  const removeAfterUpload = uploadQueue.enqueue(async () => { uploadEvents.push("delete"); });
+  await Promise.resolve();
+  assert.deepEqual(uploadEvents, ["upload-start"], "移除要等正在进行的上传结束，不能与 rename 交错");
+  releaseUpload();
+  await upload;
+  await removeAfterUpload;
+  assert.deepEqual(uploadEvents, ["upload-start", "upload-end", "delete"], "上传与删除串行，删除是最后一次写入");
 }
 
 /** 初始关闭 → 滑块打开浮层 → 移除：浮层必须关掉，未发出的旧 PATCH 不能排在删除后面。 */
@@ -425,6 +442,9 @@ async function main(): Promise<void> {
     assert.equal(adminLogin.status, 200, "管理员重新登录失败");
     const adminToken = ((await adminLogin.json()) as { token?: string }).token;
     assert.ok(adminToken, "管理员登录未返回 token");
+    const adminSettings = await fetch(`${base}/api/system-settings`, { headers: { Authorization: `Bearer ${adminToken}` } });
+    assert.equal(adminSettings.status, 200, "管理员应能读取全局设置");
+    assert.equal(((await adminSettings.json()) as { authenticated?: boolean }).authenticated, true, "已登录管理员才渲染背景清退入口");
     const purged = await fetch(`${base}/api/admin/backgrounds/purge-students`, {
       method: "POST",
       headers: { Authorization: `Bearer ${adminToken}` }
@@ -471,6 +491,9 @@ async function main(): Promise<void> {
     assert.equal(anonDelete.status, 401, "免登录模式下没有用户 id 时不能删除背景图");
     const anonPurge = await fetch(`${base}/api/admin/backgrounds/purge-students`, { method: "POST" });
     assert.equal(anonPurge.status, 401, "免登录模式下匿名请求不能清退学生背景");
+    const anonSettings = await fetch(`${base}/api/system-settings`);
+    assert.equal(anonSettings.status, 200, "免登录模式仍可读取全局设置");
+    assert.equal(((await anonSettings.json()) as { authenticated?: boolean }).authenticated, false, "免登录模式不渲染背景清退入口");
     assert.equal(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), true, "匿名删除不得带走教师背景");
 
     await new Promise((resolve) => setImmediate(resolve));

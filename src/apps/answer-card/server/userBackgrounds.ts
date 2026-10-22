@@ -36,7 +36,8 @@ export function resolveUserBackgroundPath(dir: string, userId: unknown): string 
 export async function removeUserBackgroundFile(dir: string, userId: unknown): Promise<boolean> {
   const target = resolveUserBackgroundPath(dir, userId);
   if (!target || !existsSync(target)) return false;
-  await rm(target);
+  // force: 双标签页并发删除时，另一个请求已经删掉文件不应变成 500。
+  await rm(target, { force: true });
   return true;
 }
 

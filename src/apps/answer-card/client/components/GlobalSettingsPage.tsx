@@ -81,15 +81,17 @@ export function GlobalSettingsPage({ onBack }: Props) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [messageTone, setMessageTone] = useState<"success" | "error">("error");
+  const [purgeAvailable, setPurgeAvailable] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetchJson<{ ok: boolean; data: Settings }>("/api/system-settings");
+      const res = await fetchJson<{ ok: boolean; data: Settings; authenticated?: boolean }>("/api/system-settings");
       if (res.ok) {
         const data = (res.data ?? {}) as Record<string, string>;
         setSettings(data as Settings);
         setDraft(data as Settings);
+        setPurgeAvailable(res.authenticated === true);
         try { if (data[BAND_KEY_DIFF]) setDiffBands(JSON.parse(data[BAND_KEY_DIFF])); } catch { /* keep default */ }
         try { if (data[BAND_KEY_DISC]) setDiscBands(JSON.parse(data[BAND_KEY_DISC])); } catch { /* keep default */ }
       }
@@ -474,6 +476,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
         )}
       </div>
 
+      {purgeAvailable && (
       <div className="flex flex-col gap-3 border-t border-border-subtle pt-5">
         <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
           <Trash2 size={15} className="shrink-0" />
@@ -495,6 +498,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
         </div>
         {purgeMsg && <Banner tone={purgeTone}>{purgeMsg}</Banner>}
       </div>
+      )}
 
       {/* v1.9.6+: 开发者工具（演示数据导入/清除）。即时执行，不参与底部保存。 */}
       <div className="flex flex-col gap-3 border-t border-border-subtle pt-5">

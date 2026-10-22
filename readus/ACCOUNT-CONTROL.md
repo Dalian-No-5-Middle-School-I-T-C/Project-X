@@ -162,7 +162,9 @@ system:manage               系统维护（仅管理员）
 让登录用户删掉自己的 `<userId>.jpg` 并把 `background_opacity` 归零——学生可以调这个接口，
 设置页不给他们按钮。管理员在全局设置里点「清除学生历史背景」，对应
 `POST /api/admin/backgrounds/purge-students`（`system:manage`）：只删学生角色的文件、
-只把学生的透明度归零，教师和管理员的图不动。前端同步隐藏阅卷 Tab 与整段背景区（`AccountSettingsPage.tsx`），
+只把学生的透明度归零，教师和管理员的图不动。清退入口只在有登录身份时渲染；免登录单机模式
+没有可核验的管理员身份，不提供该入口。清退范围是**当前存在的学生账号**，已注销账号留下的
+`<id>.jpg` 不会被这个入口枚举到。前端同步隐藏阅卷 Tab 与整段背景区（`AccountSettingsPage.tsx`），
 并在保存时只提交允许的字段，避免夹带被禁字段时整单 403 把底部导航一起打断——
 但**授权口径始终以上表的后端门为准**。
 页签回退只在「请求的正是被隐藏的阅卷设置」时发生（`!canEditGradingSettings && settingsTab === "grading"`），

@@ -173,6 +173,7 @@ export function AccountSettingsPage() {
   const [bgMsgTone, setBgMsgTone] = useState<"success" | "error">("success");
   const [removeBgOpen, setRemoveBgOpen] = useState(false);
   const [removeBgBusy, setRemoveBgBusy] = useState(false);
+  const [bgBusy, setBgBusy] = useState(false);
   const [settingsMsg, setSettingsMsg] = useState("");
 
   // Multi-provider AI management
@@ -311,31 +312,39 @@ export function AccountSettingsPage() {
 
   async function handleBgUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (!file || isStudent) return;
+    if (!file || isStudent || bgBusy || removeBgBusy) return;
+    setBgBusy(true);
     setBgMsg("");
     try {
       const form = new FormData();
       form.append("file", file);
-      const res = await authFetch("/api/users/me/background", {
-        method: "POST",
-        body: form
+      // 上传也进同一条队列：与待发送的透明度 PATCH、移除 DELETE 串行，避免 rename 与删除交错。
+      await bgOpacityWrites.current!.enqueue(async () => {
+        const res = await authFetch("/api/users/me/background", {
+          method: "POST",
+          body: form
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({} as { error?: string; message?: string }));
+          throw new Error(err.message || err.error || "上传失败");
+        }
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({} as { error?: string; message?: string }));
-        throw new Error(err.message || err.error || "上传失败");
-      }
       setBgMsgTone("success");
       setBgMsg("上传成功，刷新后生效");
       setTimeout(() => setBgMsg(""), 3000);
     } catch (err) {
       setBgMsgTone("error");
       setBgMsg(err instanceof Error ? err.message : "上传失败");
+    } finally {
+      setBgBusy(false);
+      // Reset input so same file can be re-uploaded
+      e.target.value = "";
     }
-    // Reset input so same file can be re-uploaded
-    e.target.value = "";
   }
 
   async function handleRemoveBackground() {
+    if (bgBusy) return;
+    const previousOpacity = bgOpacity;
     clearPendingBgOpacity();
     // 先把 Workspace 透明度拉回 0，并清掉滑块直接写过的浮层。
     // 进入本页时 showBg 已是 0 的话，setShowBg(0) 不会触发 App 的 effect。
@@ -352,8 +361,15 @@ export function AccountSettingsPage() {
       setRemoveBgOpen(false);
       setTimeout(() => setBgMsg(""), 3000);
     } catch (err) {
+      // 服务端文件与透明度都还在；把本地预览恢复到移除前，避免界面谎报已关闭。
+      if (previousOpacity > 0) {
+        setBgOpacity(previousOpacity);
+        setShowBg(previousOpacity);
+        document.documentElement.style.setProperty("--bg-opacity", String(previousOpacity));
+        document.body.classList.add("has-bg-image");
+      }
       setBgMsgTone("error");
-      setBgMsg(err instanceof Error ? err.message : "移除失败");
+      setBgMsg(err instanceof Error ? err.message : "移除失败，背景设置未变");
     } finally {
       setRemoveBgBusy(false);
     }
@@ -607,13 +623,13 @@ export function AccountSettingsPage() {
                   {/* 学生整段背景区不渲染。上传仍按学生身份单独判断，不看 grade:write。 */}
                   {canUploadBackground && (
                     <>
-                      <Button variant="ghost" size="sm" onClick={() => bgFileRef.current?.click()}>
+                      <Button variant="ghost" size="sm" disabled={bgBusy || removeBgBusy} onClick={() => bgFileRef.current?.click()}>
                         上传背景图
                       </Button>
-                      <Button variant="ghost" size="sm" onClick={() => setRemoveBgOpen(true)}>
+                      <Button variant="ghost" size="sm" disabled={bgBusy || removeBgBusy} onClick={() => setRemoveBgOpen(true)}>
                         移除背景图
                       </Button>
-                      <input ref={bgFileRef} type="file" accept="image/*" className="hidden" onChange={handleBgUpload} />
+                      <input ref={bgFileRef} type="file" accept="image/*" className="hidden" disabled={bgBusy || removeBgBusy} onChange={handleBgUpload} />
                     </>
                   )}
                   {bgMsg && (
