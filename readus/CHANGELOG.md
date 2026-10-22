@@ -12,6 +12,14 @@
 - **文档**：`AGENTS.md` 的班级口径、`readus/整卡改分说明.md`、`readus/原卷与逐题答案-使用说明.md` 同步改写。
 - **验证**：`npm run typecheck`、`vite build --mode web`、`vite build --mode scanner` 通过；`verify:exam-class-memberships`（含回溯后的排名、对比、梯队、趋势、导出、筛选、重新判分与「只剩归档关联」断言）、`verify:class-archive`、`verify:permission-scope`（148/0，含调班显式拒绝与成功路径）、`verify:card-rotation-ui`、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-postprocess-all` 均 ALL PASS。
 - **已知限制**：以上验证只在 SQLite 上执行，本机没有 MariaDB 实例，MariaDB 方言分支未跑；调班入口目前只在「账号管理 → 班级管理」下（受 `user:manage` 门禁），教师虽已被接口允许，仍缺可见入口；真机扫描仪与浏览器端人工验收未做。
+## 2026-10-20：#345/#346 进步/退步按得分率判定 + 独立分析页交付收口
+
+- **判定口径**：跨考试与跨学期的进步/退步一律按得分率变化（百分点）判定，阈值 ±3 pp，显著档 ±10 pp；缺满分时返回 null 并显示「—」，不虚构分母、不退回绝对分。服务端学生自助路径、React 页面、打印报告与独立分析页共用 `src/shared/scoreProgress.ts`。
+- **独立分析页单文件交付**：`Grade-Analysis-System-mobile.html` 不再通过 `<script src="src/shared/scoreProgress.global.js">` 引用仓库内路径，生成包直接内联进页面；`scripts/sync-score-progress-browser.ts` 负责生成并内联，`verify:progress-score-rate` 校验内联内容与源码一致。按文档只复制 HTML 的部署方式不会再因 404 整页不初始化。
+- **live 数据顺序**：`/api/exams` 与 `/api/scores/me` 都是最新在前，页面在 `fetchExams` / `fetchStudentScores` 统一整理为按考试时间升序；学生分析以该生实际有成绩的最近一场为锚点，缺考最新一场不再抛错或把方向算反。
+- **零变化展示**：打印报告单与学期对比的得分率、总分、名次零变化统一显示「持平」，不再出现「↑ +0 pp」。
+- **题块满分**：独立页题块判定只用题块自身满分，取不到即跳过并说明原因，不用整卷满分兜底。
+- **验证**：`verify:progress-score-rate` 77 项通过，其中新增执行页面真实内联脚本的 live 顺序、缺考回退断言，以及打印报告单零变化的结构断言；`typecheck`、`build` 通过。未运行浏览器端到端与 MariaDB 专项。
 
 ## 2026-10-19：#342 客观题「每题分值」同步逐题配置，卡面总分与导出弹窗同源
 
