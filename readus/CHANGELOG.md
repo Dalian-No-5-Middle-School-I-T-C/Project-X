@@ -21,6 +21,26 @@
 - **验证**：`npm run typecheck`、`vite build --mode web`、`vite build --mode scanner` 通过；`verify:exam-class-memberships`（含回溯后的排名、对比、梯队、趋势、导出、筛选、重新判分与「只剩归档关联」断言）、`verify:class-archive`、`verify:permission-scope`（148/0，含调班显式拒绝与成功路径）、`verify:card-rotation-ui`、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-postprocess-all` 均 ALL PASS。
 - **已知限制**：以上验证只在 SQLite 上执行，本机没有 MariaDB 实例，MariaDB 方言分支未跑；调班入口目前只在「账号管理 → 班级管理」下（受 `user:manage` 门禁），教师虽已被接口允许，仍缺可见入口；真机扫描仪与浏览器端人工验收未做。
 
+## 2026-10-22：#340 评审收口——背景上传与移除串行、单机清退入口隐藏
+
+- **上传与移除不再交错**：`handleBgUpload` 与透明度 PATCH、移除 DELETE 进同一条队列；上传或移除进行中两个按钮与文件选择都禁用。避免 rename 晚于 DELETE 时「已移除」却仍有文件，或旧上传带走刚移除的图。
+- **队列跨页面挂载共享**：写入队列提升为登录身份级（`backgroundWriteSession`），离开账号设置再返回时，新的 DELETE 仍排在旧实例的在途 PATCH 后面；身份切换后旧队列里尚未执行的任务直接丢弃，不会用新账号凭据落库。卸载时仍清理未发送的防抖定时器。
+- **移除失败回填**：DELETE 失败时把本地透明度与浮层恢复到移除前，不再显示「已关闭」而服务端仍保留背景；删除文件改用 `rm(..., { force: true })`，双标签页并发删除不再因 ENOENT 返回 500。
+- **免登录单机模式隐藏清退入口**：`GET /api/system-settings` 返回 `authenticated`，全局设置页只在有登录身份时渲染「清除学生历史背景」；后端匿名 401 保留。`ACCOUNT-CONTROL.md` 登记该边界与「已注销账号残留文件不在清退范围」。
+- **验证**：`verify:student-web-settings` 新增管理员 `authenticated=true`、免登录 `authenticated=false`、跨挂载队列顺序与身份切换丢弃断言；`verify:auth`、`verify:security-critical`、`typecheck`、`build` 通过。未做真实浏览器与 iOS15 验收。
+
+## 2026-10-18：#336 学生历史背景的清退入口
+
+- 不在启动或迁移时删文件。学生已经看不到这些图，静默清盘会让人分不清教师的图有没有被一起带走。
+- `DELETE /api/users/me/background`：登录用户删除自己的 `backgrounds/<userId>.jpg`，并把 `background_opacity` 归零。学生可以调，账号设置页不显示按钮；教师和管理员在背景区有「移除背景图」。
+- `POST /api/admin/backgrounds/purge-students`（`system:manage`）：只删除当前学生角色的 `<id>.jpg`，只把这些账号的透明度归零。教师、管理员、临时文件和随包默认图都不动。全局设置页有确认对话框。
+
+## 2026-10-18：#335 背景图上传上限改为三档
+
+- `POST /api/users/me/background` 的体积闸门不再写死 5 MiB。`PROJECTX_BACKGROUND_UPLOAD_MIB` 默认 5、天花板 32；非法值回落默认并打印 `[background-upload-limits]`，超过天花板则夹紧。单一来源 `src/shared/backgroundUploadLimits.ts`。
+- 超限仍是 413 `UPLOAD_ERROR`，文案带上当前生效上限，例如「上传文件超过大小限制（≤5 MiB）」。这句只属于背景图上传，其它 multer 闸门的文案不变。
+- 账号设置接口多返回 `backgroundUploadLimit`，设置页在背景区注明「单张不超过 N MiB」。学生账号仍然不能上传。
+
 ## 2026-10-22：PR #344 恢复凭据与单卷保存边界修复
 
 - 当前版本的未入库卷也校验既有恢复指纹；原图变化后重新显示核验入口，保存事务和确认入库拒绝失效凭据，普通保存不能重新盖章。上传完成入库也检查已有恢复指纹。
