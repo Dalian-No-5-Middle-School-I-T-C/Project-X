@@ -18,6 +18,15 @@ export function scanCorrectionRouter(prefix: "session" | "sessions", remote: boo
       const session = await getMysqlDb().get<{card_id:string}>("SELECT card_id FROM twain_scan_sessions WHERE id=?",req.params.sessionId);
       if (!session) { res.status(404).json({message:"扫描会话不存在"}); return; }
       const resolved = await resolveScannerExam(session.card_id,String(req.params.sessionId));
+      // Scanner sync imports cards without creating local exams. The enclosing session
+      // scope already distinguishes these originals from ambiguous or deleted exams.
+      if (!remote && resolved.allExamIds.length === 0) {
+        if (req.user && !["admin", "teacher"].includes(req.user.role_name)) {
+          res.status(403).json({message:"权限不足：整卡订正仅限教师或管理员"}); return;
+        }
+        requirePermissionCompat(PERMISSIONS.GRADE_WRITE)(req,res,next);
+        return;
+      }
       if (!resolved.exam && req.user) { res.status(409).json({message:"无法确定考试归属"}); return; }
       if (resolved.exam) req.params.examId = String(resolved.exam.id);
       requirePermissionCompat(PERMISSIONS.GRADE_WRITE)(req,res,() => { void requireWholeExamGradingAccess(req,res,next).catch(next); });

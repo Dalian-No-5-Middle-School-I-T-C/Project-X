@@ -1,5 +1,13 @@
 # Project-X CHANGELOG
 
+## 2026-10-22：#349 交错客观/主观题块顺序保存后丢失
+
+- **现象**：设计器里排成「一、二、三、四、五、六」（客观/主观交错），保存后重新打开、导出 PDF、`/layout` 和扫描识别都变成「先全部客观、再全部主观」。设计图与导出件不一致。
+- **根因**：`bodyBlocks` 是交错数组，但落库拆成 `objective_blocks` / `subjective_blocks`；两个插入方法都把 `sort_order` 硬编码为 0，`findById()` 又固定先读客观表再读主观表，跨类型顺序没有落点。
+- **修复**：保存时按 `bodyBlocks` 下标写整卡级 `sort_order`（跨两表连续唯一）；`findById()` 把两张表按 `sort_order` 合并。历史数据（`sort_order` 全 0 或按类型各自编号）继续按旧的分组顺序读取，重新保存后自动升级，不改变存量卡原有顺序。
+- **影响范围**：PDF 导出、`/api/cards/:id/layout`、扫描识别、整卡订正、设计器重新加载。存量卡若已被错误分组，需老师重新拖动一次题块并保存——旧数据无法推断原本的交错意图。
+- **验证**：新增 `verify:card-block-order`（临时 SQLite 隔离库）：交错块保存/读取往返、`buildLayout` 顺序、历史 0 序号兼容、历史卡重新保存升级；脚本在导入数据库模块前切到临时工作目录，并在首次写入前断言方言为 SQLite，避免本机 `config.yml` 的 remote 配置把回归写到真实库；`typecheck` 通过，CI 已接入。MariaDB 未在本机实跑（无客户端），读取路径为方言无关的 JS 合并，未新增列/迁移。
+
 ## 2026-10-20：#347 调班后历次考试跟随现班 + 原卷旋转查看
 
 - **调班即回溯考试归属**：`reanchorStudentExamClasses` 在人工调班（迁移学生、加入班级、移出班级、导入新建班级关联）后，把该生全部考试的 `exam_class_memberships` 重写为调班后的班级，考号保持不变。此前 `captureExamClasses` 一旦为某场考试落过快照就永不改写，`preserveStudentExamHistory` 又把改动前的旧班级冻结进历史表，所以强基班调整、转班、留级跳级之后，历次考试与班级统计仍停在原班（issue #347 ①）。
@@ -12,6 +20,24 @@
 - **文档**：`AGENTS.md` 的班级口径、`readus/整卡改分说明.md`、`readus/原卷与逐题答案-使用说明.md` 同步改写。
 - **验证**：`npm run typecheck`、`vite build --mode web`、`vite build --mode scanner` 通过；`verify:exam-class-memberships`（含回溯后的排名、对比、梯队、趋势、导出、筛选、重新判分与「只剩归档关联」断言）、`verify:class-archive`、`verify:permission-scope`（148/0，含调班显式拒绝与成功路径）、`verify:card-rotation-ui`、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-postprocess-all` 均 ALL PASS。
 - **已知限制**：以上验证只在 SQLite 上执行，本机没有 MariaDB 实例，MariaDB 方言分支未跑；调班入口目前只在「账号管理 → 班级管理」下（受 `user:manage` 门禁），教师虽已被接口允许，仍缺可见入口；真机扫描仪与浏览器端人工验收未做。
+
+## 2026-10-22：PR #344 恢复凭据与单卷保存边界修复
+
+- 当前版本的未入库卷也校验既有恢复指纹；原图变化后重新显示核验入口，保存事务和确认入库拒绝失效凭据，普通保存不能重新盖章。上传完成入库也检查已有恢复指纹。
+- 点名「保存此卷」仍有存疑题、实际没有入库时返回 409 和逐题确认提示；同会话其他卷缺学号、缺识别或未上传完成时，完整的所选卷可独立保存，其他卷的页面状态保持原样。
+- 异常列表缓存正在执行的会话查询，同一刷新内并发处理多个回执时共用结果；下一次刷新重新读取。
+- 新增 `verify:scanner-correction-boundaries`，通过 HTTP 和数据库终态覆盖当前版本凭据失效、取锁前原图变化、重新核验恢复、存疑题拒绝与确认后保存、单卷隔离、幂等重试和缓存并发。接入 SQLite 与 MariaDB CI。
+- 本机 macOS / Node 24 / 隔离 SQLite：新增回归及 10 项既有专项通过，类型检查、Web、扫描端与服务端构建通过。MariaDB 验证由本提交 CI 执行。
+
+## 2026-10-21：PR #344 旧卷订正凭据与异常卷队列收口
+
+- **v64 之前保存的旧卷也要重新核验**：已入库旧卷的订正快照没有 `recovery_fingerprint` 时，不再当成普通扫描直接改正式成绩；打开成绩修改会返回「待核验」草稿，必须走签名补识别并保存后才能继续。`loadSessionCorrection` 与 `saveStudentCorrection` 共用同一判断，避免只在保存时才发现。
+- **异常卷列表不再被 validate 回执灌满**：只保留 `held/roster/conflict/correction` 与「曾经入库过」的 pending；同一会话的页面、会话、卡片与分组在一次刷新内缓存，避免逐行重复读整会话。仅点过「校验」、尚未保存的正常卷仍留在扫描端待保存，不进教师异常队列。
+- **单卷保存只回报本卷**：`saveGroupId` 指定时，`/complete` 与整卡订正返回的 results/failures 只包含该组；同会话其他组的名单或重复卷问题留给各自处理，不再把已成功保存的卷报成失败。
+- **建表事实源补齐**：`scanCorrectionSchema()` 的 SQLite / MariaDB 共用 DDL 增加 `recovery_fingerprint`，v64 迁移继续做幂等补列；新库、老库升级与重放迁移走同一份列定义。
+- **保留必要的一致性读取**：指纹包含保存后的 `revision`，因此写后加注仍要重新计算一次；没有复用写前哈希，避免把旧 revision 的指纹写回。
+- **验证**：`verify:scanner-legacy-correction`（含迁移前无指纹→签名重识别→恢复可信）、`verify:scanner-batch-results`（新增双组单卷保存隔离）、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-upload-flow`、`verify:scanner-pending`（本机在切图回滚清理断言处既有失败，已在干净 PR head 复现，与本次改动无关）与 `typecheck` 通过；MariaDB 方言未在本机运行。
+
 ## 2026-10-20：#345/#346 进步/退步按得分率判定 + 独立分析页交付收口
 
 - **判定口径**：跨考试与跨学期的进步/退步一律按得分率变化（百分点）判定，阈值 ±3 pp，显著档 ±10 pp；缺满分时返回 null 并显示「—」，不虚构分母、不退回绝对分。服务端学生自助路径、React 页面、打印报告与独立分析页共用 `src/shared/scoreProgress.ts`。

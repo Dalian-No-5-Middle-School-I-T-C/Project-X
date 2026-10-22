@@ -8,7 +8,7 @@ import { ScanPreviewModal, type ScanPage } from "./ScanPreviewModal";
 export function ScannerConflictCards({ cards, remote = false, request = authFetch, saveSession, onChanged }: {
   cards: ScanConflictCard[]; remote?: boolean;
   request?: (url: string, init?: RequestInit) => Promise<Response>;
-  saveSession?: (sessionId: string) => Promise<Response>;
+  saveSession?: (sessionId: string, groupId: string) => Promise<Response>;
   onChanged: (sessionId: string) => void | Promise<void>;
 }) {
   const [ids, setIds] = useState<Record<string, string>>({});
@@ -40,9 +40,10 @@ export function ScannerConflictCards({ cards, remote = false, request = authFetc
       const legacy = card.sessionId.startsWith("legacy:");
       const url = legacy ? `/api/scanner/${remote ? "upload/" : ""}legacy/${card.sessionId.slice(7)}/${encodeURIComponent(card.groupId)}/${save ? "save" : "correct"}`
         : `${base}/${save ? (remote ? "complete" : "results") : (remote ? "correct" : "retry")}`;
-      const response = save && remote && !legacy && saveSession ? await saveSession(card.sessionId) : await request(url, {
+      const response = save && remote && !legacy && saveSession ? await saveSession(card.sessionId, card.groupId) : await request(url, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        ...(!save ? { body: JSON.stringify({ groupId: card.groupId, studentId: ids[key]?.trim() }) } : {}),
+        ...(!save ? { body: JSON.stringify({ groupId: card.groupId, studentId: ids[key]?.trim() }) }
+          : !legacy ? { body: JSON.stringify(remote ? { groupId: card.groupId } : { groupIds: [card.groupId] }) } : {}),
       });
       const data = await response.json();
       if (save) await onChanged(card.sessionId);
@@ -79,7 +80,7 @@ export function ScannerConflictCards({ cards, remote = false, request = authFetc
             <Input aria-label={`原卷 ${key} 订正学号`} placeholder="订正后的学号" value={ids[key] ?? ""} onChange={e => setIds(old => ({ ...old, [key]: e.target.value }))} disabled={busy} />
             <Button size="sm" variant="outline" disabled={busy || !ids[key]?.trim()} onClick={() => void act(card, false)}>订正此卷</Button>
             {!legacy && <Button size="sm" variant="outline" disabled={busy || card.previouslySaved} onClick={() => void discard(card)}>作废此卷</Button>}
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => void act(card, true)}>{legacy ? "恢复核对后的历史成绩" : "重新保存此会话"}</Button>
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => void act(card, true)}>{legacy ? "恢复核对后的历史成绩" : "保存此卷"}</Button>
           </>
         </div>
         {legacy && <p className="text-xs text-muted-foreground">历史成绩缺少可验证的原卷来源，已保留完整成绩快照；所列图片为匹配的历史扫描记录，请人工核对。</p>}

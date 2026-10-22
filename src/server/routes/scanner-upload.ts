@@ -611,6 +611,9 @@ router.post("/sessions/:sessionId/groups/:groupId/discard", dualAuth, async (req
 router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
+    const selected = z.string().regex(/^\d+$/).max(64).optional().safeParse(req.body?.groupId);
+    if (!selected.success) { res.status(400).json({ message: "groupId 必须是有效的答题卡组编号" }); return; }
+    const saveGroupId = selected.data;
     const db = await getMysqlDb();
 
     const session = await db.get<{ id: string; card_id: string; page_count: number; status: string; card_version: string | null; version_source: string }>(
@@ -656,17 +659,23 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     const uploadedCount = Number(uploaded?.cnt ?? 0);
     const totalCount = Number(total?.cnt ?? 0);
 
-    // v1.6.0: 检查完整性 — 未全部上传完成时阻止标记 completed
-    const complete = uploadedCount >= totalCount && totalCount > 0;
-    const status = complete ? "completed" : "incomplete";
+    const card = await new CardRepository().findById(session.card_id);
+    if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+    const records = (await listScanRecordsGroupedByStudent(String(sessionId))).flatMap(group => group.records);
+    const selectedGroup = saveGroupId === undefined ? undefined : groupSessionPages(card, records).groups.get(saveGroupId);
+    if (saveGroupId !== undefined && !selectedGroup) {
+      res.status(404).json({ message: "答题卡分组不存在" }); return;
+    }
+    const completionRecords = selectedGroup ? selectedGroup.map(page => page.record) : records;
+    const selectedUploaded = completionRecords.filter(record => ["uploaded", "completed"].includes(record.ocr_status)).length;
+
+    // A named save checks its own pages; automatic completion still checks the whole session.
+    const complete = completionRecords.length > 0 && selectedUploaded === completionRecords.length;
+    const status = uploadedCount >= totalCount && totalCount > 0 ? "completed" : "incomplete";
     let reviewCards: import("../../shared/scanPages").ScanConflictCard[] = [];
 
     if (complete) {
-      const fullSession = await db.get<{ card_id: string }>("SELECT card_id FROM twain_scan_sessions WHERE id = ?", sessionId);
-      const card = await new CardRepository().findById(fullSession!.card_id);
-      if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
-      const groups = await listScanRecordsGroupedByStudent(String(sessionId));
-      if (groups.some(group => group.records.some(record => !record.recognition || !record.student_id))) {
+      if (completionRecords.some(record => !record.recognition || !record.student_id)) {
         res.status(409).json({ message: "图片已保存，但缺少本机识别结果；请使用新版扫描端重试上传，成绩尚未入库" });
         return;
       }
@@ -674,13 +683,19 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
       // 低置信度或未配答案的题仍按原协议入库，并在结果里带 needsReviewCount。
       // 若这里改成 409，双面订正等既有完成流程会停在 error，成绩也写不进去。
       // 后处理页自己在 needsReviewCount > 0 时不入队。
-      const batch = await processScannerSession(card, String(sessionId), "save");
+      const batch = await processScannerSession(card, String(sessionId), "save", saveGroupId);
       reviewCards = batch.reviewCards ?? [];
       if (batch.failures.length) {
         res.status(409).json({ ok: false, message: "部分答题卡未入库，请处理以下问题后重试", ...batch });
         return;
       }
-      const { exam: savedExam } = await resolveScannerExam(fullSession!.card_id, String(sessionId));
+      if (saveGroupId !== undefined && !batch.results.some(result => result.groupId === saveGroupId && result.saved)) {
+        const unreviewed = batch.results.some(result => result.groupId === saveGroupId && result.needsReviewCount > 0);
+        res.status(409).json({ ...batch, ok: false, saved: false, code: "SCAN_CARD_NOT_SAVED",
+          message: unreviewed ? "此卷仍有存疑题，请打开整卡改分逐题确认后再保存" : "此卷尚未入库，请刷新并核对处理结果" });
+        return;
+      }
+      const { exam: savedExam } = await resolveScannerExam(session.card_id, String(sessionId));
       const linkedExams = savedExam?.status === "grading" ? [savedExam] : [];
       for (const exam of linkedExams) {
         await recomputeExamRankings(db, exam.id);
@@ -695,12 +710,15 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
       "UPDATE twain_scan_sessions SET status = ?, page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
       status, uploadedCount, sessionId
     );
-    if (complete) await db.run("UPDATE twain_scan_records SET ocr_status = 'completed' WHERE session_id = ?", sessionId);
+    if (complete) {
+      if (saveGroupId === undefined) await db.run("UPDATE twain_scan_records SET ocr_status = 'completed' WHERE session_id = ?", sessionId);
+      else for (const record of completionRecords) await db.run("UPDATE twain_scan_records SET ocr_status = 'completed' WHERE session_id = ? AND id = ?",sessionId,record.id);
+    }
 
     if (!complete) {
       res.status(400).json({
         ok: false,
-        message: `上传未完成：${uploadedCount}/${totalCount} 页已上传，请补传缺失页面后再提交`,
+        message: `上传未完成：${selectedUploaded}/${completionRecords.length} 页已上传，请补传缺失页面后再提交`,
         pagesUploaded: uploadedCount,
         pagesTotal: totalCount,
       });
@@ -709,7 +727,7 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
 
     res.json({
       ok: true,
-      message: `扫描完成：${uploadedCount}/${totalCount} 页已上传并完成服务端判分`,
+      message: saveGroupId === undefined ? `扫描完成：${uploadedCount}/${totalCount} 页已上传并完成服务端判分` : "所选答题卡已保存",
       reviewCards,
       pagesUploaded: uploadedCount,
       pagesTotal: totalCount,
