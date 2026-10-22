@@ -7,6 +7,9 @@ function callerKey(req: Request): string {
   if (req.user) return `user:${req.user.id}`;
   return `ip:${ipKeyGenerator(req.ip ?? "unknown")}`;
 }
+function correctionKey(req: Request): string {
+  return req.params.sessionId ? `session:${req.params.sessionId}` : `student:${req.params.examId}:${req.params.studentId}`;
+}
 
 // Shared across router instances so different sessions cannot bypass a key's limit.
 export const correctionCallerLimiter = rateLimit({
@@ -20,7 +23,7 @@ export const correctionCallerLimiter = rateLimit({
 export const correctionSessionLimiter = rateLimit({
   windowMs: 60_000,
   limit: 30,
-  keyGenerator: req => String(req.params.sessionId),
+  keyGenerator: correctionKey,
   standardHeaders: true,
   legacyHeaders: false,
   message: { code: "CORRECTION_RATE_LIMITED", message: "此扫描会话订正请求过于频繁，请稍后重试" },
@@ -35,7 +38,7 @@ export function guardCorrectionRequest(
   handler: (req: Request, res: Response, next: NextFunction) => Promise<void>,
 ): RequestHandler {
   return async (req, res, next) => {
-    const caller = callerKey(req), session = String(req.params.sessionId);
+    const caller = callerKey(req), session = correctionKey(req);
     if (activeCallers.size >= MAX_CONCURRENT_CORRECTIONS || activeCallers.has(caller) || activeSessions.has(session)) {
       res.setHeader("Retry-After", "5");
       res.status(429).json({ code: "CORRECTION_BUSY", message: "订正处理中，请稍后重试" });

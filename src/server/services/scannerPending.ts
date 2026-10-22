@@ -21,6 +21,8 @@ import {
 import { persistScannerResultToMainDb } from "./scannerResultPersistence";
 import { recomputeExamRankings } from "./rankingUpdate";
 import { analysisCache } from "./analysisCache";
+import { assertCorrectionGroupVersion } from "./scanCorrectionProvenance";
+import type { AnswerCard } from "../../shared/types";
 
 type PendingRow = {
   exam_id: number;
@@ -33,14 +35,22 @@ type PendingRow = {
   result_json: string | null;
   score_snapshot: string | null;
 };
-async function evidence(db: DbAdapter, row: PendingRow) {
+type SessionEvidence = {
+  exam: { card_id: string; class_id: number | null; grade_id: number | null } | null;
+  card: AnswerCard | null;
+  session: { card_id: string; card_version: string | null; version_source: string } | null;
+  raw: Array<ScanRecordWithResult & { objective_json: string | null; subjective_json: string | null }>;
+  grouped?: ReturnType<typeof groupSessionPages>;
+};
+/** Cache the in-flight read so concurrent receipts share one session snapshot. */
+type EvidenceCache = Map<string, Promise<SessionEvidence>>;
+async function loadSessionEvidence(db: DbAdapter, row: PendingRow): Promise<SessionEvidence> {
   const exam = await db.get<{
     card_id: string;
     class_id: number | null;
     grade_id: number | null;
   }>("SELECT card_id,class_id,grade_id FROM exams WHERE id=?", row.exam_id);
   const card = exam && (await new CardRepository(db).findById(exam.card_id));
-  if (!exam || !card) throw new Error("考试或答题卡不存在");
   const session = await db.get<{
     card_id: string;
     card_version: string | null;
@@ -60,24 +70,32 @@ async function evidence(db: DbAdapter, row: PendingRow) {
     LEFT JOIN twain_recognition_results g ON g.scan_record_id=r.id WHERE r.session_id=? ORDER BY r.page_num,r.side,r.id`,
     row.session_id,
   );
+  return { exam, card, session, raw };
+}
+
+async function evidence(db: DbAdapter, row: PendingRow, cache?: EvidenceCache) {
+  const cacheKey = `${row.exam_id}:${row.session_id}`;
+  let loading = cache?.get(cacheKey);
+  if (!loading) {
+    loading = loadSessionEvidence(db, row);
+    cache?.set(cacheKey, loading);
+  }
+  const cached = await loading;
+  const { exam, card, session, raw } = cached;
+  if (!exam || !card) throw new Error("考试或答题卡不存在");
   const records = raw.map((r) => ({
     ...r,
     recognition: r.objective_json
       ? { objective_json: r.objective_json, subjective_json: r.subjective_json }
       : null,
   })) as ScanRecordWithResult[];
-  const grouped = groupSessionPages(card, records),
+  const grouped = cached.grouped ?? (cached.grouped = groupSessionPages(card, records)),
     group = grouped.groups.get(row.group_id);
   let result: ReturnType<typeof gradeSessionGroup> | undefined,
     issue: string | undefined;
+  let recoveryFingerprints: string[] = [];
   try {
-    if (
-      !session ||
-      session.card_id !== card.id ||
-      session.card_version !== cardFingerprint(card) ||
-      session.version_source === "legacy_verified"
-    )
-      throw new Error("答题卡版本变化或来源未验证，请重新上传");
+    recoveryFingerprints = await assertCorrectionGroupVersion(db, card, session, group?.map(p => p.record.id) ?? []);
     if (!group) throw new Error("原卷已变更，请重新上传");
     if (
       legacySessionBlockReason({
@@ -131,6 +149,7 @@ async function evidence(db: DbAdapter, row: PendingRow) {
         related,
         version: cardFingerprint(card),
         session,
+        recoveryFingerprints,
       }),
     )
     .digest("hex");
@@ -139,17 +158,18 @@ async function evidence(db: DbAdapter, row: PendingRow) {
 export async function listPendingScans(examId: number) {
   const db = getMysqlDb();
   const rows = await db.all<PendingRow>(
-    "SELECT * FROM scanner_submissions WHERE exam_id=? AND (state IN ('held','roster','conflict') OR (state='pending' AND previously_saved=1)) ORDER BY session_id,group_id",
+    "SELECT * FROM scanner_submissions WHERE exam_id=? AND (state IN ('held','roster','conflict','correction') OR (state='pending' AND previously_saved=1)) ORDER BY session_id,group_id",
     examId,
   );
+  const cache: EvidenceCache = new Map();
   return Promise.all(
     rows.map(async (row) => {
-      const e = await evidence(db, row);
+      const e = await evidence(db, row, cache);
       return {
         sessionId: row.session_id,
         groupId: row.group_id,
         studentNumber: row.student_number,
-        reason: row.state === "roster" ? "roster" : row.state === "pending" ? "correction" : "duplicate",
+        reason: row.state === "roster" ? "roster" : ["pending","correction"].includes(row.state) ? "correction" : "duplicate",
         existingScore: e.score?.total_score ?? null,
         proposedScore: e.result?.totalScore ?? null,
         token: e.token,
