@@ -40,6 +40,8 @@
     "server": "tsx src/apps/answer-card/server/index.ts",
     "verify:auth": "tsx scripts/verify-auth.ts",
     "verify:student-score-display": "tsx scripts/verify-student-score-fullscore-examtime.ts",
+    "verify:progress-score-rate": "tsx scripts/verify-progress-score-rate.ts",
+    "sync:score-progress": "tsx scripts/sync-score-progress-browser.ts",
     "verify:student-web-settings": "tsx scripts/verify-student-web-settings.ts",
     "verify:mariadb": "tsx scripts/verify-mariadb.ts",
     "verify:security-critical": "tsx scripts/verify-security-critical.ts",
