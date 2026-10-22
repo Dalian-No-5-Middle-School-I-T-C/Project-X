@@ -1,5 +1,5 @@
 import { scanCorrectionRouter } from "../../../../server/routes/scan-correction";
-import { processScannerSession, discardScannerGroup } from "../../../../server/services/scannerSubmissions";
+import { processScannerSession, discardScannerGroup, listActiveReceiptGroups, writeScannerSession } from "../../../../server/services/scannerSubmissions";
 import { scannerLegacyRecoveryRouter } from "../../../../server/routes/scanner-legacy-recovery";
 import {
   filterRecognitionJson,
@@ -11,6 +11,7 @@ import {
   scanRecordLayoutPage
 } from "../../../../server/middleware/scanner-scope";
 import { parseIdentityMode } from "../../../../shared/cardIdentity";
+import { resolveScannerExam } from "../../../../server/services/scannerExam";
 import { parseRecognitionDpi } from "../helpers";
 import { Router, type Response } from "express";
 import { existsSync } from "node:fs";
@@ -21,6 +22,7 @@ import {
   listScanRecords,
   getScanRecordWithResult,
   deleteScanRecord,
+  deleteScanRecordInTransaction,
   getSession,
   parseSessionWarnings,
   listSessions,
@@ -37,6 +39,7 @@ import { safeId, dataDir } from "../storage";
 import { findCardForLayout } from "../card-layout";
 import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
 import { collectSessionResults, groupSessionPages } from "./session-results";
+import { filterDeletableGroups } from "../../../../shared/scanPostprocess";
 
 // persistScannerResultToMainDb 的串行队列（模块级，跨请求生效）：
 // better-sqlite3 是单连接,并发事务会在 BEGIN/COMMIT 之间互相穿插（见 SqliteAdapter.transaction 注释），
@@ -46,6 +49,14 @@ function enqueuePersist(task: () => Promise<void>): Promise<void> {
   const run = persistQueue.then(() => task());
   persistQueue = run.then(() => undefined, () => undefined);
   return run;
+}
+
+/** 未带 groupIds：整会话保存（扫描面板原按钮）。带了：只保存点名的组，且调用方要自己排除待复核组。 */
+function parseSaveGroupIds(body: unknown): ReadonlySet<string> | null | "invalid" {
+  if (!body || typeof body !== "object" || !("groupIds" in body) || (body as { groupIds?: unknown }).groupIds === undefined) return null;
+  const raw = (body as { groupIds?: unknown }).groupIds;
+  if (!Array.isArray(raw) || raw.some(id => typeof id !== "string" || id.length === 0)) return "invalid";
+  return new Set(raw);
 }
 
 /** 等纸空闲超时的合法区间：下限 2s（慢于此值几乎必然截断正常进纸），上限 2min。 */
@@ -324,8 +335,11 @@ export function createScannerRouter(twainEnabled = true): Router {
       // 安全（PR #312 CR5）：题块教师只保留含本人题块的排版页。
       const scope = scanPageScopeOf(res);
       const card = scope?.restricted ? await findCardForLayout(session.card_id) : null;
+      // 后处理页改考号要按考试查花名册；考试归属不定（未绑定或绑定多个考试）时为 null，前端降级为纯手输。
+      const { exam } = await resolveScannerExam(session.card_id, session.id);
       res.json({
         session,
+        examId: exam?.id ?? null,
         // 安全（R04）：不再回传服务端绝对路径；预览走 /api/scanner/scan-image/:recordId
         records: records.filter(r => scanPageAllowed(scope,
           scanRecordLayoutPage(card, r.page_num, r.side === "back" ? "back" : "front"))).map((r) => ({
@@ -553,7 +567,9 @@ export function createScannerRouter(twainEnabled = true): Router {
     })
     .post(async (req, res, next) => {
       try {
-        await enqueuePersist(async () => { await sessionResults(req.params.sessionId, true, res); });
+        const only = parseSaveGroupIds(req.body);
+        if (only === "invalid") { res.status(400).json({ message: "groupIds 必须是字符串数组" }); return; }
+        await enqueuePersist(async () => { await sessionResults(req.params.sessionId, true, res, false, false, undefined, only ?? undefined); });
       } catch (error) { next(error); }
     });
 
@@ -575,7 +591,8 @@ export function createScannerRouter(twainEnabled = true): Router {
     res: Response,
     validate = false,
     previewOnly = false,
-    warnings?: string[]
+    warnings?: string[],
+    saveGroupIds?: ReadonlySet<string>,
   ) {
     const sessionId = safeId(id);
     const session = await getSession(sessionId);
@@ -584,7 +601,10 @@ export function createScannerRouter(twainEnabled = true): Router {
     // Use the same database card as scan/OCR; synced cards have no legacy JSON file.
     const card = await findCardForLayout(session.card_id);
     if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
-    const result = await processScannerSession(card, sessionId, previewOnly ? "preview" : save ? "save" : validate ? "validate" : "preview");
+    const result = await processScannerSession(
+      card, sessionId, previewOnly ? "preview" : save ? "save" : validate ? "validate" : "preview",
+      undefined, saveGroupIds,
+    );
     res.json(warnings?.length ? { ...result, warnings } : result);
   }
 
@@ -620,7 +640,9 @@ export function createScannerRouter(twainEnabled = true): Router {
           recordIds: new Set(rows.map(r => r.record.id)), studentId,
         });
         await flushSessionWarnings(sessionId);
-        await sessionResults(sessionId, false, res, true, false, retryWarnings);
+        // 远端后处理读结果用 preview。重新识别后再 validate 会给同会话其余组写回执。
+        const previewOnly = (req.body ?? {}).previewOnly === true;
+        await sessionResults(sessionId, false, res, true, previewOnly, retryWarnings);
       });
     } catch (error) { next(error); }
   });
@@ -634,7 +656,48 @@ export function createScannerRouter(twainEnabled = true): Router {
       const card = await findCardForLayout(session.card_id);
       if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
       await discardScannerGroup(card, sessionId, String(req.params.groupId));
-      res.json(await processScannerSession(card, sessionId, "validate"));
+      // 远端后处理只读 preview：作废后再 validate 会给同会话其余组写回执，甚至 withdraw 已有成绩。
+      const previewOnly = (req.body ?? {}).previewOnly === true;
+      res.json(await processScannerSession(card, sessionId, previewOnly ? "preview" : "validate"));
+    } catch (error) { next(error); }
+  });
+
+  // 后处理页·视图 1 多选删除：只删本机扫描记录与识别结果，不动远端已上传成绩。
+  // 有 saved/held/conflict/roster 回执的组必须 force（客户端已二次确认代价），否则 409 列出 blocked。
+  router.delete("/session/:sessionId/groups", async (req, res, next) => {
+    try {
+      const sessionId = safeId(req.params.sessionId);
+      const body = (req.body ?? {}) as { groupIds?: unknown; force?: unknown; previewOnly?: unknown };
+      const groupIds = Array.isArray(body.groupIds)
+        ? [...new Set(body.groupIds.filter((g): g is string => typeof g === "string" && g.length > 0))]
+        : [];
+      if (!groupIds.length) { res.status(400).json({ message: "groupIds 不能为空" }); return; }
+      const session = await getSession(sessionId);
+      if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
+      if (session.status === "scanning") { res.status(409).json({ message: "请等待扫描结束" }); return; }
+      const card = await findCardForLayout(session.card_id);
+      if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+      const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
+      const groups = groupSessionPages(card, records).groups;
+      // 回执检查必须和删除在同一条提交队列里。先在队列外查、再排队删除时，
+      // 并发的保存可以在两次之间提交 saved/held/conflict，删除就会用不带 force 的过期集合把刚入库的本地页删掉。
+      const decision = await writeScannerSession(sessionId, async tx => {
+        const active = await listActiveReceiptGroups(tx, sessionId, groupIds);
+        const next = filterDeletableGroups(groupIds, new Map(active.map(groupId => [groupId, true])), body.force === true);
+        if (next.blocked.length) return next;
+        const targets = next.deletable.flatMap(groupId => (groups.get(groupId) ?? []).map(row => row.record.id));
+        for (const recordId of targets) await deleteScanRecordInTransaction(tx, recordId);
+        return next;
+      });
+      if (decision.blocked.length) {
+        res.status(409).json({ message: "所选卷包含已入库或待老师确认的回执，确认删除远端不受影响后请重试", blocked: decision.blocked });
+        return;
+      }
+      const missing = groupIds.filter(groupId => !groups.has(groupId));
+      // 远端后处理读结果用 previewOnly。删除后若仍 validate，会给留下来的组写回执，并可能 withdraw 已有成绩。
+      const refresh = body.previewOnly === true ? "preview" : "validate";
+      const result = await processScannerSession(card, sessionId, refresh);
+      res.json({ ...result, deletedGroups: decision.deletable.length - missing.length, missingGroups: missing });
     } catch (error) { next(error); }
   });
 

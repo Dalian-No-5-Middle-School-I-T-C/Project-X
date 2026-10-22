@@ -50,9 +50,14 @@ const summaryRequests: string[] = [];
 const retryRequests: unknown[] = [];
 const summary = () => ({ failures: includeFailure ? [{ groupId: "1", studentId: null, stage: "recognition",
   message: "未识别学号", pages: [{ recordId: "page-2", pageNum: 2, layoutPage: 1, side: "front" }] }] : [],
-  results: [{ groupId: "0", studentId: "91001", pageCount: 1, needsReviewCount: 0,
-    totalScore: 5, maxScore: 5, objectiveScore: 5, objectiveMaxScore: 5, subjectiveScore: 0, subjectiveMaxScore: 0,
-    pages: [{ recordId: "page-1", pageNum: 1, layoutPage: 1, side: "front", objectiveScore: 5, subjectiveScore: 0, totalScore: 5, totalMaxScore: 5 }], saved: false }] });
+  results: [
+    { groupId: "0", studentId: "91001", pageCount: 1, needsReviewCount: 0,
+      totalScore: 5, maxScore: 5, objectiveScore: 5, objectiveMaxScore: 5, subjectiveScore: 0, subjectiveMaxScore: 0,
+      pages: [{ recordId: "page-1", pageNum: 1, layoutPage: 1, side: "front", objectiveScore: 5, subjectiveScore: 0, totalScore: 5, totalMaxScore: 5 }], saved: false },
+    { groupId: "9", studentId: "91009", pageCount: 1, needsReviewCount: 1,
+      totalScore: 0, maxScore: 5, objectiveScore: 0, objectiveMaxScore: 5, subjectiveScore: 0, subjectiveMaxScore: 0,
+      pages: [{ recordId: "page-9", pageNum: 9, layoutPage: 1, side: "front", objectiveScore: 0, subjectiveScore: 0, totalScore: 0, totalMaxScore: 5 }], saved: false },
+  ] });
 install("fetch", async (input: unknown, init?: RequestInit) => {
   const url = String(input);
   if (url.includes("/api/cards/")) { cardRequests++; await cardReady; return Response.json(card); }
@@ -118,6 +123,7 @@ try {
   // session state was committed. It must still upload with the session snapshot.
   await act(async () => { streams[0].done(); }); await settle();
   assert.equal(uploads.length, 1);
+  assert.equal(uploads.some(item => item.name === "扫描_91009"), false, "低置信度卷不随完成自动上传");
   assert.equal(uploads[0].identityMode, "legacy");
   assert.equal(uploads[0].cardVersion, version);
   await click("开始新扫描"); await settle();

@@ -4,7 +4,7 @@ import type { AnswerCard } from "../../shared/types";
 import type { CombinedStudentResult } from "../../shared/grading";
 import type { ScanBatchResponse, ScanConflictCard, ScanBatchPage } from "../../shared/scanPages";
 import { validateSessionGroupStructure, collectSessionResults, gradeSessionGroup, groupSessionPages, legacySessionBlockReason } from "../../apps/answer-card/server/scanner/session-results";
-import { listScanRecordsGroupedByStudent, type StudentGradingResultRow } from "../../apps/answer-card/server/database/scan-store";
+import { listScanRecordsGroupedByStudent, type ScanRecordWithResult, type StudentGradingResultRow } from "../../apps/answer-card/server/database/scan-store";
 import { persistScannerResultToMainDb } from "./scannerResultPersistence";
 import { recomputeExamRankings } from "./rankingUpdate";
 import { analysisCache } from "./analysisCache";
@@ -112,11 +112,30 @@ export function writeScannerSession<T>(sessionId: string, work: (tx: DbAdapter) 
 async function receipts(db: DbAdapter, examId: number): Promise<Receipt[]> {
   return db.all<Receipt>("SELECT * FROM scanner_submissions WHERE exam_id = ? AND state NOT IN ('superseded', 'discarded')", examId);
 }
+/** 重卡副本在被收成冲突前已经能独立判分。保留其中一份时，复核和分数必须跟这份卷走。 */
+function localConflictCard(card: AnswerCard,
+  groups: ReadonlyMap<string, Array<{ record: ScanRecordWithResult; page: ScanBatchPage }>>,
+  sessionId: string, groupId: string, studentNumber: string, pages: ScanBatchPage[]): ScanConflictCard {
+  const rows = groups.get(groupId);
+  let graded: CombinedStudentResult | undefined;
+  if (rows) {
+    try { graded = gradeSessionGroup(card, rows, studentNumber); } catch { graded = undefined; }
+  }
+  return {
+    sessionId, groupId, studentId: studentNumber, previouslySaved: false, pages,
+    totalScore: graded?.totalScore, maxScore: graded?.totalMaxScore,
+    objectiveScore: graded?.objectiveScore, subjectiveScore: graded?.subjectiveScore,
+    needsReviewCount: graded?.needsReviewCount,
+  };
+}
 function conflictCard(row: Receipt): ScanConflictCard {
   const result = row.result_json ? JSON.parse(row.result_json) as CombinedStudentResult : null;
   const snapshot = row.score_snapshot ? JSON.parse(row.score_snapshot) : null;
   return { sessionId: row.session_id, groupId: row.group_id, studentId: row.student_number,
-    previouslySaved: Boolean(row.previously_saved), formalScoreRetained: row.state === "saved", totalScore: snapshot?.score?.total_score ?? result?.totalScore,
+    previouslySaved: Boolean(row.previously_saved), formalScoreRetained: row.state === "saved",
+    totalScore: snapshot?.score?.total_score ?? result?.totalScore,
+    maxScore: result?.totalMaxScore, objectiveScore: result?.objectiveScore, subjectiveScore: result?.subjectiveScore,
+    needsReviewCount: result?.needsReviewCount,
     pages: JSON.parse(row.pages_json) as ScanBatchPage[] };
 }
 async function withdraw(db: DbAdapter, examId: number, studentNumber: string, reason: "scanner_duplicate" | "scanner_retry" = "scanner_duplicate") {
@@ -283,13 +302,15 @@ export async function recoverScannerSubmissionSnapshot(examId: number, sessionId
 
 /** Both paths consume Windows recognition records; this service never runs OMR. */
 export async function processScannerSession(card: AnswerCard, sessionId: string,
-  mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string): Promise<ScanBatchResponse> {
-  return enqueueScannerSubmission(() => processScannerSessionInQueue(card, sessionId, mode, saveGroupId));
+  mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string, saveGroupIds?: ReadonlySet<string>,
+  blockUnreviewed = false): Promise<ScanBatchResponse> {
+  return enqueueScannerSubmission(() => processScannerSessionInQueue(card, sessionId, mode, saveGroupId, saveGroupIds, blockUnreviewed));
 }
 
 /** Caller retains scanner queue ownership through correction and admission. */
 export async function processScannerSessionInQueue(card: AnswerCard, sessionId: string,
-  mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string): Promise<ScanBatchResponse> {
+  mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string, saveGroupIds?: ReadonlySet<string>,
+  blockUnreviewed = false): Promise<ScanBatchResponse> {
     const db = getMysqlDb();
     const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
     const { groups, pageCount } = groupSessionPages(card, records);
@@ -344,10 +365,15 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
           if (target) targetNumbers.add(target.studentNumber);
           if (prior) targetNumbers.add(prior.student_number);
         }
-        const scopedCandidates = saveGroupId === undefined ? candidates : candidates.filter(c =>
+        // 点名保存只碰这些组。未点名的组连回执都不重写，避免「只入库正常卷」时把待复核组卷进冲突处理。
+        const namedCandidates = saveGroupIds
+          ? candidates.filter(candidate => saveGroupIds.has(candidate.groupId))
+          : candidates;
+        const scopedCandidates = saveGroupId === undefined ? namedCandidates : namedCandidates.filter(c =>
           c.groupId === saveGroupId || targetNumbers.has(c.studentNumber));
         for (const groupId of repeatedGroups) {
           if (discarded.has(groupId)) continue;
+          if (saveGroupIds && !saveGroupIds.has(groupId)) continue;
           const owner = old.find(row => row.session_id === sessionId && row.group_id === groupId && row.state === "saved");
           if (saveGroupId !== undefined && groupId !== saveGroupId && (!owner || !targetNumbers.has(owner.student_number))) continue;
           if (owner) {
@@ -462,7 +488,7 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
       if (!exists) continue;
       // Historical partial saves can have grades and receipts but unbound crops.
       // Replay repairs their ownership without rewriting scores or publication.
-      if (mode === "save" && (saveGroupId === undefined || row.group_id === saveGroupId)) await db.transaction(async tx => {
+      if (mode === "save" && (saveGroupId === undefined || row.group_id === saveGroupId) && (!saveGroupIds || saveGroupIds.has(row.group_id))) await db.transaction(async tx => {
         await lockExam(tx, exam.id);
         await linkSavedScannerCrops(tx, card.id, row);
       });
@@ -475,6 +501,11 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
     const response = await collectSessionResults(card, activeRecords, cached, mode === "save" ? async result => {
       const candidate = candidates.find(c => c.pages.some(p => p.recordId === result.pages[0]?.recordId));
       if (!candidate || discarded.has(candidate.groupId) || (saveGroupId !== undefined && candidate.groupId !== saveGroupId)) return false;
+      // 点名保存（整批 groupIds，或订正这一组的 saveGroupId）在仍有存疑题时只留草稿。
+      // blockUnreviewed 只在调用方显式打开时拦住整会话保存。上传完成接口不打开它：
+      // 那条链路没有确认步骤，必须继续把带复核标记的成绩入库。
+      if (saveGroupIds && !saveGroupIds.has(candidate.groupId)) return false;
+      if ((blockUnreviewed || saveGroupIds != null || saveGroupId !== undefined) && result.needsReviewCount > 0) return false;
       await db.transaction(async tx => {
         await lockExam(tx, exam.id);
         const current = await receipts(tx, exam.id);
@@ -509,7 +540,7 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
       response.failures = response.failures.filter(r => r.groupId !== candidate.groupId);
       const related = all.filter(r => r.student_number === candidate.studentNumber).map(conflictCard);
       for (const local of localDuplicates) if (!related.some(r => r.sessionId === sessionId && r.groupId === local.groupId)) {
-        related.push({ sessionId, groupId: local.groupId, studentId: candidate.studentNumber, previouslySaved: false, pages: local.pages });
+        related.push(localConflictCard(card, groups, sessionId, local.groupId, candidate.studentNumber, local.pages));
       }
       response.failures.push({ groupId: candidate.groupId, studentId: candidate.studentNumber, stage: "recognition", pages: candidate.pages,
         message: all.some(r => r.student_number===candidate.studentNumber && ["held","roster"].includes(r.state)) ? "重复上传待老师确认，已有正式成绩保持不变，请在考试或成绩分析页面处理" : "重复学号：新旧答题卡均需核对订正，已保存成绩撤出后才可重新保存", conflicts: related });
@@ -520,4 +551,20 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
     }
     response.reviewCards = all.filter(r => r.state === "pending" && r.previously_saved).map(conflictCard);
     return visible(response);
+}
+
+/**
+ * 删除护栏数据源：这些组里哪些回执已经「定论或待老师确认」。
+ * 只认 saved/held/conflict/roster 四类（spec §4.1）：validate 阶段给每份卷写的 pending 回执
+ * 是本机判分常态，把它也算进来会让每次本地删除都弹「已上传」的假警告。
+ * 参数走 DbAdapter 的 varargs；整体绑数组在 MariaDB 上是占位符与实参数量不匹配。
+ */
+export async function listActiveReceiptGroups(db: DbAdapter, sessionId: string, groupIds: readonly string[]): Promise<string[]> {
+  if (!groupIds.length) return [];
+  const placeholders = groupIds.map(() => "?").join(",");
+  const rows = await db.all<{ group_id: string }>(
+    `SELECT DISTINCT group_id FROM scanner_submissions WHERE session_id = ? AND group_id IN (${placeholders}) AND state IN ('saved','held','conflict','roster')`,
+    sessionId, ...groupIds,
+  );
+  return rows.map(row => row.group_id);
 }

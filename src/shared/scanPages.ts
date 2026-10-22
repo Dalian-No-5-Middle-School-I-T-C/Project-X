@@ -101,6 +101,12 @@ export interface ScanConflictCard {
   previouslySaved: boolean;
   formalScoreRetained?: boolean;
   totalScore?: number;
+  /** 这份副本自己的判分。保留重卡时要原样带回，不能另造 0 分。 */
+  maxScore?: number;
+  objectiveScore?: number;
+  subjectiveScore?: number;
+  /** 缺省表示预览没带上复核结果，调用方不得把它当成「已经确认」。 */
+  needsReviewCount?: number;
   pages: ScanBatchPage[];
 }
 

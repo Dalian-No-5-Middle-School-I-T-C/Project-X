@@ -8,6 +8,7 @@ import { SERVER_URL_KEY, readServerUrl } from "./scannerMode";
 import { assertCredentialTransportAllowed } from "./remoteCredentialTransport";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
 import { applyScanStudentId, uniqueScanConflictCards } from "../../../../shared/scanPages";
+import { forgetScanUploadRecovery, readScanUploadRecovery, rememberQueuedGroup, writeScanUploadRecovery } from "./scannerUploadLedger";
 import type { ScanBatchFailure, ScanConflictCard, ScanBatchResponse } from "../../../../shared/scanPages";
 import type { CombinedGradingRow } from "../../../../shared/types";
 
@@ -30,6 +31,8 @@ export interface UploadPageInput {
   /** Stable card group and layout page from the local session summary. */
   groupId?: string;
   layoutPage?: number;
+  /** Local immutable scan record used to verify a restored page mapping. */
+  recordId?: string;
   studentId?: string;
 }
 
@@ -48,6 +51,8 @@ export interface StartUploadInput {
   name: string;
   dpi?: number;
   paperSize?: string;
+  /** 本机扫描会话。同一张卡的 groupId 会跨会话重号，有它才能判断是不是同一份原卷。 */
+  localSessionId?: string;
   pages: UploadPageInput[];
 }
 
@@ -104,6 +109,7 @@ interface JobRecord {
   kind: UploadJobKind;
   name: string;
   cardId: string;
+  localSessionId?: string;
   /** 安全 R35：随会话创建上报的卡版本指纹，服务端据此拒绝旧版本上传 */
   cardVersion: string;
   dpi: number;
@@ -261,6 +267,52 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       const saved = localStorage.getItem(`projectx_scanner_session_version/${key}`);
       return saved && /^[0-9a-f]{24}$/i.test(saved) ? saved : undefined;
     } catch { return undefined; }
+  }
+
+  function recoveryGroup(job: JobRecord): string | null {
+    if (job.kind !== "scan" || !job.localSessionId) return null;
+    const groups = new Set(job.pages.map(page => page.input.groupId));
+    return groups.size === 1 ? [...groups][0] ?? null : null;
+  }
+
+  function persistRecovery(job: JobRecord, completed = false): void {
+    const groupId = recoveryGroup(job);
+    if (groupId === null || !job.remoteSessionId) return;
+    writeScanUploadRecovery(job.cardId, job.localSessionId!, groupId, {
+      remoteBase: job.remoteBase, remoteSessionId: job.remoteSessionId, cardVersion: job.cardVersion,
+      completed, dpi: job.dpi, paperSize: job.paperSize, identityMode: job.identityMode,
+      pendingStudentId: job.pendingStudentId,
+      pages: job.pages.map(page => ({ pageNum: page.input.pageNum, side: page.input.side,
+        layoutPage: page.input.layoutPage, recordId: page.input.recordId, studentId: page.input.studentId,
+        token: page.token, done: page.done, recognizedStudentId: page.studentId })),
+    });
+  }
+
+  function restoreRecovery(job: JobRecord): void {
+    const groupId = recoveryGroup(job);
+    if (groupId === null) return;
+    const saved = readScanUploadRecovery(job.cardId, job.localSessionId!, groupId);
+    if (!saved) return;
+    if (saved.completed) throw new Error("这份卷已经上传完成，请从服务器成绩修改进入订正");
+    if (saved.remoteBase !== job.remoteBase) throw new Error("这份卷尚未上传完成，请切回原服务器后续传");
+    if (saved.cardVersion !== job.cardVersion || saved.identityMode !== job.identityMode
+      || saved.pages.length !== job.pages.length || saved.pages.some((page, i) => {
+        const input = job.pages[i].input;
+        return page.pageNum !== input.pageNum || page.side !== input.side || page.layoutPage !== input.layoutPage
+          || page.recordId !== input.recordId;
+      })) throw new Error("原卷版本或页序已改变，请核对原上传会话后再处理");
+    job.remoteSessionId = saved.remoteSessionId;
+    job.dpi = saved.dpi;
+    job.paperSize = saved.paperSize;
+    job.pendingStudentId = saved.pendingStudentId;
+    saved.pages.forEach((page, index) => {
+      const target = job.pages[index];
+      target.token = page.token;
+      target.done = page.done;
+      target.studentId = page.recognizedStudentId;
+      target.input.studentId = page.studentId;
+    });
+    job.message = "已恢复原上传会话，继续上传未完成的页面";
   }
   const listeners = new Set<() => void>();
   let snapshot: UploadManagerSnapshot = { jobs: [], activeJobId: null, queuedCount: 0 };
@@ -558,6 +610,8 @@ if (j.cancelled) throw cancelledError(j);
         j.pages.forEach((p, i) => {
           p.token = tokens[i];
         });
+        // Save the remote identity before sending pages. Closing a failed card can then restore this same session.
+        persistRecovery(j);
       } catch (err) {
         if ((err as { isJobCancelled?: boolean }).isJobCancelled) return;
         setStatus(j, "error", `创建会话失败：${friendlyErr(err)}`);
@@ -599,6 +653,7 @@ if (j.cancelled) throw cancelledError(j);
           for (const page of completed) page.studentId = { status: "ok", value: j.pendingStudentId! };
         });
         j.pendingStudentId = undefined;
+        persistRecovery(j);
       } catch (error) {
         if ((error as { isJobCancelled?: boolean }).isJobCancelled) return;
         // Keep a failed-page marker so correction can be retried with another ID.
@@ -619,6 +674,7 @@ if (j.cancelled) throw cancelledError(j);
         if (page.anchor && !page.anchor.done) throw new Error("同份答题卡的首页尚未成功，请重试失败页；背面不会借用其他学生的学号");
         await runWithRetry(j, "上传", () => uploadPageOnce(j, page));
         page.done = true;
+        persistRecovery(j);
         releasePage(page);
         notify();
       } catch (err) {
@@ -647,7 +703,14 @@ if (j.cancelled) throw cancelledError(j);
     j.resumePhase = "completing";
     setStatus(j, "completing", "正在提交上传会话…");
     try {
+      // A restart after complete succeeds must retry only complete, never overwrite completed pages.
+      persistRecovery(j);
       await runWithRetry(j, "提交会话", () => completeSession(j));
+      persistRecovery(j, true);
+      const groupId = recoveryGroup(j);
+      if (groupId !== null && rememberQueuedGroup(j.cardId, j.localSessionId!, groupId)) {
+        forgetScanUploadRecovery(j.cardId, j.localSessionId!, groupId);
+      }
       for (const p of j.pages) releasePage(p);
       setStatus(j, "done", `上传完成，${j.pages.length} 页已提交到服务器`);
     } catch (err) {
@@ -685,6 +748,48 @@ if (j.cancelled) throw cancelledError(j);
     }
   }
 
+  function scanGroupJobs(cardId: string, groupId: string, localSessionId: string): JobRecord[] {
+    return jobs.filter(job => job.kind === "scan" && job.cardId === cardId && job.localSessionId === localSessionId
+      && job.pages.some(page => page.input.groupId === groupId));
+  }
+
+  /** 这份扫描原卷是否已经占住上传资格。导入任务没有本机会话号，不能拿来挡新扫描；缺会话号也不当通配。 */
+  function hasGroupUpload(cardId: string, groupId: string, localSessionId?: string): boolean {
+    if (!localSessionId) return false;
+    return scanGroupJobs(cardId, groupId, localSessionId).some(job => {
+      if (job.remoteSessionId) return true;
+      return job.status === "queued" || job.status === "creating" || job.status === "uploading"
+        || job.status === "paused" || job.status === "completing" || job.status === "done";
+    });
+  }
+
+  /**
+   * 删除本机原图前先和上传任务对齐。
+   * 还在排队、且没建远端会话的任务直接取消，避免稍后读图 404 还提示重试。
+   * 已建会话但尚未完成的任务保留原图用于续传，上传完成后保留完成标记。
+   */
+  function localGroupDeleteBlock(cardId: string, groupId: string, localSessionId: string): string | null {
+    const inFlight = scanGroupJobs(cardId, groupId, localSessionId).some(job => job.status === "creating"
+      || job.status === "uploading" || job.status === "completing" || job.status === "paused");
+    if (inFlight) return "这份卷正在上传，请等上传结束再删除本机原图";
+    const recovery = readScanUploadRecovery(cardId, localSessionId, groupId);
+    return recovery && !recovery.completed ? "这份卷尚未上传完成，请恢复上传后再删除本机原图" : null;
+  }
+
+  function releaseGroupForLocalDelete(cardId: string, groupId: string, localSessionId: string):
+    { ok: true; forgetLedger: boolean } | { ok: false; message: string } {
+    const message = localGroupDeleteBlock(cardId, groupId, localSessionId);
+    if (message) return { ok: false, message };
+    const matching = scanGroupJobs(cardId, groupId, localSessionId);
+    // 已经建出远端会话或已经传完的，留下入队标记，避免删掉本机图后再开一份回执。
+    const forgetLedger = !matching.some(job => job.status === "done" || job.remoteSessionId != null);
+    for (const job of matching) {
+      if (job.status === "queued") cancelJob(job.id);
+      else if (job.status === "error" || job.status === "cancelled") dismissJob(job.id);
+    }
+    return { ok: true, forgetLedger };
+  }
+
   function startUpload(input: StartUploadInput): string {
     if (input.pages.length === 0) throw new Error("没有可上传的页面");
     const pages: PageRecord[] = input.pages.map(p => ({ input: { ...p }, token: "", done: false, failed: false }));
@@ -717,6 +822,7 @@ if (j.cancelled) throw cancelledError(j);
       kind: input.kind,
       name: input.name,
       cardId: input.cardId,
+      localSessionId: input.localSessionId,
       cardVersion: input.cardVersion,
       dpi: input.dpi ?? 300,
       paperSize: input.paperSize ?? "A4",
@@ -733,6 +839,7 @@ if (j.cancelled) throw cancelledError(j);
       apiKey: getStoredApiKey(),
       cancelled: false,
     };
+    restoreRecovery(job);
     jobs.push(job);
     notify();
     void pump();
@@ -749,6 +856,8 @@ if (j.cancelled) throw cancelledError(j);
     if (!j.remoteSessionId && j.remoteBase === readRemoteBase()) {
       j.apiKey = getStoredApiKey();
     }
+    try { persistRecovery(j); }
+    catch (error) { setStatus(j, "error", friendlyErr(error)); return; }
     for (const p of j.pages) p.failed = false;
     j.message = "";
     j.status = "queued";
@@ -903,6 +1012,9 @@ if (j.cancelled) throw cancelledError(j);
       return jobFetch(job)(url, init);
     },
     startUpload,
+    hasGroupUpload,
+    localGroupDeleteBlock,
+    releaseGroupForLocalDelete,
     retryFailed,
     retryPaused,
     cancelJob,

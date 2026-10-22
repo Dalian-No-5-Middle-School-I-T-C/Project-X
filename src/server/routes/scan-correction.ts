@@ -36,7 +36,8 @@ export function scanCorrectionRouter(prefix: "session" | "sessions", remote: boo
       const session = await getMysqlDb().get<{card_id:string;status:string}>("SELECT card_id,status FROM twain_scan_sessions WHERE id=?",req.params.sessionId);
       const card = session && await new CardRepository().findById(session.card_id);
       if (!card || session?.status === "scanning") { res.status(409).json({message:"请等待扫描结束"}); return; }
-      const result = await saveSessionCorrection(card,String(req.params.sessionId),String(req.params.groupId),req.body?.pages,req.user?.id ?? null,remote);
+      const draft = req.body?.draft === true && !remote;
+      const result = await saveSessionCorrection(card,String(req.params.sessionId),String(req.params.groupId),req.body?.pages,req.user?.id ?? null,remote,draft);
       res.json({ok:true,...result});
     } catch (error) { res.status(409).json({message:error instanceof Error ? error.message : "保存失败"}); }
   }));

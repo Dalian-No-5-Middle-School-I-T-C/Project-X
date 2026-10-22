@@ -77,6 +77,17 @@ export function objectiveQuestionDefinitions(block: ObjectiveBlock): ObjectiveQu
   });
 }
 
+/**
+ * 客观题题块总分：逐题分值求和，与判分、导出弹窗同源。
+ * 卡面标题不要用 `questionCount × scorePerQuestion` 反推——逐题覆盖是正式功能，两套算法必然分叉。
+ */
+export function objectiveBlockTotalScore(block: ObjectiveBlock): number {
+  const sum = objectiveQuestionDefinitions(block).reduce(
+    (total, question) => total + (Number.isFinite(question.score) ? question.score : 0), 0
+  );
+  return Math.round(sum * 100) / 100;
+}
+
 export function findObjectiveQuestion(
   card: AnswerCard,
   questionNumber: number
@@ -291,9 +302,10 @@ function findSubjectiveBlock(card: AnswerCard, questionId: string): SubjectiveBl
   return null;
 }
 
-function findSubjectiveQuestion(card: AnswerCard, questionId: string): SubjectiveQuestion | undefined {
+function findSubjectiveQuestion(card: AnswerCard, questionId: string, blockId?: string): SubjectiveQuestion | undefined {
   for (const block of card.bodyBlocks) {
     if (block.type !== "subjective") continue;
+    if (blockId && block.id !== blockId) continue;
     const q = block.questions.find((q) => q.id === questionId);
     if (q) return q;
   }
@@ -304,7 +316,9 @@ export function gradeSubjectiveRecognition(
   card: AnswerCard,
   recognition: SubjectiveRecognitionQuestion
 ): SubjectiveQuestionGrade | null {
-  const question = findSubjectiveQuestion(card, recognition.questionId);
+  // 同一 questionId 可以出现在多个题块。带了 blockId 就必须对上那一块，
+  // 否则后块的 25 分会被前块的满分夹成前块的分数。没带 blockId 的旧结果仍取第一块。
+  const question = findSubjectiveQuestion(card, recognition.questionId, recognition.blockId);
   // 安全：题目必须存在于答题卡定义中。识别结果可由扫描端/上传方构造，
   // 未知 questionId 的自报分数与满分一律丢弃，不得计入成绩。
   if (!question) return null;
