@@ -3,15 +3,24 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+const originalCwd = process.cwd();
 const dir = mkdtempSync(path.join(tmpdir(), "projectx-card-order-"));
 process.env.PROJECTX_DB_PATH = path.join(dir, "test.db");
 process.env.ANSWER_CARD_DATA_DIR = path.join(dir, "cards");
 for (const key of Object.keys(process.env)) {
   if (/^PROJECTX_(MARIADB|MYSQL)_/.test(key)) delete process.env[key];
 }
+// config.yml 按 process.cwd() 解析；先切到临时目录，避免本机 database.mode=remote
+// 的配置让回归脚本连上真实库并写入测试卡。
+process.chdir(dir);
 
-const { initializeDatabase, closeDatabase, getMysqlDb } = await import("../src/server/db");
-initializeDatabase();
+const {
+  initializeDatabase,
+  closeDatabase,
+  getMysqlDb,
+  detectDialect,
+  resolveProjectDbPath
+} = await import("../src/server/db");
 const { CardRepository } = await import("../src/server/repositories/CardRepository");
 const { createDefaultCard } = await import("../src/shared/defaultCard");
 const { buildLayout } = await import("../src/shared/layout");
@@ -58,6 +67,15 @@ card.bodyBlocks = [
 ] as any;
 
 try {
+  initializeDatabase();
+  assert.equal(detectDialect(), "sqlite", "回归脚本必须运行在隔离的 SQLite 方言上");
+  assert.equal(getMysqlDb().dialect, "sqlite", "写入前再次确认适配器不是远程 MariaDB");
+  assert.equal(
+    path.resolve(resolveProjectDbPath()),
+    path.resolve(path.join(dir, "test.db")),
+    "回归脚本的数据库路径必须落在临时目录内"
+  );
+
   const repo = new CardRepository();
   await repo.createCard(card);
   await repo.updateCard(card);
@@ -105,5 +123,6 @@ try {
   console.log("PASS 历史卡重新保存后升级为整卡序号");
 } finally {
   closeDatabase();
+  process.chdir(originalCwd);
   rmSync(dir, { recursive: true, force: true });
 }

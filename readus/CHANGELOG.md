@@ -6,7 +6,7 @@
 - **根因**：`bodyBlocks` 是交错数组，但落库拆成 `objective_blocks` / `subjective_blocks`；两个插入方法都把 `sort_order` 硬编码为 0，`findById()` 又固定先读客观表再读主观表，跨类型顺序没有落点。
 - **修复**：保存时按 `bodyBlocks` 下标写整卡级 `sort_order`（跨两表连续唯一）；`findById()` 把两张表按 `sort_order` 合并。历史数据（`sort_order` 全 0 或按类型各自编号）继续按旧的分组顺序读取，重新保存后自动升级，不改变存量卡原有顺序。
 - **影响范围**：PDF 导出、`/api/cards/:id/layout`、扫描识别、整卡订正、设计器重新加载。存量卡若已被错误分组，需老师重新拖动一次题块并保存——旧数据无法推断原本的交错意图。
-- **验证**：新增 `verify:card-block-order`（临时 SQLite 隔离库）：交错块保存/读取往返、`buildLayout` 顺序、历史 0 序号兼容、历史卡重新保存升级；`typecheck` 通过，CI 已接入。MariaDB 未在本机实跑（无客户端），读取路径为方言无关的 JS 合并，未新增列/迁移。
+- **验证**：新增 `verify:card-block-order`（临时 SQLite 隔离库）：交错块保存/读取往返、`buildLayout` 顺序、历史 0 序号兼容、历史卡重新保存升级；脚本在导入数据库模块前切到临时工作目录，并在首次写入前断言方言为 SQLite，避免本机 `config.yml` 的 remote 配置把回归写到真实库；`typecheck` 通过，CI 已接入。MariaDB 未在本机实跑（无客户端），读取路径为方言无关的 JS 合并，未新增列/迁移。
 
 ## 2026-10-19：#342 客观题「每题分值」同步逐题配置，卡面总分与导出弹窗同源
 
