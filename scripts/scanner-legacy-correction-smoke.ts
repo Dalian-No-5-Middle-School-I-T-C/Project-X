@@ -81,7 +81,7 @@ try {
   await assert.rejects(confirmPendingScan(exam.id,session.id,"0","accept",stale.token,admin.lastInsertRowid,null),/已更新/);
   // Original image changes invalidate both an open approval and the stored proof.
   await writeFile(records[0].image_path,await sharp({create:{width:2100,height:2970,channels:3,background:"red"}}).png().toBuffer());
-  assert.match((await current("0")).issue!,/版本核验/);
+  assert.match((await current("0")).issue!,/凭据已失效/);
   await assert.rejects(confirmPendingScan(exam.id,session.id,"0","accept",item.token,admin.lastInsertRowid,null),/已更新/);
   assert((await sessionCorrection(card,session.id,"0",true)).pages[0].recovery);
   await writeFile(records[0].image_path,bytes);

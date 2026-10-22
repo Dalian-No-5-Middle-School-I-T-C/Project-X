@@ -18,7 +18,7 @@ import { markScoreMutated } from "./examPublishEvents";
 import { resolveScannerExam } from "./scannerExam";
 import { analysisCache } from "./analysisCache";
 import { CardRepository } from "../repositories/CardRepository";
-import { assertCorrectionGroupVersion, assertCorrectionSessionVersion, correctionProvenanceState, correctionSourceFingerprint, needsCorrectionProvenance, STALE_CORRECTION_PROVENANCE } from "./scanCorrectionProvenance";
+import { assertCorrectionGroupVersion, assertCorrectionPageProvenance, assertCorrectionSessionVersion, correctionProvenanceState, correctionSourceFingerprint, needsCorrectionProvenance, STALE_CORRECTION_PROVENANCE } from "./scanCorrectionProvenance";
 
 export async function storeCorrectionPage(card: AnswerCard, sourceType: CorrectionPage["sourceType"], sourceId: string | number,
   recognition: CombinedRecognitionResult, db = getMysqlDb()) {
@@ -67,11 +67,9 @@ async function loadSessionCorrection(card: AnswerCard, sessionId: string, groupI
     const url = remote ? `/api/scanner/upload/records/${encodeURIComponent(record.id)}/image` : `/api/scanner/scan-image/${encodeURIComponent(record.id)}`;
     let page = await loadCorrectionPage("twain_scan_record", record.id, url);
     const provenance = allowRecovery ? await correctionProvenanceState(getMysqlDb(),card,record.id) : null;
-    // 已入库旧卷同样要按会话口径判断：v64 之前留下的快照没有指纹，
-    // 不能因为「不是 invalid」就当成普通扫描直接改正式成绩。
-    const unverified = allowRecovery && (savedOwner
-      ? provenance === "invalid" || (provenance === "absent" && needsCorrectionProvenance(session))
-      : needsCorrectionProvenance(session) && provenance !== "valid");
+    // A recovery fingerprint binds current-version drafts as well as legacy papers.
+    const unverified = allowRecovery && (provenance === "invalid"
+      || (provenance === "absent" && needsCorrectionProvenance(session)));
     if (!page || unverified) {
       if (!allowRecovery) throw new Error("此卷缺少坐标映射，请在服务器异常卷处理中重新识别");
       if (!savedOwner && await getMysqlDb().get("SELECT exam_id FROM scanner_submissions WHERE session_id=? AND group_id=? AND state IN ('saved','discarded')",sessionId,groupId)) throw new Error("此卷已入库或已作废，请从成绩修改进入整卡改分");
@@ -245,6 +243,8 @@ export async function saveSessionCorrection(card: AnswerCard, sessionId: string,
         const session = await tx.get<{card_id:string;card_version:string|null;version_source:string}>("SELECT card_id,card_version,version_source FROM twain_scan_sessions WHERE id=?",sessionId);
         assertCorrectionSessionVersion(card,session);
         if (verifiedPageIds.length) await assertCorrectionGroupVersion(tx,card,session,verifiedPageIds);
+      } else {
+        for (const sourceId of verifiedPageIds) await assertCorrectionPageProvenance(tx,card,sourceId);
       }
       const results = await writePages(tx,document,edits,userId);
       const number = results.find(r => r.page.layout.studentArea)?.recognition.studentId?.value;

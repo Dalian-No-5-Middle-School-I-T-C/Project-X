@@ -42,40 +42,45 @@ type SessionEvidence = {
   raw: Array<ScanRecordWithResult & { objective_json: string | null; subjective_json: string | null }>;
   grouped?: ReturnType<typeof groupSessionPages>;
 };
-/** 同一会话的整页记录只读一次；异常列表每次刷新都会逐个回执算 evidence。 */
-type EvidenceCache = Map<string, SessionEvidence>;
+/** Cache the in-flight read so concurrent receipts share one session snapshot. */
+type EvidenceCache = Map<string, Promise<SessionEvidence>>;
+async function loadSessionEvidence(db: DbAdapter, row: PendingRow): Promise<SessionEvidence> {
+  const exam = await db.get<{
+    card_id: string;
+    class_id: number | null;
+    grade_id: number | null;
+  }>("SELECT card_id,class_id,grade_id FROM exams WHERE id=?", row.exam_id);
+  const card = exam && (await new CardRepository(db).findById(exam.card_id));
+  const session = await db.get<{
+    card_id: string;
+    card_version: string | null;
+    version_source: string;
+  }>(
+    "SELECT card_id,card_version,version_source FROM twain_scan_sessions WHERE id=?",
+    row.session_id,
+  );
+  const raw = await db.all<
+    ScanRecordWithResult & {
+      objective_json: string | null;
+      subjective_json: string | null;
+    }
+  >(
+    `SELECT r.*,s.identity_mode,g.objective_json,g.subjective_json
+    FROM twain_scan_records r JOIN twain_scan_sessions s ON s.id=r.session_id
+    LEFT JOIN twain_recognition_results g ON g.scan_record_id=r.id WHERE r.session_id=? ORDER BY r.page_num,r.side,r.id`,
+    row.session_id,
+  );
+  return { exam, card, session, raw };
+}
+
 async function evidence(db: DbAdapter, row: PendingRow, cache?: EvidenceCache) {
   const cacheKey = `${row.exam_id}:${row.session_id}`;
-  let cached = cache?.get(cacheKey);
-  if (!cached) {
-    const exam = await db.get<{
-      card_id: string;
-      class_id: number | null;
-      grade_id: number | null;
-    }>("SELECT card_id,class_id,grade_id FROM exams WHERE id=?", row.exam_id);
-    const card = exam && (await new CardRepository(db).findById(exam.card_id));
-    const session = await db.get<{
-      card_id: string;
-      card_version: string | null;
-      version_source: string;
-    }>(
-      "SELECT card_id,card_version,version_source FROM twain_scan_sessions WHERE id=?",
-      row.session_id,
-    );
-    const raw = await db.all<
-      ScanRecordWithResult & {
-        objective_json: string | null;
-        subjective_json: string | null;
-      }
-    >(
-      `SELECT r.*,s.identity_mode,g.objective_json,g.subjective_json
-      FROM twain_scan_records r JOIN twain_scan_sessions s ON s.id=r.session_id
-      LEFT JOIN twain_recognition_results g ON g.scan_record_id=r.id WHERE r.session_id=? ORDER BY r.page_num,r.side,r.id`,
-      row.session_id,
-    );
-    cached = { exam, card, session, raw };
-    cache?.set(cacheKey, cached);
+  let loading = cache?.get(cacheKey);
+  if (!loading) {
+    loading = loadSessionEvidence(db, row);
+    cache?.set(cacheKey, loading);
   }
+  const cached = await loading;
   const { exam, card, session, raw } = cached;
   if (!exam || !card) throw new Error("考试或答题卡不存在");
   const records = raw.map((r) => ({

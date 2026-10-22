@@ -47,8 +47,10 @@ export async function correctionProvenanceState(db: DbAdapter, card: AnswerCard,
   }
 }
 
-async function verifiedCorrectionFingerprint(db: DbAdapter, card: AnswerCard, sourceId: string): Promise<string | null> {
-  if (await correctionProvenanceState(db, card, sourceId) !== "valid") return null;
+export async function assertCorrectionPageProvenance(db: DbAdapter, card: AnswerCard, sourceId: string): Promise<string | null> {
+  const state = await correctionProvenanceState(db, card, sourceId);
+  if (state === "invalid") throw new Error(STALE_CORRECTION_PROVENANCE);
+  if (state === "absent") return null;
   const row = await db.get<{ recovery_fingerprint: string | null }>(
     "SELECT recovery_fingerprint FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?", sourceId);
   return row?.recovery_fingerprint ?? null;
@@ -67,13 +69,12 @@ export async function assertCorrectionGroupVersion(db: DbAdapter, card: AnswerCa
   session: CorrectionSession | null | undefined, sourceIds: string[]) {
   assertCorrectionSessionVersion(card, session);
   const fingerprints: string[] = [];
-  if (needsCorrectionProvenance(session)) {
-    if (!sourceIds.length) throw new Error("原卷不存在，请刷新");
-    for (const id of sourceIds) {
-      const fingerprint = await verifiedCorrectionFingerprint(db, card, id);
-      if (!fingerprint) throw new Error("此旧卷尚未完成原图与答题卡版本核验，请打开整卡改分，重新识别并保存");
-      fingerprints.push(fingerprint);
-    }
+  const required = needsCorrectionProvenance(session);
+  if (required && !sourceIds.length) throw new Error("原卷不存在，请刷新");
+  for (const id of sourceIds) {
+    const fingerprint = await assertCorrectionPageProvenance(db, card, id);
+    if (!fingerprint && required) throw new Error("此旧卷尚未完成原图与答题卡版本核验，请打开整卡改分，重新识别并保存");
+    if (fingerprint) fingerprints.push(fingerprint);
   }
   return fingerprints;
 }
