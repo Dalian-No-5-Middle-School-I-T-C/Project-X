@@ -109,6 +109,18 @@ function defaultObjective(start: number): ObjectiveBlock {
   };
 }
 
+/**
+ * 块级「每题分值」是客观题分值的录入口，改动必须同时落到已物化的逐题配置：
+ * `objectiveQuestionDefinitions()` 里逐题 `score` 优先于块级值，只写块级会让卡面标题
+ * 与导出弹窗/判分各算一套（issue #342）。与同面板「选项数」「题型」一致，块级值覆盖全部逐题。
+ */
+export function applyScorePerQuestion(block: ObjectiveBlock, score: number): void {
+  block.scorePerQuestion = score;
+  for (const question of block.questions ?? []) {
+    question.score = score;
+  }
+}
+
 function defaultSubjective(nextNumber: number): SubjectiveBlock {
   return {
     id: createBlockId("subj"),

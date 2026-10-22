@@ -32,7 +32,8 @@ import {
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { gradeCombinedRecognition, gradeSubjectiveRecognition } from "../src/shared/grading";
+import { gradeCombinedRecognition, gradeSubjectiveRecognition, normalizeObjectiveQuestions, objectiveBlockTotalScore, objectiveQuestionDefinitions } from "../src/shared/grading";
+import { applyScorePerQuestion } from "../src/apps/answer-card/client/cardModel";
 import {
   CreateCardSchema,
   UpdateUserSettingsSchema,
@@ -427,6 +428,31 @@ section("13. shared/ranking —— 天梯截断不切开同分并列");
     crossTie.board.length === 12 && crossTie.board.every((r) => r.rank === 1));
   check("跨考天梯 myRank 与本人标记一致",
     crossTie.myRank === 1 && crossTie.board.filter((r) => r.isCurrentUser).length === 1);
+}
+
+section("14. 客观题总分单一事实源 —— 卡面标题与导出弹窗不得分叉（#342）");
+{
+  // 线上复现路径：新建块默认每题 5 分 → 点标准答案物化逐题配置 → 再把「每题分值」改成 1.5
+  const block = objectiveBlock(10, 5, Array.from({ length: 10 }, () => 5));
+  block.questions = normalizeObjectiveQuestions(block);
+  applyScorePerQuestion(block, 1.5);
+
+  const r = validateCardScores(card("shuxue", [block]));
+  check("改「每题分值」后已物化的逐题配置全部同步",
+    objectiveQuestionDefinitions(block).every((q) => q.score === 1.5));
+  check("导出弹窗总分与卡面标题同为 15 分（曾为 50 分）",
+    r.totalScore === 15 && r.objectiveScore === 15 && objectiveBlockTotalScore(block) === 15);
+
+  const legacy = objectiveBlock(10, 1.5);
+  check("旧卡无逐题配置时仍按 题数 × 每题分值 求和",
+    objectiveBlockTotalScore(legacy) === 15 && validateCardScores(card("shuxue", [legacy])).totalScore === 15);
+
+  const mixed = objectiveBlock(3, 5, [5, 5, 8]);
+  check("逐题覆盖时标题总分取逐题求和 18，而非 3×5=15",
+    objectiveBlockTotalScore(mixed) === 18 && validateCardScores(card("shuxue", [mixed])).totalScore === 18);
+
+  check("0.3 × 10 求和不产生浮点尾差",
+    objectiveBlockTotalScore(objectiveBlock(10, 0.3, Array.from({ length: 10 }, () => 0.3))) === 3);
 }
 
 async function runValidate(
