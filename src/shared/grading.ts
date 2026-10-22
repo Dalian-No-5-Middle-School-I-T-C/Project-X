@@ -17,6 +17,7 @@ import type {
   SubjectiveQuestionGradeStatus,
   SubjectiveRecognitionQuestion
 } from "./types";
+import { isMultiSelectMode } from "./objectiveMode";
 
 export const OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD = 0.12;
 
@@ -189,7 +190,7 @@ export function gradeObjectiveQuestion(
     };
   }
 
-  const maxScore = definition.score;
+  const maxScore = Number.isFinite(definition.score) ? Math.max(0, definition.score) : 0;
   const correctOptions = normalizeOptions(definition.answerKey, definition.optionCount);
   if (correctOptions.length === 0) {
     return {
@@ -225,7 +226,7 @@ export function gradeObjectiveQuestion(
   const hasTooMany = selectedOptions.length > correctOptions.length;
   const allowsWrongOptions = definition.scoringRule?.allowWrongOptions === true;
   const canPartial =
-    (definition.mode === "multiple" || definition.mode === "indefinite") &&
+    isMultiSelectMode(definition.mode) &&
     selectedOptions.length > 0 &&
     selectedCorrectCount > 0 &&
     !hasTooMany &&
@@ -233,7 +234,9 @@ export function gradeObjectiveQuestion(
   const partialScore = canPartial
     ? partialScoreFor(definition.scoringRule, selectedCorrectCount, correctOptions.length)
     : undefined;
-  const score = partialScore ?? wrongOrExtraScoreFor(definition.scoringRule);
+  // 导入卡/历史卡里的计分规则是外部数据：非有限值按 0，且单题不能超过满分或低于负满分。
+  const rawScore = partialScore ?? wrongOrExtraScoreFor(definition.scoringRule);
+  const score = Number.isFinite(rawScore) ? Math.max(-maxScore, Math.min(rawScore, maxScore)) : 0;
 
   return {
     questionNumber: question.questionNumber,
@@ -322,19 +325,20 @@ export function gradeSubjectiveRecognition(
   // 安全：题目必须存在于答题卡定义中。识别结果可由扫描端/上传方构造，
   // 未知 questionId 的自报分数与满分一律丢弃，不得计入成绩。
   if (!question) return null;
-  const maxScore = question.score;
+  const maxScore = Number.isFinite(question.score) ? Math.max(0, question.score) : 0;
   const needsReview = recognition.status !== "ok";
 
   let status: SubjectiveQuestionGradeStatus = "ok";
   if (recognition.status === "invalid") status = "invalid";
   else if (needsReview) status = "missing_score_grid";
+  const reportedScore = Number.isFinite(recognition.score) ? recognition.score : 0;
 
   return {
     questionId: recognition.questionId,
     // 题号同样以卡面定义为准：question_scores 以题号作为冲突键，
     // 采用上报题号会让伪造值覆盖/串写其它小题的逐题成绩。
     questionNumber: question.number,
-    score: Math.max(0, Math.min(recognition.score, maxScore)),
+    score: Math.max(0, Math.min(reportedScore, maxScore)),
     maxScore,
     status,
     needsReview,

@@ -1351,6 +1351,10 @@ MIGRATIONS.push({ version: 64, name: "scan-correction-provenance", up(db) {
   addColumnIfMissing(db, "scan_correction_pages", "recovery_fingerprint", "VARCHAR(64)");
 } });
 
+// SQLite 是动态类型，INTEGER 亲和列本来就能存 13.1；MariaDB 的 INT 会拒绝小题号。
+// 这里只记录版本，保持两端迁移号对齐。
+MIGRATIONS.push({ version: 65, name: "question-number-decimals", up() {} });
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

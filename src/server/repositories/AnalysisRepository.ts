@@ -1316,7 +1316,6 @@ export class AnalysisRepository {
     const scoreKnown = fullScore > 0;
     const passLine = scoreKnown ? fullScore * thresholds.passRate : 0;
     const excellentLine = scoreKnown ? fullScore * thresholds.excellentRate : 0;
-    const ranges = scoreKnown ? histogram([], fullScore, thresholds.segmentSize) : [];
 
     const examClasses = await this.getExamClasses(examId);
     const selected = examClasses.filter((cls) => classIds.includes(cls.classId));
@@ -1334,9 +1333,7 @@ export class AnalysisRepository {
       const sum = scores.reduce((a, b) => a + b, 0);
       const avg = sum / scores.length;
       const variance = scores.reduce((a, b) => a + (b - avg) ** 2, 0) / scores.length;
-      const distribution = ranges.map((r) => ({
-        ...r, count: scores.filter((s) => s >= r.min && s <= r.max).length
-      }));
+      const distribution = scoreKnown ? histogram(scores, fullScore, thresholds.segmentSize) : [];
       // Issue #175: 每班难度/区分度（与 getExamMetrics 口径一致：D = 逐题区分度均值）
       const qa = await this.getQuestionAnalysis(examId, cls.classId);
       const disc = qa.length > 0 ? qa.reduce((s, q) => s + (q.discrimination ?? 0), 0) / qa.length : 0;
