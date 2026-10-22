@@ -22,7 +22,13 @@ export function readScanUploadRecovery(cardId: string, sessionId: string, groupI
   if (typeof localStorage === "undefined") return null;
   const raw = localStorage.getItem(recoveryKey(cardId, sessionId, groupId));
   if (!raw) return null;
-  const parsed = recoverySchema.safeParse(JSON.parse(raw));
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(raw);
+  } catch {
+    throw new Error("上传恢复记录损坏，请保留本机原卷并核对服务器会话");
+  }
+  const parsed = recoverySchema.safeParse(parsedJson);
   if (!parsed.success) throw new Error("上传恢复记录不完整，请保留本机原卷并核对服务器会话");
   return parsed.data;
 }

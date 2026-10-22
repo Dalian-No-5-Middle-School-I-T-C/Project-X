@@ -116,11 +116,15 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
       };
 
       if (isEdit) {
-        await authFetch(`/api/exam-groups/${existingGroup!.id}`, {
+        const res = await authFetch(`/api/exam-groups/${existingGroup!.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body)
         });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({} as { message?: string; error?: string }));
+          throw new Error(data.message || data.error || "保存大考失败");
+        }
         onCreated?.(existingGroup!.id);
       } else {
         const res = await authFetch("/api/exam-groups", {
@@ -128,7 +132,12 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body)
         });
-        const data = await res.json();
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({} as { message?: string; error?: string }));
+          throw new Error(data.message || data.error || "创建大考失败");
+        }
+        const data = await res.json().catch(() => ({} as { id?: number }));
+        if (!data.id) throw new Error("创建大考失败：服务器未返回大考 ID");
         onCreated?.(data.id);
       }
       onClose();
