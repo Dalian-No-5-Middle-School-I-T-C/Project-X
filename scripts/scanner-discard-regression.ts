@@ -20,7 +20,12 @@ try {
   const before = await processScannerSession(card,session.id,'save');
   assert.equal(before.failures.length,2);
   await discardScannerGroup(card,session.id,'1');
-  const after = await processScannerSession(card,session.id,'save');
-  assert.equal(after.failures.length,0); assert.equal(after.results[0].saved,true);
+  const retry = await processScannerSession(card,session.id,'save');
+  assert(retry.failures.some(f=>f.groupId==='0'&&f.stage==='saving'), 'Discarding a duplicate does not approve the remaining paper');
+  assert.equal((await db.get<{state:string}>("SELECT state FROM scanner_submissions WHERE session_id=? AND group_id='0'",session.id))?.state,'correction');
+  assert.equal((await db.all('SELECT id FROM student_scores')).length,0);
+  const after = await processScannerSession(card,session.id,'save',undefined,new Set(['0']));
+  assert.equal(after.failures.length,0); assert.equal(after.results.find(r=>r.groupId==='0')?.saved,true);
+  assert.equal(Number((await db.get<{total_score:number}>('SELECT total_score FROM student_scores'))?.total_score),5);
   console.log(JSON.stringify({before,after,receipts:await db.all('SELECT group_id,state FROM scanner_submissions WHERE session_id=?',session.id),scores:await db.all('SELECT total_score FROM student_scores')},null,2));
 } finally {await fixture.close();}

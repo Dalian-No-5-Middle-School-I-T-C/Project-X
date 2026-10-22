@@ -12,7 +12,7 @@ export type CorrectionPage = {
   selected: string[];
   invalid: string[];
   imageUrl: string;
-  recovery?: { fingerprint: string; identityMode: "strict" | "legacy"; dpi: number; signature?: string };
+  recovery?: { fingerprint: string; identityMode: "strict" | "legacy"; dpi: number; signature?: string; reason?: "provenance" };
 };
 export type CorrectionDocument = { card: AnswerCard; pages: CorrectionPage[]; version: string };
 export type CorrectionEdit = { sourceId: string; revision: number; selected: string[]; touched?: string[]; recovery?: { fingerprint: string; signature?: string; recognition: CombinedRecognitionResult } };

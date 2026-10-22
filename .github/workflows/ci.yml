@@ -95,7 +95,7 @@ jobs:
       - name: Linux x86_64 red pen score cells
         run: npm run verify:recognizer-red-pen
       - name: Full-card correction and legacy recognition drafts (SQLite)
-        run: npm run verify:scan-correction && npm run verify:scan-correction-security && npm run verify:scanner-pending && npm run verify:scanner-retry-concurrency && npm run verify:ladder-options-soft-delete
+        run: npm run verify:scan-correction && npm run verify:scanner-local-correction && npm run verify:scan-correction-security && npm run verify:scanner-pending && npm run verify:scanner-retry-concurrency && npm run verify:ladder-options-soft-delete
       # v57 空置 + 「阅卷中已公布」考试不被强制结考，并检查两套方言迁移版本号不撞号
       - name: Grading-published exam and migration numbering
         run: npm run verify:grading-published-exam
@@ -144,6 +144,10 @@ jobs:
         run: npm run verify:scanner-duplex-correction
       - name: Scanner correction preserves valid grades
         run: npm run verify:scanner-correction-safety
+      - name: Legacy correction provenance and roster admission
+        run: npm run verify:scanner-legacy-correction
+      - name: Scanner correction source and selected-save boundaries
+        run: npm run verify:scanner-correction-boundaries
       - name: Scanner review fixes
         run: npm run verify:scanner-review-fixes
       - name: Scanner batch timeout
@@ -261,6 +265,8 @@ jobs:
           CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_partial_ci CHARACTER SET utf8mb4;
           CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_correction_ci CHARACTER SET utf8mb4;
           CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_warning_ci CHARACTER SET utf8mb4;
+          CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_legacy_ci CHARACTER SET utf8mb4;
+          CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_boundaries_ci CHARACTER SET utf8mb4;
           CREATE DATABASE IF NOT EXISTS projectx_scanner_postprocess_ci CHARACTER SET utf8mb4;
           GRANT ALL PRIVILEGES ON projectx_scanner_postprocess_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_ci.* TO 'projectx_ci'@'%';
@@ -272,6 +278,8 @@ jobs:
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_partial_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_correction_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_warning_ci.* TO 'projectx_ci'@'%';
+          GRANT ALL PRIVILEGES ON projectx_scanner_batch_legacy_ci.* TO 'projectx_ci'@'%';
+          GRANT ALL PRIVILEGES ON projectx_scanner_batch_boundaries_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_exam_classes_test.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_migration_test.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_card_correction_ci.* TO 'projectx_ci'@'%';
@@ -324,6 +332,16 @@ jobs:
           SCANNER_BATCH_MARIADB: "1"
           PROJECTX_MARIADB_DATABASE: projectx_scanner_batch_pending_ci
         run: npm run verify:scanner-pending
+      - name: Legacy correction provenance and upgrade (MariaDB)
+        env:
+          SCANNER_BATCH_MARIADB: "1"
+          PROJECTX_MARIADB_DATABASE: projectx_scanner_batch_legacy_ci
+        run: npm run verify:scanner-legacy-correction
+      - name: Scanner correction source and selected-save boundaries (MariaDB)
+        env:
+          SCANNER_BATCH_MARIADB: "1"
+          PROJECTX_MARIADB_DATABASE: projectx_scanner_batch_boundaries_ci
+        run: npm run verify:scanner-correction-boundaries
       - name: Scanner OCR retry and human correction concurrency (MariaDB)
         env:
           SCANNER_BATCH_MARIADB: "1"

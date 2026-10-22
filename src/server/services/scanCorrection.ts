@@ -12,11 +12,13 @@ import { gradeObjectiveQuestion, gradeSubjectiveRecognition } from "../../shared
 import type { AnswerCard, CombinedRecognitionResult } from "../../shared/types";
 import { listScanRecordsGroupedByStudent } from "../../apps/answer-card/server/database/scan-store";
 import { groupSessionPages, validateSessionGroupStructure } from "../../apps/answer-card/server/scanner/session-results";
-import { enqueueScannerSubmission, processScannerSessionInQueue } from "./scannerSubmissions";
+import { enqueueScannerSubmission, processScannerSessionInQueue, savedReceiptOwnerOfPage } from "./scannerSubmissions";
 import { recomputeExamRankings } from "./rankingUpdate";
 import { markScoreMutated } from "./examPublishEvents";
 import { resolveScannerExam } from "./scannerExam";
 import { analysisCache } from "./analysisCache";
+import { CardRepository } from "../repositories/CardRepository";
+import { assertCorrectionGroupVersion, assertCorrectionPageProvenance, assertCorrectionSessionVersion, correctionProvenanceState, correctionSourceFingerprint, needsCorrectionProvenance, STALE_CORRECTION_PROVENANCE } from "./scanCorrectionProvenance";
 
 export async function storeCorrectionPage(card: AnswerCard, sourceType: CorrectionPage["sourceType"], sourceId: string | number,
   recognition: CombinedRecognitionResult, db = getMysqlDb()) {
@@ -31,7 +33,7 @@ export async function storeCorrectionPage(card: AnswerCard, sourceType: Correcti
   const upsert = buildUpsertSQL(db.dialect, "scan_correction_pages",
     ["source_type","source_id","card_version","layout_json","recognition_json","revision"], ["source_type","source_id"],
     ["card_version","layout_json","recognition_json"]);
-  await db.run(`${upsert}, revision = revision + 1`,
+  await db.run(`${upsert}, revision = revision + 1, recovery_fingerprint = NULL`,
     sourceType, String(sourceId), cardFingerprint(card), JSON.stringify(layout), JSON.stringify(safe), Date.now());
 }
 export async function loadCorrectionPage(sourceType: CorrectionPage["sourceType"], sourceId: string, imageUrl: string, db = getMysqlDb()): Promise<CorrectionPage | null> {
@@ -42,21 +44,40 @@ export async function loadCorrectionPage(sourceType: CorrectionPage["sourceType"
   return { sourceType, sourceId, revision: Number(row.revision), layout, recognition, ...recognizedCells(layout, recognition), imageUrl };
 }
 export async function sessionCorrection(card: AnswerCard, sessionId: string, groupId: string, remote: boolean, allowRecovery = remote): Promise<CorrectionDocument> {
+  return loadSessionCorrection(card, sessionId, groupId, remote, allowRecovery);
+}
+async function loadSessionCorrection(card: AnswerCard, sessionId: string, groupId: string, remote: boolean, allowRecovery: boolean,
+  savedOwner?: { examId: number; studentNumber: string }): Promise<CorrectionDocument> {
+  const receipt = savedOwner ? await getMysqlDb().get<{pages_json:string}>("SELECT pages_json FROM scanner_submissions WHERE session_id=? AND group_id=? AND exam_id=? AND student_number=? AND state='saved'",
+    sessionId,groupId,savedOwner.examId,savedOwner.studentNumber) : null;
+  if (savedOwner && !receipt) throw new Error("原卷归属已变化，请重新打开成绩修改");
+  const session = await getMysqlDb().get<{card_version:string|null;version_source:string}>("SELECT card_version,version_source FROM twain_scan_sessions WHERE id=?",sessionId);
+  if (!session) throw new Error("扫描会话不存在");
+  if (session.card_version && session.card_version !== cardFingerprint(card)) throw new Error("答题卡版本已变化，请核对原卷版本后重新扫描");
   const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
   const group = groupSessionPages(card, records).groups.get(groupId);
   if (!group) throw new Error("答题卡分组不存在");
+  if (receipt) {
+    const owned = JSON.parse(receipt.pages_json) as Array<{recordId:string}>;
+    if (owned.length !== group.length || group.some(row=>!owned.some(page=>page.recordId===row.record.id))) throw new Error("原卷页序或归属已变化，请先处理异常卷");
+    validateSessionGroupStructure(card,group,buildLayout(card).pages.length);
+  }
   const pages: CorrectionPage[] = [];
   for (const { record, page: mapped } of group) {
     const url = remote ? `/api/scanner/upload/records/${encodeURIComponent(record.id)}/image` : `/api/scanner/scan-image/${encodeURIComponent(record.id)}`;
     let page = await loadCorrectionPage("twain_scan_record", record.id, url);
-    if (!page) {
+    const provenance = allowRecovery ? await correctionProvenanceState(getMysqlDb(),card,record.id) : null;
+    // A recovery fingerprint binds current-version drafts as well as legacy papers.
+    const unverified = allowRecovery && (provenance === "invalid"
+      || (provenance === "absent" && needsCorrectionProvenance(session)));
+    if (!page || unverified) {
       if (!allowRecovery) throw new Error("此卷缺少坐标映射，请在服务器异常卷处理中重新识别");
-      if (await getMysqlDb().get("SELECT exam_id FROM scanner_submissions WHERE session_id=? AND group_id=? AND state IN ('saved','discarded')",sessionId,groupId)) throw new Error("此卷已入库或已作废，请从成绩修改进入整卡改分");
+      if (!savedOwner && await getMysqlDb().get("SELECT exam_id FROM scanner_submissions WHERE session_id=? AND group_id=? AND state IN ('saved','discarded')",sessionId,groupId)) throw new Error("此卷已入库或已作废，请从成绩修改进入整卡改分");
       const source = await recoverySource(getMysqlDb(),card,record.id);
       const layout = buildLayout(card).pages.find(p=>p.pageNumber===mapped.layoutPage)!;
-      page = {sourceType:"twain_scan_record",sourceId:record.id,revision:0,layout,imageUrl:url,
+      page = {sourceType:"twain_scan_record",sourceId:record.id,revision:page?.revision ?? 0,layout,imageUrl:url,
         recognition:{status:"partial",pageNumber:mapped.layoutPage,questions:[],subjectiveQuestions:[]},selected:[],invalid:[],
-        recovery:{fingerprint:source.fingerprint,identityMode:source.identityMode,dpi:source.dpi}};
+        recovery:{fingerprint:source.fingerprint,identityMode:source.identityMode,dpi:source.dpi,...(unverified?{reason:"provenance" as const}:{})}};
     }
     // ID-only correction predating the overlay must be reflected on reopening.
     if (!page.recovery && record.student_id && page.recognition.studentId?.value !== record.student_id) {
@@ -71,11 +92,19 @@ let recoveryRunning = false;
 /** Only this explicit recovery operation invokes Linux OMR; it never persists the draft. */
 export async function recognizeSessionCorrection(card: AnswerCard, sessionId: string, groupId: string, raw: unknown,
   recognize: (request:RecognitionRequest)=>Promise<Record<string,unknown>> = recognizeCorrectionCard): Promise<CorrectionDocument> {
+  return recognizeCorrectionDocument(() => sessionCorrection(card,sessionId,groupId,true),raw,recognize);
+}
+export async function recognizeStudentCorrection(card: AnswerCard, examId: number, studentId: number, raw: unknown,
+  recognize: (request:RecognitionRequest)=>Promise<Record<string,unknown>> = recognizeCorrectionCard): Promise<CorrectionDocument> {
+  return recognizeCorrectionDocument(() => studentCorrection(card,examId,studentId),raw,recognize);
+}
+async function recognizeCorrectionDocument(load: () => Promise<CorrectionDocument>, raw: unknown,
+  recognize: (request:RecognitionRequest)=>Promise<Record<string,unknown>>): Promise<CorrectionDocument> {
   if (recoveryRunning) throw new Error("另一份旧卷正在识别，请稍后重试");
   recoveryRunning = true;
   let dir:string|undefined;
   try {
-    const document = await sessionCorrection(card,sessionId,groupId,true);
+    const document = await load(), card = document.card;
     const missing = document.pages.filter(p=>p.recovery && !p.recognition.geometry);
     const input = raw as {version?:string;pages?:Array<{sourceId:string;fingerprint:string}>}|null;
     if (input?.version !== document.version || !Array.isArray(input.pages) || input.pages.length!==missing.length ||
@@ -90,6 +119,17 @@ export async function recognizeSessionCorrection(card: AnswerCard, sessionId: st
       const recognition = await recognize({imagePath:source.imagePath,layoutPath,pageNumber:page.layout.pageNumber,dpi:source.dpi,identityMode:source.identityMode});
       const result = recoveredPage(card,page,recognition);
       if (result.recognition.geometry?.imageWidth!==source.width || result.recognition.geometry.imageHeight!==source.height) throw new Error("重新识别坐标与原卷尺寸不匹配");
+      // Pre-provenance snapshots may already contain saved teacher edits. Verify
+      // alignment afresh, then retain those marks for the teacher's explicit save.
+      if (page.recovery?.reason === "provenance") {
+        const previous = await getMysqlDb().get<{card_version:string;revision:number;recognition_json:string;modified_by:number|null;recovery_fingerprint:string|null}>(
+          "SELECT card_version,revision,recognition_json,modified_by,recovery_fingerprint FROM scan_correction_pages WHERE source_type=? AND source_id=?",page.sourceType,page.sourceId);
+        if (previous && Number(previous.revision)===page.revision && previous.card_version===document.version && previous.modified_by!==null && !previous.recovery_fingerprint) {
+          const selected = recognizedCells(page.layout,JSON.parse(previous.recognition_json)).selected;
+          result.recognition = correctionState(card,result,selected).recognition;
+          Object.assign(result,recognizedCells(page.layout,result.recognition));
+        }
+      }
       const latest = await recoverySource(getMysqlDb(),card,page.sourceId);
       if (latest.fingerprint!==source.fingerprint) throw new Error("识别期间原卷已变化，请重新打开");
       result.recovery = {...page.recovery!,signature:signRecovery(source.fingerprint,result.recognition)};
@@ -107,7 +147,8 @@ export async function studentCorrection(card: AnswerCard, examId: number, studen
   const receipts = await db.all<{session_id:string;group_id:string}>(
     "SELECT session_id,group_id FROM scanner_submissions WHERE exam_id=? AND student_number=? AND state='saved'",examId,student.student_number);
   if (receipts.length > 1) throw new Error("存在多份已保存原卷，请先处理重复卷");
-  if (receipts.length === 1) return sessionCorrection(card,receipts[0].session_id,receipts[0].group_id,false);
+  if (receipts.length === 1) return loadSessionCorrection(card,receipts[0].session_id,receipts[0].group_id,false,true,
+    {examId,studentNumber:student.student_number});
   // A regrade creates a new batch but retains historical source records.
   const latest = await db.get<{batch_id:number}>(`SELECT sr.batch_id FROM scan_records sr JOIN scan_batches sb ON sb.id=sr.batch_id
     WHERE sb.exam_id=? AND sr.student_id=? AND sb.status IN ('done','partial') ORDER BY sb.id DESC LIMIT 1`,examId,studentId);
@@ -132,6 +173,7 @@ function validateEdits(document: CorrectionDocument, raw: unknown): CorrectionEd
     if (!page || seen.has(page.sourceId) || edit.revision !== page.revision) throw new Error("答题卡已更新，请重新打开后修改");
     seen.add(page.sourceId);
     if (page.recovery) {
+      if (page.recovery.reason === "provenance" && !edit.recovery) throw new Error(STALE_CORRECTION_PROVENANCE);
       if (edit.recovery?.fingerprint !== page.recovery.fingerprint) throw new Error("原卷已变化，请重新打开后识别");
       verifyRecovery(edit.recovery.fingerprint,edit.recovery.recognition,edit.recovery.signature);
       Object.assign(page,recoveredPage(document.card,page,edit.recovery.recognition));
@@ -151,10 +193,16 @@ async function writePages(tx: DbAdapter, document: CorrectionDocument, edits: Co
       const source = await recoverySource(tx,document.card,page.sourceId);
       if (source.fingerprint !== page.recovery.fingerprint) throw new Error("原卷已变化，请重新打开后识别");
       if (source.width !== page.recognition.geometry?.imageWidth || source.height !== page.recognition.geometry?.imageHeight) throw new Error("坐标映射与原卷尺寸不匹配");
-      revision = Date.now();
-      const inserted = await tx.run(buildInsertIgnore(tx.dialect,"scan_correction_pages",["source_type","source_id","card_version","layout_json","recognition_json","revision"]),
-        page.sourceType,page.sourceId,document.version,JSON.stringify(page.layout),JSON.stringify(page.recognition),revision);
-      if (!inserted.changes) throw new Error("另一位教师已更新此卷，请重新打开");
+      if (revision === 0) {
+        revision = Date.now();
+        const inserted = await tx.run(buildInsertIgnore(tx.dialect,"scan_correction_pages",["source_type","source_id","card_version","layout_json","recognition_json","revision"]),
+          page.sourceType,page.sourceId,document.version,JSON.stringify(page.layout),JSON.stringify(page.recognition),revision);
+        if (!inserted.changes) throw new Error("另一位教师已更新此卷，请重新打开");
+      } else {
+        const updated = await tx.run(`UPDATE scan_correction_pages SET card_version=?,layout_json=?,recognition_json=?,recovery_fingerprint=NULL
+          WHERE source_type=? AND source_id=? AND revision=?`,document.version,JSON.stringify(page.layout),JSON.stringify(page.recognition),page.sourceType,page.sourceId,revision);
+        if (!updated.changes) throw new Error("另一位教师已更新此卷，请重新打开");
+      }
     }
     const row = await tx.get<{card_version:string;revision:number}>("SELECT card_version,revision FROM scan_correction_pages WHERE source_type=? AND source_id=?",page.sourceType,page.sourceId);
     if (!row || Number(row.revision) !== revision || row.card_version !== document.version) throw new Error("答题卡版式或识别结果已变化，请重新识别或重新打开");
@@ -186,7 +234,18 @@ export async function saveSessionCorrection(card: AnswerCard, sessionId: string,
     const resolved = await resolveScannerExam(card.id,sessionId);
     await db.transaction(async tx => {
       if (resolved.exam) await tx.run("UPDATE exams SET id=id WHERE id=?",resolved.exam.id);
+      const current = await new CardRepository(tx).findById(card.id);
+      if (!current || cardFingerprint(current)!==document.version) throw new Error("答题卡版本已变化，请重新打开后核对");
       if (await tx.get("SELECT exam_id FROM scanner_submissions WHERE session_id=? AND group_id=? AND state IN ('saved','discarded')",sessionId,groupId)) throw new Error("此卷已入库或已作废，请从成绩修改进入整卡改分");
+      // Recheck existing evidence after obtaining the exam lock, before changing its inputs.
+      const verifiedPageIds = document.pages.filter(p=>!p.recovery).map(p=>p.sourceId);
+      if (allowRecovery) {
+        const session = await tx.get<{card_id:string;card_version:string|null;version_source:string}>("SELECT card_id,card_version,version_source FROM twain_scan_sessions WHERE id=?",sessionId);
+        assertCorrectionSessionVersion(card,session);
+        if (verifiedPageIds.length) await assertCorrectionGroupVersion(tx,card,session,verifiedPageIds);
+      } else {
+        for (const sourceId of verifiedPageIds) await assertCorrectionPageProvenance(tx,card,sourceId);
+      }
       const results = await writePages(tx,document,edits,userId);
       const number = results.find(r => r.page.layout.studentArea)?.recognition.studentId?.value;
       if (!number) throw new Error("请完整填写学号");
@@ -197,6 +256,18 @@ export async function saveSessionCorrection(card: AnswerCard, sessionId: string,
         await tx.run(buildUpsertSQL(tx.dialect,"twain_recognition_results",["id","scan_record_id","objective_json","subjective_json","grade_status"],["scan_record_id"],["objective_json","subjective_json","grade_status"]),
           page.sourceId,page.sourceId,JSON.stringify(recognition.questions),JSON.stringify(recognition.subjectiveQuestions),"recognized");
       }
+      // Stamp only the pages verified by signed recovery, or carrying a verified
+      // recovery into a subsequent edit. Other originals in this session stay unknown.
+      // The fingerprint binds the post-write revision, so it must be computed after writePages.
+      for (const {page} of results) {
+        const prior = await tx.get<{recovery_fingerprint:string|null}>("SELECT recovery_fingerprint FROM scan_correction_pages WHERE source_type=? AND source_id=?",page.sourceType,page.sourceId);
+        if (page.recovery || prior?.recovery_fingerprint) {
+          const fingerprint = await correctionSourceFingerprint(tx,card,page.sourceId);
+          await tx.run("UPDATE scan_correction_pages SET recovery_fingerprint=? WHERE source_type=? AND source_id=?",fingerprint,page.sourceType,page.sourceId);
+        }
+      }
+      // Existing pages were checked before writes; recovered pages were checked
+      // against their signed source in writePages. Do not hash newly stamped pages again.
       // Validate against transactional records before committing any correction.
       const records = (await tx.all<any>(`SELECT r.*,s.identity_mode,g.objective_json,g.subjective_json FROM twain_scan_records r
         JOIN twain_scan_sessions s ON s.id=r.session_id
@@ -241,8 +312,32 @@ export async function saveStudentCorrection(card: AnswerCard, examId: number, st
     const db = getMysqlDb(), document = await studentCorrection(card,examId,studentId), edits = validateEdits(document,raw);
     await db.transaction(async tx => {
       await tx.run("UPDATE exams SET id=id WHERE id=?",examId);
-      const results = await writePages(tx,document,edits,userId);
+      const current = await new CardRepository(tx).findById(card.id);
+      if (!current || cardFingerprint(current)!==document.version) throw new Error("答题卡版本已变化，请重新打开后核对");
       const student = await tx.get<{student_number:string}>("SELECT student_number FROM users WHERE id=?",studentId);
+      const recoveredIds: string[] = [];
+      for (const page of document.pages) {
+        if (page.sourceType !== "twain_scan_record") continue;
+        if (page.recovery) {
+          const record = await tx.get<{session_id:string}>("SELECT session_id FROM twain_scan_records WHERE id=?",page.sourceId);
+          const owner = record && await savedReceiptOwnerOfPage(record.session_id,page.sourceId,false,tx);
+          if (!owner || Number(owner.exam_id)!==examId || owner.student_number!==student?.student_number) throw new Error("原卷归属已变化，请重新打开成绩修改");
+          recoveredIds.push(page.sourceId);
+          continue;
+        }
+        const provenance = await correctionProvenanceState(tx, card, page.sourceId);
+        if (provenance === "invalid") throw new Error(STALE_CORRECTION_PROVENANCE);
+        if (provenance === "absent") {
+          const session = await tx.get<{ card_version: string | null; version_source: string }>(
+            "SELECT s.card_version,s.version_source FROM twain_scan_records r JOIN twain_scan_sessions s ON s.id=r.session_id WHERE r.id=?",
+            page.sourceId,
+          );
+          // v64 之前保存的旧卷没有指纹；要求先走签名补识别，不能直接改正式成绩。
+          if (session && needsCorrectionProvenance(session)) throw new Error(STALE_CORRECTION_PROVENANCE);
+        }
+        if (provenance === "valid") recoveredIds.push(page.sourceId);
+      }
+      const results = await writePages(tx,document,edits,userId);
       const number = results.find(r => r.page.layout.studentArea)?.recognition.studentId?.value;
       if (number && number !== student?.student_number) throw new Error("已入库答卷的学号归属不能直接覆盖，请在异常卷处理中订正归属后保存");
       let changed = false;
@@ -255,8 +350,14 @@ export async function saveStudentCorrection(card: AnswerCard, examId: number, st
           await tx.run(`INSERT INTO answer_overrides (exam_id,card_id,question_number,score_type,override_type,old_value,new_value,created_by,created_at) VALUES (?,?,?,?,'score',?,?,?,?)`,examId,card.id,u.number,u.type,JSON.stringify({studentId,...prior}),JSON.stringify({studentId,score:u.score,selectedOptions:u.options}),userId,databaseTimestamp());
           changed = true;
         }
-
       }
+      for (const sourceId of recoveredIds) await tx.run(
+        "UPDATE scan_correction_pages SET recovery_fingerprint=? WHERE source_type='twain_scan_record' AND source_id=?",
+        await correctionSourceFingerprint(tx,card,sourceId),sourceId);
+      if (document.pages.some(page => page.recovery)) await tx.run(
+        "INSERT INTO answer_overrides (exam_id,card_id,question_number,score_type,override_type,old_value,new_value,created_by,created_at) VALUES (?,?,NULL,'objective','score',?,?,?,?)",
+        examId,card.id,JSON.stringify({studentId,action:"correction_reverify"}),
+        JSON.stringify({studentId,action:"correction_reverify",pages:document.pages.filter(page=>page.recovery).map(page=>({sourceId:page.sourceId,fingerprint:page.recovery!.fingerprint}))}),userId,databaseTimestamp());
       if (changed) {
         const sums = await tx.all<{score_type:string;total:number}>("SELECT score_type,SUM(score) AS total FROM question_scores WHERE exam_id=? AND student_id=? GROUP BY score_type",examId,studentId);
         const objective = Number(sums.find(s => s.score_type === "objective")?.total ?? 0), subjective = Number(sums.find(s => s.score_type === "subjective")?.total ?? 0);

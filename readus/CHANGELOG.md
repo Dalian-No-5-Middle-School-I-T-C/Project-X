@@ -1,5 +1,21 @@
 # Project-X CHANGELOG
 
+## 2026-10-22：PR #344 恢复凭据与单卷保存边界修复
+
+- 当前版本的未入库卷也校验既有恢复指纹；原图变化后重新显示核验入口，保存事务和确认入库拒绝失效凭据，普通保存不能重新盖章。上传完成入库也检查已有恢复指纹。
+- 点名「保存此卷」仍有存疑题、实际没有入库时返回 409 和逐题确认提示；同会话其他卷缺学号、缺识别或未上传完成时，完整的所选卷可独立保存，其他卷的页面状态保持原样。
+- 异常列表缓存正在执行的会话查询，同一刷新内并发处理多个回执时共用结果；下一次刷新重新读取。
+- 新增 `verify:scanner-correction-boundaries`，通过 HTTP 和数据库终态覆盖当前版本凭据失效、取锁前原图变化、重新核验恢复、存疑题拒绝与确认后保存、单卷隔离、幂等重试和缓存并发。接入 SQLite 与 MariaDB CI。
+- 本机 macOS / Node 24 / 隔离 SQLite：新增回归及 10 项既有专项通过，类型检查、Web、扫描端与服务端构建通过。MariaDB 验证由本提交 CI 执行。
+
+## 2026-10-21：PR #344 旧卷订正凭据与异常卷队列收口
+
+- **v64 之前保存的旧卷也要重新核验**：已入库旧卷的订正快照没有 `recovery_fingerprint` 时，不再当成普通扫描直接改正式成绩；打开成绩修改会返回「待核验」草稿，必须走签名补识别并保存后才能继续。`loadSessionCorrection` 与 `saveStudentCorrection` 共用同一判断，避免只在保存时才发现。
+- **异常卷列表不再被 validate 回执灌满**：只保留 `held/roster/conflict/correction` 与「曾经入库过」的 pending；同一会话的页面、会话、卡片与分组在一次刷新内缓存，避免逐行重复读整会话。仅点过「校验」、尚未保存的正常卷仍留在扫描端待保存，不进教师异常队列。
+- **单卷保存只回报本卷**：`saveGroupId` 指定时，`/complete` 与整卡订正返回的 results/failures 只包含该组；同会话其他组的名单或重复卷问题留给各自处理，不再把已成功保存的卷报成失败。
+- **建表事实源补齐**：`scanCorrectionSchema()` 的 SQLite / MariaDB 共用 DDL 增加 `recovery_fingerprint`，v64 迁移继续做幂等补列；新库、老库升级与重放迁移走同一份列定义。
+- **保留必要的一致性读取**：指纹包含保存后的 `revision`，因此写后加注仍要重新计算一次；没有复用写前哈希，避免把旧 revision 的指纹写回。
+- **验证**：`verify:scanner-legacy-correction`（含迁移前无指纹→签名重识别→恢复可信）、`verify:scanner-batch-results`（新增双组单卷保存隔离）、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-upload-flow`、`verify:scanner-pending`（本机在切图回滚清理断言处既有失败，已在干净 PR head 复现，与本次改动无关）与 `typecheck` 通过；MariaDB 方言未在本机运行。
 ## 2026-10-20：#345/#346 进步/退步按得分率判定 + 独立分析页交付收口
 
 - **判定口径**：跨考试与跨学期的进步/退步一律按得分率变化（百分点）判定，阈值 ±3 pp，显著档 ±10 pp；缺满分时返回 null 并显示「—」，不虚构分母、不退回绝对分。服务端学生自助路径、React 页面、打印报告与独立分析页共用 `src/shared/scoreProgress.ts`。

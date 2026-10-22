@@ -37,14 +37,18 @@ async function main(): Promise<void> {
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'warnings_json'"),
       "含分数格告警必须能落到会话行");
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_records LIKE 'identity_json'"));
+    assert.ok(await db.get("SHOW COLUMNS FROM scan_correction_pages LIKE 'recovery_fingerprint'"));
     // Upgrade an existing v61 database without relying on fresh-schema CREATEs.
     await db.exec("DROP TABLE scan_correction_pages");
-    await db.run("DELETE FROM schema_migrations WHERE version = 62");
+    // Dropping the table also removes the column added by v64; replay both migrations.
+    await db.run("DELETE FROM schema_migrations WHERE version IN (62,64)");
     assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version=49"));
     const migrationConnection = await (await import("mysql2/promise")).createConnection(getMariadbConfig());
     try { await runMariadbMigrations(migrationConnection); } finally { await migrationConnection.end(); }
     assert.ok(await db.get("SHOW COLUMNS FROM scan_correction_pages LIKE 'recognition_json'"));
     assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version=62"));
+    assert.ok(await db.get("SHOW COLUMNS FROM scan_correction_pages LIKE 'recovery_fingerprint'"));
+    assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version=64"));
     // Simulate a pre-QR installation and exercise the incremental migration too.
     await db.exec("ALTER TABLE twain_scan_sessions DROP COLUMN identity_mode");
     await db.exec("ALTER TABLE twain_scan_sessions DROP COLUMN warnings_json");
