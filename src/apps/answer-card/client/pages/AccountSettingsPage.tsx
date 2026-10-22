@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   BrainCircuit,
@@ -14,7 +14,7 @@ import { useAuth } from "../auth/AuthContext";
 import { PERMISSIONS } from "../auth/types";
 import { useWorkspace } from "../WorkspaceContext";
 import { fetchJson, authFetch } from "../auth/api";
-import { createBackgroundOpacityQueue } from "../lib/backgroundOpacityWrites";
+import { backgroundWriteSession } from "../lib/backgroundOpacityWrites";
 import { cn } from "../lib/utils";
 import { SkinSwitcher, SKIN_OPTIONS } from "../components/SkinSwitcher";
 import {
@@ -167,8 +167,8 @@ export function AccountSettingsPage() {
   const [bgLimit, setBgLimit] = useState("");
   const bgFileRef = useRef<HTMLInputElement | null>(null);
   const bgSaveTimer = useRef<number | null>(null);
-  const bgOpacityWrites = useRef<ReturnType<typeof createBackgroundOpacityQueue> | null>(null);
-  if (!bgOpacityWrites.current) bgOpacityWrites.current = createBackgroundOpacityQueue();
+  const bgSessionKey = user ? `user:${user.id}` : "anonymous";
+  const bgSession = useMemo(() => backgroundWriteSession(bgSessionKey), [bgSessionKey]);
   const [bgMsg, setBgMsg] = useState("");
   const [bgMsgTone, setBgMsgTone] = useState<"success" | "error">("success");
   const [removeBgOpen, setRemoveBgOpen] = useState(false);
@@ -280,12 +280,13 @@ export function AccountSettingsPage() {
         payload.scoreDisplayMode = displayMode;
         payload.reviewConfidenceThreshold = reviewThreshold;
       }
-      // 跟滑块 PATCH、移除 DELETE 排进同一条队列，避免保存与在途透明度写交错。
-      await bgOpacityWrites.current!.enqueue(() => fetchJson("/api/users/me/settings", {
+      // 跟滑块 PATCH、移除 DELETE 排进同一条会话队列，避免保存与在途透明度写交错。
+      const executed = await bgSession.enqueue(() => fetchJson("/api/users/me/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       }).then(() => undefined));
+      if (!executed) { setSettingsMsg("账号已切换，本次设置未保存"); return; }
       setSettingsMsg("已保存");
       // v1.9.0: 刷新用户状态使 Tab 栏开关即时生效
       await refreshUser();
@@ -296,13 +297,13 @@ export function AccountSettingsPage() {
   }
 
   // v1.9.5: 滑动背景图透明度时防抖持久化，避免刷新后被重置为 0。
-  // 真正发出的请求进 bgOpacityWrites，移除背景时可以排在它后面把透明度归零。
+  // 真正发出的请求进会话队列，移除背景时可以排在它后面把透明度归零。
   const persistBgOpacity = (v: number) => {
     if (isStudent) return;
     clearPendingBgOpacity();
     bgSaveTimer.current = window.setTimeout(() => {
       bgSaveTimer.current = null;
-      void bgOpacityWrites.current!.enqueue(() => fetchJson("/api/users/me/settings", {
+      void bgSession.enqueue(() => fetchJson("/api/users/me/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ backgroundOpacity: v }),
@@ -318,8 +319,8 @@ export function AccountSettingsPage() {
     try {
       const form = new FormData();
       form.append("file", file);
-      // 上传也进同一条队列：与待发送的透明度 PATCH、移除 DELETE 串行，避免 rename 与删除交错。
-      await bgOpacityWrites.current!.enqueue(async () => {
+      // 上传也进同一条会话队列：与待发送的透明度 PATCH、移除 DELETE 串行，避免 rename 与删除交错。
+      const executed = await bgSession.enqueue(async () => {
         const res = await authFetch("/api/users/me/background", {
           method: "POST",
           body: form
@@ -329,6 +330,7 @@ export function AccountSettingsPage() {
           throw new Error(err.message || err.error || "上传失败");
         }
       });
+      if (!executed) return;
       setBgMsgTone("success");
       setBgMsg("上传成功，刷新后生效");
       setTimeout(() => setBgMsg(""), 3000);
@@ -355,7 +357,18 @@ export function AccountSettingsPage() {
     setRemoveBgBusy(true);
     setBgMsg("");
     try {
-      await bgOpacityWrites.current!.enqueue(() => fetchJson("/api/users/me/background", { method: "DELETE" }).then(() => undefined));
+      const executed = await bgSession.enqueue(() => fetchJson("/api/users/me/background", { method: "DELETE" }).then(() => undefined));
+      if (!executed) {
+        if (previousOpacity > 0) {
+          setBgOpacity(previousOpacity);
+          setShowBg(previousOpacity);
+          document.documentElement.style.setProperty("--bg-opacity", String(previousOpacity));
+          document.body.classList.add("has-bg-image");
+        }
+        setBgMsgTone("error");
+        setBgMsg("账号已切换，本次移除未执行");
+        return;
+      }
       setBgMsgTone("success");
       setBgMsg("已移除背景图");
       setRemoveBgOpen(false);

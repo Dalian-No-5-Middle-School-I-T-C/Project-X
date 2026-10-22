@@ -5,7 +5,7 @@
  * 使用隔离 SQLite，不碰现有业务库。
  */
 import assert from "node:assert/strict";
-import { createBackgroundOpacityQueue } from "../src/apps/answer-card/client/lib/backgroundOpacityWrites";
+import { backgroundWriteSession, createBackgroundOpacityQueue } from "../src/apps/answer-card/client/lib/backgroundOpacityWrites";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -84,6 +84,45 @@ async function assertLateOpacityPatchCannotFinishAfterDelete(): Promise<void> {
   await upload;
   await removeAfterUpload;
   assert.deepEqual(uploadEvents, ["upload-start", "upload-end", "delete"], "上传与删除串行，删除是最后一次写入");
+}
+
+/** 会话级队列：页面重新挂载后，DELETE 仍排在旧实例的在途 PATCH 后面；身份切换丢弃未执行任务。 */
+async function assertSessionQueueSurvivesRemount(): Promise<void> {
+  const firstMount = backgroundWriteSession("user:91001");
+  const events: string[] = [];
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const patch = firstMount.enqueue(async () => {
+    events.push("patch-start");
+    await gate;
+    events.push("patch-end");
+  });
+  await Promise.resolve();
+  const secondMount = backgroundWriteSession("user:91001");
+  const remove = secondMount.enqueue(async () => { events.push("delete"); });
+  await Promise.resolve();
+  assert.deepEqual(events, ["patch-start"], "重新进入页面后的删除仍要等待旧页面的在途 PATCH");
+  release();
+  assert.equal(await patch, true);
+  assert.equal(await remove, true);
+  assert.deepEqual(events, ["patch-start", "patch-end", "delete"], "跨挂载实例的归零仍是最后一次写入");
+
+  const userA = backgroundWriteSession("user:91002");
+  const switched: string[] = [];
+  let releaseStale: () => void = () => {};
+  const staleGate = new Promise<void>((resolve) => { releaseStale = resolve; });
+  const inflight = userA.enqueue(async () => {
+    switched.push("inflight-start");
+    await staleGate;
+    switched.push("inflight-end");
+  });
+  const queued = userA.enqueue(async () => { switched.push("queued"); });
+  await Promise.resolve();
+  backgroundWriteSession("user:91003");
+  releaseStale();
+  assert.equal(await inflight, true);
+  assert.equal(await queued, false, "身份切换后旧队列里的未执行任务必须丢弃");
+  assert.deepEqual(switched, ["inflight-start", "inflight-end"]);
 }
 
 /** 初始关闭 → 滑块打开浮层 → 移除：浮层必须关掉，未发出的旧 PATCH 不能排在删除后面。 */
@@ -205,6 +244,7 @@ async function assertRemoveClearsOverlayAndDropsPendingOpacity(): Promise<void> 
 }
 
 async function main(): Promise<void> {
+  await assertSessionQueueSurvivesRemount();
   await assertLateOpacityPatchCannotFinishAfterDelete();
   await assertRemoveClearsOverlayAndDropsPendingOpacity();
   const { initializeDatabase, closeDatabase, getDatabase, ensureDefaultAdmin } = await import("../src/server/db/index");
