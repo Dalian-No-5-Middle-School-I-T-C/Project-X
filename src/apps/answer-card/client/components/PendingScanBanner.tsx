@@ -122,14 +122,14 @@ export function PendingScanBanner({
   if (!items.length && !error && !choice) return null;
   return (
     <section
-      className="m-4 rounded-lg border border-warning-border bg-warning-soft p-4"
+      className="m-4 max-h-[50vh] shrink-0 overflow-y-auto rounded-lg border border-warning-border bg-warning-soft p-4"
       aria-label="异常扫描卷"
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <strong>{items.length} 份扫描卷待处理</strong>
           <p className="m-0 text-sm">
-            重复学号的相关卷均转为异常卷，已入库成绩撤回，请订正后保存。名单外学生需核对后加入名单。
+            请按各卷提示核对并保存。重复学号需先订正，名单外学生需核对后加入名单。
           </p>
         </div>
         <Button
@@ -171,6 +171,7 @@ export function PendingScanBanner({
               </Button>
               <CardCorrectionButton
                 disabled={busy}
+                allowUnchangedSave
                 url={`/api/scanner/upload/sessions/${encodeURIComponent(item.sessionId)}/groups/${encodeURIComponent(item.groupId)}/correction`}
                 onSaved={() => { void load(); onChanged?.(); }}
               />

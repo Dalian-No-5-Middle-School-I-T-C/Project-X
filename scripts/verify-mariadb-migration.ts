@@ -54,7 +54,7 @@ try {
       INSERT INTO exams(id,name,status,grade_id) VALUES (1,'历史考试','grading',1);
       INSERT INTO student_scores(id,exam_id,student_id,total_score) VALUES (1,1,1,80);
       DROP TABLE scan_correction_pages;
-      DELETE FROM schema_migrations WHERE version = 62;
+      DELETE FROM schema_migrations WHERE version IN (62,64);
       DROP TABLE exam_class_memberships;
       DELETE FROM schema_migrations WHERE version = 59;
     `);
@@ -79,6 +79,7 @@ try {
     runMigrations(upgraded);
     upgraded.prepare("INSERT INTO scan_correction_pages(source_type,source_id,card_version,layout_json,recognition_json,revision) VALUES (?,?,?,?,?,?)")
       .run("twain_scan_record","migration-page","v1",'{"pageNumber":1}','{"geometry":{"imageWidth":2100}}',1720000000000);
+    upgraded.prepare("UPDATE scan_correction_pages SET recovery_fingerprint=? WHERE source_id='migration-page'").run("a".repeat(64));
     upgraded.prepare("INSERT INTO exam_class_memberships(exam_id,student_id,class_id,joined_at) VALUES (1,1,1,'2026-10-04 08:00:00'),(1,1,0,NULL)").run();
   } finally { upgraded.close(); }
   migrate(["--dry-run"]);
@@ -87,9 +88,10 @@ try {
   const [snapshots] = await conn.query<any[]>("SELECT class_id, joined_at FROM exam_class_memberships WHERE exam_id = 1 AND student_id = 1 ORDER BY class_id");
   assert.deepEqual(snapshots.map(r => Number(r.class_id)), [0, 1], "Present tables must migrate all composite-key rows, including the unknown-class sentinel");
   assert.equal(snapshots[1].joined_at, "2026-10-04 08:00:00", "Snapshot timestamps must remain unchanged");
-  const [corrections] = await conn.query<any[]>("SELECT recognition_json, revision FROM scan_correction_pages WHERE source_id='migration-page'");
+  const [corrections] = await conn.query<any[]>("SELECT recognition_json, revision, recovery_fingerprint FROM scan_correction_pages WHERE source_id='migration-page'");
   assert.equal(corrections[0].recognition_json,'{"geometry":{"imageWidth":2100}}');
   assert.equal(Number(corrections[0].revision),1720000000000);
+  assert.equal(corrections[0].recovery_fingerprint,"a".repeat(64));
   console.log("PASS: v59 snapshots migrate and verify by their composite key; source remains read-only");
 } finally {
   await conn.end();

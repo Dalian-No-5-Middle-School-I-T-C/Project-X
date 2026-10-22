@@ -1347,6 +1347,10 @@ MIGRATIONS.push({ version: 63, name: "scan-session-warnings", up(db) {
   })();
 } });
 
+MIGRATIONS.push({ version: 64, name: "scan-correction-provenance", up(db) {
+  addColumnIfMissing(db, "scan_correction_pages", "recovery_fingerprint", "VARCHAR(64)");
+} });
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
