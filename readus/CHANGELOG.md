@@ -3,15 +3,24 @@
 ## 2026-10-20：#347 调班后历次考试跟随现班 + 原卷旋转查看
 
 - **调班即回溯考试归属**：`reanchorStudentExamClasses` 在人工调班（迁移学生、加入班级、移出班级、导入新建班级关联）后，把该生全部考试的 `exam_class_memberships` 重写为调班后的班级，考号保持不变。此前 `captureExamClasses` 一旦为某场考试落过快照就永不改写，`preserveStudentExamHistory` 又把改动前的旧班级冻结进历史表，所以强基班调整、转班、留级跳级之后，历次考试与班级统计仍停在原班（issue #347 ①）。
-- **回溯的取值口径**：优先取该生仍在读的班级，其次取已归档关联；考试范围（班级或年级）与学生现班不再重合时（跨年级调班、原班专属考试）仍归到现班，不让历史成绩落进筛选盲区。学生已无任何班级关联时保持原样，不把历史改成「未知班级」；反过来，归属为「未知班级」的历史考试在被分配班级后会一并补上。班级排名与分数本身不在回溯范围内重算，按现有口径随成绩变化重算。
+- **回溯的取值口径**：只取该生仍在读的班级；考试范围（班级或年级）与现班不再重合时（跨年级调班、原班专属考试）仍归到现班，不让历史成绩落进筛选盲区。学生已无在读班级时保持原样（包括只剩归档关联的情况），不把历史改成「未知班级」或旧归档班；反过来，归属为「未知班级」的历史考试在被分配班级后会一并补上。班级排名与分数本身不在回溯范围内重算，按现有口径随成绩变化重算。
 - **跟随归属的下游口径**：班级汇总、班级对比、梯队与年级梯子、成长曲线的班均分、成绩导出、按班筛选与钻取、重新判分后的归属全部按调班后的现班；实际参加名单（`exam_participants`）仍按考试记录存在与否判定，回溯班级不改名单人数。
-- **调班接口的权限**：`POST /api/classes/:id/students/:studentId/move` 从只允许 `class:manage` 改为复用现有范围判断——管理员与持 `class:manage` 者直通；教师侧只放行显式的班主任与学年主任（`teacher_role`），源班级与目标班级都必须落在 `getAccessibleClassIds` 的范围内，并且无论范围是否为全校都要过源班级的 `can_view_students` 开关。未配置细分角色的旧数据教师即使在读取侧被兼容成全校可见，也不获得调班权；前端隐藏按钮不作为授权依据。
+- **调班接口的权限**：`POST /api/classes/:id/students/:studentId/move` 从只允许 `class:manage` 改为复用现有范围判断——管理员与持 `class:manage` 者直通；教师侧只放行源班班主任（按班关系 `teacher_classes.is_head_teacher` 指定，或显式 `teacher_role=班主任` 的旧数据兼容）与学年主任。源班级与目标班级都必须落在 `getAccessibleClassIds` 的范围内，并且无论范围是否为全校都要过源班级的 `can_view_students` 开关。未配置细分角色的旧数据教师即使在读取侧被兼容成全校可见，也不获得调班权；前端隐藏按钮不作为授权依据。
 - **原卷旋转（issue #347 ③④）**：新增 `RotatedCardImage` / `RotationButtons`，扫描端「查看与订正异常卷」的改分画布、学号点选、整卡改分弹窗，以及网页端扫描原卷预览、答题卡放大查看和学生端「查看原卷」都可 90° 步进旋转。改分画布把图片与填涂格热区放进同一个 SVG 变换，旋转后点选坐标不变；旋转只影响显示，不写回图片、坐标或识别结果，弹窗关闭后复位。
 - **#347 ②「无法确定考试归属」**：报告人复核为本场重复送卡，不是归属缺陷，本次不改代码。
-- **PR #348 评审修复**：① 调班门不再把「范围不受限」当成「跳过其他权限检查」（上述角色与名单门，并补显式拒绝的 POST 回归）；② `RotatedCardImage` 在图片加载成功时就记录尺寸——原先只在已请求旋转时才记录，导致「先看图再点旋转」的正常流程里同一个 `<img>` 不会再触发 load，旋转永远不生效；③ 90°/270° 时容器宽高比与 `viewBox` 同源互换（`rotationBox`），否则竖卷转正后留大片空白、布局错位。新增 `scripts/rotated-card-image-ui-smoke.ts`（`npm run verify:card-rotation-ui`）做组件级挂载回归：真实 `load` 事件驱动、点按钮切状态、同一实例换页重测尺寸、加载失败回调透传，改前该脚本按旧实现即失败。
+- **PR #348 评审修复**：① 调班门不再把「范围不受限」当成「跳过其他权限检查」，学年主任也要过源班名单矩阵；班主任资格按源班关系判断，并补显式拒绝的 POST 回归；② `RotatedCardImage` 在图片加载成功时就记录尺寸——原先只在已请求旋转时才记录，导致「先看图再点旋转」的正常流程里同一个 `<img>` 不会再触发 load，旋转永远不生效；③ 90°/270° 时容器宽高比与 `viewBox` 同源互换（`rotationBox`），顺时针按钮与 SVG 正角度一致；④ 放大框 `contain` 模式给 SVG 旋转后的固有像素宽高，不再塌成替换元素默认小图；⑤ 媒体票据重签后的新地址写回组件状态，旋转后的 `<image>` 不再引用已淘汰的旧票据，且 SVG 分支的加载失败也会透传；⑥ 只剩归档关联时不再把历次考试改挂到旧归档班。
 - **文档**：`AGENTS.md` 的班级口径、`readus/整卡改分说明.md`、`readus/原卷与逐题答案-使用说明.md` 同步改写。
-- **验证**：`npm run typecheck`、`vite build --mode web`、`vite build --mode scanner` 通过；`verify:exam-class-memberships`（含回溯后的排名、对比、梯队、趋势、导出、筛选与重新判分断言）、`verify:class-archive`、`verify:permission-scope`（131/0，含调班三条显式拒绝与成功路径）、`verify:card-rotation-ui`、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-postprocess-all` 均 ALL PASS。
+- **验证**：`npm run typecheck`、`vite build --mode web`、`vite build --mode scanner` 通过；`verify:exam-class-memberships`（含回溯后的排名、对比、梯队、趋势、导出、筛选、重新判分与「只剩归档关联」断言）、`verify:class-archive`、`verify:permission-scope`（148/0，含调班显式拒绝与成功路径）、`verify:card-rotation-ui`、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-postprocess-all` 均 ALL PASS。
 - **已知限制**：以上验证只在 SQLite 上执行，本机没有 MariaDB 实例，MariaDB 方言分支未跑；调班入口目前只在「账号管理 → 班级管理」下（受 `user:manage` 门禁），教师虽已被接口允许，仍缺可见入口；真机扫描仪与浏览器端人工验收未做。
+
+## 2026-10-19：#342 客观题「每题分值」同步逐题配置，卡面总分与导出弹窗同源
+
+- **现象**：题块 10 题、每题分值 1.5，卡面标题写「共15分」，点 PDF 后导出弹窗却是「总分 50 分」并弹「通常应为 100 或 150 分」告警。
+- **根因是两套总分算法**：卡面标题按 `questionCount × scorePerQuestion`，导出弹窗与判分按逐题 `score` 求和（`objectiveQuestionDefinitions()` 里逐题值优先于块级值）。而「每题分值」输入框只写块级字段，逐题配置却会在点标准答案、改题目数/选项数/题型时被隐式物化，取的是当时的块级默认值（新建块默认 5 分）。所以「先点过答案再改分值」必然分叉。
+- **不止显示**：判分满分按逐题值算，这张卡实际按每题 5 分判；`insertObjectiveBlock()` 写库时块级列取 `firstQuestion.score`，老师填的 1.5 不落库，重新打开变回 5。
+- **修复**：新增 `applyScorePerQuestion()`，改「每题分值」时同步覆盖已物化的逐题 `score`（与同面板「选项数」「题型」一致的 blanket 行为）；新增 `objectiveBlockTotalScore()` 作为题块总分唯一事实源，卡面标题改用它逐题求和，「展开每题配置」里的手工覆盖不再让标题算错。
+- **验证**：`verify:core-logic` 第 14 节新增 5 条回归断言（复现路径、旧卡无逐题配置、逐题覆盖、浮点尾差），全绿；`typecheck` 与 `build:web` 通过。浏览器端点击流程未在本机实跑（dev 会连仓库配置的库），改动为纯函数接线。
+- **存量数据**：库里 `score_per_question` 已被写成 5 的卡不回填——无法判断历史意图。这类卡上线后需老师重新填一次每题分值，届时会正确同步到逐题与标题。
 
 ## 2026-10-17：PR #332 —— 双面批次收尾、红笔分数格强制彩色与告警可恢复、DPI 逐轴取证
 
