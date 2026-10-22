@@ -213,6 +213,8 @@ export class ClassRepository {
 
   /** 学生迁移：从原班级移除并加入目标班级（目标班级所属年级即学生的新年级）。 */
   async moveStudent(fromClassId: number, toClassId: number, studentId: number): Promise<void> {
+    // 无实际调班的重放请求不能触发回溯，否则一次 no-op 也会永久改写历史归属。
+    if (fromClassId === toClassId) return;
     await this.db.transaction(async (tx) => {
       await preserveStudentExamHistory(tx, studentId);
       // 调班语义只移除**原班**关联；其他在读班（合法多班）与归档班级的历史关联一律保留。

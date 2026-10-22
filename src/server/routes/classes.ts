@@ -337,6 +337,10 @@ router.post("/:id/students/:studentId/move", canMoveStudent, async (req: Request
     res.status(400).json({ message: "该学生不在当前班级" });
     return;
   }
+  if (fromId === target.id) {
+    res.status(400).json({ message: "源班级与目标班级相同，无需调班" });
+    return;
+  }
 
   await classRepo.moveStudent(fromId, target.id, studentId);
   res.json({ message: `已迁移到 ${target.grade_name} · ${target.name}，该生历次考试的班级归属已同步更新` });

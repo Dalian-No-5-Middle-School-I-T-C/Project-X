@@ -116,6 +116,13 @@ try {
   await score(future, b, 70);
   assert.deepEqual(await membership(future, b), [selected.id]);
   assert.deepEqual(await membership(e1, b), [selected.id], "A move re-anchors every past exam to the new class");
+  // A same-class replay must not re-anchor: temporarily place an old snapshot in another
+  // class and prove the no-op leaves it untouched.
+  await db.run("UPDATE exam_class_memberships SET class_id = ? WHERE exam_id = ? AND student_id = ?", old.id, e1, b);
+  await classes.moveStudent(selected.id, selected.id, b);
+  assert.deepEqual(await membership(e1, b), [old.id], "Same-class move must not rewrite historical class snapshots");
+  await db.run("UPDATE exam_class_memberships SET class_id = ? WHERE exam_id = ? AND student_id = ?", selected.id, e1, b);
+  assert.equal((await analysis.getScoreTableData(e1)).rows.find((r: any) => r.studentId === b)?.classId, selected.id);
   const movedStats = await analysis.getClassKnowledgeStats(e1);
   assert.equal(movedStats.matrix.find(r => r.knowledgePoint === '函数')?.byClass.find(r => r.classId === old.id)?.scoreRate, 100);
   assert.equal(Math.round((movedStats.matrix.find(r => r.knowledgePoint === '函数')?.byClass.find(r => r.classId === selected.id)?.scoreRate ?? 0) * 10) / 10, 66.7);
