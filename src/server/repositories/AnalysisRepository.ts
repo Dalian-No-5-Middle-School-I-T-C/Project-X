@@ -2,6 +2,7 @@ import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { EXAM_NOT_SOFT_DELETED_SQL, GROUP_MEMBER_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
 import { competitionRank } from "../../shared/ranking";
+import { scoreRateChange, scoreRateOf } from "../../shared/scoreProgress";
 import { rankPercentile } from "../services/rankingUpdate";
 import { getAnalysisThresholds, DEFAULT_ANALYSIS_THRESHOLDS } from "../services/analysisConfig";
 import { analysisCache } from "../services/analysisCache";
@@ -352,6 +353,7 @@ export class AnalysisRepository {
       prevAvgScore: null,
       prevPassRate: null,
       avgScoreChange: null,
+      avgScoreRateChange: null,
       passRateChange: null
     };
     const prevExam = await this.findPreviousExam(examId);
@@ -376,7 +378,12 @@ export class AnalysisRepository {
       prevExamName: prevExam.name,
       prevAvgScore: previous.avgScore,
       prevPassRate: previous.fullScore > 0 ? previous.passRate : null,
+      // 绝对均分差只作展示：两届满分不同时长短不可比（issue #345）
       avgScoreChange: round1(current.avgScore - previous.avgScore),
+      avgScoreRateChange: scoreRateChange(
+        scoreRateOf(current.avgScore, current.fullScore),
+        scoreRateOf(previous.avgScore, previous.fullScore)
+      ),
       // 缺少任一届满分时，及格率没有可比较的基准；均分变化仍然有效。
       passRateChange: current.fullScore > 0 && previous.fullScore > 0
         ? current.passRate - previous.passRate
@@ -1591,12 +1598,14 @@ export class AnalysisRepository {
       const pct = r.pctStored != null ? r.pctStored : rankPercentile(rank, grade.classSize);
       const fullScore = fullScores.get(r.examId) ?? 0;
       const total = Number(r.totalScore);
+      const scoreRate = scoreRateOf(total, fullScore);
       return {
         examId: r.examId, examName: r.examName, subject: r.subject ?? "",
         examTime: r.examTime, totalScore: total,
         classAvg: classAvgByExam.get(r.examId) ?? 0, gradeAvg: grade.gradeAvg,
         classSize: grade.classSize, rank, percentile: Math.round(pct * 10) / 10,
-        fullScore, scoreRate: fullScore > 0 ? Math.round((total / fullScore) * 1000) / 10 : 0,
+        // 满分解析不出来时给 null 而不是 0，消费端据此显示「—」，也避免把「得 0 分」当成「算不出得分率」
+        fullScore: scoreRate == null ? null : fullScore, scoreRate,
       };
     });
   }

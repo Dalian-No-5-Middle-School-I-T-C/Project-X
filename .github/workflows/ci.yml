@@ -50,6 +50,10 @@ jobs:
       - name: Student score full-score / examTime regression
         run: npm run verify:student-score-display
 
+      # issue #345：进步/退步按得分率（百分点）判定，不再受各卷满分大小带偏
+      - name: Progress judgement by score rate regression
+        run: npm run verify:progress-score-rate
+
       # Issue #322：学生网页端不能改阅卷/评分设置，也不能看到或上传背景图
       - name: Student web settings and background regression
         run: npm run verify:student-web-settings

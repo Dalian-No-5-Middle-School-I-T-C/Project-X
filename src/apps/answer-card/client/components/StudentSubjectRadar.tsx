@@ -142,7 +142,7 @@ export function StudentSubjectRadar() {
 
       {/* Subject detail table */}
       <Table>
-        <TableHeader><TableRow><TableHead>学科</TableHead><TableHead numeric>考试次数</TableHead><TableHead numeric>平均分</TableHead><TableHead>趋势</TableHead></TableRow></TableHeader>
+        <TableHeader><TableRow><TableHead>学科</TableHead><TableHead numeric>考试次数</TableHead><TableHead numeric>平均分</TableHead><TableHead>趋势（按得分率）</TableHead></TableRow></TableHeader>
         <TableBody>{subjects.map((s) => <TableRow key={s.subject} selected={s.subject === weakSubject}><TableCell>{s.subject}</TableCell><TableCell numeric>{s.examCount}</TableCell><TableCell numeric>{s.avgScore}</TableCell><TableCell>{s.trend === "up" ? <TrendingUp size={14} className="text-success-foreground" /> : s.trend === "down" ? <TrendingDown size={14} className="text-destructive-fg" /> : "—"}</TableCell></TableRow>)}</TableBody>
       </Table>
       </CardContent>

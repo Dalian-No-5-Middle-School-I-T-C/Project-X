@@ -16,6 +16,11 @@ import { trackAnalysisCall } from "../services/aiTelemetry";
 // 安全（R11）：AI 计费与并发配额（判定与占位原子完成）
 import { AiQuotaError, reserveAiCall } from "../services/aiQuota";
 import type { SubjectWeaknessItem, StudentTrendPoint } from "../../shared/types";
+import {
+  judgeProgress,
+  scoreRateChange,
+  type ProgressDirection
+} from "../../shared/scoreProgress";
 import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropService";
 import {
   groupAnswersByPage,
@@ -39,6 +44,25 @@ const scoreRepo = new ScoreRepository();
 const userRepo = new UserRepository();
 
 router.use(authMiddleware);
+
+/**
+ * 学科进退步方向：取该学科最近两场考试，按**得分率变化（百分点）**判定（issue #345）。
+ *
+ * 旧口径用绝对分差 `> 3 分`，会被满分大小带偏——150 分卷涨 3 分只有 2%，
+ * 100 分卷涨 3 分是 3%，同一阈值在不同卷子上代表的变化量不同。
+ * 任一场解析不出满分即 `unknown`（不虚构分母，也不退回绝对分）。
+ *
+ * `/me/subject-comparison` 与 `/me/ai-analysis` 共用本函数，避免两处各写一套规则。
+ */
+function subjectTrendFromScoreRate(points: StudentTrendPoint[]): ProgressDirection {
+  const sorted = [...points].sort((a, b) => String(a.examTime).localeCompare(String(b.examTime)));
+  if (sorted.length < 2) return "stable";
+  const change = scoreRateChange(
+    sorted[sorted.length - 1].scoreRate,
+    sorted[sorted.length - 2].scoreRate
+  );
+  return judgeProgress(change);
+}
 
 type AccessibleError = { status: number; message: string };
 
@@ -221,15 +245,8 @@ router.get("/me/subject-comparison", async (req: Request, res: Response) => {
     const gapToClass = Math.round((avgScore - avgClassAvg) * 10) / 10;
     const bestScore = Math.max(...scores);
     const worstScore = Math.min(...scores);
-    // 趋势判断：最近两次考试
-    const sorted = [...points].sort((a, b) => String(a.examTime).localeCompare(String(b.examTime)));
-    let trend: "up" | "down" | "stable" = "stable";
-    if (sorted.length >= 2) {
-      const last = sorted[sorted.length - 1].totalScore;
-      const prev = sorted[sorted.length - 2].totalScore;
-      if (last - prev > 3) trend = "up";
-      else if (prev - last > 3) trend = "down";
-    }
+    // 趋势判断：最近两次考试的得分率变化（见 subjectTrendFromScoreRate）
+    const trend = subjectTrendFromScoreRate(points);
 
     subjects.push({ subject, examCount: points.length, avgScore, avgClassAvg, gapToClass, bestScore, worstScore, trend });
   }
@@ -351,14 +368,7 @@ router.post("/me/ai-analysis", async (req: Request, res: Response) => {
     const gap = Math.round((avg - classAvg) * 10) / 10;
     const best = Math.max(...scores);
     const worst = Math.min(...scores);
-    const sorted = [...points].sort((a, b) => String(a.examTime).localeCompare(String(b.examTime)));
-    let trend: "up" | "down" | "stable" = "stable";
-    if (sorted.length >= 2) {
-      const last = sorted[sorted.length - 1].totalScore;
-      const prev = sorted[sorted.length - 2].totalScore;
-      if (last - prev > 3) trend = "up";
-      else if (prev - last > 3) trend = "down";
-    }
+    const trend = subjectTrendFromScoreRate(points);
     return { subject, examCount: points.length, avgScore: avg, avgClassAvg: classAvg, gapToClass: gap, bestScore: best, worstScore: worst, trend };
   });
 
@@ -381,8 +391,13 @@ router.post("/me/ai-analysis", async (req: Request, res: Response) => {
     suggestions.push(`重点提升 ${weakSubjects[0].split("（")[0]}，可针对性做专项练习。`);
   }
   if (decliningSubjects.length > 0) {
-    weakPoints.push(`成绩下滑学科：${decliningSubjects.join("、")}。最近一次考试分数有所下降，需要关注。`);
+    weakPoints.push(`成绩下滑学科：${decliningSubjects.join("、")}。最近一次考试的得分率有所下降，需要关注。`);
     suggestions.push(`回顾 ${decliningSubjects.join("、")} 近期错题，分析失分原因。`);
+  }
+  // issue #345：满分解析不出来的学科不参与得分率比较，需要向学生说明结论不完整
+  const unjudgedSubjects = subjectSummaries.filter((s) => s.trend === "unknown").map((s) => s.subject);
+  if (unjudgedSubjects.length > 0) {
+    caveats.push(`${unjudgedSubjects.join("、")} 的考试缺少满分依据，未参与进步/退步判定。`);
   }
   if (strongSubjects.length > 0) {
     suggestions.push(`保持 ${strongSubjects.join("、")} 的优势，继续巩固练习。`);
