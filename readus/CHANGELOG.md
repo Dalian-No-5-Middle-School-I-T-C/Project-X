@@ -44,6 +44,7 @@
 - **失败不再静默关窗**：新建大考、原卷信息保存、新建答题卡在服务端失败时保留表单并显示错误；扫描后处理删除失败留在页面提示，不再触发扫描端全局未处理 rejection 遮罩；损坏的上传恢复记录改为可读错误。
 - **统计刷新**：大考详情的题目分析/班级对比在切换文理后重新请求，不再显示上一 track 的旧数据。
 - **验证**：`typecheck`、`build`、`verify:core-logic` 104/0、`verify:auth` 153/0、`verify:security-critical` 523/0、`verify:scanner-pending`、`verify:exam-class-memberships`、`verify:class-archive`、`verify:scanner-batch-results`、`verify:scan-correction`、`verify:student-score-display`、`verify:progress-score-rate` 77/0；新增 MariaDB 小题号插入回归，由 CI MariaDB 作业执行。本机无 MariaDB，未本地运行该专项。
+- 评审补充（P2）：扫描后处理页强制删除自身失败（网络错误 / HTTP 500）时，只关了 `confirmOpen` 没清掉上一轮 409 留下的 `blockedNotice`，而确认框开关是 `confirmOpen || blockedNotice`，框会继续挡在错误提示前面。现在失败时一并清空 `blockedNotice`，原因直接显示在选择栏，勾选取舍保留可重试；`verify:scanner-postprocess-ui` 新增「非 force → 409 → force → 500」剧本，断言框已关闭且错误当场可见（退回旧写法时该断言即红）。
 
 ## 2026-10-17：PR #332 —— 双面批次收尾、红笔分数格强制彩色与告警可恢复、DPI 逐轴取证
 

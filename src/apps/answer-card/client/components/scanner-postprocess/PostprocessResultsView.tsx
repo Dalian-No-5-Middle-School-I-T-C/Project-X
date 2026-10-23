@@ -88,8 +88,10 @@ export function PostprocessResultsView({ groups, channel, onDelete, onOpen, onSa
       const err = error as { blocked?: string[] };
       if (err?.blocked?.length) { setBlockedNotice(err.blocked); return; }
       // 删除失败必须留在当前视图显示；直接抛给 void onConfirm 会触发扫描端全局
-      // unhandledrejection 遮罩，整页不可用。
+      // unhandledrejection 遮罩，整页不可用。确认框的开关是 confirmOpen || blockedNotice，
+      // 不清掉上一次的 blockedNotice 就会让框继续挡在错误前面。
       setConfirmOpen(false);
+      setBlockedNotice(null);
       setDeleteError(error instanceof Error ? error.message : "删除失败");
     } finally {
       setDeleting(false);
