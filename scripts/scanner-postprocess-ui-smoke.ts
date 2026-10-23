@@ -544,16 +544,6 @@ try {
   }))));
   // 列表现直接复用共享判分的结果，所以状态取判分侧的归类（missing_score_grid），不再是识别原始字串。
   await settle();assert.match(text(),/第 2 题（主观 missing_score_grid）/);assert(!text().includes("没有低于阈值的题"));
-  await clickText("去改这题");assert(jumped);
-  await act(async()=>root5!.render(createElement(TooltipProvider,null,createElement(PostprocessCorrectionView,{
-    channel:reviewChannel,sessionId:"review",groupId:"0",draftOnly:true,onSaved:()=>{},
-  }))));
-  await settle();assert(saveButton()?.disabled,"打开待确认卷不会自动确认");
-  const scoreCell = () => document.querySelector(`[data-cell-id="${ten.id}"]`)!;
-  await clickNode(scoreCell());await clickNode(scoreCell());await settle();
-  assert(saveButton() && !saveButton()!.disabled,"点回原分数同样可以明确确认");
-  await clickText("保存修改");assert(reviewed);
-
   // ── 双面卡的低置信度面板：按整份卡判一次，别把另一页「没上报的题」列成存疑 ──
   const pageTwoRecognition = {...recognition, pageNumber: 2, questions: [], subjectiveQuestions: []};
   const twoPageDoc: CorrectionDocument = {card, version, pages: [
@@ -573,6 +563,17 @@ try {
   assert.match(text(),/第 2 题（客观）/, "真实存在的低置信度题要列出来");
   assert.equal((text().match(/题（客观）/g) ?? []).length, 1, "第二页没上报的题不能被重复列成存疑");
   assert(!text().includes("未答"), "合成条目不能伪装成本页的空白作答");
+
+
+  await clickText("去改这题");assert(jumped);
+  await act(async()=>root5!.render(createElement(TooltipProvider,null,createElement(PostprocessCorrectionView,{
+    channel:reviewChannel,sessionId:"review",groupId:"0",draftOnly:true,onSaved:()=>{},
+  }))));
+  await settle();assert(saveButton()?.disabled,"打开待确认卷不会自动确认");
+  const scoreCell = () => document.querySelector(`[data-cell-id="${ten.id}"]`)!;
+  await clickNode(scoreCell());await clickNode(scoreCell());await settle();
+  assert(saveButton() && !saveButton()!.disabled,"点回原分数同样可以明确确认");
+  await clickText("保存修改");assert(reviewed);
 
   console.log("PASS scanner-postprocess-ui-smoke");
 } catch (error) {
