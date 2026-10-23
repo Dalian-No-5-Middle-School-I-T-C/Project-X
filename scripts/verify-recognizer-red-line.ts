@@ -13,15 +13,21 @@ import type { CombinedRecognitionResult, Rect } from "../src/shared/types";
 // Synthetic cards exercise the real native recognizer and grading consumer.
 // Real server scans remain local investigation data, outside the repository.
 type Stroke = "line" | "broken" | "thin" | "horizontal" | "black" | "short" | "one-ended" | "grazing" | "cross" | "parallel" | "dots";
-const cases: Array<{ name: string; marks: Array<[number, Stroke]>; expected: number | null; max?: number }> = [
+/**
+ * `unreviewed: true` = 分数格里读不到任何红笔笔迹（考生没画斜线、或用黑笔/蓝笔画的分数）。
+ * 两者在识别结果里完全同形：`status invalid` + `no_valid_subjective_score` + 有效格与拒绝格都为空。
+ * issue #352 的口径是「读不到红笔就按未作答 0 分，不再挂复核」，维护者已确认接受
+ * 「非红笔的分数会被静默判 0」这一侧风险，兜底是阅卷必须用红笔的规范 + #331 ③ 的整页零红笔告警。
+ */
+const cases: Array<{ name: string; marks: Array<[number, Stroke]>; expected: number | null; max?: number; unreviewed?: boolean }> = [
   { name: "tens plus ones", marks: [[20, "line"], [8, "line"]], expected: 28 },
   { name: "printed digit interrupts pen", marks: [[20, "line"], [8, "broken"]], expected: 28 },
   { name: "thin scanned pen", marks: [[20, "thin"], [8, "thin"]], expected: 28 },
   { name: "horizontal pen", marks: [[30, "horizontal"]], expected: 30 },
   { name: "ones plus half", marks: [[8, "line"], [.5, "broken"]], expected: 8.5 },
   { name: "explicit zero", marks: [[0, "broken"]], expected: 0 },
-  { name: "blank grid", marks: [], expected: null },
-  { name: "black pen", marks: [[20, "black"], [8, "black"]], expected: null },
+  { name: "blank grid", marks: [], expected: null, unreviewed: true },
+  { name: "black pen", marks: [[20, "black"], [8, "black"]], expected: null, unreviewed: true },
   { name: "short ones cannot disappear", marks: [[20, "line"], [8, "short"]], expected: null },
   { name: "stroke stops inside cell", marks: [[20, "line"], [8, "one-ended"]], expected: null },
   { name: "stroke only grazes cell edge", marks: [[20, "line"], [8, "grazing"]], expected: null },
@@ -91,8 +97,9 @@ try {
         assert.equal(recognition.status, test.expected === null ? "invalid" : "ok", context);
         assert.equal(recognition.score, test.expected ?? 0, context);
         const grade = gradeSubjectiveRecognition(card, recognition)!;
-        assert.equal(grade.needsReview, test.expected === null, context);
+        assert.equal(grade.needsReview, test.expected === null && !test.unreviewed, context);
         assert.equal(grade.score, test.expected ?? 0, context);
+        if (test.unreviewed) assert.equal(grade.status, "ok", `${context}：读不到红笔按「未作答 0 分」确认，不再挂复核`);
         ++checked;
       }
     }
