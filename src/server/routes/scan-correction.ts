@@ -28,8 +28,7 @@ export function scanCorrectionRouter(prefix: "session" | "sessions", remote: boo
         }
         // 会话已经绑定过考试，但那些考试全被软删除：这张卡属于被清理的那场考试，
         // 不能改挂到同卡片的另一场在用考试上放行（评审 P1）。与 CR4 同口径按「不存在」处理。
-        const boundButArchived = resolved.boundExamIds.length > 0
-          && !resolved.exams.some(exam => resolved.boundExamIds.includes(exam.id));
+        const boundButArchived = resolved.boundExamIds.some(examId => !resolved.exams.some(exam => exam.id === examId));
         if (boundButArchived && req.user && req.user.role_name !== "admin") {
           res.status(404).json({message:"考试不存在或已按数据保留策略清理"}); return;
         }

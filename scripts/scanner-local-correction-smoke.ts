@@ -99,7 +99,15 @@ try {
     secondExam.lastInsertRowid, session.id, "0");
   assert.equal((await request("teacher")).status, 404, "archived bindings must not be re-homed onto another active exam");
   assert.equal((await request("admin")).status, 200, "admins keep the CR4 read-through on cleaned exams");
-  await db.run("DELETE FROM scanner_submissions WHERE exam_id=? AND session_id=?", secondExam.lastInsertRowid, session.id);
+  // 混合绑定（同一会话既传过被清理的考试、也传过在用考试）同样不能放行：订正保存会连带改写
+  // 已清理考试留下的成绩快照，只看「有没有一场还在用」会把这份保留数据暴露出去。
+  await db.run("INSERT INTO scanner_submissions(exam_id,session_id,group_id,student_number,state,pages_json) VALUES (?,?,?,'91001','saved','{}')",
+    firstExam.lastInsertRowid, session.id, "0");
+  await db.run("UPDATE exams SET created_by=? WHERE id IN (?,?)", owner.lastInsertRowid, firstExam.lastInsertRowid, secondExam.lastInsertRowid);
+  assert.equal((await fetch(url, { headers: { Authorization: `Bearer ${ownerLogin.token}` } })).status, 404,
+    "mixed archived + active bindings must still reject the archived receipt");
+  await db.run("UPDATE exams SET created_by=NULL WHERE id IN (?,?)", firstExam.lastInsertRowid, secondExam.lastInsertRowid);
+  await db.run("DELETE FROM scanner_submissions WHERE session_id=?", session.id);
   await db.run("DELETE FROM exam_archives WHERE exam_id=?", secondExam.lastInsertRowid);
   await db.run("DELETE FROM exams WHERE id=?", secondExam.lastInsertRowid);
   await db.run("INSERT INTO exam_archives(exam_id,is_deleted,deleted_at) VALUES (?,1,CURRENT_TIMESTAMP)", firstExam.lastInsertRowid);
