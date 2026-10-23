@@ -12,7 +12,7 @@ import { replaceScopedSelection, type PostprocessQueueItem } from "../../../../.
 import { selectStudentDigitCells } from "../../../../../shared/correctionCellSelect";
 import { uniqueScanConflictCards, type ScanConflictCard } from "../../../../../shared/scanPages";
 import { correctionCells, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../../shared/scanCorrection";
-import { OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
+import { isBlankSubjectiveRecognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
 import type { SubjectiveQuestionNumber } from "../../../../../shared/types";
 
 export interface ScanMeta { recordId: string; createdAt: string; scanQuality: number | null; }
@@ -605,10 +605,12 @@ function LowConfidencePanel({ item, channel, onJump }: {
     for (const page of document.pages) {
       const recognition = page.recognition;
       for (const question of recognition.questions ?? []) {
+        if ((question.selectedOptions?.length ?? 0) === 0) continue;
         if ((question.confidence ?? 0) >= OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD) continue;
         list.push({ questionNumber: question.questionNumber, label: `第 ${question.questionNumber} 题（客观）`, confidence: question.confidence ?? 0, value: question.selectedOptions.join(",") || "未答" });
       }
       for (const question of recognition.subjectiveQuestions ?? []) {
+        if (isBlankSubjectiveRecognition(question)) continue;
         if (question.status === "ok") continue;
         list.push({ questionNumber: question.questionNumber, label: `第 ${question.questionNumber} 题（主观 ${question.status}）`, confidence: question.confidence ?? 0, value: String(question.score) });
       }

@@ -174,7 +174,9 @@ export function gradeObjectiveQuestion(
   const definition = target?.definition;
   const confidence = Number.isFinite(question.confidence) ? question.confidence : 0;
   const selectedOptions = normalizeOptions(question.selectedOptions, definition?.optionCount);
-  const needsReview = confidence < confidenceThreshold;
+  // 只用原始填涂判断空白：被选项数过滤掉的非法/越界标签说明识别结果有问题，仍应复核。
+  const blank = (question.selectedOptions?.length ?? 0) === 0;
+  const needsReview = !blank && confidence < confidenceThreshold;
 
   if (!definition) {
     return {
@@ -203,6 +205,21 @@ export function gradeObjectiveQuestion(
       status: "missing_key",
       needsReview: true,
       message: "未配置标准答案"
+    };
+  }
+
+  // 空题不是识别失败：没有填涂就直接 0 分，不再用低置信度把它推进复核队列。
+  if (blank) {
+    return {
+      questionNumber: question.questionNumber,
+      selectedOptions,
+      correctOptions,
+      score: 0,
+      maxScore,
+      confidence,
+      status: "wrong",
+      needsReview: false,
+      message: "未作答，按 0 分"
     };
   }
 
@@ -315,6 +332,13 @@ function findSubjectiveQuestion(card: AnswerCard, questionId: string, blockId?: 
   return undefined;
 }
 
+/** 识别器确认「没有红笔斜线」的空白分数格：应直接 0 分，不进入复核。 */
+export function isBlankSubjectiveRecognition(recognition: SubjectiveRecognitionQuestion): boolean {
+  return recognition.status === "invalid"
+    && recognition.message === "no_valid_subjective_score"
+    && (recognition.invalidCells?.length ?? 0) === 0;
+}
+
 export function gradeSubjectiveRecognition(
   card: AnswerCard,
   recognition: SubjectiveRecognitionQuestion
@@ -326,6 +350,20 @@ export function gradeSubjectiveRecognition(
   // 未知 questionId 的自报分数与满分一律丢弃，不得计入成绩。
   if (!question) return null;
   const maxScore = Number.isFinite(question.score) ? Math.max(0, question.score) : 0;
+  if (isBlankSubjectiveRecognition(recognition)) {
+    return {
+      questionId: recognition.questionId,
+      questionNumber: question.number,
+      score: 0,
+      maxScore,
+      status: "ok",
+      needsReview: false,
+      confidence: recognition.confidence,
+      validCells: [],
+      invalidCells: [],
+      message: "未作答，按 0 分"
+    };
+  }
   const needsReview = recognition.status !== "ok";
 
   let status: SubjectiveQuestionGradeStatus = "ok";

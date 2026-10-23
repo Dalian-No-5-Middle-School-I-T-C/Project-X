@@ -466,7 +466,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     const nextJobs = { ...uploadJobsRef.current };
     let queued = 0;
     for (const result of data.results) {
-      if (result.needsReviewCount > 0) continue;
+      // 存疑题随结果一起上传，由服务器保存并返回 needsReviewCount；不要在上传前拦下整份卷。
       if (nextJobs[result.groupId]) continue;
       if (isGroupQueued(metadata.cardId, sid, result.groupId)) continue;
       if (scannerUploadManager.hasGroupUpload(metadata.cardId, result.groupId, sid)) continue;

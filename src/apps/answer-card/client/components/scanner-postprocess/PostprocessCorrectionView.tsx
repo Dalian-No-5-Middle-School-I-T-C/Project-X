@@ -12,7 +12,7 @@ import {
   type CorrectionCell, type CorrectionDocument, type CorrectionEdit,
 } from "../../../../../shared/scanCorrection";
 import { matchesCorrectionFocus, selectObjectiveOptionCells, selectScoreCells } from "../../../../../shared/correctionCellSelect";
-import { findObjectiveQuestion, gradeCombinedRecognition, gradeSubjectiveRecognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
+import { findObjectiveQuestion, gradeCombinedRecognition, gradeSubjectiveRecognition, isBlankSubjectiveRecognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
 import { isMultiSelectMode, objectiveModeLabel } from "../../../../../shared/objectiveMode";
 import type { CombinedRecognitionResult, SubjectiveQuestionNumber } from "../../../../../shared/types";
 
@@ -165,8 +165,14 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
   const reviewQuestions = useMemo(() => {
     const set = new Set<SubjectiveQuestionNumber>();
     if (!liveMerged) return set;
-    for (const q of liveMerged.questions ?? []) if ((q.confidence ?? 0) < OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD) set.add(q.questionNumber);
-    for (const q of liveMerged.subjectiveQuestions ?? []) if (q.status !== "ok") set.add(q.questionNumber);
+    for (const q of liveMerged.questions ?? []) {
+      if ((q.selectedOptions?.length ?? 0) === 0) continue;
+      if ((q.confidence ?? 0) < OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD) set.add(q.questionNumber);
+    }
+    for (const q of liveMerged.subjectiveQuestions ?? []) {
+      if (isBlankSubjectiveRecognition(q)) continue;
+      if (q.status !== "ok") set.add(q.questionNumber);
+    }
     return set;
   }, [liveMerged]);
 

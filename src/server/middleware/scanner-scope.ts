@@ -400,7 +400,12 @@ export async function requireScannerExamScope(req: Request, res: Response, next:
       // Same distinction as above: exams that were soft-deleted are not "unbound" (CR4).
       if (refuseSoftDeletedOnly(res, req.user, resolved)) return;
       if (!resolved.exam && resolved.exams.length === 0) { next(); return; }
-      if (!resolved.exam) { res.status(409).json({ message: "无法确定扫描会话的考试归属" }); return; }
+      if (!resolved.exam) {
+        // 本地整卡订正只改扫描记录，不写考试成绩；归属有歧义时也应能改卡，
+        // 由订正路由自行校验 GRADE_WRITE 与可见考试范围。
+        if (!isMachineCaller(req) && /^\/groups\/[^/]+\/correction$/.test(req.path)) { next(); return; }
+        res.status(409).json({ message: "无法确定扫描会话的考试归属" }); return;
+      }
       examId = resolved.exam.id;
     }
     if (!Number.isSafeInteger(examId) || examId < 1) { res.status(400).json({ message: "无效的考试编号" }); return; }

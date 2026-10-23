@@ -69,7 +69,13 @@ try {
   assert.equal((await request("admin", "GET", undefined, url.replace("/session/", "/upload/sessions/"))).status, 409, "server-side correction still requires an exam");
   const firstExam = await db.run("INSERT INTO exams(name,card_id,status) VALUES (?,?,'grading')", "first", card.id);
   const secondExam = await db.run("INSERT INTO exams(name,card_id,status) VALUES (?,?,'grading')", "second", card.id);
-  assert.equal((await request("admin")).status, 409, "multiple candidate exams must stay ambiguous");
+  const ambiguous = await request("admin");
+  assert.equal(ambiguous.status, 200, "multiple candidate exams must not block local card correction");
+  const ambiguousDoc = await ambiguous.json() as CorrectionDocument;
+  const ambiguousSave = await request("admin", "PUT", { pages: ambiguousDoc.pages.map(p => ({
+    sourceId: p.sourceId, revision: p.revision, selected: p.selected })) });
+  assert.equal(ambiguousSave.status, 200, "ambiguous ownership must still allow saving the local card");
+  assert.equal((await ambiguousSave.json() as { saved: boolean }).saved, false, "ambiguous ownership must not admit grades");
   await db.run("DELETE FROM exams WHERE id=?", secondExam.lastInsertRowid);
   await db.run("INSERT INTO exam_archives(exam_id,is_deleted,deleted_at) VALUES (?,1,CURRENT_TIMESTAMP)", firstExam.lastInsertRowid);
   assert.equal((await request("teacher")).status, 404, "a cleaned exam must not become an unbound local scan");

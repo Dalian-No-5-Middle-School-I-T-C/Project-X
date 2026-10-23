@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { getMysqlDb } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
-import { requirePermissionCompat, requireWholeExamGradingAccess } from "../../apps/answer-card/server/middleware";
+import { requirePermissionCompat, requireWholeExamGradingAccess, getVisibleExamIds } from "../../apps/answer-card/server/middleware";
 import { PERMISSIONS } from "../auth/permissions";
 import { resolveScannerExam } from "../services/scannerExam";
 import { recognizeSessionCorrection, saveSessionCorrection, sessionCorrection } from "../services/scanCorrection";
@@ -20,9 +20,19 @@ export function scanCorrectionRouter(prefix: "session" | "sessions", remote: boo
       const resolved = await resolveScannerExam(session.card_id,String(req.params.sessionId));
       // Scanner sync imports cards without creating local exams. The enclosing session
       // scope already distinguishes these originals from ambiguous or deleted exams.
-      if (!remote && resolved.allExamIds.length === 0) {
+      // 多场未归档考试、只剩归档考试等无法唯一确定归属的情况也一样：本地整卡改分
+      // 只改本机扫描记录，不应因为归属不唯一而整页不可用；正式成绩入库仍在后续流程校验。
+      if (!remote && (!resolved.exam || resolved.allExamIds.length === 0)) {
         if (req.user && !["admin", "teacher"].includes(req.user.role_name)) {
           res.status(403).json({message:"权限不足：整卡订正仅限教师或管理员"}); return;
+        }
+        // 归属不唯一时必须能看到全部候选考试，口径与扫描记录读取一致；
+        // 只看得到其中一场不足以证明有权改这张可能属于其他考试的卡。
+        if (req.user && resolved.exams.length > 0) {
+          const visible = await getVisibleExamIds(req.user);
+          if (visible !== null && !resolved.exams.every(exam => visible.includes(exam.id))) {
+            res.status(403).json({message:"权限不足：无权修改该扫描会话"}); return;
+          }
         }
         requirePermissionCompat(PERMISSIONS.GRADE_WRITE)(req,res,next);
         return;

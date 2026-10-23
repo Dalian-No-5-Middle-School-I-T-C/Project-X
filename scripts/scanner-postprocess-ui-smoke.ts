@@ -372,8 +372,8 @@ try {
   secondGroupResolved = true;
   await act(async () => { confirm.click(); });
   await settle();
-  assert.equal(uploads.length, 2, "汇总没排上的正常卷由后处理页补上首传，已处理组也在其中");
-  assert.deepEqual(uploads.map(item => item.name), ["扫描_10003", "扫描_10002"]);
+  assert.equal(uploads.length, 3, "后处理页首传会带上所有识别成功的卷，已处理组也在其中");
+  assert.deepEqual(uploads.map(item => item.name), ["扫描_10001", "扫描_10003", "扫描_10002"]);
   for (const upload of uploads) {
     assert.equal(upload.cardVersion, scanVersion, "补传必须上报扫描当时的卡版本");
     assert.notEqual(upload.cardVersion, version, "不能改用页面后来拉到的最新卡指纹");
@@ -382,7 +382,7 @@ try {
     assert.equal(upload.kind, "scan");
     assert.equal(upload.pages.length, 1);
   }
-  assert.equal(uploads.some(item => item.name === "扫描_10001"), false, "仍有存疑的卷不能先上传");
+  assert.equal(uploads.some(item => item.name === "扫描_10001"), true, "存疑卷也要先上传，复核在服务器侧完成");
 
   // ── 队列进度：处理完一条后条数减少、已处理计数保留 ──
   await settle();

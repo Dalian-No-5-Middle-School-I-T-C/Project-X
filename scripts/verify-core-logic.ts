@@ -228,6 +228,43 @@ section("1c. 客观题模式与计分规则边界");
   check("错选负分不会超过该题负满分", negative.score === -5);
 }
 
+section("1d. 空题直接零分，不进入复核");
+{
+  const objective: ObjectiveBlock = {
+    id: "obj-blank",
+    type: "objective",
+    title: "客观题",
+    questionStart: 1,
+    questionCount: 1,
+    optionCount: 4,
+    mode: "single",
+    scorePerQuestion: 5,
+    density: "compact",
+    answerKey: { 1: ["A"] },
+    questions: [{ questionNumber: 1, mode: "single", optionCount: 4, score: 5, answerKey: ["A"] }]
+  };
+  const blankObjective = gradeObjectiveQuestion(card("shuxue", [objective]), { questionNumber: 1, selectedOptions: [], confidence: 0 });
+  check("空客观题直接 0 分且不复核", blankObjective.score === 0 && blankObjective.needsReview === false && blankObjective.status === "wrong");
+  const invalidObjective = gradeObjectiveQuestion(card("shuxue", [objective]), { questionNumber: 1, selectedOptions: ["Z"], confidence: 0.05 });
+  check("越界选项不能当成空白零分", invalidObjective.needsReview === true && invalidObjective.selectedOptions.length === 0);
+
+  const blankSubjective = gradeSubjectiveRecognition(subjectiveCard(), {
+    questionId: "s1", questionNumber: 28, score: 0, maxScore: 10,
+    status: "invalid", confidence: 0, validCells: [], invalidCells: [],
+    message: "no_valid_subjective_score"
+  });
+  check("空白分数格直接 0 分且不复核", blankSubjective?.score === 0 && blankSubjective?.needsReview === false && blankSubjective?.status === "ok");
+
+  const rejected = gradeSubjectiveRecognition(subjectiveCard(), {
+    questionId: "s1", questionNumber: 28, score: 0, maxScore: 10,
+    status: "invalid", confidence: 0.1,
+    validCells: [],
+    invalidCells: [{ score: 5, rect: { x: 0, y: 0, width: 1, height: 1 } }] as never,
+    message: "ambiguous_subjective_score"
+  });
+  check("读到红笔但未采纳仍保留复核", rejected?.needsReview === true);
+}
+
 section("2. validateCardScores —— 客观题异常分");{
   const r = validateCardScores(card("shuxue", [objectiveBlock(5, 4, [4, 4, 3, 4, 4])]));
   check(

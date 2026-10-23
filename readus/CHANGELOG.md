@@ -34,6 +34,13 @@
 - **验证**：`verify:core-logic` 第 14 节新增 5 条回归断言（复现路径、旧卡无逐题配置、逐题覆盖、浮点尾差），全绿；`typecheck` 与 `build:web` 通过。浏览器端点击流程未在本机实跑（dev 会连仓库配置的库），改动为纯函数接线。
 - **存量数据**：库里 `score_per_question` 已被写成 5 的卡不回填——无法判断历史意图。这类卡上线后需老师重新填一次每题分值，届时会正确同步到逐题与标题。
 
+## 2026-10-23：#352 扫描端整卡改分归属、存疑卷上传与空白题零分
+
+- **归属不唯一仍可整卡改分**：本地扫描会话的 `GET/PUT /api/scanner/session/:sessionId/groups/:groupId/correction` 不再因「多场候选考试」或「只剩归档考试」直接 409。会话作用域只对本地订正路径放行，订正路由再要求教师/管理员、`GRADE_WRITE` 以及全部候选考试的可见范围；正式成绩入库仍要求唯一考试归属，归属不唯一时只保存本机草稿。
+- **存疑卷照常上传**：扫描工作台与后处理页不再用 `needsReviewCount > 0` 拦下整卷上传；图片与识别结果先上传，复核计数随回执返回，后续在服务器或异常卷流程处理。
+- **空白题直接零分**：客观题原始选项为空时直接 0 分，不再因低置信度进入复核；被选项数过滤掉的越界标签仍按识别异常复核。主观题为 `invalid + no_valid_subjective_score` 且没有 `invalidCells`（完全没有红笔斜线）时按 0 分计；读到了红笔但未采纳或组合异常仍保留复核。扫描端改分视图与低置信度面板同步不再列出这些空白题。
+- **验证**：`typecheck`；`verify:core-logic`（108 项，含空客观题、无红笔主观题与越界选项仍复核）；`verify:scanner-upload-flow`（低置信度卷仍上传、入库并保留 `needsReviewCount`）；`verify:scanner-panel-session`、`verify:scanner-postprocess-all`、`verify:scanner-legacy-correction`、`verify:scanner-local-correction`（多场候选下的本地改分与权限拒绝）、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-correction-boundaries`、`verify:scanner-pending`、`verify:scanner-batch-results`、`verify:scanner-upload-manager`、`verify:scanner-review-regressions`、`verify:permission-scope` 通过。本机只运行 SQLite，MariaDB 由 CI 执行。
+
 ## 2026-10-23：鲁棒性审查——小数题号、模板总分、计分边界与失败回显
 
 - **MariaDB 小题号**：语文模板的 13.1/17.1 等题号原先写入 `INT` 列，strict mode 会 500、非 strict 会把 13.1/13.2 截成同一个 13。迁移 v65 把 `subjective_questions.number`、`question_scores.question_number`、`knowledge_points.question_number`、`answer_overrides.question_number` 改为 DOUBLE；SQLite 新建表同步为 REAL（旧库动态类型本就能存小数）。

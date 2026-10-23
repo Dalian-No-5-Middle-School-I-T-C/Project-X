@@ -70,7 +70,8 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
         nextBatches[sessionId] = batch;
         nextMetas[sessionId] = await loadSessionMeta(sessionId);
       }
-      // 失败、冲突副本、以及结果里仍需复核的卷，都还没进过上传名单。订正干净后才补传一次。
+      // 失败、冲突副本、以及结果里仍需复核的卷，都先上传图片与识别结果；
+      // 存疑状态随回执返回，后续在服务器/异常卷流程处理。
       for (const [sid, next] of Object.entries(nextBatches)) {
         for (const result of next.results) {
           if (result.needsReviewCount > 0) abnormalSeen.current.add(`${sid}/${result.groupId}`);
@@ -243,10 +244,6 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
       else if (alreadyQueued) notify.info("本机已保存。该卷随本批一起上传过，改动不再重复上传；服务器成绩请走 Web 成绩修改。");
       return;
     }
-    if (result.needsReviewCount > 0) {
-      notify.info("仍有存疑题，全部确认后再上传");
-      return;
-    }
     const inPage = sessionId in fresh.batches;
     const queuedNow = queueCleanGroup(cardId, fresh.card.id, sessionId, meta, result, queuedByPage.current);
     if (queuedNow === "queued") {
@@ -414,7 +411,7 @@ function queueCleanGroup(
   queued: Set<string>,
 ): QueueOutcome {
   // 这里只服务远端补传。本机 result.saved 只说明本机考试接住了成绩，不是远端回执。
-  if (result.needsReviewCount > 0 || !result.studentId) return "skipped";
+  if (!result.studentId) return "skipped";
   const key = `${sessionId}/${result.groupId}`;
   if (queued.has(key) || isGroupQueued(cardId, sessionId, result.groupId)) return "skipped";
   if (scannerUploadManager.hasGroupUpload(uploadCardId, result.groupId, sessionId)) {
