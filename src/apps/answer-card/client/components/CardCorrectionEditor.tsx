@@ -4,6 +4,7 @@ import { authFetch } from "../auth/api";
 import { Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter } from "./ui/v2";
 import { correctionState, isUnconfirmedCorrectionCell, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../shared/scanCorrection";
 import { CorrectionCanvas } from "./scanner-postprocess/CorrectionCanvas";
+import { RotationButtons, type ImageRotation } from "./RotatedCardImage";
 
 type Request = (url: string, init?: RequestInit) => Promise<Response>;
 export function CardCorrectionButton({ url, request = authFetch, onSaved, disabled = false, allowUnchangedSave = false }: {
@@ -23,6 +24,7 @@ export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved,al
   const [message,setMessage] = useState("");
   const [busy,setBusy] = useState(false);
   const [zoom,setZoom] = useState(1);
+  const [rotation,setRotation] = useState<ImageRotation>(0);
   const [pageIndex,setPageIndex] = useState(0);
   const dirty = !!document && edits.some(edit => {
     const original = document.pages.find(p => p.sourceId === edit.sourceId)!;
@@ -103,6 +105,7 @@ export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved,al
         <Button size="sm" variant="outline" disabled={zoom<=1} onClick={() => setZoom(z=>Math.max(1,z-.5))}>缩小</Button>
         <Button size="sm" variant="outline" disabled={zoom>=4} onClick={() => setZoom(z=>Math.min(4,z+.5))}>放大</Button>
         <span>{Math.round(zoom*100)}%</span>
+        <RotationButtons rotation={rotation} onChange={setRotation} />
       </div>
       <DialogBody className="min-h-0 flex-1 overflow-auto bg-muted p-3">
         {busy && !document && <p role="status">正在加载完整答题卡…</p>}
@@ -110,7 +113,7 @@ export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved,al
           <span>{document?.pages.some(p=>p.recovery?.reason==="provenance") ? "此旧卷尚未完成原图与答题卡版本核验，请重新识别，核对后保存。" : "此卷缺少坐标数据，请重新识别，核对后保存。"}</span>
           <Button variant="outline" disabled={busy} onClick={()=>void recover()}>重新识别旧卷</Button>
         </div>}
-        {page && edit && <CorrectionCanvas document={document} pageIndex={pageIndex} edit={edit} images={images} zoom={zoom} busy={busy} onToggle={toggle} />}
+        {page && edit && <CorrectionCanvas document={document} pageIndex={pageIndex} edit={edit} images={images} zoom={zoom} rotation={rotation} busy={busy} onToggle={toggle} />}
       </DialogBody>
       <DialogFooter className="flex-wrap">
         <div className="min-w-0 flex-1 text-sm" role="status">{message || (errors.length ? <span className="text-destructive-fg">{[...new Set(errors)].slice(0,3).join("；")}{errors.length>3 ? "…" : ""}</span> : dirty ? "修改尚未保存" : missing ? "请先重新识别旧卷" : "点击填涂格开始修改")}</div>

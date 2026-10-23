@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, FileText, Images, RefreshCw } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
 import { retryMediaTicketImage } from "../lib/mediaTicketRetry";
+import { RotatedCardImage, RotationButtons, type ImageRotation } from "./RotatedCardImage";
 import type { AnswerBlockCrop } from "../../../../shared/types";
 import {
   Button,
@@ -58,9 +59,13 @@ interface Props {
 }
 
 /** 原卷页图片：加载失败时不留破图，也不谎报成功 */
-function PaperImage({ src, alt }: { src: string; alt: string }) {
+function PaperImage({ src, alt, rotation }: { src: string; alt: string; rotation: ImageRotation }) {
+  const [resolvedSrc, setResolvedSrc] = useState(src);
   const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [src]);
+  useEffect(() => {
+    setResolvedSrc(src);
+    setFailed(false);
+  }, [src]);
   if (failed) {
     return (
       <div className="flex h-40 items-center justify-center rounded-md border border-border-subtle bg-secondary text-sm text-muted-foreground">
@@ -69,16 +74,17 @@ function PaperImage({ src, alt }: { src: string; alt: string }) {
     );
   }
   return (
-    <img
-      src={src}
+    <RotatedCardImage
+      src={resolvedSrc}
       alt={alt}
+      rotation={rotation}
       loading="lazy"
       onError={(event) => {
-        // 票据被服务端淘汰时先静默重签一次；仍然失败才落到「加载失败」占位
-        if (retryMediaTicketImage(event.currentTarget)) return;
+        // 票据被服务端淘汰时先静默重签一次；新地址写回状态，旋转后的 SVG 也用它
+        if (retryMediaTicketImage(event.currentTarget, setResolvedSrc)) return;
         setFailed(true);
       }}
-      className="w-full rounded-md border border-border-subtle bg-card object-contain"
+      className="rounded-md border border-border-subtle bg-card"
     />
   );
 }
@@ -108,6 +114,7 @@ export function StudentExamPaper({ examId, examName, onBack }: Props) {
   const [data, setData] = useState<PaperPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [rotation, setRotation] = useState<ImageRotation>(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -136,6 +143,7 @@ export function StudentExamPaper({ examId, examName, onBack }: Props) {
         </Button>
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground">{examName || data?.examName || ""}</span>
+          <RotationButtons size="icon-sm" variant="ghost" rotation={rotation} onChange={setRotation} />
           <Button variant="ghost" size="sm" onClick={() => void load()} disabled={loading} className="gap-1.5">
             <RefreshCw size={16} />刷新
           </Button>
@@ -200,7 +208,7 @@ export function StudentExamPaper({ examId, examName, onBack }: Props) {
                   </CardHeader>
                   <CardContent className="flex flex-col gap-3">
                     {page.isImage ? (
-                      <PaperImage src={mediaUrl(page.imageUrl)} alt={`原卷第 ${page.pageIndex} 页`} />
+                      <PaperImage src={mediaUrl(page.imageUrl)} alt={`原卷第 ${page.pageIndex} 页`} rotation={rotation} />
                     ) : (
                       <p className="m-0 rounded-md border border-border-subtle bg-secondary px-3 py-2 text-sm text-muted-foreground">
                         该页为 {page.mimeType || "非图片"} 文件，浏览器内可直接点击图片链接查看。
@@ -234,7 +242,7 @@ export function StudentExamPaper({ examId, examName, onBack }: Props) {
                       </div>
                     </CardHeader>
                     <CardContent>
-                      <PaperImage src={mediaUrl(block.imageUrl)} alt={block.blockTitle || "我的作答"} />
+                      <PaperImage src={mediaUrl(block.imageUrl)} alt={block.blockTitle || "我的作答"} rotation={rotation} />
                     </CardContent>
                   </Card>
                 ))}

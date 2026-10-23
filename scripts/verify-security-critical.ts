@@ -3554,8 +3554,8 @@ async function main(): Promise<void> {
       check(p2RetrySource.indexOf("invalidateMediaTicket(failedUrl)") < p2RetrySource.indexOf("resignMediaTicketUrl(failedUrl)"),
         "P2-3：重签前先作废缓存里的旧票（顺序反了就会把刚签到的新票删掉）");
       check(/retryMediaTicketImage\(event\.currentTarget\)/.test(p2GradeSource)
-        && /if \(retryMediaTicketImage\(event\.currentTarget\)\) return;\s*\n\s*setFailed\(true\);/.test(p2PaperSource),
-        "P2-3：切块图与学生卷页面图都挂了 onError 重签（只修一处，另一处照样白屏）");
+        && /if \(retryMediaTicketImage\(event\.currentTarget, setResolvedSrc\)\) return;\s*\n\s*setFailed\(true\);/.test(p2PaperSource),
+        "P2-3：切块图与学生卷页面图都挂了 onError 重签，学生页把重签地址写回状态");
 
       // P2-1：卸载前的自动保存必须把服务端返回的新 revision 接住
       const p2FlushAt = /keepalive: true\s*\}\)\.then\(async \(response\) => \{/.test(p2AppSource);

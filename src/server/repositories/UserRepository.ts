@@ -6,6 +6,7 @@ import { encryptField, decryptField } from "../lib/field-crypto";
 import { csvCell } from "../../shared/csv";
 import crypto from "node:crypto";
 import { preserveStudentExamHistory } from "../services/examParticipants";
+import { reanchorStudentExamClasses } from "../services/examClassMemberships";
 import { analysisCache } from "../services/analysisCache";
 
 export interface UserRecord {
@@ -286,13 +287,13 @@ export class UserRepository {
               await tx.run("UPDATE users SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND role_id = 3", studentName, existingStudent.id);
               // B12（评审修订）：重导入按花名册**纯增量**补班级关联（INSERT IGNORE）。
               // 多班在读成员是合法状态（#308），此前「先清空当前归属再绑回花名册班级」
-              // 会把学生同时就读的其他在读班当脏数据抹掉；多行关联的归班歧义由读取侧
-              // 「在读优先 → joined_at 最新」口径消解，移出班级走 removeStudent/moveStudent。
+              // 会把学生同时就读的其他在读班当脏数据抹掉。新增关联即回溯考试归属（#347）：
+              // 学生从此在该班统计，历史考试一并跟随；真正离开原班走 removeStudent/moveStudent。
               const linkSql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
-              if (!await tx.get("SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?", cls.id, existingStudent.id)) {
-                await preserveStudentExamHistory(tx, existingStudent.id);
-              }
+              const isNewLink = !await tx.get("SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?", cls.id, existingStudent.id);
+              if (isNewLink) await preserveStudentExamHistory(tx, existingStudent.id);
               await tx.run(linkSql, cls.id, existingStudent.id);
+              if (isNewLink) await reanchorStudentExamClasses(tx, existingStudent.id);
             });
             analysisCache.clear();
             result.students.linked++; continue;

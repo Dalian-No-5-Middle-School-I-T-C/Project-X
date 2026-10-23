@@ -57,6 +57,7 @@
 - **建表事实源补齐**：`scanCorrectionSchema()` 的 SQLite / MariaDB 共用 DDL 增加 `recovery_fingerprint`，v64 迁移继续做幂等补列；新库、老库升级与重放迁移走同一份列定义。
 - **保留必要的一致性读取**：指纹包含保存后的 `revision`，因此写后加注仍要重新计算一次；没有复用写前哈希，避免把旧 revision 的指纹写回。
 - **验证**：`verify:scanner-legacy-correction`（含迁移前无指纹→签名重识别→恢复可信）、`verify:scanner-batch-results`（新增双组单卷保存隔离）、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-upload-flow`、`verify:scanner-pending`（本机在切图回滚清理断言处既有失败，已在干净 PR head 复现，与本次改动无关）与 `typecheck` 通过；MariaDB 方言未在本机运行。
+
 ## 2026-10-20：#345/#346 进步/退步按得分率判定 + 独立分析页交付收口
 
 - **判定口径**：跨考试与跨学期的进步/退步一律按得分率变化（百分点）判定，阈值 ±3 pp，显著档 ±10 pp；缺满分时返回 null 并显示「—」，不虚构分母、不退回绝对分。服务端学生自助路径、React 页面、打印报告与独立分析页共用 `src/shared/scoreProgress.ts`。

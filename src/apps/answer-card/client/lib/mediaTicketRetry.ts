@@ -14,16 +14,24 @@ import { invalidateMediaTicket, resignMediaTicketUrl } from "../auth/api";
 export const MEDIA_IMAGE_RETRY_KEY = "pxTicketRetried";
 
 /**
+ * @param onFresh 重签成功后的新地址；传了就交给调用方写回组件状态，
+ *   避免旋转后的 SVG 分支继续引用已淘汰的旧票据。
  * @returns true 表示已发起重签重试（调用方此时不要把界面切成「加载失败」）
  */
-export function retryMediaTicketImage(element: HTMLImageElement): boolean {
-  const failedUrl = element.getAttribute("src") ?? element.src;
+export function retryMediaTicketImage(
+  element: HTMLImageElement | SVGImageElement,
+  onFresh?: (fresh: string) => void,
+): boolean {
+  const failedUrl = element.getAttribute("src") ?? element.getAttribute("href") ?? (element as HTMLImageElement).src ?? "";
   if (!failedUrl.includes("mt=")) return false; // 同源或已回落 token：没有票据可重签
   if (element.dataset[MEDIA_IMAGE_RETRY_KEY] === failedUrl) return false; // 同一 URL 只重试一次
   element.dataset[MEDIA_IMAGE_RETRY_KEY] = failedUrl;
   invalidateMediaTicket(failedUrl);
   void resignMediaTicketUrl(failedUrl).then((fresh) => {
-    if (fresh && fresh !== failedUrl) element.src = fresh;
+    if (!fresh || fresh === failedUrl) return;
+    if (onFresh) onFresh(fresh);
+    else if ("src" in element) element.src = fresh;
+    else element.setAttribute("href", fresh);
   });
   return true;
 }
