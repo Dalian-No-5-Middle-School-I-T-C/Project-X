@@ -109,6 +109,19 @@ try {
   await db.run("UPDATE exams SET created_by=NULL WHERE id IN (?,?)", firstExam.lastInsertRowid, secondExam.lastInsertRowid);
   await db.run("DELETE FROM scanner_submissions WHERE session_id=?", session.id);
   await db.run("DELETE FROM exam_archives WHERE exam_id=?", secondExam.lastInsertRowid);
+  // 同一张答题卡被一场与本会话无关的在用考试复用：授权只看会话真正绑过的考试，
+  // 不能因为那场无关考试的教师没有整卷授权就把正常归属人也挡在门外（评审 P2）。
+  const thirdExam = await db.run("INSERT INTO exams(name,card_id,status) VALUES('同卡复用无关考试',?,'grading')", card.id);
+  for (const examId of [firstExam.lastInsertRowid, secondExam.lastInsertRowid]) {
+    await db.run("INSERT INTO scanner_submissions(exam_id,session_id,group_id,student_number,state,pages_json) VALUES (?,?,?,'91001','saved','{}')",
+      examId, session.id, "0");
+  }
+  await db.run("UPDATE exams SET created_by=? WHERE id IN (?,?)", owner.lastInsertRowid, firstExam.lastInsertRowid, secondExam.lastInsertRowid);
+  assert.equal((await fetch(url, { headers: { Authorization: `Bearer ${ownerLogin.token}` } })).status, 200,
+    "reused-card exams must not be part of the authorization candidates when the session is already bound");
+  await db.run("UPDATE exams SET created_by=NULL WHERE id IN (?,?)", firstExam.lastInsertRowid, secondExam.lastInsertRowid);
+  await db.run("DELETE FROM scanner_submissions WHERE session_id=?", session.id);
+  await db.run("DELETE FROM exams WHERE id=?", thirdExam.lastInsertRowid);
   await db.run("DELETE FROM exams WHERE id=?", secondExam.lastInsertRowid);
   await db.run("INSERT INTO exam_archives(exam_id,is_deleted,deleted_at) VALUES (?,1,CURRENT_TIMESTAMP)", firstExam.lastInsertRowid);
   assert.equal((await request("teacher")).status, 404, "a cleaned exam must not become an unbound local scan");

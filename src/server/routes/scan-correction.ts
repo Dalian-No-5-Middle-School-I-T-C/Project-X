@@ -32,14 +32,18 @@ export function scanCorrectionRouter(prefix: "session" | "sessions", remote: boo
         if (boundButArchived && req.user && req.user.role_name !== "admin") {
           res.status(404).json({message:"考试不存在或已按数据保留策略清理"}); return;
         }
-        // 归属不唯一时必须对**每一场**候选考试都有整卷阅卷授权，口径与归属唯一时一致；
-        // 只有题块级授权或看不到某一场考试的教师，不能借歧义读到并改写整张卡的订正。
-        if (req.user && resolved.exams.length > 0) {
+        // 归属不唯一时按「这场扫描真正可能属于谁」收口：会话已经绑过在用考试就只认这些绑定，
+        // 还没提交过才退回到同卡的全部在用考试。对每一场候选都要有整卷阅卷授权，口径与归属唯一时一致。
+        const boundActiveIds = resolved.boundExamIds.filter(examId => resolved.exams.some(exam => exam.id === examId));
+        const candidates = boundActiveIds.length > 0
+          ? resolved.exams.filter(exam => boundActiveIds.includes(exam.id))
+          : resolved.exams;
+        if (req.user && candidates.length > 0) {
           const visible = await getVisibleExamIds(req.user);
-          if (visible !== null && !resolved.exams.every(exam => visible.includes(exam.id))) {
+          if (visible !== null && !candidates.every(exam => visible.includes(exam.id))) {
             res.status(403).json({message:"权限不足：无权修改该扫描会话"}); return;
           }
-          for (const exam of resolved.exams) {
+          for (const exam of candidates) {
             let allowed = false;
             await requireWholeExamGradingAccessForExam(req, res, () => { allowed = true; }, exam.id);
             if (!allowed) return;
