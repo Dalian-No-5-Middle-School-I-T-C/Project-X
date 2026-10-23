@@ -49,6 +49,21 @@ function normalizeOptionLayout(value: unknown): ObjectiveOptionLayout {
   return value === "vertical" || value === "vertical-options" ? value : "horizontal";
 }
 
+/**
+ * 题块顺序是整卡级的：客观题和主观题虽然分表存储，`sort_order` 必须在两表之间连续唯一。
+ * 新写入按 bodyBlocks 的 JSON 顺序编号；历史行全部为 0（或按类型各自编号）时保留旧的
+ * 「先客观后主观」顺序，避免升级后无端重排存量答题卡。
+ */
+function orderBlocksByCardSequence(entries: Array<{ sortOrder: number; block: any }>): any[] {
+  if (entries.length < 2) return entries.map((entry) => entry.block);
+  const orders = entries.map((entry) => entry.sortOrder);
+  const isCardWideSequence = new Set(orders).size === entries.length
+    && Math.min(...orders) === 0
+    && Math.max(...orders) === entries.length - 1;
+  if (!isCardWideSequence) return entries.map((entry) => entry.block);
+  return [...entries].sort((a, b) => a.sortOrder - b.sortOrder).map((entry) => entry.block);
+}
+
 export class CardRepository {
   private db: DbAdapter;
 
@@ -135,9 +150,13 @@ export class CardRepository {
     await tx.run("DELETE FROM subjective_blocks WHERE card_id = ?", card.id);
 
     if (card.bodyBlocks) {
+      let sortOrder = 0;
       for (const block of card.bodyBlocks) {
-        if (block.type === "objective") await this.insertObjectiveBlock(block as any, card.id, tx);
-        else if (block.type === "subjective") await this.insertSubjectiveBlock(block as any, card.id, tx);
+        if (block.type === "objective") {
+          await this.insertObjectiveBlock(block as any, card.id, sortOrder++, tx);
+        } else if (block.type === "subjective") {
+          await this.insertSubjectiveBlock(block as any, card.id, sortOrder++, tx);
+        }
       }
     }
 
@@ -146,14 +165,14 @@ export class CardRepository {
     return Number(row?.revision ?? 0);
   }
 
-  private async insertObjectiveBlock(block: any, cardId: string, tx: DbAdapter): Promise<void> {
+  private async insertObjectiveBlock(block: any, cardId: string, sortOrder: number, tx: DbAdapter): Promise<void> {
     const questions = normalizeObjectiveQuestions(block);
     const firstQuestion = questions[0];
     const blockOptionLayout = normalizeOptionLayout(block.optionLayout);
     await tx.run(
       `INSERT INTO objective_blocks (id, card_id, sort_order, title, title_locked, question_start, question_count, option_count, mode, score_per_question, density, option_layout, wrong_or_extra_score)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      block.id, cardId, 0, block.title ?? "", block.titleLocked ? 1 : 0, firstQuestion?.questionNumber ?? block.questionStart ?? 1,
+      block.id, cardId, sortOrder, block.title ?? "", block.titleLocked ? 1 : 0, firstQuestion?.questionNumber ?? block.questionStart ?? 1,
       questions.length || block.questionCount || 0, firstQuestion?.optionCount ?? block.optionCount ?? 4,
       firstQuestion?.mode ?? block.mode ?? "single", firstQuestion?.score ?? block.scorePerQuestion ?? 0,
       block.density ?? "compact", blockOptionLayout, firstQuestion?.scoringRule?.wrongOrExtraScore ?? block.multipleScoring?.wrongOrExtraScore ?? 0
@@ -188,10 +207,10 @@ export class CardRepository {
     }
   }
 
-  private async insertSubjectiveBlock(block: any, cardId: string, tx: DbAdapter): Promise<void> {
+  private async insertSubjectiveBlock(block: any, cardId: string, sortOrder: number, tx: DbAdapter): Promise<void> {
     await tx.run(
       `INSERT INTO subjective_blocks (id, card_id, sort_order, block_kind, title, title_locked) VALUES (?, ?, ?, ?, ?, ?)`,
-      block.id, cardId, 0, block.blockKind ?? (block.title?.includes("填空") ? "fill_blank" : "answer"), block.title ?? "", block.titleLocked ? 1 : 0
+      block.id, cardId, sortOrder, block.blockKind ?? (block.title?.includes("填空") ? "fill_blank" : "answer"), block.title ?? "", block.titleLocked ? 1 : 0
     );
 
     if (block.questions) {
@@ -247,6 +266,7 @@ export class CardRepository {
       layoutVersion: cardRow.layout_version === 2 ? 2 : 1, updatedAt: cardRow.updated_at,
       revision: Number(cardRow.revision ?? 0)
     };
+    const persistedBlocks: Array<{ sortOrder: number; block: any }> = [];
 
     const objBlocks = await this.db.all("SELECT * FROM objective_blocks WHERE card_id = ? ORDER BY sort_order", cardId);
     for (const b of objBlocks) {
@@ -273,7 +293,7 @@ export class CardRepository {
         })) : undefined
       };
       block.questions ??= normalizeObjectiveQuestions(block);
-      card.bodyBlocks.push(block);
+      persistedBlocks.push({ sortOrder: Number(b.sort_order ?? 0), block });
     }
 
     const subBlocks = await this.db.all("SELECT * FROM subjective_blocks WHERE card_id = ? ORDER BY sort_order", cardId);
@@ -300,9 +320,13 @@ export class CardRepository {
           images: images.map((img: any) => ({ assetId: img.asset_id, originalName: img.original_name, widthMm: img.width_mm, heightMm: img.height_mm, align: img.align }))
         };
       }));
-      card.bodyBlocks.push({ id: b.id, type: "subjective", blockKind: b.block_kind ?? (String(b.title ?? "").includes("填空") ? "fill_blank" : "answer"), title: b.title, titleLocked: b.title_locked === 1, questions: questionsWithImages } as any);
+      persistedBlocks.push({
+        sortOrder: Number(b.sort_order ?? 0),
+        block: { id: b.id, type: "subjective", blockKind: b.block_kind ?? (String(b.title ?? "").includes("填空") ? "fill_blank" : "answer"), title: b.title, titleLocked: b.title_locked === 1, questions: questionsWithImages } as any
+      });
     }
 
+    card.bodyBlocks = orderBlocksByCardSequence(persistedBlocks);
     return card;
   }
 

@@ -54,6 +54,7 @@
     "verify:release-integrity": "tsx scripts/verify-release-integrity.ts",
     "verify:card-export-revision": "tsx scripts/verify-card-export-revision.ts",
     "verify:card-export-revision:mariadb": "tsx scripts/verify-card-export-revision.ts --mariadb",
+    "verify:card-block-order": "tsx scripts/verify-card-block-order.ts",
     "verify:a3": "tsx scripts/verify-a3.ts",
     "verify:feedback-260923": "tsx scripts/feedback-260923-smoke.ts",
     "verify:round5-db-upsert": "tsx scripts/verify-round5-db-upsert.ts",
