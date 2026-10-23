@@ -356,7 +356,7 @@ node scripts/hash-release-artifacts.cjs --check --root <产物目录>
 #### 环境要求
 
 - Windows 操作系统
-- Node.js 24.22.1+（开发）/ Node.js 22.23.4+（CI 与打包机）。22.23.4、24.22.1、26.12.1 起修复 CVE-2026-111497；更低版本服务端会拒绝启动
+- Node.js 24.22.1+（开发）/ Node.js 22.23.4+（CI 与打包机）。22.23.4、24.22.1、26.12.1 起修复 CVE-2026-111497；更低版本服务端会拒绝启动。扫描端 Electron 39 自带的 Chromium 142 仍会解码 Brotli，窗口只接受 gzip 与 deflate
 - Visual Studio 2022（编译 C++ 原生模块需要）
 - OpenCV 4.13+（识别引擎编译需要）
 
