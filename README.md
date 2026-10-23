@@ -1032,6 +1032,19 @@ Project-X/
 > （实测：单张 6 MiB 插图即由 body-parser 返回 413，与配额判定分属两层）。现场要导入更大的图集，
 > 应该改前端形态（分批导入或改走 multipart 上传），而不是把这里调大。
 
+> **个人背景图上传体积**（issue #335，单一来源 `src/shared/backgroundUploadLimits.ts`）
+>
+> `POST /api/users/me/background` 的体积闸门与答题卡资源同一套约定：默认值、`PROJECTX_*`、安全天花板。
+> 5 MiB 够手机照片；老师从扫描件裁出的整页图可以放宽，但不能靠一个拼错的数字把保护关掉。
+> 非法值（非数字、小于 1）回落默认并打印 `[background-upload-limits]`；超过天花板则夹紧。解析不抛错。
+> 超限返回 **413** `UPLOAD_ERROR`，文案带上当前生效上限，例如「上传文件超过大小限制（≤5 MiB）」。
+>
+> | 环境变量 | 默认 | 天花板 | 含义 |
+> |----------|------|--------|------|
+> | `PROJECTX_BACKGROUND_UPLOAD_MIB` | 5 | 32 | 单个背景图上传体积 |
+>
+> 生效档位打在启动日志的 `[background-upload-limits] …` 一行。学生账号仍不能上传（见 #322）；这一档只调节教师和管理员的上传体积。
+
 > **URL 凭据换成单次媒体票据**（安全 R30，单一来源 `src/shared/mediaTicketLimits.ts`）
 >
 > 跨域 API 模式下浏览器无法给 `<img>` / `<iframe>` / `EventSource` 带 `Authorization` 头，前端于是把
