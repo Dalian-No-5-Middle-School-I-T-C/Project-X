@@ -29,10 +29,10 @@ import {
 import {
   isImageExtension, isValidImageBuffer, isValidImageFile, safeImageExtension
 } from "../src/apps/answer-card/server/validate-upload";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { gradeCombinedRecognition, gradeObjectiveQuestion, gradeSubjectiveRecognition, normalizeObjectiveQuestions, objectiveBlockTotalScore, objectiveQuestionDefinitions } from "../src/shared/grading";
+import { gradeCombinedRecognition, gradeObjectiveQuestion, gradeObjectiveRecognition, gradeSessionStudentResults, gradeSubjectiveRecognition, normalizeObjectiveQuestions, OBJECTIVE_SELECTED_FILL_RATIO, objectiveBlockTotalScore, objectiveQuestionDefinitions } from "../src/shared/grading";
 import { applyScorePerQuestion } from "../src/apps/answer-card/client/cardModel";
 import { createDefaultCard } from "../src/shared/defaultCard";
 import { applySubjectTemplate } from "../src/shared/cardTemplates";
@@ -248,6 +248,32 @@ section("1d. 空题直接零分，不进入复核");
   const invalidObjective = gradeObjectiveQuestion(card("shuxue", [objective]), { questionNumber: 1, selectedOptions: ["Z"], confidence: 0.05 });
   check("越界选项不能当成空白零分", invalidObjective.needsReview === true && invalidObjective.selectedOptions.length === 0);
 
+  const faintMark = gradeObjectiveQuestion(card("shuxue", [objective]), {
+    questionNumber: 1, selectedOptions: [], confidence: 0.05, optionScores: { A: 0.41, B: 0.2, C: 0.05, D: 0.03 }
+  });
+  check("识别器看清了墨迹却因并列/不足清空选择，仍要复核", faintMark.needsReview === true && faintMark.status === "review");
+  const cleanSheet = gradeObjectiveQuestion(card("shuxue", [objective]), {
+    questionNumber: 1, selectedOptions: [], confidence: 0.05, optionScores: { A: 0.05, B: 0.03, C: 0.02, D: 0.04 }
+  });
+  check("证据里没有任何达到下限的墨迹才算考生空白", cleanSheet.needsReview === false && cleanSheet.score === 0);
+
+  const nativeSource = readFileSync(new URL("../native/AnswerCardRecognizer/answer-card-recognizer/answer_recognition.cpp", import.meta.url), "utf8");
+  const declaredRatio = Number(nativeSource.match(/constexpr double MIN_SELECTED_FILL_RATIO = ([0-9.]+);/)?.[1]);
+  check(`涂写下限 ${OBJECTIVE_SELECTED_FILL_RATIO} 与识别器源码 ${declaredRatio} 一致`, declaredRatio === OBJECTIVE_SELECTED_FILL_RATIO);
+
+  // 双面/多页：第二页没上报的题是合成的，不能把第一页真实存在的存疑答案顶掉。
+  const pageWithDoubt = { status: "ok", pageNumber: 1, studentId: { status: "ok", value: "91001" },
+    questions: [{ questionNumber: 1, selectedOptions: ["C"], confidence: 0.05 }], subjectiveQuestions: [] };
+  const pageWithoutQuestion = { status: "ok", pageNumber: 2, studentId: { status: "ok", value: "91001" },
+    questions: [], subjectiveQuestions: [] };
+  const synthesized = gradeObjectiveRecognition(card("shuxue", [objective]), "page2.png", pageWithoutQuestion as never);
+  check("本页未上报的题按「未上报」留复核，不当成考生空白", synthesized.needsReviewCount === 1);
+  const combined = gradeSessionStudentResults(card("shuxue", [objective]), [
+    { recordId: "r1", pageNum: 1, side: "front", imagePath: "a.png", recognition: pageWithDoubt as never, ocrStatus: "done" },
+    { recordId: "r2", pageNum: 2, side: "back", imagePath: "b.png", recognition: pageWithoutQuestion as never, ocrStatus: "done" },
+  ]);
+  check("跨页择优后存疑计数不被合成空白清零", combined.needsReviewCount === 1 && combined.totalScore === 0);
+
   const blankSubjective = gradeSubjectiveRecognition(subjectiveCard(), {
     questionId: "s1", questionNumber: 28, score: 0, maxScore: 10,
     status: "invalid", confidence: 0, validCells: [], invalidCells: [],
@@ -263,6 +289,32 @@ section("1d. 空题直接零分，不进入复核");
     message: "ambiguous_subjective_score"
   });
   check("读到红笔但未采纳仍保留复核", rejected?.needsReview === true);
+
+  // 整张卡一格红笔都没有 = 灰度/忘切彩色的签名（issue #331 ③），不能静默按空白零分。
+  const twoSubjectiveCard: AnswerCard = card("shuxue", [{
+    id: "subj2", type: "subjective", title: "解答题",
+    questions: [
+      { id: "s1", number: 28, score: 10, style: "manual_score_grid", kind: "plain_box", minHeightMm: 30 },
+      { id: "s2", number: 29, score: 10, style: "manual_score_grid", kind: "plain_box", minHeightMm: 30 }
+    ]
+  } as never]);
+  const noRed = (questionId: string, questionNumber: number) => ({
+    questionId, questionNumber, score: 0, maxScore: 10, status: "invalid", confidence: 0,
+    validCells: [], invalidCells: [], message: "no_valid_subjective_score"
+  });
+  const scoredRed = {
+    questionId: "s1", questionNumber: 28, score: 6, maxScore: 10, status: "ok", confidence: 0.9,
+    validCells: [{ score: 6, rect: { x: 0, y: 0, width: 1, height: 1 } }], invalidCells: []
+  };
+  const partialNoRed = gradeCombinedRecognition(twoSubjectiveCard, "partial.png", {
+    status: "ok", questions: [], subjectiveQuestions: [scoredRed, noRed("s2", 29)]
+  } as never);
+  const blankSecond = partialNoRed.subjectiveQuestions.find(q => q.questionId === "s2");
+  check("同页别处读到红笔时，没画斜线的大题按 0 分确认", blankSecond?.score === 0 && blankSecond?.needsReview === false);
+  const allNoRed = gradeCombinedRecognition(twoSubjectiveCard, "gray.png", {
+    status: "ok", questions: [], subjectiveQuestions: [noRed("s1", 28), noRed("s2", 29)]
+  } as never);
+  check("整张卡都没有红笔笔迹时全部留复核", allNoRed.subjectiveQuestions.every(q => q.needsReview === true) && allNoRed.subjectiveScore === 0);
 }
 
 section("2. validateCardScores —— 客观题异常分");{

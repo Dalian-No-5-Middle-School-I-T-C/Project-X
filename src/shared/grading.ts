@@ -21,6 +21,13 @@ import { isMultiSelectMode } from "./objectiveMode";
 
 export const OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD = 0.12;
 
+/**
+ * 识别器认定「有涂迹」的填充率下限，取自 native `answer_recognition.cpp` 的
+ * `MIN_SELECTED_FILL_RATIO`（同一函数在 :452-454 会把「涂得不够」或「两档并列」的选择直接清空，
+ * 但墨迹仍留在 `optionScores` 里）。`verify-core-logic` 会核对该源码常量，避免两边悄悄分叉。
+ */
+export const OBJECTIVE_SELECTED_FILL_RATIO = 0.32;
+
 const OPTION_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
 export type ObjectiveQuestionDefinition = {
@@ -165,17 +172,31 @@ function wrongOrExtraScoreFor(rule: ObjectiveScoringRule | undefined): number {
   return rule?.wrongOrExtraScore ?? 0;
 }
 
+/** 识别证据里是否存在达到涂写下限的选项（`optionScores` 缺失时按「没有墨迹证据」处理）。 */
+function hasMarkedOptionEvidence(optionScores: Record<string, number> | undefined): boolean {
+  if (!optionScores) return false;
+  return Object.values(optionScores).some(value => Number.isFinite(value) && value >= OBJECTIVE_SELECTED_FILL_RATIO);
+}
+
+/**
+ * @param reportedOnThisPage 该题是否出现在这一页的识别结果里。多页/双面卡里没上报的题是由
+ *   `gradeObjectiveRecognition` 合成的，不能当成考生空白（评审 P1）；合成条目继续按低置信度留复核。
+ */
 export function gradeObjectiveQuestion(
   card: AnswerCard,
   question: ObjectiveRecognitionQuestion,
-  confidenceThreshold = OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD
+  confidenceThreshold = OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD,
+  reportedOnThisPage = true
 ): ObjectiveQuestionGrade {
   const target = findObjectiveQuestion(card, question.questionNumber);
   const definition = target?.definition;
   const confidence = Number.isFinite(question.confidence) ? question.confidence : 0;
   const selectedOptions = normalizeOptions(question.selectedOptions, definition?.optionCount);
-  // 只用原始填涂判断空白：被选项数过滤掉的非法/越界标签说明识别结果有问题，仍应复核。
-  const blank = (question.selectedOptions?.length ?? 0) === 0;
+  // 空白必须是「这一题被上报过、原始选项为空、且证据里没有达到下限的墨迹」。
+  // 越界标签被过滤掉、或识别器看清了墨迹却因并列/不足而清空选择，都仍属识别异常，要复核。
+  const blank = reportedOnThisPage
+    && (question.selectedOptions?.length ?? 0) === 0
+    && !hasMarkedOptionEvidence(question.optionScores);
   const needsReview = !blank && confidence < confidenceThreshold;
 
   if (!definition) {
@@ -280,12 +301,13 @@ export function gradeObjectiveRecognition(
   for (const block of card.bodyBlocks) {
     if (block.type !== "objective") continue;
     for (const questionNumber of objectiveQuestionNumbers(block)) {
-      const recognized = questionMap.get(questionNumber) ?? {
-        questionNumber,
-        selectedOptions: [],
-        confidence: 0
-      };
-      grades.push(gradeObjectiveQuestion(card, recognized, confidenceThreshold));
+      const recognized = questionMap.get(questionNumber);
+      grades.push(gradeObjectiveQuestion(
+        card,
+        recognized ?? { questionNumber, selectedOptions: [], confidence: 0 },
+        confidenceThreshold,
+        recognized !== undefined
+      ));
     }
   }
 
@@ -332,16 +354,33 @@ function findSubjectiveQuestion(card: AnswerCard, questionId: string, blockId?: 
   return undefined;
 }
 
-/** 识别器确认「没有红笔斜线」的空白分数格：应直接 0 分，不进入复核。 */
-export function isBlankSubjectiveRecognition(recognition: SubjectiveRecognitionQuestion): boolean {
-  return recognition.status === "invalid"
+/**
+ * 这份识别结果里是否读到过红笔（采纳或未采纳都算）。整张卡一格红笔都没有时——历史灰度卷、
+ * 驱动没保住彩色——「考生没画斜线」和「红笔整批丢了」在识别 JSON 里完全同形，
+ * 必须继续留复核，不能把真实手写的分数静默归零（issue #331 ③ 的既有口径）。
+ */
+export function hasRedPenEvidence(
+  subjectiveQuestions: readonly Pick<SubjectiveRecognitionQuestion, "validCells" | "invalidCells">[]
+): boolean {
+  return subjectiveQuestions.some(question =>
+    (question.validCells?.length ?? 0) > 0 || (question.invalidCells?.length ?? 0) > 0);
+}
+
+/** 识别器确认「这一题没画给分斜线」的空白分数格：同一份结果里别处读到过红笔时，才按 0 分确认。 */
+export function isBlankSubjectiveRecognition(
+  recognition: SubjectiveRecognitionQuestion,
+  redPenEvidence = true
+): boolean {
+  return redPenEvidence
+    && recognition.status === "invalid"
     && recognition.message === "no_valid_subjective_score"
     && (recognition.invalidCells?.length ?? 0) === 0;
 }
 
 export function gradeSubjectiveRecognition(
   card: AnswerCard,
-  recognition: SubjectiveRecognitionQuestion
+  recognition: SubjectiveRecognitionQuestion,
+  redPenEvidence = true
 ): SubjectiveQuestionGrade | null {
   // 同一 questionId 可以出现在多个题块。带了 blockId 就必须对上那一块，
   // 否则后块的 25 分会被前块的满分夹成前块的分数。没带 blockId 的旧结果仍取第一块。
@@ -350,7 +389,7 @@ export function gradeSubjectiveRecognition(
   // 未知 questionId 的自报分数与满分一律丢弃，不得计入成绩。
   if (!question) return null;
   const maxScore = Number.isFinite(question.score) ? Math.max(0, question.score) : 0;
-  if (isBlankSubjectiveRecognition(recognition)) {
+  if (isBlankSubjectiveRecognition(recognition, redPenEvidence)) {
     return {
       questionId: recognition.questionId,
       questionNumber: question.number,
@@ -395,8 +434,9 @@ export function gradeCombinedRecognition(
 ): CombinedGradingRow {
   const objectiveRow = gradeObjectiveRecognition(card, fileName, recognition, confidenceThreshold);
 
+  const redPenEvidence = hasRedPenEvidence(recognition.subjectiveQuestions ?? []);
   const subjectiveQuestions: SubjectiveQuestionGrade[] = (recognition.subjectiveQuestions ?? [])
-    .map((sq) => gradeSubjectiveRecognition(card, sq))
+    .map((sq) => gradeSubjectiveRecognition(card, sq, redPenEvidence))
     .filter((grade): grade is SubjectiveQuestionGrade => grade !== null);
 
   const objectiveScore = objectiveRow.score;

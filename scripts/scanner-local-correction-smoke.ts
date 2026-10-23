@@ -93,6 +93,14 @@ try {
   assert.equal((await fetch(url, { headers: { Authorization: `Bearer ${ownerLogin.token}` } })).status, 200,
     "teachers with whole-exam grading access keep the ambiguous correction available");
   await db.run("UPDATE exams SET created_by=NULL WHERE id IN (?,?)", firstExam.lastInsertRowid, secondExam.lastInsertRowid);
+  // 会话曾绑定第二场考试，而那场已被保留策略清理：不能把这张卡改挂到仍在用的第一场上。
+  await db.run("INSERT INTO exam_archives(exam_id,is_deleted,deleted_at) VALUES (?,1,CURRENT_TIMESTAMP)", secondExam.lastInsertRowid);
+  await db.run("INSERT INTO scanner_submissions(exam_id,session_id,group_id,student_number,state,pages_json) VALUES (?,?,?,'91001','saved','{}')",
+    secondExam.lastInsertRowid, session.id, "0");
+  assert.equal((await request("teacher")).status, 404, "archived bindings must not be re-homed onto another active exam");
+  assert.equal((await request("admin")).status, 200, "admins keep the CR4 read-through on cleaned exams");
+  await db.run("DELETE FROM scanner_submissions WHERE exam_id=? AND session_id=?", secondExam.lastInsertRowid, session.id);
+  await db.run("DELETE FROM exam_archives WHERE exam_id=?", secondExam.lastInsertRowid);
   await db.run("DELETE FROM exams WHERE id=?", secondExam.lastInsertRowid);
   await db.run("INSERT INTO exam_archives(exam_id,is_deleted,deleted_at) VALUES (?,1,CURRENT_TIMESTAMP)", firstExam.lastInsertRowid);
   assert.equal((await request("teacher")).status, 404, "a cleaned exam must not become an unbound local scan");

@@ -20,5 +20,5 @@ export async function resolveScannerExam(cardId: string, sessionId: string) {
   const exam = bound.length > 0
     ? bound.length === 1 ? exams.find(e => e.id === bound[0].exam_id) : undefined
     : active.length === 1 ? active[0] : active.length === 0 && exams.length === 1 ? exams[0] : undefined;
-  return { exams, exam, allExamIds: rows.map(e => Number(e.id)) };
+  return { exams, exam, allExamIds: rows.map(e => Number(e.id)), boundExamIds: bound.map(row => Number(row.exam_id)) };
 }

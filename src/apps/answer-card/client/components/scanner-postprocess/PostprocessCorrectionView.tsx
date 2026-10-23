@@ -12,7 +12,7 @@ import {
   type CorrectionCell, type CorrectionDocument, type CorrectionEdit,
 } from "../../../../../shared/scanCorrection";
 import { matchesCorrectionFocus, selectObjectiveOptionCells, selectScoreCells } from "../../../../../shared/correctionCellSelect";
-import { findObjectiveQuestion, gradeCombinedRecognition, gradeSubjectiveRecognition, isBlankSubjectiveRecognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
+import { findObjectiveQuestion, gradeCombinedRecognition, gradeSubjectiveRecognition, hasRedPenEvidence, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
 import { isMultiSelectMode, objectiveModeLabel } from "../../../../../shared/objectiveMode";
 import type { CombinedRecognitionResult, SubjectiveQuestionNumber } from "../../../../../shared/types";
 
@@ -162,19 +162,15 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
     ? gradeCombinedRecognition(document.card, `后处理_${groupId}`, liveMerged, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD)
     : null), [document, liveMerged, groupId]);
 
+  // 复核题号直接取共享判分的结果：界面不再自己写一套「低置信度 = 存疑」判定，
+  // 空白题、越界选项、整张卡没红笔这些口径都由 gradeCombinedRecognition 统一裁断。
   const reviewQuestions = useMemo(() => {
     const set = new Set<SubjectiveQuestionNumber>();
-    if (!liveMerged) return set;
-    for (const q of liveMerged.questions ?? []) {
-      if ((q.selectedOptions?.length ?? 0) === 0) continue;
-      if ((q.confidence ?? 0) < OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD) set.add(q.questionNumber);
-    }
-    for (const q of liveMerged.subjectiveQuestions ?? []) {
-      if (isBlankSubjectiveRecognition(q)) continue;
-      if (q.status !== "ok") set.add(q.questionNumber);
-    }
+    if (!graded) return set;
+    for (const q of graded.questions) if (q.needsReview) set.add(q.questionNumber);
+    for (const q of graded.subjectiveQuestions) if (q.needsReview) set.add(q.questionNumber);
     return set;
-  }, [liveMerged]);
+  }, [graded]);
 
   const rows = useMemo<Row[]>(() => {
     if (!document || !graded) return [];
@@ -192,7 +188,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
     // 主观题按「题块」逐条出行：同一 questionId 可能出现在多个题块上，
     // 用 graded.subjectiveQuestions（无 blockId）反查会把两块的分数格混在一起
     const subjective: Row[] = (liveMerged?.subjectiveQuestions ?? []).flatMap(entry => {
-      const grade = gradeSubjectiveRecognition(document.card, entry);
+      const grade = gradeSubjectiveRecognition(document.card, entry, hasRedPenEvidence(liveMerged?.subjectiveQuestions ?? []));
       if (!grade) return [];
       const origin = original.subjectiveQuestions?.find(o => o.questionId === grade.questionId && o.blockId === entry.blockId);
       return [{

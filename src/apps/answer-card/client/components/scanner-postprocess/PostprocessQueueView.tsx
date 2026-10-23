@@ -12,7 +12,7 @@ import { replaceScopedSelection, type PostprocessQueueItem } from "../../../../.
 import { selectStudentDigitCells } from "../../../../../shared/correctionCellSelect";
 import { uniqueScanConflictCards, type ScanConflictCard } from "../../../../../shared/scanPages";
 import { correctionCells, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../../shared/scanCorrection";
-import { isBlankSubjectiveRecognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
+import { gradeCombinedRecognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
 import type { SubjectiveQuestionNumber } from "../../../../../shared/types";
 
 export interface ScanMeta { recordId: string; createdAt: string; scanQuality: number | null; }
@@ -603,15 +603,13 @@ function LowConfidencePanel({ item, channel, onJump }: {
     if (!document) return [];
     const list: Array<{ questionNumber: SubjectiveQuestionNumber; label: string; confidence: number; value: string }> = [];
     for (const page of document.pages) {
-      const recognition = page.recognition;
-      for (const question of recognition.questions ?? []) {
-        if ((question.selectedOptions?.length ?? 0) === 0) continue;
-        if ((question.confidence ?? 0) >= OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD) continue;
+      const graded = gradeCombinedRecognition(document.card, page.sourceId, page.recognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD);
+      for (const question of graded.questions) {
+        if (!question.needsReview) continue;
         list.push({ questionNumber: question.questionNumber, label: `第 ${question.questionNumber} 题（客观）`, confidence: question.confidence ?? 0, value: question.selectedOptions.join(",") || "未答" });
       }
-      for (const question of recognition.subjectiveQuestions ?? []) {
-        if (isBlankSubjectiveRecognition(question)) continue;
-        if (question.status === "ok") continue;
+      for (const question of graded.subjectiveQuestions) {
+        if (!question.needsReview) continue;
         list.push({ questionNumber: question.questionNumber, label: `第 ${question.questionNumber} 题（主观 ${question.status}）`, confidence: question.confidence ?? 0, value: String(question.score) });
       }
     }

@@ -534,7 +534,8 @@ try {
     layoutPageCountFor:()=>1,onResolved:()=>{},onPreviewDiscard:()=>{},onDelete:async()=>{},
     onJumpToCorrection:(_sid,_gid,question)=>{assert.equal(question,2);jumped=true;},
   }))));
-  await settle();assert.match(text(),/第 2 题（主观 review）/);assert(!text().includes("没有低于阈值的题"));
+  // 列表现直接复用共享判分的结果，所以状态取判分侧的归类（missing_score_grid），不再是识别原始字串。
+  await settle();assert.match(text(),/第 2 题（主观 missing_score_grid）/);assert(!text().includes("没有低于阈值的题"));
   await clickText("去改这题");assert(jumped);
   await act(async()=>root5!.render(createElement(TooltipProvider,null,createElement(PostprocessCorrectionView,{
     channel:reviewChannel,sessionId:"review",groupId:"0",draftOnly:true,onSaved:()=>{},

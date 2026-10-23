@@ -36,10 +36,10 @@
 
 ## 2026-10-23：#352 扫描端整卡改分归属、存疑卷上传与空白题零分
 
-- **归属不唯一仍可整卡改分**：本地扫描会话的 `GET/PUT /api/scanner/session/:sessionId/groups/:groupId/correction` 不再因「多场候选考试」或「只剩归档考试」直接 409。会话作用域只对本地订正路径放行，订正路由再要求教师/管理员、`GRADE_WRITE`，并且**每一场候选考试都要过整卷阅卷授权**（与归属唯一时同一条门：只有单题块授权、或与某场考试无归属关系的教师仍被拒绝）；正式成绩入库仍要求唯一考试归属，归属不唯一时只保存本机草稿。
+- **归属不唯一仍可整卡改分**：本地扫描会话的 `GET/PUT /api/scanner/session/:sessionId/groups/:groupId/correction` 不再因「多场候选考试」或「只剩归档考试」直接 409。会话作用域只对本地订正路径放行，订正路由再要求教师/管理员、`GRADE_WRITE`，并且**每一场候选考试都要过整卷阅卷授权**（与归属唯一时同一条门：只有单题块授权、或与某场考试无归属关系的教师仍被拒绝）；正式成绩入库仍要求唯一考试归属，归属不唯一时只保存本机草稿。会话若曾绑定**已被保留策略清理**的考试，按「考试不存在」拒绝（管理员除外），不会把这张卡改挂到同卡的另一场在用考试上。
 - **存疑卷照常上传**：扫描工作台与后处理页不再用 `needsReviewCount > 0` 拦下整卷上传；图片与识别结果先上传，复核计数随回执返回，后续在服务器或异常卷流程处理。
-- **空白题直接零分**：客观题原始选项为空时直接 0 分，不再因低置信度进入复核；被选项数过滤掉的越界标签仍按识别异常复核。主观题为 `invalid + no_valid_subjective_score` 且没有 `invalidCells`（完全没有红笔斜线）时按 0 分计；读到了红笔但未采纳或组合异常仍保留复核。扫描端改分视图与低置信度面板同步不再列出这些空白题。
-- **验证**：`typecheck`；`verify:core-logic`（108 项，含空客观题、无红笔主观题与越界选项仍复核）；`verify:scanner-upload-flow`（低置信度卷仍上传、入库并保留 `needsReviewCount`）；`verify:scanner-panel-session`、`verify:scanner-postprocess-all`、`verify:scanner-legacy-correction`、`verify:scanner-local-correction`（多场候选下的本地改分与权限拒绝）、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-correction-boundaries`、`verify:scanner-pending`、`verify:scanner-batch-results`、`verify:scanner-upload-manager`、`verify:scanner-review-regressions`、`verify:permission-scope` 通过。本机只运行 SQLite，MariaDB 由 CI 执行。
+- **空白题直接零分（带识别证据判定）**：客观题只有同时满足「该题出现在本页识别结果里」「原始选项为空」「`optionScores` 里没有达到识别器涂写下限（`MIN_SELECTED_FILL_RATIO` = 0.32，`verify-core-logic` 会核对该源码常量）的墨迹」才按 0 分确认；多页/双面卡里本页未上报的题、被选项数过滤掉的越界标签、以及识别器看到墨迹却因并列或不足而清空选择的情况，一律继续复核。主观题 `invalid + no_valid_subjective_score` 且没有 `invalidCells` 时，还要求**同一份识别结果里别处读到过红笔**才按 0 分确认；整张卡一格红笔都没有（历史灰度、驱动没保住彩色）继续留复核，与 issue #331 ③ 的既有口径一致。扫描端改分视图与低置信度面板不再各自写判定，改为直接复用共享判分的 `needsReview`。
+- **验证**：`typecheck`、Web 与扫描端构建；`verify:core-logic`（115 项，含空客观题、越界选项、墨迹未采纳、跨页合成题不被空白顶掉、空白大题与整卡无红笔两种情形）；`verify:scanner-upload-flow`（低置信度卷仍上传、入库并保留 `needsReviewCount`）；`verify:scanner-panel-session`、`verify:scanner-postprocess-all`、`verify:scanner-legacy-correction`、`verify:scanner-local-correction`（多场候选下的本地改分、单题块授权 403、整卷授权 200、归档绑定 404）、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-correction-boundaries`、`verify:scanner-pending`、`verify:scanner-batch-results`、`verify:scanner-duplex-correction`、`verify:scanner-upload-manager`、`verify:scanner-review-regressions`、`verify:security-critical`（523/0）、`verify:permission-scope`（122/0）通过。本机只运行 SQLite，MariaDB 由 CI 执行。
 
 ## 2026-10-23：鲁棒性审查——小数题号、模板总分、计分边界与失败回显
 
