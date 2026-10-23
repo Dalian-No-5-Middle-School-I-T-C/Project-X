@@ -42,8 +42,8 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   const [loading, setLoading] = useState(true);
   const [savingAll, setSavingAll] = useState(false);
   const [error, setError] = useState("");
-  /** 本页见过的异常组（sid/gid），含结果里仍需复核的低置信度卷。
-   *  它们订正干净后才允许补传一次。已经进过上传名单的组不再建第二份回执。 */
+  /** 本页见过的异常组（sid/gid）：失败卷与冲突副本还没建过回执，订正后允许补传一次。
+   *  识别成功的卷（含存疑卷）已在 reload 的首传里排队，不再建第二份回执。 */
   const abnormalKey = `projectx-postprocess-abnormal/${cardId}`;
   const abnormalSeen = useRef<Set<string>>(readIdSet(abnormalKey));
   /** 完成名单持久化；未完成上传由 manager 恢复原远端会话。 */
@@ -217,8 +217,8 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   }
 
   /**
-   * 处理完一条之后重拉。首传已经在 reload 里按「未入库、无存疑、不在名单」做过。
-   * 这里只补「不在本页会话列表里」的保留份，并拦住仍需复核或已经传过的组。
+   * 处理完一条之后重拉。首传已在 reload 里对全部识别成功的组排队（存疑卷也算）。
+   * 这里只补「还没传过」的失败/冲突保留份；已经传过的组不再建第二份回执。
    */
   async function syncAfterFix(sessionId: string, groupId: string) {
     const key = `${sessionId}/${groupId}`;
@@ -241,7 +241,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
     const result = batch?.results.find(entry => entry.groupId === groupId);
     if (!result || !meta) {
       if (wasAbnormal) notify.error("没有找到可补传的识别结果");
-      else if (alreadyQueued) notify.info("本机已保存。该卷随本批一起上传过，改动不再重复上传；服务器成绩请走 Web 成绩修改。");
+      else if (alreadyQueued) notify.info("该卷已随本批上传，本机改动不再重复上传；服务器成绩请走 Web 成绩修改。");
       return;
     }
     const inPage = sessionId in fresh.batches;
@@ -258,8 +258,10 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
       notify.error("本机会话没有扫描时的答题卡版本，已停止补传，避免按新版面上传旧识别结果");
       return;
     }
-    if (!wasAbnormal && alreadyQueued) {
-      notify.info("本机已保存。该卷随本批一起上传过，改动不再重复上传；服务器成绩请走 Web 成绩修改。");
+    if (alreadyQueued) {
+      // 重复上传同一份考卷会被服务端当成第二份原卷，反而撤掉已保存的成绩，
+      // 所以本机改分只留本机记录，服务器侧要改请走 Web 成绩修改。
+      notify.info("该卷已随本批上传，本机改动不再重复上传；服务器成绩请走 Web 成绩修改。");
     }
   }
 

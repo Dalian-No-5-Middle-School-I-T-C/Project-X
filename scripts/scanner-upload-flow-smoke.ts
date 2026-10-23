@@ -55,6 +55,17 @@ function cards(id: string) {
   return uniqueScanConflictCards([...(job.reviewCards ?? []), ...(job.failures?.flatMap(f => f.conflicts ?? []) ?? [])]);
 }
 try {
+  // 上传契约必须保留主观题的失败原因字串：丢了它，服务端就把「没画斜线」继续当存疑（#352）。
+  const { recognitionSchema } = await import("../src/server/routes/scanner-upload");
+  const parsedRecognition = recognitionSchema.parse({
+    identity: { status: "verified", code: "QR_VERIFIED", cardId: fixture.cardId, pageNumber: 1 },
+    status: "ok", studentId: { status: "ok", value: "91001" },
+    questions: [{ questionNumber: 1, selectedOptions: [], confidence: 0 }],
+    subjectiveQuestions: [{ questionId: "q1", questionNumber: 7, score: 0, maxScore: 10, status: "invalid",
+      confidence: 0, message: "no_valid_subjective_score", validCells: [], invalidCells: [] }],
+  });
+  assert.equal(parsedRecognition.subjectiveQuestions[0].message, "no_valid_subjective_score", "上传契约必须留下 message 字段");
+
   const original = enqueue("original");
   assert.equal((await terminal(original)).status, "done");
   const originalSession = (await state()).receipts.find(r => r.state === "saved")!.session_id;

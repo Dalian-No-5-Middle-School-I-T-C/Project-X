@@ -39,6 +39,9 @@
 - **归属不唯一仍可整卡改分**：本地扫描会话的 `GET/PUT /api/scanner/session/:sessionId/groups/:groupId/correction` 不再因「多场候选考试」或「只剩归档考试」直接 409。会话作用域只对本地订正路径放行，订正路由再要求教师/管理员、`GRADE_WRITE`，并且**每一场候选考试都要过整卷阅卷授权**（与归属唯一时同一条门：只有单题块授权、或与某场考试无归属关系的教师仍被拒绝）；正式成绩入库仍要求唯一考试归属，归属不唯一时只保存本机草稿。会话若曾绑定**已被保留策略清理**的考试，按「考试不存在」拒绝（管理员除外），不会把这张卡改挂到同卡的另一场在用考试上。
 - **存疑卷照常上传**：扫描工作台与后处理页不再用 `needsReviewCount > 0` 拦下整卷上传；图片与识别结果先上传，复核计数随回执返回，后续在服务器或异常卷流程处理。
 - **空白题直接零分**：客观题没涂（原始选项为空）直接 0 分，不再因低置信度进复核；主观题分数格没画给分斜线（`invalid + no_valid_subjective_score` 且没有 `invalidCells`）同样按 0 分确认。两条现场例外继续保留：被选项数过滤掉的越界标签算识别异常，多页/双面卡里本页未上报的题（`gradeObjectiveRecognition` 合成的条目）算「未上报」，不会把另一页真实的存疑答案顶掉。红笔整批丢失（灰度、忘切彩色）不改判分口径，仍由 issue #331 ③ 的强制彩色 + 按页零红笔告警兜住。扫描端改分视图与低置信度面板不再各自写一套「低于阈值就算存疑」，统一复用共享判分的 `needsReview`。
+- **上传契约保留主观题失败原因**：`scanner-upload` 的识别结果校验此前会丢掉 `subjectiveQuestions[].message`，服务端因此永远认不出 `no_valid_subjective_score`，空白大题传上去仍算存疑。字段补进白名单（限长 120），并在 `verify:scanner-upload-flow` 里直接解析一次钉住。
+- **异常队列按整份卡判一次**：低置信度面板原先逐页判分，双面卡的另一页会把「本页没上报的客观题」列成一堆置信度 0 的「未答」存疑项。改为合并整份卡后判一次，与改分视图同一口径。
+- **已上传的存疑卷给出明确指路**：存疑卷现在先上传，之后在本机改分不再重复排队（重复上传同一份考卷会被服务端当成第二份原卷，反而撤掉已保存的成绩），界面会提示「已随本批上传，改动请走 Web 成绩修改」，不再静默。
 - **验证**：`typecheck`、Web 与扫描端构建；`verify:core-logic`（111 项，含空客观题、越界选项、跨页合成题不被空白顶掉、空白大题零分）；`verify:scanner-upload-flow`（低置信度卷仍上传、入库并保留 `needsReviewCount`）；`verify:scanner-panel-session`、`verify:scanner-postprocess-all`、`verify:scanner-legacy-correction`、`verify:scanner-local-correction`（多场候选下的本地改分、单题块授权 403、整卷授权 200、归档绑定 404）、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-correction-boundaries`、`verify:scanner-pending`、`verify:scanner-batch-results`、`verify:scanner-duplex-correction`、`verify:scanner-upload-manager`、`verify:scanner-review-regressions`、`verify:security-critical`（523/0）、`verify:permission-scope`（122/0）通过。本机只运行 SQLite，MariaDB 由 CI 执行。
 
 ## 2026-10-23：鲁棒性审查——小数题号、模板总分、计分边界与失败回显

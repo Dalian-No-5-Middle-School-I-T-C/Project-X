@@ -8,7 +8,7 @@ import { CorrectionCanvas } from "./CorrectionCanvas";
 import type { PostprocessChannel } from "./postprocessChannel";
 import { replaceScopedSelection } from "../../../../../shared/scanPostprocess";
 import {
-  correctionCells, correctionState, isUnconfirmedCorrectionCell, lowConfidenceTouchedIds, toggleCorrectionCell,
+  correctionCells, correctionState, isUnconfirmedCorrectionCell, lowConfidenceTouchedIds, mergeRecognitions, toggleCorrectionCell,
   type CorrectionCell, type CorrectionDocument, type CorrectionEdit,
 } from "../../../../../shared/scanCorrection";
 import { matchesCorrectionFocus, selectObjectiveOptionCells, selectScoreCells } from "../../../../../shared/correctionCellSelect";
@@ -64,22 +64,6 @@ function markLowConfidenceConfirmation<T extends { sourceId: string; selected: s
 /** 卡面选项字母表：A..（optionCount） */
 function optionLetters(count: number | undefined): string[] {
   return Array.from({ length: Math.max(0, count ?? 0) }, (_, index) => String.fromCharCode(65 + index));
-}
-
-/** 各页 recognition 拼成整份卡的识别结果（与本机按组判分同一口径）。 */
-function mergeRecognitions(document: CorrectionDocument): CombinedRecognitionResult {
-  const base = document.pages[0]?.recognition;
-  const merged: CombinedRecognitionResult = {
-    status: base?.status ?? "ok",
-    studentId: base?.studentId ?? { status: "ok", value: null },
-    questions: [],
-    subjectiveQuestions: [],
-  };
-  for (const page of document.pages) {
-    merged.questions.push(...(page.recognition.questions ?? []));
-    merged.subjectiveQuestions.push(...(page.recognition.subjectiveQuestions ?? []));
-  }
-  return merged;
 }
 
 export function PostprocessCorrectionView({ channel, sessionId, groupId, initialSaved = false, draftOnly = false, highlightQuestion, onSaved }: PostprocessCorrectionViewProps) {

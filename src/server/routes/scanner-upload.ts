@@ -55,7 +55,7 @@ const geometrySchema = z.object({
   imageWidth: z.number().int().positive().max(100000), imageHeight: z.number().int().positive().max(100000),
   imageToLayout: z.array(z.number().finite()).length(9), layoutToImage: z.array(z.number().finite()).length(9),
 });
-const recognitionSchema = z.object({
+export const recognitionSchema = z.object({
   geometry: geometrySchema.optional(),
   pageNumber: z.number().int().positive().optional(),
   identity: z.object({ status: z.enum(["verified", "unverified"]), code: z.string(), cardId: z.string().optional(), pageNumber: z.number().int().positive().optional() }),
@@ -69,6 +69,9 @@ const recognitionSchema = z.object({
     blockId: z.string().optional(), questionId: z.string(), questionNumber: z.union([z.number(), z.string()]),
     score: z.number().finite().nonnegative(), maxScore: z.number().finite().nonnegative(),
     status: z.string(), confidence: z.number().finite(),
+    // 判分要靠 `no_valid_subjective_score` 这道字串区分「没画斜线」与「画了但没采纳」，
+    // 这里丢字段就等于把空白大题一路退回存疑队列（issue #352）。
+    message: z.string().max(120).optional(),
     validCells: z.array(z.any()), invalidCells: z.array(z.any()),
   })).max(1000),
 });
