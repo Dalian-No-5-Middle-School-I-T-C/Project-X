@@ -46,6 +46,7 @@
 - **验证**：`typecheck`、`build`、`verify:core-logic` 104/0、`verify:auth` 153/0、`verify:security-critical` 523/0、`verify:scanner-pending`、`verify:exam-class-memberships`、`verify:class-archive`、`verify:scanner-batch-results`、`verify:scan-correction`、`verify:student-score-display`、`verify:progress-score-rate` 77/0；新增 MariaDB 小题号插入回归，由 CI MariaDB 作业执行。本机无 MariaDB，未本地运行该专项。
 - 评审补充（P2）：扫描后处理页强制删除自身失败（网络错误 / HTTP 500）时，只关了 `confirmOpen` 没清掉上一轮 409 留下的 `blockedNotice`，而确认框开关是 `confirmOpen || blockedNotice`，框会继续挡在错误提示前面。现在失败时一并清空 `blockedNotice`，原因直接显示在选择栏，勾选取舍保留可重试；`verify:scanner-postprocess-ui` 新增「非 force → 409 → force → 500」剧本，断言框已关闭且错误当场可见（退回旧写法时该断言即红）。
 
+- 评审补充（P1）：填空模板把块总分记在首个空后，其余小空的满分是 0，而识别切块的题号清单会列出块内全部小空、网阅面板也照样提交——`ReviewService` 原样按「题号不在答题卡题目范围内」拒绝，英语语法填空（57–65）与数学填空（13–14）的整块卷子从此交不出去。现在满分 0 的本块小题按不可评分对象跳过（不报错、也不写逐题成绩），块总分仍记在首个空；真正不属于本题块或卡面的题号依旧拒绝。`verify:review-submit` 新增逐题模式与题块总分模式两份填空块回归（含落库题号只应有首个空的断言），退回旧实现时直接抛「题号 57 不在答题卡题目范围内」。
 ## 2026-10-17：PR #332 —— 双面批次收尾、红笔分数格强制彩色与告警可恢复、DPI 逐轴取证
 
 - **批次结束按单双面分别判定**：单面时 `MSG_ENDXFER` 的码 7（随包 `twain.h` 2.5.1 的 `TWRC_ENDOFLIST`）且 `Count==0` 才收批；双面时该组合仍继续等待当前张背面，背面到达才成功，未到达则保留正面并报部分失败，不再出现「只出一面却报整批成功」。收尾码与 `Count` 的组合由假 DSM 夹具编译真实扫描循环回归，只在 CI（Linux + g++）执行。
