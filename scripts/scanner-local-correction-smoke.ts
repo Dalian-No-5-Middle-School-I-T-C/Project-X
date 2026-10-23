@@ -76,6 +76,8 @@ try {
     sourceId: p.sourceId, revision: p.revision, selected: p.selected })) });
   assert.equal(ambiguousSave.status, 200, "ambiguous ownership must still allow saving the local card");
   assert.equal((await ambiguousSave.json() as { saved: boolean }).saved, false, "ambiguous ownership must not admit grades");
+  assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id IN (?,?)", firstExam.lastInsertRowid, secondExam.lastInsertRowid), null,
+    "ambiguous local correction must never write formal grades");
   // 只有单题块授权的教师：看得到考试，但不能借归属歧义读改整张卡。
   const scoped = await db.run("INSERT INTO users(username,password_hash,name,role_id) VALUES ('local_blockscoped',?,'单题块教师',2)", hash);
   await db.run("INSERT INTO teacher_permissions(teacher_id,block_id,can_grade,can_view_scores) VALUES (?,?,?,?)", scoped.lastInsertRowid, "local_obj", 1, 1);
