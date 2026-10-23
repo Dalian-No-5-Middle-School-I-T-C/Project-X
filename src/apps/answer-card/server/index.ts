@@ -28,6 +28,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { enforceNodeRuntimeCve2026111497 } from "../../../shared/nodeRuntimeSecurity";
+
+// CVE-2026-111497：未修复的 Node 在监听之前退出。Electron 内嵌运行时走解码闸门，不在这里退出。
+enforceNodeRuntimeCve2026111497();
 
 // 服务端启动时一次性读取 package.json 拿到版本号，避免在源码各处写死 v1.x.x；
 // 与客户端 import.meta.env.VITE_APP_VERSION（vite.config.ts 注入）保持同源。

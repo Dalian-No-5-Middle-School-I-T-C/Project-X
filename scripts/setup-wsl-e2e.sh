@@ -2,7 +2,12 @@
 set -euo pipefail
 root=/var/tmp/projectx-e2e-20260905
 repo=$(cd "$(dirname "$0")/.." && pwd)
-export PATH="$root/node-v22.22.0-linux-x64/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+node_home="$root/node-v22.23.4-linux-x64"
+if [[ ! -x "$node_home/bin/node" ]] || ! "$node_home/bin/node" -e 'const version=process.env.PROJECTX_NODE_VERSION_UNDER_TEST||process.versions.node;const m=/^v?(\d+)\.(\d+)\.(\d+)(.*)$/.exec(String(version).trim());if(!m)process.exit(1);const M=+m[1],n=+m[2],p=+m[3];const bad=m[4]!==""||M<22||M===23||M===25||(M===22&&(n<23||(n===23&&p<4)))||(M===24&&(n<22||(n===22&&p<1)))||(M===26&&(n<12||(n===12&&p<1)));if(bad)process.exit(1);'; then
+  echo "需要已解压的 Node.js 22.23.4+（CVE-2026-111497）：$node_home" >&2
+  exit 1
+fi
+export PATH="$node_home/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 printf '[mysqld]\nport=3308\n' > /etc/mysql/mariadb.conf.d/99-projectx-e2e.cnf
 service mariadb start
 mariadb <<'SQL'
@@ -20,7 +25,7 @@ cat > "$root/run-server.sh" <<'RUN'
 #!/usr/bin/env bash
 set -euo pipefail
 cd /var/tmp/projectx-e2e-20260905/server
-export PATH=/var/tmp/projectx-e2e-20260905/node-v22.22.0-linux-x64/bin:/usr/local/bin:/usr/bin:/bin
+export PATH=/var/tmp/projectx-e2e-20260905/node-v22.23.4-linux-x64/bin:/usr/local/bin:/usr/bin:/bin
 export PORT=5187 PROJECTX_AUTH_ENFORCE=1 PROJECTX_ENABLE_SCANNER=0 PROJECTX_ENABLE_SCANNER_CLIENT_API=1
 export PROJECTX_MARIADB_HOST=127.0.0.1 PROJECTX_MARIADB_PORT=3308 PROJECTX_MARIADB_USER=projectx_e2e
 export PROJECTX_MARIADB_PASSWORD=Local-E2e-Only-2026 PROJECTX_MARIADB_DATABASE=projectx_e2e_20260905

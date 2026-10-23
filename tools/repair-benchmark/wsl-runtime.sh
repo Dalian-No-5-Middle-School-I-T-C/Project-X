@@ -55,8 +55,10 @@ if ! command -v mariadbd >/dev/null || ! command -v nginx >/dev/null || ! python
   apt-get update
   apt-get install -y mariadb-server nginx python3-venv curl xz-utils fonts-noto-cjk build-essential
 fi
-if [[ ! -x "$cache/node/bin/node" ]]; then
-  curl -fL --retry 3 https://nodejs.org/dist/v22.22.0/node-v22.22.0-linux-x64.tar.xz -o "$cache/node.tar.xz"
+# CVE-2026-111497：已缓存的 22.22.0 不能继续用。检查脚本与 electron/node-runtime-security.cjs 同源。
+if [[ ! -x "$cache/node/bin/node" ]] || ! "$cache/node/bin/node" -e 'const version=process.env.PROJECTX_NODE_VERSION_UNDER_TEST||process.versions.node;const m=/^v?(\d+)\.(\d+)\.(\d+)(.*)$/.exec(String(version).trim());if(!m)process.exit(1);const M=+m[1],n=+m[2],p=+m[3];const bad=m[4]!==""||M<22||M===23||M===25||(M===22&&(n<23||(n===23&&p<4)))||(M===24&&(n<22||(n===22&&p<1)))||(M===26&&(n<12||(n===12&&p<1)));if(bad)process.exit(1);'; then
+  curl -fL --retry 3 https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.xz -o "$cache/node.tar.xz"
+  rm -rf "$cache/node"
   mkdir -p "$cache/node"
   tar -xJf "$cache/node.tar.xz" --strip-components=1 -C "$cache/node"
 fi

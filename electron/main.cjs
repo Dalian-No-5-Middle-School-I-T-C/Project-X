@@ -1,3 +1,6 @@
+// 先于 Electron 初始化执行：扫描端的 Node 由 Electron 自带，CVE-2026-111497 的补丁还没进稳定版。
+require("./node-runtime-security.cjs").enforceNodeRuntimeCve2026111497();
+
 const { app, BrowserWindow, dialog, session, shell } = require("electron");
 const fs = require("node:fs");
 const http = require("node:http");

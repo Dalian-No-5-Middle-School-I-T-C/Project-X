@@ -12,7 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [22]
+        # CVE-2026-111497：22.x 从 22.23.4 起修复。不要改回浮动的 22。
+        node-version: ["22.23.4"]
 
     steps:
       - uses: actions/checkout@v4
@@ -172,6 +173,10 @@ jobs:
       - name: Ubuntu server package systemd hardening (R37)
         run: npm run verify:systemd-hardening
 
+      # CVE-2026-111497：版本下限、未修复运行时退出 78、Electron 路径关闭 Brotli 解码。
+      - name: Node.js CVE-2026-111497 runtime gate
+        run: npm run verify:node-runtime-cve
+
       # 发布产物完整性清单（R42）：exe/msi 没有代码签名（无证书，且证书不得入库），
       # 处置是每次打包都生成 SHA256SUMS.txt + BUILD-INTEGRITY.txt，并把签名状态如实写出来。
       # 脚本用一次性临时目录真跑生成与校验（含篡改 / 多出文件 / 缺清单三条失败路径）。
@@ -226,7 +231,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.23.4
           cache: npm
       - name: Install dependencies
         run: npm install --ignore-scripts
@@ -440,7 +445,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.23.4
           cache: npm
 
       - name: Install dependencies
