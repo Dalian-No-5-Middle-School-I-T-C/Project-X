@@ -72,6 +72,42 @@ async function main(): Promise<void> {
     assert.deepEqual(await db.all("SELECT version, name FROM schema_migrations ORDER BY version"), migrations);
     console.log("PASS: fresh schema, migrations, repeated initialization");
 
+    // ===== v65：语文/数学模板的 13.1 这类小题号必须能落 MariaDB =====
+    {
+      const { CardRepository } = await import("../src/server/repositories/CardRepository");
+      const { createDefaultCard } = await import("../src/shared/defaultCard");
+      const { applySubjectTemplate } = await import("../src/shared/cardTemplates");
+      const decimalCard = applySubjectTemplate(createDefaultCard("MARIA_DECIMAL_CI", "yuwen"), {});
+      const decimalRepo = new CardRepository();
+      await decimalRepo.createCard(decimalCard);
+      await decimalRepo.updateCard(decimalCard);
+      const decimalNumbers = await db.all<{ number: number }>(
+        `SELECT q.number FROM subjective_questions q
+         JOIN subjective_blocks b ON b.id = q.block_id
+         WHERE b.card_id = ? ORDER BY q.number`, decimalCard.id);
+      assert.ok(decimalNumbers.some((row) => Number(row.number) === 13.1),
+        "MariaDB 必须能保存 13.1 这类小题号（INT 会拒绝或截断）");
+      const decimalUser = await db.run(
+        "INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES ('maria_decimal','disabled','小题号测试',3,'MARIA-DEC-1')");
+      const decimalExam = await db.run("INSERT INTO exams (name,card_id,status) VALUES ('小题号测试',?,'grading')", decimalCard.id);
+      await db.run("INSERT INTO question_scores (exam_id,student_id,question_number,score,max_score,score_type) VALUES (?,?,?,?,?,'subjective')",
+        decimalExam.lastInsertRowid, decimalUser.lastInsertRowid, 13.1, 4, 4);
+      await db.run("INSERT INTO knowledge_points (card_id,question_number,point_text) VALUES (?,?,?)",
+        decimalCard.id, 13.1, "小数题号知识点");
+      await db.run("INSERT INTO answer_overrides (exam_id,card_id,question_number,score_type,override_type) VALUES (?,?,?, 'subjective','score')",
+        decimalExam.lastInsertRowid, decimalCard.id, 13.1);
+      const decimalScore = await db.get<{ question_number: number }>(
+        "SELECT question_number FROM question_scores WHERE exam_id = ?", decimalExam.lastInsertRowid);
+      assert.equal(Number(decimalScore!.question_number), 13.1, "question_scores 也必须保留小数题号");
+      await db.run("DELETE FROM question_scores WHERE exam_id=?", decimalExam.lastInsertRowid);
+      await db.run("DELETE FROM answer_overrides WHERE exam_id=?", decimalExam.lastInsertRowid);
+      await db.run("DELETE FROM knowledge_points WHERE card_id=?", decimalCard.id);
+      await db.run("DELETE FROM exams WHERE id=?", decimalExam.lastInsertRowid);
+      await db.run("DELETE FROM users WHERE id=?", decimalUser.lastInsertRowid);
+      await db.run("DELETE FROM answer_cards WHERE id=?", decimalCard.id);
+      console.log("PASS: decimal sub-question numbers persist on MariaDB");
+    }
+
     // ===== R01 管理员引导口令（MariaDB 分支：buildInsertIgnore 新库路径 + 引导文件事实源）=====
     const adminFile = getBootstrapAdminPath();
     const readAdminRow = () => db.get<{ password_hash: string; password_change_required: number }>(

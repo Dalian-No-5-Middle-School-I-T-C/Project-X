@@ -76,6 +76,19 @@
 - **验证**：`verify:core-logic` 第 14 节新增 5 条回归断言（复现路径、旧卡无逐题配置、逐题覆盖、浮点尾差），全绿；`typecheck` 与 `build:web` 通过。浏览器端点击流程未在本机实跑（dev 会连仓库配置的库），改动为纯函数接线。
 - **存量数据**：库里 `score_per_question` 已被写成 5 的卡不回填——无法判断历史意图。这类卡上线后需老师重新填一次每题分值，届时会正确同步到逐题与标题。
 
+## 2026-10-23：鲁棒性审查——小数题号、模板总分、计分边界与失败回显
+
+- **MariaDB 小题号**：语文模板的 13.1/17.1 等题号原先写入 `INT` 列，strict mode 会 500、非 strict 会把 13.1/13.2 截成同一个 13。迁移 v65 把 `subjective_questions.number`、`question_scores.question_number`、`knowledge_points.question_number`、`answer_overrides.question_number` 改为 DOUBLE；SQLite 新建表同步为 REAL（旧库动态类型本就能存小数）。
+- **填空模板总分**：英语语法填空 10 个空、数学填空 3 个空原先每个都带分，但版式与校验只认首个得分格，导致整块只算 1.5/5 分。改为把块总分 15 记在首个空，其余空不带分。
+- **判分边界**：历史 `indeterminate` 模式改走统一的多选判定；客观题计分规则的分数按 `[-maxScore, maxScore]` 收敛，非有限值归 0；主观题上报分同样先做有限值检查再裁剪。
+- **半分数分桶**：班级对比的分数段改用与总览相同的 `histogram()` 半开区间，89.5 这类半分数不再落在 80-89 与 90-100 之间的空隙。
+- **Windows 切图回滚**：递归 `mkdir` 可能返回 `\\?\C:\...` 扩展长度路径，`path.resolve` 不认识它，导致回滚只删文件、不删新建目录。新增路径归一化后再做目录归属判断；`verify:scanner-pending` 从失败转为通过。
+- **失败不再静默关窗**：新建大考、原卷信息保存、新建答题卡在服务端失败时保留表单并显示错误；扫描后处理删除失败留在页面提示，不再触发扫描端全局未处理 rejection 遮罩；损坏的上传恢复记录改为可读错误。
+- **统计刷新**：大考详情的题目分析/班级对比在切换文理后重新请求，不再显示上一 track 的旧数据。
+- **验证**：`typecheck`、`build`、`verify:core-logic` 104/0、`verify:auth` 153/0、`verify:security-critical` 523/0、`verify:scanner-pending`、`verify:exam-class-memberships`、`verify:class-archive`、`verify:scanner-batch-results`、`verify:scan-correction`、`verify:student-score-display`、`verify:progress-score-rate` 77/0；新增 MariaDB 小题号插入回归，由 CI MariaDB 作业执行。本机无 MariaDB，未本地运行该专项。
+- 评审补充（P2）：扫描后处理页强制删除自身失败（网络错误 / HTTP 500）时，只关了 `confirmOpen` 没清掉上一轮 409 留下的 `blockedNotice`，而确认框开关是 `confirmOpen || blockedNotice`，框会继续挡在错误提示前面。现在失败时一并清空 `blockedNotice`，原因直接显示在选择栏，勾选取舍保留可重试；`verify:scanner-postprocess-ui` 新增「非 force → 409 → force → 500」剧本，断言框已关闭且错误当场可见（退回旧写法时该断言即红）。
+
+- 评审补充（P1）：填空模板把块总分记在首个空后，其余小空的满分是 0，而识别切块的题号清单会列出块内全部小空、网阅面板也照样提交——`ReviewService` 原样按「题号不在答题卡题目范围内」拒绝，英语语法填空（57–65）与数学填空（13–14）的整块卷子从此交不出去。现在满分 0 的本块小题按不可评分对象跳过（不报错、也不写逐题成绩），块总分仍记在首个空；真正不属于本题块或卡面的题号依旧拒绝。`verify:review-submit` 新增逐题模式与题块总分模式两份填空块回归（含落库题号只应有首个空的断言），退回旧实现时直接抛「题号 57 不在答题卡题目范围内」。
 ## 2026-10-17：PR #332 —— 双面批次收尾、红笔分数格强制彩色与告警可恢复、DPI 逐轴取证
 
 - **批次结束按单双面分别判定**：单面时 `MSG_ENDXFER` 的码 7（随包 `twain.h` 2.5.1 的 `TWRC_ENDOFLIST`）且 `Count==0` 才收批；双面时该组合仍继续等待当前张背面，背面到达才成功，未到达则保留正面并报部分失败，不再出现「只出一面却报整批成功」。收尾码与 `Count` 的组合由假 DSM 夹具编译真实扫描循环回归，只在 CI（Linux + g++）执行。

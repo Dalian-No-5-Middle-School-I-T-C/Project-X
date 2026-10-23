@@ -71,6 +71,8 @@ const correctionDocument: CorrectionDocument = {
 let secondGroupResolved = false;
 let allClean = false;
 let deleteBlockedOnce = false;
+/** 剧本：下一轮「非 force → 409 → force」里让 force 请求返回 500，用来检查失败提示会不会被确认框挡住。 */
+let failForceDeleteOnce = false;
 let duplicateKept = false;
 const groupTwoResult = {
   groupId: "1", studentId: "10002", totalScore: 10, maxScore: 10, objectiveScore: 10, objectiveMaxScore: 10,
@@ -189,6 +191,13 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
       deleteBlockedOnce = true;
       return Response.json({ message: "所选卷包含已上传或待确认的回执", blocked: body.groupIds }, { status: 409 });
     }
+    if (failForceDeleteOnce && !body.force) {
+      return Response.json({ message: "所选卷包含已上传或待确认的回执", blocked: body.groupIds }, { status: 409 });
+    }
+    if (failForceDeleteOnce && body.force) {
+      failForceDeleteOnce = false;
+      return Response.json({ message: "服务端删除失败（HTTP 500）" }, { status: 500 });
+    }
     return Response.json({ ...batch(), deletedGroups: body.groupIds.length, missingGroups: [] });
   }
   if (url.endsWith("/retry")) return Response.json(batch());
@@ -283,6 +292,21 @@ try {
   await clickText("知晓代价，仍删除");
   await settle();
   assert.deepEqual(deletes[1].body, { groupIds: ["1"], force: true }, "二次确认后带 force 重试");
+
+  // ── 强制删除自身失败：确认框必须让位，失败原因要当场看得见（评审 P2）──
+  failForceDeleteOnce = true;
+  await clickText("选择");
+  await clickSelector('[aria-label="选择 组 1"]');
+  await clickText("删除选中（1）");
+  await clickText("删除，不可恢复");
+  await settle();
+  assert.match(text(), /知晓代价，仍删除/, "第二轮仍然先给出代价确认");
+  await clickText("知晓代价，仍删除");
+  await settle();
+  assert(!document.querySelector('[role="alertdialog"][data-state="open"]'), "强制删除失败后确认框必须关闭");
+  assert.match(text(), /服务端删除失败（HTTP 500）/, "失败原因要显示在当前视图，不能躲在确认框背后");
+  assert.equal(failForceDeleteOnce, false, "500 剧本只触发一次");
+  await clickText("选择");
 
   // ── 视图 2：画布点选与表格汇总双向即时同步（D5 并存不切换）──
   await clickText("扫描结果");

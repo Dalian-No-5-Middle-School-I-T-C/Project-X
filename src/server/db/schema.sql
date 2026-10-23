@@ -226,7 +226,7 @@ CREATE TABLE IF NOT EXISTS subjective_blocks (
 CREATE TABLE IF NOT EXISTS subjective_questions (
     id               TEXT PRIMARY KEY,
     block_id         TEXT NOT NULL REFERENCES subjective_blocks(id) ON DELETE CASCADE,
-    number           INTEGER NOT NULL,
+    number           REAL NOT NULL,
     score            REAL NOT NULL,
     style            TEXT NOT NULL,              -- manual_score_grid / plain_box
     kind             TEXT NOT NULL,              -- plain_box / lined_answer / blank
@@ -274,7 +274,7 @@ CREATE TABLE IF NOT EXISTS card_assets (
 CREATE TABLE IF NOT EXISTS knowledge_points (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     card_id         TEXT NOT NULL REFERENCES answer_cards(id) ON DELETE CASCADE,
-    question_number INTEGER NOT NULL,
+    question_number REAL NOT NULL,
     point_text      TEXT NOT NULL,
     category        TEXT,
     sort_order      INTEGER DEFAULT 0,
@@ -565,7 +565,7 @@ CREATE TABLE IF NOT EXISTS question_scores (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     exam_id         INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
     student_id      INTEGER NOT NULL REFERENCES users(id),
-    question_number INTEGER,
+    question_number REAL,
     question_id     TEXT,
     block_id        TEXT,
     score           REAL,

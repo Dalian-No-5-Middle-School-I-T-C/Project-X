@@ -32,8 +32,10 @@ import {
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { gradeCombinedRecognition, gradeSubjectiveRecognition, normalizeObjectiveQuestions, objectiveBlockTotalScore, objectiveQuestionDefinitions } from "../src/shared/grading";
+import { gradeCombinedRecognition, gradeObjectiveQuestion, gradeSubjectiveRecognition, normalizeObjectiveQuestions, objectiveBlockTotalScore, objectiveQuestionDefinitions } from "../src/shared/grading";
 import { applyScorePerQuestion } from "../src/apps/answer-card/client/cardModel";
+import { createDefaultCard } from "../src/shared/defaultCard";
+import { applySubjectTemplate } from "../src/shared/cardTemplates";
 import {
   CreateCardSchema,
   UpdateUserSettingsSchema,
@@ -173,8 +175,60 @@ section("1. validateCardScores —— 总分与科目");
   );
 }
 
-section("2. validateCardScores —— 客观题异常分");
+section("1b. 内置模板填空块总分");
 {
+  const english = applySubjectTemplate(createDefaultCard("tpl-english", "yingyu"), { englishListening: false });
+  const englishFill = english.bodyBlocks.find((block): block is SubjectiveBlock => block.type === "subjective" && block.blockKind === "fill_blank")!;
+  check("英语语法填空把 15 分记在首个空", englishFill.questions[0]?.score === 15 && englishFill.questions.slice(1).every((q) => q.score === 0));
+  check("英语模板填空不再只算 1.5 分", validateCardScores(english).subjectiveScore === 15);
+
+  const math = applySubjectTemplate(createDefaultCard("tpl-math", "shuxue"), {});
+  const mathFill = math.bodyBlocks.find((block): block is SubjectiveBlock => block.type === "subjective" && block.blockKind === "fill_blank")!;
+  check("数学填空把 15 分记在首个空", mathFill.questions[0]?.score === 15 && mathFill.questions.slice(1).every((q) => q.score === 0));
+}
+
+section("1c. 客观题模式与计分规则边界");
+{
+  const indeterminate: ObjectiveBlock = {
+    id: "obj-indeterminate",
+    type: "objective",
+    title: "不定项",
+    questionStart: 1,
+    questionCount: 1,
+    optionCount: 4,
+    mode: "indeterminate" as unknown as ObjectiveBlock["mode"],
+    scorePerQuestion: 5,
+    density: "compact",
+    answerKey: {},
+    multipleScoring: { partialScores: {}, wrongOrExtraScore: 0 },
+    questions: [{
+      questionNumber: 1,
+      mode: "indeterminate" as unknown as ObjectiveBlock["mode"],
+      optionCount: 4,
+      score: 5,
+      answerKey: ["A", "B"],
+      scoringRule: { type: "per_selected_count", partialScores: { 1: 2 }, wrongOrExtraScore: 0 }
+    }]
+  };
+  const legacy = gradeObjectiveQuestion(card("shuxue", [indeterminate]), { questionNumber: 1, selectedOptions: ["A"], confidence: 1 });
+  check("历史 indeterminate 模式仍按多选给部分分", legacy.score === 2 && legacy.status === "partial");
+
+  const overflow = gradeObjectiveQuestion(card("shuxue", [{
+    ...indeterminate,
+    id: "obj-overflow",
+    questions: [{ ...indeterminate.questions![0], scoringRule: { type: "fixed_partial", partialScore: 99, wrongOrExtraScore: 0 } }]
+  }]), { questionNumber: 1, selectedOptions: ["A"], confidence: 1 });
+  check("计分规则超过满分时按满分封顶", overflow.score === 5);
+
+  const negative = gradeObjectiveQuestion(card("shuxue", [{
+    ...indeterminate,
+    id: "obj-negative",
+    questions: [{ ...indeterminate.questions![0], scoringRule: { type: "per_selected_count", partialScores: { 1: 2 }, wrongOrExtraScore: -99 } }]
+  }]), { questionNumber: 1, selectedOptions: ["C"], confidence: 1 });
+  check("错选负分不会超过该题负满分", negative.score === -5);
+}
+
+section("2. validateCardScores —— 客观题异常分");{
   const r = validateCardScores(card("shuxue", [objectiveBlock(5, 4, [4, 4, 3, 4, 4])]));
   check(
     "多数题 4 分中的 3 分题被标记为 objective 异常",

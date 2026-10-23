@@ -846,13 +846,12 @@ function App() {
   }
 
   async function createCard(formData: NewCardFormData) {
-    setShowNewCardModal(false);
     try {
       await flushPendingCardSave("switch");
-    } catch {
-      // 保存当前卡失败，刷新列表后退出（避免侧栏状态不一致）
-      await refreshCards();
-      return;
+    } catch (err) {
+      // 当前卡保存失败时不要继续创建，错误交回弹窗显示；列表刷新不能掩盖原始错误。
+      await refreshCards().catch(() => undefined);
+      throw new Error(err instanceof Error ? err.message : "当前答题卡保存失败，未创建新卡");
     }
     setIsBusy(true);
     try {
@@ -910,7 +909,8 @@ function App() {
         setShowPaperPanel(true);
       }
     } finally {
-      await refreshCards();
+      // 列表刷新失败不能把 isBusy 卡死；新卡已经创建成功时也不该让弹窗误报失败。
+      try { await refreshCards(); } catch { /* keep the created card usable */ }
       setIsBusy(false);
     }
   }

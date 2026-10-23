@@ -47,7 +47,7 @@ interface ExamOption {
 interface Props {
   open: boolean;
   onClose: () => void;
-  onCreate: (data: NewCardFormData) => void;
+  onCreate: (data: NewCardFormData) => Promise<void> | void;
   exams?: ExamOption[];
 }
 
@@ -253,7 +253,10 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
     }
   }
 
-  function handleCreate() {
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleCreate() {
+    if (submitting) return;
     const finalLabel = subjectLabel === "其他" ? customSubject.trim() : subjectLabel;
     if (!finalLabel) { setError("请选择科目或手动输入科目名"); return; }
     const titleTrimmed = title.trim();
@@ -273,20 +276,29 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
     if (!normalizedExamDate) { setError("请选择考试时间"); return; }
     if (!isValidExamDate(normalizedExamDate)) { setError(`请输入 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效考试时间（YYYY-MM-DD）`); return; }
     const key = subjectToKey(finalLabel);
-    onCreate({
-      subject: key,
-      subjectLabel: finalLabel,
-      title: titleTrimmed,
-      examDate: normalizedExamDate,
-      examAction,
-      examName: examAction === "create" ? examName.trim() || titleTrimmed : undefined,
-      linkExamId: examAction === "link" && linkExamId ? linkExamId : undefined,
-      gradeId: examAction === "create" && createGradeId && createGradeId !== "__none__" ? Number(createGradeId) : undefined,
-      classId: examAction === "create" && createClassId && createClassId !== "__none__" ? Number(createClassId) : undefined,
-      englishListening,
-      chineseChoicePlacement,
-      paperSize,
-    });
+    setSubmitting(true);
+    setError("");
+    try {
+      await onCreate({
+        subject: key,
+        subjectLabel: finalLabel,
+        title: titleTrimmed,
+        examDate: normalizedExamDate,
+        examAction,
+        examName: examAction === "create" ? examName.trim() || titleTrimmed : undefined,
+        linkExamId: examAction === "link" && linkExamId ? linkExamId : undefined,
+        gradeId: examAction === "create" && createGradeId && createGradeId !== "__none__" ? Number(createGradeId) : undefined,
+        classId: examAction === "create" && createClassId && createClassId !== "__none__" ? Number(createClassId) : undefined,
+        englishListening,
+        chineseChoicePlacement,
+        paperSize,
+      });
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建答题卡失败");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   const selectedSubjectKey = subjectToKey(showCustom ? customSubject.trim() : subjectLabel);
@@ -441,8 +453,8 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
           {error && <p className="text-sm text-destructive-fg">{error}</p>}
         </DialogBody>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>取消</Button>
-          <Button variant="primary" onClick={handleCreate}>创建答题卡</Button>
+          <Button variant="outline" onClick={onClose} disabled={submitting}>取消</Button>
+          <Button variant="primary" onClick={() => void handleCreate()} loading={submitting}>创建答题卡</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
