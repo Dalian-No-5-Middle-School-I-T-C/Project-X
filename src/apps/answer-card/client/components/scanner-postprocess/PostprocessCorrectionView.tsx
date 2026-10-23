@@ -12,7 +12,7 @@ import {
   type CorrectionCell, type CorrectionDocument, type CorrectionEdit,
 } from "../../../../../shared/scanCorrection";
 import { matchesCorrectionFocus, selectObjectiveOptionCells, selectScoreCells } from "../../../../../shared/correctionCellSelect";
-import { findObjectiveQuestion, gradeCombinedRecognition, gradeSubjectiveRecognition, hasRedPenEvidence, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
+import { findObjectiveQuestion, gradeCombinedRecognition, gradeSubjectiveRecognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
 import { isMultiSelectMode, objectiveModeLabel } from "../../../../../shared/objectiveMode";
 import type { CombinedRecognitionResult, SubjectiveQuestionNumber } from "../../../../../shared/types";
 
@@ -188,7 +188,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
     // 主观题按「题块」逐条出行：同一 questionId 可能出现在多个题块上，
     // 用 graded.subjectiveQuestions（无 blockId）反查会把两块的分数格混在一起
     const subjective: Row[] = (liveMerged?.subjectiveQuestions ?? []).flatMap(entry => {
-      const grade = gradeSubjectiveRecognition(document.card, entry, hasRedPenEvidence(liveMerged?.subjectiveQuestions ?? []));
+      const grade = gradeSubjectiveRecognition(document.card, entry);
       if (!grade) return [];
       const origin = original.subjectiveQuestions?.find(o => o.questionId === grade.questionId && o.blockId === entry.blockId);
       return [{

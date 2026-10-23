@@ -21,13 +21,6 @@ import { isMultiSelectMode } from "./objectiveMode";
 
 export const OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD = 0.12;
 
-/**
- * 识别器认定「有涂迹」的填充率下限，取自 native `answer_recognition.cpp` 的
- * `MIN_SELECTED_FILL_RATIO`（同一函数在 :452-454 会把「涂得不够」或「两档并列」的选择直接清空，
- * 但墨迹仍留在 `optionScores` 里）。`verify-core-logic` 会核对该源码常量，避免两边悄悄分叉。
- */
-export const OBJECTIVE_SELECTED_FILL_RATIO = 0.32;
-
 const OPTION_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
 export type ObjectiveQuestionDefinition = {
@@ -172,15 +165,9 @@ function wrongOrExtraScoreFor(rule: ObjectiveScoringRule | undefined): number {
   return rule?.wrongOrExtraScore ?? 0;
 }
 
-/** 识别证据里是否存在达到涂写下限的选项（`optionScores` 缺失时按「没有墨迹证据」处理）。 */
-function hasMarkedOptionEvidence(optionScores: Record<string, number> | undefined): boolean {
-  if (!optionScores) return false;
-  return Object.values(optionScores).some(value => Number.isFinite(value) && value >= OBJECTIVE_SELECTED_FILL_RATIO);
-}
-
 /**
  * @param reportedOnThisPage 该题是否出现在这一页的识别结果里。多页/双面卡里没上报的题是由
- *   `gradeObjectiveRecognition` 合成的，不能当成考生空白（评审 P1）；合成条目继续按低置信度留复核。
+ *   `gradeObjectiveRecognition` 合成的，不是本页的作答，不能当成考生空白。
  */
 export function gradeObjectiveQuestion(
   card: AnswerCard,
@@ -192,11 +179,9 @@ export function gradeObjectiveQuestion(
   const definition = target?.definition;
   const confidence = Number.isFinite(question.confidence) ? question.confidence : 0;
   const selectedOptions = normalizeOptions(question.selectedOptions, definition?.optionCount);
-  // 空白必须是「这一题被上报过、原始选项为空、且证据里没有达到下限的墨迹」。
-  // 越界标签被过滤掉、或识别器看清了墨迹却因并列/不足而清空选择，都仍属识别异常，要复核。
-  const blank = reportedOnThisPage
-    && (question.selectedOptions?.length ?? 0) === 0
-    && !hasMarkedOptionEvidence(question.optionScores);
+  // 没涂就是没涂：直接 0 分，不再用低置信度把它推进复核队列（issue #352）。
+  // 只看原始填涂，被选项数过滤掉的越界标签属于识别异常，仍要复核。
+  const blank = reportedOnThisPage && (question.selectedOptions?.length ?? 0) === 0;
   const needsReview = !blank && confidence < confidenceThreshold;
 
   if (!definition) {
@@ -354,33 +339,16 @@ function findSubjectiveQuestion(card: AnswerCard, questionId: string, blockId?: 
   return undefined;
 }
 
-/**
- * 这份识别结果里是否读到过红笔（采纳或未采纳都算）。整张卡一格红笔都没有时——历史灰度卷、
- * 驱动没保住彩色——「考生没画斜线」和「红笔整批丢了」在识别 JSON 里完全同形，
- * 必须继续留复核，不能把真实手写的分数静默归零（issue #331 ③ 的既有口径）。
- */
-export function hasRedPenEvidence(
-  subjectiveQuestions: readonly Pick<SubjectiveRecognitionQuestion, "validCells" | "invalidCells">[]
-): boolean {
-  return subjectiveQuestions.some(question =>
-    (question.validCells?.length ?? 0) > 0 || (question.invalidCells?.length ?? 0) > 0);
-}
-
-/** 识别器确认「这一题没画给分斜线」的空白分数格：同一份结果里别处读到过红笔时，才按 0 分确认。 */
-export function isBlankSubjectiveRecognition(
-  recognition: SubjectiveRecognitionQuestion,
-  redPenEvidence = true
-): boolean {
-  return redPenEvidence
-    && recognition.status === "invalid"
+/** 识别器确认「这一题没画给分斜线」的空白分数格：直接 0 分，不进复核（issue #352）。 */
+export function isBlankSubjectiveRecognition(recognition: SubjectiveRecognitionQuestion): boolean {
+  return recognition.status === "invalid"
     && recognition.message === "no_valid_subjective_score"
     && (recognition.invalidCells?.length ?? 0) === 0;
 }
 
 export function gradeSubjectiveRecognition(
   card: AnswerCard,
-  recognition: SubjectiveRecognitionQuestion,
-  redPenEvidence = true
+  recognition: SubjectiveRecognitionQuestion
 ): SubjectiveQuestionGrade | null {
   // 同一 questionId 可以出现在多个题块。带了 blockId 就必须对上那一块，
   // 否则后块的 25 分会被前块的满分夹成前块的分数。没带 blockId 的旧结果仍取第一块。
@@ -389,7 +357,7 @@ export function gradeSubjectiveRecognition(
   // 未知 questionId 的自报分数与满分一律丢弃，不得计入成绩。
   if (!question) return null;
   const maxScore = Number.isFinite(question.score) ? Math.max(0, question.score) : 0;
-  if (isBlankSubjectiveRecognition(recognition, redPenEvidence)) {
+  if (isBlankSubjectiveRecognition(recognition)) {
     return {
       questionId: recognition.questionId,
       questionNumber: question.number,
@@ -434,9 +402,8 @@ export function gradeCombinedRecognition(
 ): CombinedGradingRow {
   const objectiveRow = gradeObjectiveRecognition(card, fileName, recognition, confidenceThreshold);
 
-  const redPenEvidence = hasRedPenEvidence(recognition.subjectiveQuestions ?? []);
   const subjectiveQuestions: SubjectiveQuestionGrade[] = (recognition.subjectiveQuestions ?? [])
-    .map((sq) => gradeSubjectiveRecognition(card, sq, redPenEvidence))
+    .map((sq) => gradeSubjectiveRecognition(card, sq))
     .filter((grade): grade is SubjectiveQuestionGrade => grade !== null);
 
   const objectiveScore = objectiveRow.score;
