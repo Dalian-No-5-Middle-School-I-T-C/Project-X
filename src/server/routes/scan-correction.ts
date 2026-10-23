@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { getMysqlDb } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
-import { requirePermissionCompat, requireWholeExamGradingAccess, getVisibleExamIds } from "../../apps/answer-card/server/middleware";
+import { requirePermissionCompat, requireWholeExamGradingAccess, requireWholeExamGradingAccessForExam, getVisibleExamIds } from "../../apps/answer-card/server/middleware";
 import { PERMISSIONS } from "../auth/permissions";
 import { resolveScannerExam } from "../services/scannerExam";
 import { recognizeSessionCorrection, saveSessionCorrection, sessionCorrection } from "../services/scanCorrection";
@@ -26,12 +26,17 @@ export function scanCorrectionRouter(prefix: "session" | "sessions", remote: boo
         if (req.user && !["admin", "teacher"].includes(req.user.role_name)) {
           res.status(403).json({message:"权限不足：整卡订正仅限教师或管理员"}); return;
         }
-        // 归属不唯一时必须能看到全部候选考试，口径与扫描记录读取一致；
-        // 只看得到其中一场不足以证明有权改这张可能属于其他考试的卡。
+        // 归属不唯一时必须对**每一场**候选考试都有整卷阅卷授权，口径与归属唯一时一致；
+        // 只有题块级授权或看不到某一场考试的教师，不能借歧义读到并改写整张卡的订正。
         if (req.user && resolved.exams.length > 0) {
           const visible = await getVisibleExamIds(req.user);
           if (visible !== null && !resolved.exams.every(exam => visible.includes(exam.id))) {
             res.status(403).json({message:"权限不足：无权修改该扫描会话"}); return;
+          }
+          for (const exam of resolved.exams) {
+            let allowed = false;
+            await requireWholeExamGradingAccessForExam(req, res, () => { allowed = true; }, exam.id);
+            if (!allowed) return;
           }
         }
         requirePermissionCompat(PERMISSIONS.GRADE_WRITE)(req,res,next);

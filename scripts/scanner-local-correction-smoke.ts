@@ -76,6 +76,21 @@ try {
     sourceId: p.sourceId, revision: p.revision, selected: p.selected })) });
   assert.equal(ambiguousSave.status, 200, "ambiguous ownership must still allow saving the local card");
   assert.equal((await ambiguousSave.json() as { saved: boolean }).saved, false, "ambiguous ownership must not admit grades");
+  // 只有单题块授权的教师：看得到考试，但不能借归属歧义读改整张卡。
+  const scoped = await db.run("INSERT INTO users(username,password_hash,name,role_id) VALUES ('local_blockscoped',?,'单题块教师',2)", hash);
+  await db.run("INSERT INTO teacher_permissions(teacher_id,block_id,can_grade,can_view_scores) VALUES (?,?,?,?)", scoped.lastInsertRowid, "local_obj", 1, 1);
+  const scopedLogin = await authService.login("local_blockscoped", password);
+  assert(scopedLogin.success && scopedLogin.token);
+  assert.equal((await fetch(url, { headers: { Authorization: `Bearer ${scopedLogin.token}` } })).status, 403,
+    "block-scoped teachers must not correct an ambiguous whole card");
+  // 有整卷授权（这里是考试创建者）的教师仍可用，说明收口没有把正常改分也挡掉。
+  const owner = await db.run("INSERT INTO users(username,password_hash,name,role_id) VALUES ('local_owner',?,'整卷教师',2)", hash);
+  await db.run("UPDATE exams SET created_by=? WHERE id IN (?,?)", owner.lastInsertRowid, firstExam.lastInsertRowid, secondExam.lastInsertRowid);
+  const ownerLogin = await authService.login("local_owner", password);
+  assert(ownerLogin.success && ownerLogin.token);
+  assert.equal((await fetch(url, { headers: { Authorization: `Bearer ${ownerLogin.token}` } })).status, 200,
+    "teachers with whole-exam grading access keep the ambiguous correction available");
+  await db.run("UPDATE exams SET created_by=NULL WHERE id IN (?,?)", firstExam.lastInsertRowid, secondExam.lastInsertRowid);
   await db.run("DELETE FROM exams WHERE id=?", secondExam.lastInsertRowid);
   await db.run("INSERT INTO exam_archives(exam_id,is_deleted,deleted_at) VALUES (?,1,CURRENT_TIMESTAMP)", firstExam.lastInsertRowid);
   assert.equal((await request("teacher")).status, 404, "a cleaned exam must not become an unbound local scan");
