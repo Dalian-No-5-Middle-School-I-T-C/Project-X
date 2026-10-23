@@ -403,7 +403,7 @@ export async function requireScannerExamScope(req: Request, res: Response, next:
       if (!resolved.exam) {
         // 本地整卡订正只改扫描记录，不写考试成绩；归属有歧义时也应能改卡，
         // 由订正路由自行校验 GRADE_WRITE 与可见考试范围。
-        if (!isMachineCaller(req) && /^\/groups\/[^/]+\/correction$/.test(req.path)) { next(); return; }
+        if (!isMachineCaller(req) && /^\/groups\/[^/]+\/correction\/?$/.test(req.path)) { next(); return; }
         res.status(409).json({ message: "无法确定扫描会话的考试归属" }); return;
       }
       examId = resolved.exam.id;
