@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   BrainCircuit,
@@ -14,11 +14,13 @@ import { useAuth } from "../auth/AuthContext";
 import { PERMISSIONS } from "../auth/types";
 import { useWorkspace } from "../WorkspaceContext";
 import { fetchJson, authFetch } from "../auth/api";
+import { backgroundWriteSession } from "../lib/backgroundOpacityWrites";
 import { cn } from "../lib/utils";
 import { SkinSwitcher, SKIN_OPTIONS } from "../components/SkinSwitcher";
 import {
   Button,
   Checkbox,
+  ConfirmDialog,
   ControlRow,
   Switch,
   Dialog,
@@ -139,8 +141,9 @@ function AiProviderForm({
  * 由 AccountMenu 的设置 Dialog 迁移为独立页面（v2 UI 重构 P6）。
  *
  * #322: 「阅卷设置」页签只对持 grade:write 的账号渲染。学生账号不提供背景图透明度，
- * 也不能上传背景图；网页端始终不挂背景浮层。后端（阅卷字段门、背景透明度门、
+ * 也不能上传或移除背景图；网页端始终不挂背景浮层。后端（阅卷字段门、背景透明度门、
  * 上传门、背景 GET 404）是同一规则的强制层，这里只是不再把不可用的控件摆出来。
+ * 学生清自己的历史文件走 DELETE 接口，批量清退在管理员的全局设置里。
  *
  * P6 重写：放弃 vertical Tabs 左栏列布局（v2 Tabs 对 vertical 支持不佳时内容列塌缩），
  * 改为 v2 Tabs 默认「横向顶部 Tab 条 + 内容区全宽自然排布」，页面容器放宽为 max-w-5xl。
@@ -154,16 +157,23 @@ export function AccountSettingsPage() {
   const canEditGradingSettings = !user || hasPermission(PERMISSIONS.GRADE_WRITE);
   const canUploadBackground = !isStudent;
   // v2.1.0: 皮肤/明暗状态由 App 顶层持有（WorkspaceContext 下发），此处直接读改即时生效
-  const { theme, setTheme, skin, setSkin } = useWorkspace();
+  const { theme, setTheme, skin, setSkin, setShowBg } = useWorkspace();
   // v1.6.0: 非 Electron 环境（WEB 端）不显示扫描端选项和数据库设置
   const isElectron = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
 
   const [displayMode, setDisplayMode] = useState("zscore");
   const [reviewThreshold, setReviewThreshold] = useState(0.12);
   const [bgOpacity, setBgOpacity] = useState(0);
+  const [bgLimit, setBgLimit] = useState("");
   const bgFileRef = useRef<HTMLInputElement | null>(null);
   const bgSaveTimer = useRef<number | null>(null);
+  const bgSessionKey = user ? `user:${user.id}` : "anonymous";
+  const bgSession = useMemo(() => backgroundWriteSession(bgSessionKey), [bgSessionKey]);
   const [bgMsg, setBgMsg] = useState("");
+  const [bgMsgTone, setBgMsgTone] = useState<"success" | "error">("success");
+  const [removeBgOpen, setRemoveBgOpen] = useState(false);
+  const [removeBgBusy, setRemoveBgBusy] = useState(false);
+  const [bgBusy, setBgBusy] = useState(false);
   const [settingsMsg, setSettingsMsg] = useState("");
 
   // Multi-provider AI management
@@ -198,13 +208,14 @@ export function AccountSettingsPage() {
   const [dbLoading, setDbLoading] = useState(false);
 
   useEffect(() => {
-    fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number; showTabBar?: number }>("/api/users/me/settings")
+    fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number; showTabBar?: number; backgroundUploadLimit?: string }>("/api/users/me/settings")
       .then((s) => {
         if (!s || typeof s !== "object") return;
         setDisplayMode(s.scoreDisplayMode || "zscore");
         setReviewThreshold(s.reviewConfidenceThreshold ?? 0.12);
         setBgOpacity(s.backgroundOpacity ?? 0);
         setShowTabBar(s.showTabBar === 1);
+        if (typeof s.backgroundUploadLimit === "string") setBgLimit(s.backgroundUploadLimit);
       })
       .catch(() => {});
     loadProviders();
@@ -250,8 +261,14 @@ export function AccountSettingsPage() {
     }
   }
 
+  function clearPendingBgOpacity() {
+    if (bgSaveTimer.current) window.clearTimeout(bgSaveTimer.current);
+    bgSaveTimer.current = null;
+  }
+
   async function saveSettings() {
     setSettingsMsg("");
+    clearPendingBgOpacity();
     try {
       // 越权字段一出现，后端整单 403。学生不提交阅卷字段和背景透明度，
       // 否则「客户端设置」的保存会被连坐失败。
@@ -263,11 +280,13 @@ export function AccountSettingsPage() {
         payload.scoreDisplayMode = displayMode;
         payload.reviewConfidenceThreshold = reviewThreshold;
       }
-      await fetchJson("/api/users/me/settings", {
+      // 跟滑块 PATCH、移除 DELETE 排进同一条会话队列，避免保存与在途透明度写交错。
+      const executed = await bgSession.enqueue(() => fetchJson("/api/users/me/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
-      });
+      }).then(() => undefined));
+      if (!executed) { setSettingsMsg("账号已切换，本次设置未保存"); return; }
       setSettingsMsg("已保存");
       // v1.9.0: 刷新用户状态使 Tab 栏开关即时生效
       await refreshUser();
@@ -277,41 +296,96 @@ export function AccountSettingsPage() {
     }
   }
 
-  // v1.9.5: 滑动背景图透明度时防抖持久化，避免刷新后被重置为 0
+  // v1.9.5: 滑动背景图透明度时防抖持久化，避免刷新后被重置为 0。
+  // 真正发出的请求进会话队列，移除背景时可以排在它后面把透明度归零。
   const persistBgOpacity = (v: number) => {
     if (isStudent) return;
-    if (bgSaveTimer.current) window.clearTimeout(bgSaveTimer.current);
+    clearPendingBgOpacity();
     bgSaveTimer.current = window.setTimeout(() => {
-      fetchJson("/api/users/me/settings", {
+      bgSaveTimer.current = null;
+      void bgSession.enqueue(() => fetchJson("/api/users/me/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ backgroundOpacity: v }),
-      }).catch(() => {});
+      }).then(() => undefined)).catch(() => {});
     }, 400);
   };
 
   async function handleBgUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    if (!file || isStudent) return;
+    if (!file || isStudent || bgBusy || removeBgBusy) return;
+    setBgBusy(true);
     setBgMsg("");
     try {
       const form = new FormData();
       form.append("file", file);
-      const res = await authFetch("/api/users/me/background", {
-        method: "POST",
-        body: form
+      // 上传也进同一条会话队列：与待发送的透明度 PATCH、移除 DELETE 串行，避免 rename 与删除交错。
+      const executed = await bgSession.enqueue(async () => {
+        const res = await authFetch("/api/users/me/background", {
+          method: "POST",
+          body: form
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({} as { error?: string; message?: string }));
+          throw new Error(err.message || err.error || "上传失败");
+        }
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "上传失败" }));
-        throw new Error(err.error || "上传失败");
-      }
+      if (!executed) return;
+      setBgMsgTone("success");
       setBgMsg("上传成功，刷新后生效");
       setTimeout(() => setBgMsg(""), 3000);
     } catch (err) {
+      setBgMsgTone("error");
       setBgMsg(err instanceof Error ? err.message : "上传失败");
+    } finally {
+      setBgBusy(false);
+      // Reset input so same file can be re-uploaded
+      e.target.value = "";
     }
-    // Reset input so same file can be re-uploaded
-    e.target.value = "";
+  }
+
+  async function handleRemoveBackground() {
+    if (bgBusy) return;
+    const previousOpacity = bgOpacity;
+    clearPendingBgOpacity();
+    // 先把 Workspace 透明度拉回 0，并清掉滑块直接写过的浮层。
+    // 进入本页时 showBg 已是 0 的话，setShowBg(0) 不会触发 App 的 effect。
+    setBgOpacity(0);
+    setShowBg(0);
+    document.documentElement.style.setProperty("--bg-opacity", "0");
+    document.body.classList.remove("has-bg-image");
+    setRemoveBgBusy(true);
+    setBgMsg("");
+    try {
+      const executed = await bgSession.enqueue(() => fetchJson("/api/users/me/background", { method: "DELETE" }).then(() => undefined));
+      if (!executed) {
+        if (previousOpacity > 0) {
+          setBgOpacity(previousOpacity);
+          setShowBg(previousOpacity);
+          document.documentElement.style.setProperty("--bg-opacity", String(previousOpacity));
+          document.body.classList.add("has-bg-image");
+        }
+        setBgMsgTone("error");
+        setBgMsg("账号已切换，本次移除未执行");
+        return;
+      }
+      setBgMsgTone("success");
+      setBgMsg("已移除背景图");
+      setRemoveBgOpen(false);
+      setTimeout(() => setBgMsg(""), 3000);
+    } catch (err) {
+      // 服务端文件与透明度都还在；把本地预览恢复到移除前，避免界面谎报已关闭。
+      if (previousOpacity > 0) {
+        setBgOpacity(previousOpacity);
+        setShowBg(previousOpacity);
+        document.documentElement.style.setProperty("--bg-opacity", String(previousOpacity));
+        document.body.classList.add("has-bg-image");
+      }
+      setBgMsgTone("error");
+      setBgMsg(err instanceof Error ? err.message : "移除失败，背景设置未变");
+    } finally {
+      setRemoveBgBusy(false);
+    }
   }
 
   // ── AI 服务商管理 ──────────────────────────────────
@@ -548,26 +622,31 @@ export function AccountSettingsPage() {
                   onChange={(e) => {
                     const v = Number(e.target.value);
                     setBgOpacity(v);
-                    document.documentElement.style.setProperty("--bg-opacity", String(v));
-                    if (v > 0) document.body.classList.add("has-bg-image");
-                    else document.body.classList.remove("has-bg-image");
+                    // 浮层由 Workspace 的 showBg 驱动，滑块只改这份状态。
+                    setShowBg(v);
                     persistBgOpacity(v);
                   }}
                   className="w-full"
                 />
-                <span className="text-xs text-muted-foreground">0% = 关闭，建议 5%~15%（浮层叠加，不影响阅读）</span>
+                <span className="text-xs text-muted-foreground">
+                  0% = 关闭，建议 5%~15%（浮层叠加，不影响阅读）
+                  {bgLimit ? `。单张不超过 ${bgLimit}` : ""}
+                </span>
                 <div className="flex items-center gap-1.5">
                   {/* 学生整段背景区不渲染。上传仍按学生身份单独判断，不看 grade:write。 */}
                   {canUploadBackground && (
                     <>
-                      <Button variant="ghost" size="sm" onClick={() => bgFileRef.current?.click()}>
+                      <Button variant="ghost" size="sm" disabled={bgBusy || removeBgBusy} onClick={() => bgFileRef.current?.click()}>
                         上传背景图
                       </Button>
-                      <input ref={bgFileRef} type="file" accept="image/*" className="hidden" onChange={handleBgUpload} />
+                      <Button variant="ghost" size="sm" disabled={bgBusy || removeBgBusy} onClick={() => setRemoveBgOpen(true)}>
+                        移除背景图
+                      </Button>
+                      <input ref={bgFileRef} type="file" accept="image/*" className="hidden" disabled={bgBusy || removeBgBusy} onChange={handleBgUpload} />
                     </>
                   )}
                   {bgMsg && (
-                    <span className={cn("text-xs", bgMsg.includes("失败") ? "text-primary" : "text-success")}>{bgMsg}</span>
+                    <span className={cn("text-xs", bgMsgTone === "error" ? "text-primary" : "text-success")}>{bgMsg}</span>
                   )}
                 </div>
               </section>
@@ -858,6 +937,16 @@ export function AccountSettingsPage() {
           </DialogBody>
         </DialogContent>
       </Dialog>
+      <ConfirmDialog
+        open={removeBgOpen}
+        onOpenChange={setRemoveBgOpen}
+        title="移除背景图"
+        description="将删除你上传的背景图，并把透明度调回关闭。此操作不能恢复。"
+        confirmLabel="移除"
+        tone="danger"
+        loading={removeBgBusy}
+        onConfirm={() => { void handleRemoveBackground(); }}
+      />
     </div>
   );
 }

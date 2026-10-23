@@ -1,7 +1,7 @@
 import { buildInsertIgnore, buildUpsertSQL, getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { ensureExamParticipants, preserveStudentExamHistory } from "../services/examParticipants";
-import { captureExistingExamClasses } from "../services/examClassMemberships";
+import { captureExistingExamClasses, reanchorStudentExamClasses } from "../services/examClassMemberships";
 import { analysisCache } from "../services/analysisCache";
 
 export interface GradeRecord {
@@ -198,6 +198,7 @@ export class ClassRepository {
     const sql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
     if (!existing) await preserveStudentExamHistory(tx, studentId);
     await tx.run(sql, classId, studentId);
+    if (!existing) await reanchorStudentExamClasses(tx, studentId);
     return !existing;
   }
 
@@ -205,12 +206,15 @@ export class ClassRepository {
     await this.db.transaction(async (tx) => {
       await preserveStudentExamHistory(tx, studentId);
       await tx.run("DELETE FROM class_students WHERE class_id = ? AND student_id = ?", classId, studentId);
+      await reanchorStudentExamClasses(tx, studentId);
     });
     analysisCache.clear();
   }
 
   /** 学生迁移：从原班级移除并加入目标班级（目标班级所属年级即学生的新年级）。 */
   async moveStudent(fromClassId: number, toClassId: number, studentId: number): Promise<void> {
+    // 无实际调班的重放请求不能触发回溯，否则一次 no-op 也会永久改写历史归属。
+    if (fromClassId === toClassId) return;
     await this.db.transaction(async (tx) => {
       await preserveStudentExamHistory(tx, studentId);
       // 调班语义只移除**原班**关联；其他在读班（合法多班）与归档班级的历史关联一律保留。
@@ -218,6 +222,8 @@ export class ClassRepository {
       await tx.run("DELETE FROM class_students WHERE class_id = ? AND student_id = ?", fromClassId, studentId);
       const sql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
       await tx.run(sql, toClassId, studentId);
+      // 一经调班即回溯：该生每次考试都改到新班统计（issue #347）。
+      await reanchorStudentExamClasses(tx, studentId);
     });
     analysisCache.clear();
   }
@@ -310,6 +316,26 @@ export class ClassRepository {
         throw new Error(`班级 ${classId} 班主任标记唯一性校验失败（期望 ${expected}，实际 ${Number(marked?.n ?? 0)}），事务回滚`);
       }
     });
+  }
+
+  /**
+   * 源班班主任资格按班级关系判断，不看全局 `teacher_role` 是否叫班主任。
+   * 按班标记优先；全局班主任角色只在「该班还没有按班标记」时兼容旧的空科目关联。
+   */
+  async isSourceClassHead(teacherId: number, classId: number, teacherRole: string | null): Promise<boolean> {
+    const row = await this.db.get<{ ok: number }>(
+      `SELECT 1 AS ok FROM teacher_classes tc
+        WHERE tc.teacher_id = ? AND tc.class_id = ? AND (
+          tc.is_head_teacher = 1 OR (
+            ? = 'head_teacher' AND tc.subject IS NULL AND NOT EXISTS (
+              SELECT 1 FROM teacher_classes h
+               WHERE h.class_id = tc.class_id AND h.is_head_teacher = 1
+            )
+          )
+        )`,
+      teacherId, classId, teacherRole
+    );
+    return Boolean(row);
   }
 
   async listTeacherClasses(teacherId: number): Promise<Array<{

@@ -40,6 +40,9 @@ jobs:
       - name: Core logic verify suite
         run: npm run verify:core-logic
 
+      - name: Card block order persistence regression
+        run: npm run verify:card-block-order
+
       - name: Ladder student identity regression
         run: npx tsx scripts/verify-ladder-students.ts
 
@@ -129,6 +132,8 @@ jobs:
         run: npm run verify:scanner-panel-session
       - name: Scanner postprocess page pure logic, delete guard and mounted views
         run: npm run verify:scanner-postprocess-all
+      - name: Card image rotation mounted component regression
+        run: npm run verify:card-rotation-ui
       - name: Scanner partial transfer failure persistence
         run: npm run verify:scanner-partial-failure
 

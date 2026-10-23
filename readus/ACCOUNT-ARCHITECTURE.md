@@ -116,7 +116,7 @@ issue #322「移除学生账号在网页端修改阅卷设置和上传背景图�
 | 能力 | 学生 | 教师 / 管理员 | 强制点 |
 |------|------|---------------|--------|
 | 账号设置页「阅卷设置」页签（成绩指标显示、复核置信度阈值） | **不可见、不可写** | 可用 | `PATCH /api/users/me/settings`：请求体含 `scoreDisplayMode` / `reviewConfidenceThreshold` 且 `!roleHasPermission(role_id, grade:write)` → **整单 403**（`canWriteGradingSelfSettings()`）。不带这两项时，皮肤 / 明暗 / Tab 栏仍可写 |
-| 背景图显示与透明度 | **不显示、不可写** | 可用 | 学生身份（`isStudentAccount()`），不看 `grade:write`。`GET` 设置把 `backgroundOpacity` 改写成 0；`GET /api/app/background` 返回 404（自定义图和默认图都不下发）；PATCH 带 `backgroundOpacity` 则整单 403。库里的历史值和 `backgrounds/<userId>.jpg` 保留，只是不再发给学生 |
+| 背景图显示与透明度 | **不显示、不可写** | 可用 | 学生身份（`isStudentAccount()`），不看 `grade:write`。`GET` 设置把 `backgroundOpacity` 改写成 0；`GET /api/app/background` 返回 404（自定义图和默认图都不下发）；PATCH 带 `backgroundOpacity` 则整单 403。读取不删历史文件。本人 `DELETE /api/users/me/background` 可清自己的文件并把透明度归零（学生接口可用，设置页无按钮）。管理员 `POST /api/admin/backgrounds/purge-students`（`system:manage`）只清学生角色的文件和透明度 |
 | 上传自定义背景图 | **不可用** | 可用 | `POST /api/users/me/background` 在 multer **之前**挂 `requireBackgroundUploadAccess()`，学生直接 403，不产生落盘文件 |
 | 皮肤、明暗、底部 Tab 栏 | 可用 | 可用 | 同一 PATCH 接口里、且请求没有夹带上面被禁字段时 |
 | 本人 AI 服务商增删改 | 可用 | 可用 | `routes/ai-providers.ts` 按 `user_id` 归属自身行，密钥加密存储；不是跨用户写权限 |

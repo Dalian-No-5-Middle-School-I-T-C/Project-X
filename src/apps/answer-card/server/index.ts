@@ -22,6 +22,12 @@ import {
   MAX_CARD_ASSETS_TOTAL_BYTES,
   describeCardAssetLimits,
 } from "../../../shared/cardAssetLimits";
+import {
+  MAX_BACKGROUND_UPLOAD_BYTES,
+  backgroundUploadTooLargeMessage,
+  describeBackgroundUploadLimit,
+  formatBackgroundUploadMib,
+} from "../../../shared/backgroundUploadLimits";
 import { cpus } from "node:os";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -119,7 +125,7 @@ import {
 import { optionalAuth, authMiddleware, requirePermission } from "../../../server/middleware/auth";
 import { requirePasswordChangeCompleted } from "../../../server/middleware/auth";
 import { authService } from "../../../server/services/AuthService";
-import { initPermissionCache, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
+import { initPermissionCache, roleHasPermission, PERMISSIONS, ROLE_IDS } from "../../../server/auth/permissions";
 import { createDefaultCard, DEFAULT_STUDENT_INFO, generateCardId } from "../../../shared/defaultCard";
 import { applySubjectTemplate } from "../../../shared/cardTemplates";
 import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey, normalizeObjectiveQuestions } from "../../../shared/grading";
@@ -173,6 +179,7 @@ import {
 import { assertScoresPublishable } from "../../../server/services/examPublication";
 import { ApiError } from "../../../server/api-error";
 import { assetsDir, cardAssetsDir, dataDir, ensureDataDirs, layoutPath, rootDir, safeId } from "./storage";
+import { removeStudentBackgroundFiles, removeUserBackgroundFile, resolveUserBackgroundPath } from "./userBackgrounds";
 import {
   CARD_REVISION_INVALID, CARD_REVISION_MISMATCH,
   pdfRevisionInvalidMessage, pdfRevisionMismatchMessage, resolvePdfRevisionGate
@@ -916,6 +923,7 @@ export async function createApp(): Promise<express.Express> {
         themeSkin: themeSkinRaw,
         uiStyle,
         colorScheme: (user as any).color_scheme ?? "light",
+        backgroundUploadLimit: formatBackgroundUploadMib(MAX_BACKGROUND_UPLOAD_BYTES),
       });
     } catch (err) { next(err); }
   });
@@ -1030,15 +1038,16 @@ export async function createApp(): Promise<express.Express> {
   };
 
   app.get("/api/app/background", optionalAuth, (req, res) => {
-    // 学生账号网页端始终不提供背景图（自定义图与默认图都不下发）。历史文件保留。
+    // 学生账号网页端始终不提供背景图（自定义图与默认图都不下发）。
+    // 历史文件不在这里删；本人 DELETE 与管理员清退各自负责。
     if (isStudentAccount(req.user)) {
       setBackgroundCache(res);
       res.status(404).json({ error: "background image not found" });
       return;
     }
     if (req.user) {
-      const customBg = path.join(backgroundsDir, `${req.user?.id}.jpg`);
-      if (existsSync(customBg)) {
+      const customBg = resolveUserBackgroundPath(backgroundsDir, req.user.id);
+      if (customBg && existsSync(customBg)) {
         setBackgroundCache(res);
         res.sendFile(customBg);
         return;
@@ -1066,7 +1075,7 @@ export async function createApp(): Promise<express.Express> {
         cb(null, `upload_${Date.now()}${ext}`);
       }
     }),
-    limits: { fileSize: 5 * 1024 * 1024 },
+    limits: { fileSize: MAX_BACKGROUND_UPLOAD_BYTES },
     fileFilter: (_req, file, cb) => {
       const ext = path.extname(decodeMultipartFilename(file.originalname)).toLowerCase();
       const allowedExts = [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"];
@@ -1082,9 +1091,24 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  // 超限在这条路由上直接回 413。全局 MulterError 分支不知道这是哪一个上传闸门，
+  // 若把背景图上限写进那句共用文案，答题卡资源等其它上传也会显示成同一个数字。
+  const receiveBackgroundUpload: express.RequestHandler = (req, res, next) => {
+    bgUpload.single("file")(req, res, (err: unknown) => {
+      if (err && typeof err === "object" && (err as { code?: string }).code === "LIMIT_FILE_SIZE") {
+        res.status(413).json({
+          code: "UPLOAD_ERROR",
+          message: backgroundUploadTooLargeMessage(MAX_BACKGROUND_UPLOAD_BYTES),
+        });
+        return;
+      }
+      next(err);
+    });
+  };
+
   // #322: 学生账号不能上传自定义背景图。门放在 multer 之前——
   // 否则被拒的请求仍会先把上传体落盘到 dataDir/backgrounds 再返回 403。
-  app.post("/api/users/me/background", authMiddleware, requireBackgroundUploadAccess, bgUpload.single("file"), async (req, res, next) => {
+  app.post("/api/users/me/background", authMiddleware, requireBackgroundUploadAccess, receiveBackgroundUpload, async (req, res, next) => {
     try {
       const userId = req.user?.id;
       if (userId == null) {
@@ -1099,14 +1123,72 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       if (!await assertImageFile(req.file.path, res)) return;
-      // 重命名为 user_${userId}.jpg，覆盖旧背景
-      const target = path.join(backgroundsDir, `${userId}.jpg`);
+      // 重命名为 <userId>.jpg，覆盖旧背景。id 非法时不落一个跑出目录的名字。
+      const target = resolveUserBackgroundPath(backgroundsDir, userId);
+      if (!target) {
+        await rm(req.file.path, { force: true });
+        res.status(400).json({ error: "无法保存背景图" });
+        return;
+      }
       await rename(req.file.path, target);
       res.json({ ok: true });
     } catch (error) {
       next(error);
     }
   });
+
+  // #336：本人删除自己的背景文件，并把透明度归零。学生也可以调——
+  // 禁的是「使用/上传」自定义背景，不是「清掉自己留下的文件」。设置页不给学生摆按钮。
+  app.delete("/api/users/me/background", authMiddleware, async (req, res, next) => {
+    try {
+      const userId = req.user?.id;
+      if (userId == null || resolveUserBackgroundPath(backgroundsDir, userId) == null) {
+        res.status(401).json({ message: "删除背景图需要已登录用户" });
+        return;
+      }
+      const removed = await removeUserBackgroundFile(backgroundsDir, userId);
+      const updated = await getMysqlDb().run(
+        "UPDATE users SET background_opacity = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND COALESCE(background_opacity, 0) != 0",
+        userId
+      );
+      res.json({ ok: true, removed, opacityReset: updated.changes > 0 });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // #336：管理员一次性清退学生历史背景。不在启动时做，避免老师发现图突然没了。
+  // 只删 role=student 的 <id>.jpg，并只把这些账号的透明度归零。教师/管理员文件不动。
+  // 免登录模式的权限门会放行无身份请求，这里再要一次已登录管理员，避免匿名清盘。
+  app.post(
+    "/api/admin/backgrounds/purge-students",
+    authMiddleware,
+    requirePermissionCompat(PERMISSIONS.SYSTEM_MANAGE),
+    async (req, res, next) => {
+      try {
+        if (req.user?.id == null) {
+          res.status(401).json({ message: "清除学生背景图需要已登录的管理员" });
+          return;
+        }
+        const db = getMysqlDb();
+        const students = await db.all<{ id: number }>(
+          "SELECT id FROM users WHERE role_id = ?",
+          ROLE_IDS.STUDENT
+        );
+        const removedFiles = await removeStudentBackgroundFiles(
+          backgroundsDir,
+          students.map((row) => row.id)
+        );
+        const updated = await db.run(
+          "UPDATE users SET background_opacity = 0, updated_at = CURRENT_TIMESTAMP WHERE role_id = ? AND COALESCE(background_opacity, 0) != 0",
+          ROLE_IDS.STUDENT
+        );
+        res.json({ ok: true, removedFiles, opacityReset: updated.changes });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   app.use("/api/users", userRoutes);
   app.use("/api/classes", classRoutes);
@@ -3192,6 +3274,7 @@ export async function startServer(port = Number(process.env.PORT ?? 5174)): Prom
       console.log(`[ai-quota] ${describeAiQuotaLimits()}`);
       // 安全（R05）：答题卡插图导入/上传档位
       console.log(`[card-asset-limits] ${describeCardAssetLimits()}`);
+      console.log(`[background-upload-limits] ${describeBackgroundUploadLimit()}`);
       logWechatSubscriptionStatus();
       startLlmClientSidecar();
       const shutdown = () => {

@@ -3,7 +3,7 @@ import type { Request, Response } from "express";
 import { ClassRepository } from "../repositories/ClassRepository";
 import { UserRepository } from "../repositories/UserRepository";
 import { authMiddleware, requirePermission, requireRole } from "../middleware/auth";
-import { PERMISSIONS, ROLE_IDS, ROLE_NAMES } from "../auth/permissions";
+import { PERMISSIONS, ROLE_IDS, ROLE_NAMES, TEACHER_ROLES, roleHasPermission } from "../auth/permissions";
 import { isTeacherSubject } from "../../shared/subjects";
 import { hasClassViewPermission } from "../../apps/answer-card/server/middleware";
 import { getAccessibleClassIds } from "./scores";
@@ -45,6 +45,57 @@ const canReadClassRoster = async (req: Request, res: Response, next: express.Nex
     return;
   }
   if (!(await hasClassViewPermission(user, classId, "can_view_students"))) {
+    res.status(403).json({ message: "权限不足：管理员已关闭你对该班级「学生名单」的查看权限" });
+    return;
+  }
+  next();
+};
+
+/**
+ * 调班门（issue #347）：调班会回溯重写该生历次考试的班级归属，属于跨组织写操作，
+ * 因此比花名册读取更严格。
+ * - 管理员保持 `class:manage`。
+ * - 学年主任范围是全校，但源班 `can_view_students` 仍要读权限矩阵本身；
+ *   `hasClassViewPermission` 对学年主任的读取放行不能用在这里。
+ * - 班主任资格看源班关系（`teacher_classes.is_head_teacher`，含旧数据兼容），
+ *   不要求全局 `teacher_role` 恰好是班主任。学科老师被指定为源班班主任后可以调班。
+ * - 未配置细分角色的旧数据教师即使在读取侧被兼容成全校可见，也不获得调班权。
+ * - 非学年主任还要目标班落在本人可见班级里。每一条放行分支都过源班名单门。
+ */
+const canMoveStudent = async (req: Request, res: Response, next: express.NextFunction): Promise<void> => {
+  const user = req.user;
+  if (!user) {
+    res.status(401).json({ message: "未认证" });
+    return;
+  }
+  if (roleHasPermission(user.role_id, PERMISSIONS.CLASS_MANAGE)) {
+    next();
+    return;
+  }
+  if (user.role_name !== ROLE_NAMES.TEACHER) {
+    res.status(403).json({ message: `权限不足：缺少 ${PERMISSIONS.CLASS_MANAGE}` });
+    return;
+  }
+  const fromId = Number(req.params.id);
+  const targetId = Number((req.body as { targetClassId?: unknown } | undefined)?.targetClassId);
+  if (!Number.isInteger(fromId) || fromId <= 0 || !Number.isInteger(targetId) || targetId <= 0) {
+    res.status(400).json({ message: "无效的班级 ID" });
+    return;
+  }
+  const isGradeLeader = user.teacher_role === TEACHER_ROLES.GRADE_LEADER;
+  const scopedTeacher = user.teacher_role === TEACHER_ROLES.HEAD_TEACHER || user.teacher_role === TEACHER_ROLES.SUBJECT_TEACHER;
+  if (!isGradeLeader) {
+    if (!scopedTeacher || !await classRepo.isSourceClassHead(user.id, fromId, user.teacher_role ?? null)) {
+      res.status(403).json({ message: "权限不足：调班只能由管理员、源班班主任或学年主任操作" });
+      return;
+    }
+    const accessible = await getAccessibleClassIds(user);
+    if (accessible === null || !accessible.includes(fromId) || !accessible.includes(targetId)) {
+      res.status(403).json({ message: "无权调班：源班级与目标班级都必须是你任教或担任班主任的班级" });
+      return;
+    }
+  }
+  if (!(await hasClassViewPermission(user, fromId, "can_view_students", { enforceMatrix: true }))) {
     res.status(403).json({ message: "权限不足：管理员已关闭你对该班级「学生名单」的查看权限" });
     return;
   }
@@ -254,8 +305,14 @@ router.post("/:id/students", manage, async (req: Request, res: Response) => {
   res.json({ message: `已添加 ${added} 名学生`, added });
 });
 
-/** POST /api/classes/:id/students/:studentId/move — 学生迁移到目标班级（跨班级/跨年级） */
-router.post("/:id/students/:studentId/move", manage, async (req: Request, res: Response) => {
+/** POST /api/classes/:id/students/:studentId/move — 学生迁移到目标班级（跨班级/跨年级）
+ *
+ * 管理员（class:manage）之外，班主任与学年主任也可调班（issue #347：强基班中途调整、
+ * 转班留级需要由年级组操作），但**源班与目标班都必须在自己的任教范围内**，并叠加
+ * 源班级的 can_view_students 开关；范围口径与成绩侧共用 getAccessibleClassIds。
+ * 调班一经提交即回溯该生全部考试的班级归属，见 reanchorStudentExamClasses。
+ */
+router.post("/:id/students/:studentId/move", canMoveStudent, async (req: Request, res: Response) => {
   const fromId = Number(req.params.id);
   const studentId = Number(req.params.studentId);
   const { targetClassId } = req.body ?? {};
@@ -280,9 +337,13 @@ router.post("/:id/students/:studentId/move", manage, async (req: Request, res: R
     res.status(400).json({ message: "该学生不在当前班级" });
     return;
   }
+  if (fromId === target.id) {
+    res.status(400).json({ message: "源班级与目标班级相同，无需调班" });
+    return;
+  }
 
   await classRepo.moveStudent(fromId, target.id, studentId);
-  res.json({ message: `已迁移到 ${target.grade_name} · ${target.name}` });
+  res.json({ message: `已迁移到 ${target.grade_name} · ${target.name}，该生历次考试的班级归属已同步更新` });
 });
 
 router.delete("/:id/students/:studentId", manage, async (req: Request, res: Response) => {

@@ -478,10 +478,16 @@ async function main(): Promise<void> {
   // 接线检查：门必须挂在 multer 之前——否则被拒的请求已把上传体落盘到 dataDir/backgrounds
   const selfSettingsSource = readFileSync(path.resolve("src/apps/answer-card/server/index.ts"), "utf8");
   ok(
-    /app\.post\(\s*"\/api\/users\/me\/background",\s*authMiddleware,\s*requireBackgroundUploadAccess,\s*bgUpload\.single/.test(
+    /app\.post\(\s*"\/api\/users\/me\/background",\s*authMiddleware,\s*requireBackgroundUploadAccess,\s*receiveBackgroundUpload/.test(
       selfSettingsSource
-    ),
-    "#322 背景图路由在 multer 前挂载 requireBackgroundUploadAccess"
+    ) && /bgUpload\.single\(/.test(selfSettingsSource)
+      && /backgroundUploadTooLargeMessage\(/.test(selfSettingsSource),
+    "#322/#335 背景图路由在 multer 前挂载身份门，超限文案带当前生效上限"
+  );
+  ok(
+    /app\.delete\(\s*"\/api\/users\/me\/background",\s*authMiddleware/.test(selfSettingsSource)
+      && /app\.post\(\s*"\/api\/admin\/backgrounds\/purge-students",\s*authMiddleware,\s*requirePermissionCompat\(PERMISSIONS\.SYSTEM_MANAGE\)/.test(selfSettingsSource),
+    "#336 本人可删自己的背景图，管理员清退走 system:manage"
   );
   ok(
     /if \(!canWriteGradingSelfSettings\(_req\.user\)\)/.test(selfSettingsSource),

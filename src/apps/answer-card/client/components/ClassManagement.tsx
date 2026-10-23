@@ -425,6 +425,7 @@ export function ClassManagement() {
 
   async function addStudent(studentId: number) {
     if (!selectedClassId) return;
+    if (!confirm("将该生加入本班？加入后该生历次考试将按加入后的在读班级统计。")) return;
     setBusy(true);
     try {
       await fetchJson(`/api/classes/${selectedClassId}/students`, {
@@ -444,7 +445,7 @@ export function ClassManagement() {
   }
 
   async function removeStudent(studentId: number, name: string) {
-    if (!selectedClassId || !confirm(`将「${name}」移出班级？`)) return;
+    if (!selectedClassId || !confirm(`将「${name}」移出班级？移出后该生历次考试将改按其剩余在读班级统计；已无在读班级时保持原归属。`)) return;
     setBusy(true);
     try {
       await fetchJson(`/api/classes/${selectedClassId}/students/${studentId}`, { method: "DELETE" });
@@ -1039,6 +1040,9 @@ export function ClassManagement() {
           <DialogBody className="flex flex-col gap-3">
             <p className="text-sm text-muted-foreground">
               将 {moveTarget?.name}（{moveTarget?.student_number ?? moveTarget?.username}）迁移到：
+            </p>
+            <p className="text-sm text-muted-foreground">
+              迁移后该学生历次考试的班级归属与班级统计均按新班级计算，考号无需改动。
             </p>
             <Field label="年级">
               <Select

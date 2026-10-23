@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./ui/v2";
+import { RotationButtons, RotatedCardImage, type ImageRotation } from "./RotatedCardImage";
 
 /**
  * ScanPreviewModal —— T2 迁移（T04 明细/订正/弹窗）
@@ -41,6 +42,8 @@ export interface ScanPreviewModalProps {
 export function ScanPreviewModal({ title, subtitle, pages, onClose }: ScanPreviewModalProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [activePageIndex, setActivePageIndex] = useState(0);
+  /** 整批原卷同方向：一次旋转作用于全部页面（issue #347） */
+  const [rotation, setRotation] = useState<ImageRotation>(0);
 
   // Keyboard shortcuts（ESC 交给 Radix Dialog，这里只管翻页）
   useEffect(() => {
@@ -89,12 +92,17 @@ export function ScanPreviewModal({ title, subtitle, pages, onClose }: ScanPrevie
   return (
     <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
       <DialogContent size="lg" className="h-[92vh] max-w-[min(92vw,900px)]">
-        <DialogHeader>
-          <DialogTitle className="truncate text-base">{title}</DialogTitle>
-          <DialogDescription className="flex flex-wrap items-center gap-3">
-            {subtitle && <span className="truncate">{subtitle}</span>}
-            <span className="tabular-nums">{pages.length} 页</span>
-          </DialogDescription>
+        <DialogHeader className="flex-row items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <DialogTitle className="truncate text-base">{title}</DialogTitle>
+            <DialogDescription className="flex flex-wrap items-center gap-3">
+              {subtitle && <span className="truncate">{subtitle}</span>}
+              <span className="tabular-nums">{pages.length} 页</span>
+            </DialogDescription>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <RotationButtons size="icon-sm" rotation={rotation} onChange={setRotation} />
+          </div>
         </DialogHeader>
 
         {/* PDF-style scrolling pages */}
@@ -122,10 +130,10 @@ export function ScanPreviewModal({ title, subtitle, pages, onClose }: ScanPrevie
                 )}
               </div>
               <div className="flex justify-center overflow-hidden rounded-lg bg-paper shadow-2">
-                <img
+                <RotatedCardImage
                   src={page.imageUrl}
                   alt={`第${page.pageNum}页${hasSides ? (page.side === "front" ? " 正面" : " 反面") : ""}`}
-                  className="block h-auto w-full"
+                  rotation={rotation}
                   loading={idx < 2 ? "eager" : "lazy"}
                 />
               </div>

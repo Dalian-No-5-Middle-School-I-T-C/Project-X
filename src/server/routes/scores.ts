@@ -138,15 +138,18 @@ async function assertStudentAccessible(
   return { status: 403, message: "权限不足" };
 }
 
-/** 解析学生的主班级 ID（用于 AI 分析上下文） */
+/** 解析学生的主班级 ID（用于 AI 分析上下文）
+ *  与成绩侧「当前班级」同一口径：在读优先 → 加入时间最新 → class_id 最大。
+ *  此前按 joined_at 取最早一条，调班后仍留在原班的学生会拿到旧班的班级均分。 */
 async function resolveStudentPrimaryClassId(studentId: number): Promise<number | null> {
   const db = getMysqlDb();
   const row = await db.get<{ class_id: number }>(
     `SELECT cs.class_id AS class_id
      FROM class_students cs
      JOIN classes c ON c.id = cs.class_id
+     JOIN grades g ON g.id = c.grade_id
      WHERE cs.student_id = ?
-     ORDER BY cs.joined_at ASC, c.sort_order ASC, cs.class_id ASC
+     ORDER BY (c.archived_at IS NULL AND g.archived_at IS NULL) DESC, cs.joined_at DESC, cs.class_id DESC
      LIMIT 1`,
     studentId
   );
