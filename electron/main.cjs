@@ -1,4 +1,12 @@
+// 先于 Electron 初始化执行：扫描端的 Node 由 Electron 自带，CVE-2026-111497 的补丁还没进稳定版。
+// Chromium 142 的解码器是另一条路径，在 loadURL 之前由 installChromiumBrotliDecodeBlock 关掉。
+require("./node-runtime-security.cjs").enforceNodeRuntimeCve2026111497();
+
 const { app, BrowserWindow, dialog, session, shell } = require("electron");
+const {
+  installChromiumBrotliDecodeBlock,
+  installChromiumBrotliHeaderBlock,
+} = require("./node-runtime-security.cjs");
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
@@ -388,6 +396,15 @@ async function createWindow() {
     appendLog("INFO", "[Renderer] responsive (recovered)");
   });
 
+  // 远程页面的 br 由 Chromium 解码，不经过 node:zlib。覆盖没装上就不要 loadURL。
+  await installChromiumBrotliDecodeBlock(mainWindow.webContents, appendLog, {
+    onFatal(error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      appendLog("ERROR", `[Electron] Brotli 解码拦截失效: ${detail}`);
+      dialog.showErrorBox("扫描端已停止加载", detail);
+      app.quit();
+    },
+  });
   appendLog("INFO", `[Electron] loadURL ${baseUrl}`);
   await mainWindow.loadURL(baseUrl);
   appendLog("INFO", `[Electron] loadURL done status=${mainWindow.webContents.getURL()}`);
@@ -395,10 +412,16 @@ async function createWindow() {
 
 configureAppIdentity();
 
+app.on("session-created", (createdSession) => {
+  installChromiumBrotliHeaderBlock(createdSession, appendLog);
+});
+
 app.whenReady().then(async () => {
   try {
     // 必须在加载任何页面之前装好（安全 R23）：权限策略按会话生效，晚装就有一个窗口期。
     installDevicePermissionPolicy();
+    // defaultSession 可能在 session-created 监听挂上之前就已经存在，这里再装一次（内部会去重）。
+    installChromiumBrotliHeaderBlock(session.defaultSession, appendLog);
     await createWindow();
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
