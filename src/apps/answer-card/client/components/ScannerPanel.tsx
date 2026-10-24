@@ -1043,7 +1043,16 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                         )}
                       </TableCell>
                       <TableCell>
-                        {!sr.saved && <CardCorrectionButton disabled={resultsBusy} url={`/api/scanner/session/${sessionId}/groups/${sr.groupId}/correction`} onSaved={() => fetchCombinedResults(sessionId)} />}
+                        {!sr.saved && (
+                          <CardCorrectionButton disabled={resultsBusy} url={`/api/scanner/session/${sessionId}/groups/${sr.groupId}/correction`} onSaved={() => {
+                            // 远端模式下本机 saved 不会因上传完成而变化：这一卷的图片与识别结果已经交给服务器，
+                            // 工作台再改分只留在本机，不提示就会静默分歧（与后处理页同一句话）。
+                            if (scannerMode === "remote" && uploadJobs[sr.groupId]) {
+                              setResultMessage("该卷已随本批上传，本机改动不再重复上传；服务器成绩请走 Web 成绩修改。");
+                            }
+                            void fetchCombinedResults(sessionId);
+                          }}
+                        />)}
                         <span className="mr-2 text-xs text-muted-foreground">{scannerMode === "remote" ? (uploadState.jobs.find(j => j.id === uploadJobs[sr.groupId])?.message || (uploadJobs[sr.groupId] ? "已加入上传队列" : "待上传")) : (sr.saved ? "已保存" : "待保存")}</span>
                         <Button
                           variant="ghost"

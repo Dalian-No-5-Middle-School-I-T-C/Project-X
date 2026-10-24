@@ -70,8 +70,9 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
         nextBatches[sessionId] = batch;
         nextMetas[sessionId] = await loadSessionMeta(sessionId);
       }
-      // 失败、冲突副本、以及结果里仍需复核的卷，都先上传图片与识别结果；
-      // 存疑状态随回执返回，后续在服务器/异常卷流程处理。
+      // 记入学号、判分成功的卷（含仍带存疑标记的）都已随批上传，存疑状态随回执返回；
+      // 失败组与冲突副本还没有学号或归属，服务端无处挂这份成绩，继续留在本机处理，
+      // 处理完（改考号/重识别）由下面的补传路径上传。
       for (const [sid, next] of Object.entries(nextBatches)) {
         for (const result of next.results) {
           if (result.needsReviewCount > 0) abnormalSeen.current.add(`${sid}/${result.groupId}`);

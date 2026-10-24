@@ -2,6 +2,8 @@
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import { act, createElement } from "react";
+import { buildLayout } from "../src/shared/layout";
+import { recognizedCells } from "../src/shared/scanCorrection";
 import { createDefaultCard } from "../src/shared/defaultCard";
 import { cardFingerprint } from "../src/shared/cardVersion";
 import type { StartUploadInput } from "../src/apps/answer-card/client/lib/scannerUploadManager";
@@ -48,6 +50,7 @@ let retainedPageCount = 2;
 const snapshotRequests: string[] = [];
 const summaryRequests: string[] = [];
 const retryRequests: unknown[] = [];
+const correctionSaves: Array<{ pages: unknown[] }> = [];
 const summary = () => ({ failures: includeFailure ? [{ groupId: "1", studentId: null, stage: "recognition",
   message: "未识别学号", pages: [{ recordId: "page-2", pageNum: 2, layoutPage: 1, side: "front" }] }] : [],
   results: [
@@ -84,7 +87,26 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
     retryRequests.push(JSON.parse(String(init?.body)));
     return Response.json({ ...summary(), warnings: ["重识别告警：历史灰度卷需改用彩色"] });
   }
+  if (url.includes("/scan-image/")) return new Response("img", { headers: { "content-type": "image/png" } });
   if (url.endsWith("/health")) return Response.json({ ok: true, capabilities: { scannerClientApi: true } });
+  if (/\/api\/scanner\/session\/[^/]+\/groups\/[^/]+\/correction$/.test(url)) {
+    if (init?.method === "PUT") {
+      correctionSaves.push(JSON.parse(String(init.body)) as { pages: unknown[] });
+      return Response.json({ ok: true, saved: false, message: "填涂订正已保存，等待上传到关联考试" });
+    }
+    const page = buildLayout(card).pages[0];
+    const sheet = {
+      status: "ok", pageNumber: 1,
+      studentId: { status: "ok", value: "91001" },
+      questions: [{ questionNumber: 1, selectedOptions: ["A"], confidence: 1 }],
+      subjectiveQuestions: [],
+      geometry: { imageWidth: 1000, imageHeight: 1414, layoutToImage: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+    } as never;
+    return Response.json({ card, version: cardFingerprint(card), pages: [{
+      sourceType: "twain_scan_record", sourceId: "page-1", revision: 1, layout: page,
+      recognition: sheet, ...recognizedCells(page, sheet), imageUrl: "/api/scanner/scan-image/page-1",
+    }] });
+  }
   throw new Error(`Uncovered panel request: ${url}`);
 });
 const { createRoot } = await import("react-dom/client");
@@ -180,6 +202,19 @@ try {
   await click("开始扫描"); await settle();
   await act(async () => { streams[3].done(); }); await settle();
   assert.equal(uploads.length, 8, "A new complete session resumes normal automatic uploads");
+  // 远端模式下这一卷已经随批次进入上传队列：从工作台改分必须当场说明改动不会回到服务器
+  //（重复上传同一份卷子会被服务端当成第二份原卷，反而撤掉已保存的成绩）。
+  await click("整卡改分"); await settle();
+  const cell = document.querySelector("svg polygon") as SVGElement | null;
+  assert(cell, "改分弹层渲染出可点选的填涂格");
+  await act(async () => { cell.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+  await settle();
+  await click("保存修改"); await settle();
+  assert.equal(correctionSaves.length, 1, "工作台改分写入本机订正端点");
+  assert(document.body.textContent?.includes("已随本批上传"), "工作台也要给出与后处理页一致的指路提示");
+
+  await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="关闭"]')?.click(); }); await settle();
+
   await click("开始新扫描"); await settle();
   await click("开始扫描"); await settle();
   const summariesBeforeEmpty = summaryRequests.length;
