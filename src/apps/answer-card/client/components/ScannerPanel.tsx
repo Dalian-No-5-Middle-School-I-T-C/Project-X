@@ -1044,21 +1044,36 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                       </TableCell>
                       <TableCell>
                         {!sr.saved && (() => {
-                          // 逐页上传时每页现读本机订正：任务在途时改分，先传出去的页保留旧识别、
-                          // 后传出去的页带上新识别，服务器会收到半旧半新的一份快照。
-                          const uploading = scannerUploadManager.isGroupUploading(sessionUploadRef.current?.cardId ?? null, sr.groupId, sessionId);
+                          // 逐页上传时每页现读本机订正：在途或仍留着可续传的半成品时改分，
+                          // 先传出去的页保留旧识别、后传出去的页带上新识别，服务器会收到半旧半新的一份快照。
+                          const cardId = sessionUploadRef.current?.cardId ?? null;
+                          const uploading = scannerUploadManager.isGroupUploading(cardId, sr.groupId, sessionId);
+                          const resumable = uploading && scannerUploadManager.isGroupUploadResumable(cardId, sr.groupId, sessionId);
                           return (
-                            <CardCorrectionButton disabled={resultsBusy || uploading}
-                              disabledReason="这一卷的上传还没结束（失败的任务可以续传失败页）；现在改分会让服务器收到半旧半新的识别结果，请先完成或取消上传"
-                              url={`/api/scanner/session/${sessionId}/groups/${sr.groupId}/correction`} onSaved={() => {
-                              // 远端模式下本机 saved 不会因上传完成而变化：这一卷已经交给服务器，
-                              // 工作台再改分只留本机，不提示就会静默分歧（与后处理页同一句话）。
-                              if (scannerMode === "remote" && uploadJobs[sr.groupId]) {
-                                setResultMessage("该卷已随本批上传，本机改动不再重复上传；服务器成绩请走 Web 成绩修改。");
-                              }
-                              void fetchCombinedResults(sessionId);
-                            }}
-                            />
+                            <>
+                              <CardCorrectionButton disabled={resultsBusy || uploading}
+                                disabledReason={resumable
+                                  ? "这一卷已上传一部分、还有失败页可续传；现在改分会让服务器收到半旧半新的识别结果。请先「重试失败页」，或点「放弃续传」后再改分"
+                                  : "这一卷正在上传；现在改分会让服务器收到半旧半新的识别结果，请等它传完或先取消任务"}
+                                url={`/api/scanner/session/${sessionId}/groups/${sr.groupId}/correction`} onSaved={() => {
+                                // 远端模式下本机 saved 不会因上传完成而变化：这一卷已经交给服务器，
+                                // 工作台再改分只留本机，不提示就会静默分歧（与后处理页同一句话）。
+                                if (scannerMode === "remote" && uploadJobs[sr.groupId]) {
+                                  setResultMessage("该卷已随本批上传，本机改动不再重复上传；服务器成绩请走 Web 成绩修改。");
+                                }
+                                void fetchCombinedResults(sessionId);
+                              }}
+                              />
+                              {resumable && cardId && (
+                                <Button variant="ghost" size="sm" onClick={() => {
+                                  if (!window.confirm("放弃续传后，已上传的半成品不再补传，这一卷可以立即整卡改分（改完请整卷重新上传）。服务器上的半成品会话不会写入成绩。确定放弃吗？")) return;
+                                  const result = scannerUploadManager.abandonGroupUpload(cardId, sr.groupId, sessionId);
+                                  setResultMessage(result.ok ? "已放弃这一卷的续传，现在可以整卡改分；改完请整卷重新上传。" : result.message);
+                                }}>
+                                  放弃续传
+                                </Button>
+                              )}
+                            </>
                           );
                         })()}
                         <span className="mr-2 text-xs text-muted-foreground">{scannerMode === "remote" ? (uploadState.jobs.find(j => j.id === uploadJobs[sr.groupId])?.message || (uploadJobs[sr.groupId] ? "已加入上传队列" : "待上传")) : (sr.saved ? "已保存" : "待保存")}</span>

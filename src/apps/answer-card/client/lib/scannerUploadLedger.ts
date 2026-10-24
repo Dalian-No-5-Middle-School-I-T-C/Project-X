@@ -15,8 +15,41 @@ const recoverySchema = z.object({
 });
 export type ScanUploadRecovery = z.infer<typeof recoverySchema>;
 
+const recoveryPrefix = "projectx-scanner-upload-recovery/";
 const recoveryKey = (cardId: string, sessionId: string, groupId: string) =>
-  `projectx-scanner-upload-recovery/${JSON.stringify([cardId, sessionId, groupId])}`;
+  `${recoveryPrefix}${JSON.stringify([cardId, sessionId, groupId])}`;
+
+/** 未完成记录还指向一个可续传的远端会话：重新入队时 `restoreRecovery` 会接回它，已成功的页不再重传。 */
+function isIncompleteRecoveryValue(raw: string): boolean {
+  try {
+    const parsed = recoverySchema.safeParse(JSON.parse(raw) as unknown);
+    // 记录读不出完成状态时按「未完成」处理：无法证明服务器上没有半成品，就不能放开改分。
+    return !parsed.success || !parsed.data.completed;
+  } catch { return true; }
+}
+
+/**
+ * 关闭进度卡只把任务从内存里摘掉，恢复记录还在，所以「这一卷还有半成品可续传」这件事
+ * 必须和删除本机原图一样继续挡住整卡改分（评审 P1：否则 dismiss 后改分→再上传仍是撕裂快照）。
+ * `cardId` 缺失时按会话 + 分组扫描全部记录，与内存任务判断里的通配口径一致。
+ */
+export function hasIncompleteScanUploadRecovery(cardId: string | null | undefined, sessionId: string, groupId: string): boolean {
+  if (typeof localStorage === "undefined") return false;
+  if (cardId) {
+    const raw = localStorage.getItem(recoveryKey(cardId, sessionId, groupId));
+    return raw !== null && isIncompleteRecoveryValue(raw);
+  }
+  for (let index = 0; index < localStorage.length; index++) {
+    const key = localStorage.key(index);
+    if (!key || !key.startsWith(recoveryPrefix)) continue;
+    let parts: unknown;
+    try { parts = JSON.parse(key.slice(recoveryPrefix.length)) as unknown; } catch { continue; }
+    if (!Array.isArray(parts) || parts[1] !== sessionId || parts[2] !== groupId) continue;
+    const raw = localStorage.getItem(key);
+    if (raw !== null && isIncompleteRecoveryValue(raw)) return true;
+  }
+  return false;
+}
 
 export function readScanUploadRecovery(cardId: string, sessionId: string, groupId: string): ScanUploadRecovery | null {
   if (typeof localStorage === "undefined") return null;

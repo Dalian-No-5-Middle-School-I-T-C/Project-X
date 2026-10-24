@@ -179,8 +179,10 @@ function refuseSoftDeletedOnly(res: Response, user: NonNullable<Request["user"]>
 // 是一个**真实存在、且仍在其保留期内**的对象。于是机器调用者走这条数据绑定校验：
 //   1. recordId / sessionId / cardId / examId 必须解析得到真实行，悬挂外键不放行；
 //   2. 记录 → 会话 → 答题卡 → 考试的归属链必须完整；
-//   3. 绑定的考试若**全部被软删除**（`exam_archives.is_deleted = 1`），按「不存在」处理——
-//      与 CR4 给人用的口径一致：已按数据保留策略清理过的原卷，机器也不该再读出来；
+//   3. 会话绑定过的考试里只要有一场被软删除（`exam_archives.is_deleted = 1`），整条归属链按
+//      「不存在」处理——与 CR4 给人用的口径一致：已按数据保留策略清理过的原卷，机器也不该再
+//      读出来，混合绑定（在用 A + 已清理 B）同样不放行（评审 P1）；卡级还没有会话时，
+//      「绑过的考试全部被清理」按「不存在」处理。
 //   4. 尚未绑定任何考试的本机扫描（还没提交过）照旧放行，这是扫描流程的正常起点。
 // 拒绝时沿用与用户路径**相同的状态码与文案**，避免「换个凭据就能探测 ID 是否存在」。
 //
@@ -220,6 +222,12 @@ async function enforceMachineRecordBinding(
     "SELECT card_id FROM twain_scan_sessions WHERE id = ?", sessionId);
   if (!session) return refuseUnbound(res, "扫描会话不存在");
   const resolved = await resolveScannerExam(session.card_id, sessionId);
+  // 会话真正绑定过「已被保留策略清理 / 已不存在」的考试：机器调用者同样按「不存在」拒绝。
+  // 只拒绝「全部绑定都已清理」的话，混合绑定（在用 A + 已清理 B）的整卡订正仍可被扫描 Key
+  // 读写，等于换一根凭据继续改写那场已清理考试的成绩快照（评审 P1）。
+  if (resolved.boundExamIds.some(examId => !resolved.exams.some(exam => exam.id === examId))) {
+    return refuseUnbound(res, "考试不存在或已按数据保留策略清理");
+  }
   if (allBoundExamsSoftDeleted(resolved)) return refuseUnbound(res, "考试不存在或已按数据保留策略清理");
   return true;
 }

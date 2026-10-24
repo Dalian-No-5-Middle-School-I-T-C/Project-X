@@ -153,7 +153,9 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
   // 空白题、越界选项、整张卡没红笔这些口径都由 gradeCombinedRecognition 统一裁断。
   // 订阅上传进度：任务在途时每一页都现读本机订正，这时保存会让服务器收到半旧半新的快照。
   useSyncExternalStore(scannerUploadManager.subscribe, scannerUploadManager.getState);
-  const uploadBusy = scannerUploadManager.isGroupUploading(document?.card.id ?? null, groupId, sessionId);
+  const uploadCardId = document?.card.id ?? null;
+  const uploadBusy = scannerUploadManager.isGroupUploading(uploadCardId, groupId, sessionId);
+  const uploadResumable = uploadBusy && scannerUploadManager.isGroupUploadResumable(uploadCardId, groupId, sessionId);
 
   const reviewQuestions = useMemo(() => {
     const set = new Set<SubjectiveQuestionNumber>();
@@ -293,11 +295,20 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
           <Button size="sm" variant="outline" disabled={zoom >= 4} onClick={() => setZoom(z => Math.min(4, z + 0.5))}>放大</Button>
           <RotationButtons rotation={rotation} onChange={setRotation} disabled={saving} />
           {uploadBusy ? (
-            <Tip label="这一卷的上传还没结束（失败的任务可以续传失败页）；现在保存会让服务器收到半旧半新的识别结果，请先完成或取消上传">
+            <Tip label={uploadResumable
+              ? "这一卷已上传一部分、还有失败页可续传；现在保存会让服务器收到半旧半新的识别结果。请先重试失败页，或点「放弃续传」后再保存"
+              : "这一卷正在上传；现在保存会让服务器收到半旧半新的识别结果，请等它传完或先取消任务"}>
               <Button variant="primary" size="sm" icon={<Save />} disabled loading>保存修改</Button>
             </Tip>
           ) : (
             <Button variant="primary" size="sm" icon={<Save />} disabled={!dirty || saving || errors.length > 0 || locked} loading={saving} onClick={() => void save()}>保存修改</Button>
+          )}
+          {uploadResumable && uploadCardId && (
+            <Button size="sm" variant="outline" onClick={() => {
+              if (!window.confirm("放弃续传后，已上传的半成品不再补传，这一卷可以立即改分（改完请整卷重新上传）。服务器上的半成品会话不会写入成绩。确定放弃吗？")) return;
+              const result = scannerUploadManager.abandonGroupUpload(uploadCardId, groupId, sessionId);
+              setMessage(result.ok ? "已放弃这一卷的续传，现在可以改分；改完请整卷重新上传。" : result.message);
+            }}>放弃续传</Button>
           )}
         </div>
       </div>

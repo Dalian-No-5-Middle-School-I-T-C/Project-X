@@ -148,5 +148,32 @@ try {
   await db.run("DELETE FROM exams WHERE id=?", secondExam.lastInsertRowid);
   await db.run("INSERT INTO exam_archives(exam_id,is_deleted,deleted_at) VALUES (?,1,CURRENT_TIMESTAMP)", firstExam.lastInsertRowid);
   assert.equal((await request("teacher")).status, 404, "a cleaned exam must not become an unbound local scan");
-  console.log(`PASS scanner local correction: ${db.dialect}; authenticated card-only sync, image, draft persistence, stale edits, student/anonymous/remote/ambiguous/deleted scope`);
+  // ── 扫描端 Key 的归档绑定门（评审 P1）────────────────────────────────────────
+  // 机器分支过去只拒绝「全部绑定都被清理」，混合绑定照样放行：同一把 Key 能把已清理考试留下的
+  // 成绩快照改写掉，等于给人用的 CR4 口径对扫描端不成立。
+  const machineKey = String((await (await fetch(`${fixture.baseUrl}/test/fixture`)).json()).key);
+  const keyHeaders = { "X-Api-Key": machineKey };
+  const remoteUrl = url.replace("/session/", "/upload/sessions/");
+  await db.run("DELETE FROM scanner_submissions WHERE session_id=?", session.id);
+  const liveExam = await db.run("INSERT INTO exams(name,card_id,status) VALUES('Key 对照考试',?,'grading')", card.id);
+  const liveSnapshot = JSON.stringify({ totalScore: 5, studentNumber: "91001" });
+  await db.run("INSERT INTO scanner_submissions(exam_id,session_id,group_id,student_number,state,pages_json,score_snapshot) VALUES (?,?,?,'91001','saved','{}',?)",
+    liveExam.lastInsertRowid, session.id, "0", liveSnapshot);
+  const keyRead = await fetch(remoteUrl, { headers: keyHeaders });
+  assert.equal(keyRead.status, 200, "正常归属下扫描 Key 仍要能读写远端整卡订正");
+  const keyDoc = await keyRead.json() as CorrectionDocument;
+  // 混合绑定：这场仍在用的考试 + 一场已按保留策略清理的考试同属一个会话。
+  const cleanedSnapshot = JSON.stringify({ totalScore: 0, studentNumber: "91001" });
+  await db.run("INSERT INTO scanner_submissions(exam_id,session_id,group_id,student_number,state,pages_json,score_snapshot) VALUES (?,?,?,'91001','saved','{}',?)",
+    firstExam.lastInsertRowid, session.id, "0", cleanedSnapshot);
+  assert.equal((await fetch(remoteUrl, { headers: keyHeaders })).status, 404,
+    "扫描 Key 不得借「还有一场在用考试」读到已清理考试的订正文档");
+  const keyWrite = await fetch(remoteUrl, { method: "PUT", headers: { ...keyHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({ pages: keyDoc.pages.map(p => ({ sourceId: p.sourceId, revision: p.revision, selected: p.selected })) }) });
+  assert.equal(keyWrite.status, 404, "扫描 Key 不得改写混合绑定里已清理考试的成绩快照");
+  assert.equal((await db.get<{ score_snapshot: string }>("SELECT score_snapshot FROM scanner_submissions WHERE exam_id=? AND session_id=?",
+    firstExam.lastInsertRowid, session.id))?.score_snapshot, cleanedSnapshot, "被拒的 Key 写入必须原样留下清理后的快照");
+  assert.equal((await db.get<{ score_snapshot: string }>("SELECT score_snapshot FROM scanner_submissions WHERE exam_id=? AND session_id=?",
+    liveExam.lastInsertRowid, session.id))?.score_snapshot, liveSnapshot, "被拒的 Key 写入同样不得改动在用考试的快照");
+  console.log(`PASS scanner local correction: ${db.dialect}; authenticated card-only sync, image, draft persistence, stale edits, student/anonymous/remote/ambiguous/deleted scope, scanner-key archived-binding gate`);
 } finally { await fixture.close(); }

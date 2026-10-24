@@ -8,7 +8,7 @@ import { SERVER_URL_KEY, readServerUrl } from "./scannerMode";
 import { assertCredentialTransportAllowed } from "./remoteCredentialTransport";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
 import { applyScanStudentId, uniqueScanConflictCards } from "../../../../shared/scanPages";
-import { forgetScanUploadRecovery, readScanUploadRecovery, rememberQueuedGroup, writeScanUploadRecovery } from "./scannerUploadLedger";
+import { forgetScanUploadRecovery, hasIncompleteScanUploadRecovery, readScanUploadRecovery, rememberQueuedGroup, writeScanUploadRecovery } from "./scannerUploadLedger";
 import type { ScanBatchFailure, ScanConflictCard, ScanBatchResponse } from "../../../../shared/scanPages";
 import type { CombinedGradingRow } from "../../../../shared/types";
 
@@ -768,13 +768,52 @@ if (j.cancelled) throw cancelledError(j);
       && job.pages.some(page => page.input.groupId === groupId));
   }
 
-  /** 这一卷是否还有上传动作会把本机订正送出去（在途，或可续传的失败任务）。整卡改分据此禁用。 */
-  function isGroupUploading(cardId: string | null | undefined, groupId: string, localSessionId?: string): boolean {
-    if (!localSessionId) return false;
+  /** 改分锁定看的是「同一份原卷的同一条组」，所以卡号缺失时按通配匹配内存任务。 */
+  function lockableGroupJobs(cardId: string | null | undefined, groupId: string, localSessionId: string): JobRecord[] {
     return jobs.filter(job => job.kind === "scan" && job.localSessionId === localSessionId
       && job.pages.some(page => page.input.groupId === groupId)
-      && (!cardId || job.cardId === cardId))
-      .some(job => isUploadLocking(job.status, job.remoteSessionId));
+      && (!cardId || job.cardId === cardId));
+  }
+
+  /**
+   * 这一卷是否还有上传动作会把本机订正送出去（在途、可续传的失败任务，或内存任务已关闭但
+   * 恢复记录还在）。整卡改分据此禁用。
+   */
+  function isGroupUploading(cardId: string | null | undefined, groupId: string, localSessionId?: string): boolean {
+    if (!localSessionId) return false;
+    return lockableGroupJobs(cardId, groupId, localSessionId)
+      .some(job => isUploadLocking(job.status, job.remoteSessionId))
+      || hasIncompleteScanUploadRecovery(cardId, localSessionId, groupId);
+  }
+
+  /** 挡住改分的是「可续传的半成品」而不是正在传输：前者可以先放弃续传再改分。 */
+  function isGroupUploadResumable(cardId: string | null | undefined, groupId: string, localSessionId?: string): boolean {
+    if (!localSessionId) return false;
+    const groupJobs = lockableGroupJobs(cardId, groupId, localSessionId);
+    if (groupJobs.some(job => isUploadingStatus(job.status))) return false;
+    return groupJobs.some(job => job.status === "error" && Boolean(job.remoteSessionId))
+      || hasIncompleteScanUploadRecovery(cardId, localSessionId, groupId);
+  }
+
+  /**
+   * 放弃这一卷的半成品续传：删掉恢复记录并摘掉该组的失败任务，改分随即解锁。
+   * 远端那份会话永远等不到 complete，因此不会写入成绩；这一卷之后按新会话整卷重传。
+   */
+  function abandonGroupUpload(cardId: string, groupId: string, localSessionId: string): { ok: true } | { ok: false; message: string } {
+    const groupJobs = lockableGroupJobs(cardId, groupId, localSessionId);
+    if (groupJobs.some(job => isUploadingStatus(job.status))) {
+      return { ok: false, message: "这一卷正在上传，请等它传完或在进度卡里取消任务" };
+    }
+    const foreign = groupJobs.filter(job => job.pages.some(page => page.input.groupId !== groupId));
+    if (foreign.length > 0) return { ok: false, message: "这一条任务里还有其他试卷，请在进度卡里逐条重试或取消" };
+    for (const job of groupJobs) {
+      for (const page of job.pages) releasePage(page);
+      const index = jobs.indexOf(job);
+      if (index >= 0) jobs.splice(index, 1);
+    }
+    forgetScanUploadRecovery(cardId, localSessionId, groupId);
+    notify();
+    return { ok: true };
   }
 
   /** 这份扫描原卷是否已经占住上传资格。导入任务没有本机会话号，不能拿来挡新扫描；缺会话号也不当通配。 */
@@ -1038,6 +1077,8 @@ if (j.cancelled) throw cancelledError(j);
     startUpload,
     hasGroupUpload,
     isGroupUploading,
+    isGroupUploadResumable,
+    abandonGroupUpload,
     localGroupDeleteBlock,
     releaseGroupForLocalDelete,
     retryFailed,
