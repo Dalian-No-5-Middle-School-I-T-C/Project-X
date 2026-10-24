@@ -868,7 +868,10 @@ if (j.cancelled) throw cancelledError(j);
     const inFlight = scanGroupJobs(cardId, groupId, localSessionId).some(job => job.status === "creating"
       || job.status === "uploading" || job.status === "completing" || job.status === "paused");
     if (inFlight) return "这份卷正在上传，请等上传结束再删除本机原图";
-    const recovery = readScanUploadRecovery(cardId, localSessionId, groupId);
+    let recovery: ReturnType<typeof readScanUploadRecovery>;
+    try { recovery = readScanUploadRecovery(cardId, localSessionId, groupId); }
+    // 损坏的记录既不能当「没传过」，也不该让删除入口直接抛异常：把读取错误原样当成拦下的理由。
+    catch (error) { return error instanceof Error ? error.message : "上传恢复记录损坏，请保留本机原卷并核对服务器会话"; }
     return recovery && !recovery.completed ? "这份卷尚未上传完成，请恢复上传后再删除本机原图" : null;
   }
 

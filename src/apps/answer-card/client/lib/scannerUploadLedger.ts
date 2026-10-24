@@ -130,9 +130,24 @@ export function readQueuedGroups(cardId: string): Set<string> {
   return readStringSet(queuedKey(cardId));
 }
 
+/**
+ * 完成标记（不抛异常）。`readScanUploadRecovery()` 遇到损坏记录会抛错，而这条路是
+ * 后处理页 reload、工作台入队判断必经的读路径——一条坏记录不能让整页渲染不出来，
+ * 损坏与未完成在这里一律按「没传完」处理，锁定与告警交给 `scanUploadRecoveryState()`。
+ */
+export function hasCompletedScanUploadRecovery(cardId: string, sessionId: string, groupId: string): boolean {
+  if (typeof localStorage === "undefined") return false;
+  const raw = localStorage.getItem(recoveryKey(cardId, sessionId, groupId));
+  if (raw === null) return false;
+  try {
+    const parsed = recoverySchema.safeParse(JSON.parse(raw) as unknown);
+    return parsed.success && parsed.data.completed;
+  } catch { return false; }
+}
+
 export function isGroupQueued(cardId: string, sessionId: string, groupId: string): boolean {
   return readQueuedGroups(cardId).has(queuedGroupKey(sessionId, groupId))
-    || readScanUploadRecovery(cardId, sessionId, groupId)?.completed === true;
+    || hasCompletedScanUploadRecovery(cardId, sessionId, groupId);
 }
 
 export function rememberQueuedGroup(cardId: string, sessionId: string, groupId: string): boolean {

@@ -130,7 +130,7 @@ async function main() {
         get length() { return values.size; },
       } });
       try {
-        const { readScanUploadRecovery } = await import("../src/apps/answer-card/client/lib/scannerUploadLedger");
+        const { isGroupQueued, readScanUploadRecovery } = await import("../src/apps/answer-card/client/lib/scannerUploadLedger");
         const torn = createScannerUploadManager(deps({
           localFetch: async (_url, init) => {
             const file = (init!.body as FormData).get("file") as Blob;
@@ -227,6 +227,10 @@ async function main() {
         values.set(corruptKey, `{"remoteSessionId":"corrupt-session","completed":false`);
         const corruptMgr = createScannerUploadManager(deps());
         assert(corruptMgr.groupUploadBlock("card_1", "0", "scan-corrupt") === "recovery-damaged", "损坏记录单独成一种锁");
+        // 坏记录不能把后处理页 reload / 入队判断打断：那些路径用的是不抛异常的完成标记。
+        assert(isGroupQueued("card_1", "scan-corrupt", "0") === false, "损坏记录不能抛异常打断入队判断");
+        assert(corruptMgr.localGroupDeleteBlock("card_1", "0", "scan-corrupt")?.includes("损坏") === true,
+          "删除本机原图时要把损坏记录当拦下的理由，而不是抛异常");
         const corruptAbandon = corruptMgr.abandonGroupUpload("card_1", "0", "scan-corrupt");
         assert(corruptAbandon.ok === false && corruptAbandon.message.includes("损坏"), "损坏记录不能被放弃");
         assert(corruptMgr.groupUploadBlock("card_1", "0", "scan-corrupt") === "recovery-damaged", "放弃被拒后仍然锁着");
