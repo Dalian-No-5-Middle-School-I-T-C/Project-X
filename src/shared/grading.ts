@@ -469,7 +469,12 @@ export interface CombinedStudentResult {
 }
 
 /** 客观题跨页择优：missing_key 最差，其次比分数，同分比置信度（非复核优先）。 */
-function isBetterObjective(candidate: ObjectiveQuestionGrade, existing: ObjectiveQuestionGrade): boolean {
+function isBetterObjective(
+  candidate: ObjectiveQuestionGrade,
+  existing: ObjectiveQuestionGrade,
+  candidateReported = true,
+  existingReported = true
+): boolean {
   const candMissing = candidate.status === "missing_key";
   const existMissing = existing.status === "missing_key";
   if (existMissing !== candMissing) return existMissing; // 用有答案的替换 missing_key
@@ -477,6 +482,9 @@ function isBetterObjective(candidate: ObjectiveQuestionGrade, existing: Objectiv
   if (candidate.score !== existing.score) return candidate.score > existing.score;
   // 同分：优先保留不需要复核（置信度更高）的结果
   if (existing.needsReview !== candidate.needsReview) return existing.needsReview;
+  // 同分同存疑：真正上报过这一题的结果胜出。另一页的合成条目是「本页没上报」，
+  // 不是考生的空白，留着它会把实际涂了的答案抹成未作答（评审 P1）。
+  if (candidateReported !== existingReported) return candidateReported;
   return false;
 }
 
@@ -523,19 +531,24 @@ export function gradeSessionStudentResults(
   confidenceThreshold = OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD
 ): CombinedStudentResult {
   const objQMap = new Map<number, ObjectiveQuestionGrade>();
+  const objReported = new Map<number, boolean>();
   const subjQMap = new Map<string, SubjectiveQuestionGrade>();
 
   const pageResults: PageGradingResult[] = pages.map((page) => {
     const row = gradeCombinedRecognition(card, page.imagePath, page.recognition, confidenceThreshold);
+    const reportedNumbers = new Set((page.recognition.questions ?? []).map(item => Number(item.questionNumber)));
 
     // Deduplicate across pages — prefer better results:
     // 1) 有标准答案的优先于 missing_key
     // 2) 高分优先
     // 3) 同分时高置信度（非 needsReview）优先，避免低置信度首页"锁死"复核标记
+    // 4) 还同分时，本页真的上报过的结果优先，合成条目不占位
     for (const q of row.questions) {
       const existing = objQMap.get(q.questionNumber);
-      if (!existing || isBetterObjective(q, existing)) {
+      const candidateReported = reportedNumbers.has(Number(q.questionNumber));
+      if (!existing || isBetterObjective(q, existing, candidateReported, objReported.get(q.questionNumber) === true)) {
         objQMap.set(q.questionNumber, q);
+        objReported.set(q.questionNumber, candidateReported);
       }
     }
     for (const sq of row.subjectiveQuestions) {

@@ -270,6 +270,19 @@ section("1d. 空题直接零分，不进入复核");
     { recordId: "r2", pageNum: 2, side: "back", imagePath: "b.png", recognition: pageWithoutQuestion as never, ocrStatus: "done" },
   ]);
   check("跨页择优后存疑计数不被合成空白清零", combined.needsReviewCount === 1 && combined.totalScore === 0);
+  // 反过来的页序：没上报的那一页排在前面，它合成的空条目不能顶掉后一页真实涂的答案（评审 P1）。
+  const reportedLater = gradeSessionStudentResults(card("shuxue", [objective]), [
+    { recordId: "r2", pageNum: 2, side: "back", imagePath: "b.png", recognition: pageWithoutQuestion as never, ocrStatus: "done" },
+    { recordId: "r1", pageNum: 1, side: "front", imagePath: "a.png", recognition: pageWithDoubt as never, ocrStatus: "done" },
+  ]);
+  const keptAnswer = reportedLater.objectiveQuestions.find(item => item.questionNumber === 1);
+  check("后一页真实上报的答案不被前一页的合成空白顶掉", keptAnswer?.selectedOptions.join() === "C"
+    && keptAnswer?.needsReview === true && reportedLater.needsReviewCount === 1);
+  const neverReported = gradeSessionStudentResults(card("shuxue", [objective]), [
+    { recordId: "r2", pageNum: 2, side: "back", imagePath: "b.png", recognition: pageWithoutQuestion as never, ocrStatus: "done" },
+  ]);
+  check("没有任何一页上报的题仍按「未上报」挂复核", neverReported.needsReviewCount === 1
+    && neverReported.objectiveQuestions[0]?.selectedOptions.length === 0);
 
   const blankSubjective = gradeSubjectiveRecognition(subjectiveCard(), {
     questionId: "s1", questionNumber: 28, score: 0, maxScore: 10,
