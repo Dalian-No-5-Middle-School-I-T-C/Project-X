@@ -112,7 +112,38 @@ async function main() {
       assert(!mgr.isGroupUploading("card_1", "9", "scan-smoke-1"), "别的组不被误判为在途");
       const scanResult = await waitTerminal(mgr, scanJob);
       assert(scanResult.status === "done" || scanResult.status === "error", `扫描任务应进入终态，实际 ${scanResult.status}`);
-      assert(!mgr.isGroupUploading("card_1", "0", "scan-smoke-1"), "终态后不再阻止改分");
+      // 完成即解锁；失败但已建远端会话的续传场景由下面一段专门覆盖。
+      if (scanResult.status === "done") assert(!mgr.isGroupUploading("card_1", "0", "scan-smoke-1"), "完整上传后不再阻止改分");
+    }
+
+    {
+      // 失败但已建远端会话的任务仍会「重试失败页」，此时改分依旧会撕裂快照（评审 P1）。
+      const torn = createScannerUploadManager(deps({
+        localFetch: async (_url, init) => {
+          const file = (init!.body as FormData).get("file") as Blob;
+          const size = file.size;
+          return jsonRes({ status: "ok", studentId: { status: "ok", value: "82048" }, questions: [], subjectiveQuestions: [], widthPx: size, heightPx: size });
+        },
+        remoteFetch: async url => {
+          if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "torn-session", uploadTokens: ["t1", "t2"] });
+          return jsonRes({ ok: true });
+        },
+      }));
+      const tornId = torn.startUpload({
+        kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "扫描_82048",
+        localSessionId: "scan-torn", identityMode: "strict",
+        pages: [
+          { pageNum: 1, side: "front", groupId: "0", getBlob: async () => blob() },
+          { pageNum: 2, side: "front", groupId: "0", getBlob: async () => { throw new Error("读取第 2 页失败"); } },
+        ],
+      });
+      const tornResult = await waitTerminal(torn, tornId);
+      assert(tornResult.status === "error", `坏页任务应 error，实际 ${tornResult.status}`);
+      const liveTorn = torn.getState().jobs.find(job => job.id === tornId)!;
+      assert(liveTorn.status === "error" && Boolean(liveTorn.remoteSessionId), "失败任务应已建立远端会话，可继续重试失败页");
+      assert(torn.isGroupUploading("card_1", "0", "scan-torn"), "可续传的失败任务仍锁住整卡改分");
+      assert(torn.dismissJob(tornId), "教师可以放弃这一条失败任务");
+      assert(!torn.isGroupUploading("card_1", "0", "scan-torn"), "移除任务后不再阻止改分");
     }
     const sessionBody = JSON.parse(bodies.find((b) => b.url.endsWith(SESSIONS))!.body);
     const completeBody = JSON.parse(bodies.find((b) => b.url.endsWith(COMPLETE))!.body);

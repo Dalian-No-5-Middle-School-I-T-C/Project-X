@@ -293,7 +293,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
           <Button size="sm" variant="outline" disabled={zoom >= 4} onClick={() => setZoom(z => Math.min(4, z + 0.5))}>放大</Button>
           <RotationButtons rotation={rotation} onChange={setRotation} disabled={saving} />
           {uploadBusy ? (
-            <Tip label="这一卷正在上传，等它完成后再保存；中途改分会让服务器收到半旧半新的识别结果">
+            <Tip label="这一卷的上传还没结束（失败的任务可以续传失败页）；现在保存会让服务器收到半旧半新的识别结果，请先完成或取消上传">
               <Button variant="primary" size="sm" icon={<Save />} disabled loading>保存修改</Button>
             </Tip>
           ) : (

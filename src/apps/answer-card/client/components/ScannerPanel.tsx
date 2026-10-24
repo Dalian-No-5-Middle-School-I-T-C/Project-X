@@ -1049,7 +1049,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                           const uploading = scannerUploadManager.isGroupUploading(sessionUploadRef.current?.cardId ?? null, sr.groupId, sessionId);
                           return (
                             <CardCorrectionButton disabled={resultsBusy || uploading}
-                              disabledReason="这一卷正在上传，等它完成后再改分；中途保存会让服务器收到半旧半新的识别结果"
+                              disabledReason="这一卷的上传还没结束（失败的任务可以续传失败页）；现在改分会让服务器收到半旧半新的识别结果，请先完成或取消上传"
                               url={`/api/scanner/session/${sessionId}/groups/${sr.groupId}/correction`} onSaved={() => {
                               // 远端模式下本机 saved 不会因上传完成而变化：这一卷已经交给服务器，
                               // 工作台再改分只留本机，不提示就会静默分歧（与后处理页同一句话）。

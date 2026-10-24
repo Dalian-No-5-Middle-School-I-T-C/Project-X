@@ -29,6 +29,15 @@ export function isUploadingStatus(status: UploadJobStatus): boolean {
     || status === "completing" || status === "paused";
 }
 
+/**
+ * 是否还要锁住整卡改分。除了「在途」，失败任务只要已经建了远端会话也算：
+ * 「重试失败页」只补传失败的页，成功过的页不会重传，此时改分同样会留下半旧半新的快照。
+ * 取消与从未建会话的失败没有远端半成品，不挡改分。
+ */
+export function isUploadLocking(status: UploadJobStatus, remoteSessionId?: string | null): boolean {
+  return isUploadingStatus(status) || (status === "error" && Boolean(remoteSessionId));
+}
+
 export interface UploadPageInput {
   pageNum: number;
   side: "front" | "back";
@@ -759,12 +768,13 @@ if (j.cancelled) throw cancelledError(j);
       && job.pages.some(page => page.input.groupId === groupId));
   }
 
-  /** 这一卷是否正在上传（未到终态）。整卡改分要据此禁用，避免多页任务送出撕裂的识别快照。 */
+  /** 这一卷是否还有上传动作会把本机订正送出去（在途，或可续传的失败任务）。整卡改分据此禁用。 */
   function isGroupUploading(cardId: string | null | undefined, groupId: string, localSessionId?: string): boolean {
     if (!localSessionId) return false;
     return jobs.filter(job => job.kind === "scan" && job.localSessionId === localSessionId
       && job.pages.some(page => page.input.groupId === groupId)
-      && (!cardId || job.cardId === cardId)).some(job => isUploadingStatus(job.status));
+      && (!cardId || job.cardId === cardId))
+      .some(job => isUploadLocking(job.status, job.remoteSessionId));
   }
 
   /** 这份扫描原卷是否已经占住上传资格。导入任务没有本机会话号，不能拿来挡新扫描；缺会话号也不当通配。 */
