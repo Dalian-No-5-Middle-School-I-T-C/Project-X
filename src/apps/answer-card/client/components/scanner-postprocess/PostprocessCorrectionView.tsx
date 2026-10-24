@@ -28,6 +28,8 @@ export interface PostprocessCorrectionViewProps {
   draftOnly?: boolean;
   /** 从异常队列「去改这题」带过来的题号：挂载后把该行滚进视野 */
   highlightQuestion?: SubjectiveQuestionNumber | null;
+  /** 放弃半成品续传成功后回调：调用方要清掉自己的「已入队」标记，否则改完不会再整卷上传 */
+  onUploadAbandoned?: () => void;
   onSaved: () => void | Promise<void>;
 }
 
@@ -68,7 +70,7 @@ function optionLetters(count: number | undefined): string[] {
   return Array.from({ length: Math.max(0, count ?? 0) }, (_, index) => String.fromCharCode(65 + index));
 }
 
-export function PostprocessCorrectionView({ channel, sessionId, groupId, initialSaved = false, draftOnly = false, highlightQuestion, onSaved }: PostprocessCorrectionViewProps) {
+export function PostprocessCorrectionView({ channel, sessionId, groupId, initialSaved = false, draftOnly = false, highlightQuestion, onUploadAbandoned, onSaved }: PostprocessCorrectionViewProps) {
   const url = channel.correctionUrl(sessionId, groupId);
   const [document, setDocument] = useState<CorrectionDocument | null>(null);
   const [edits, setEdits] = useState<CorrectionEdit[]>([]);
@@ -307,7 +309,10 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
             <Button size="sm" variant="outline" onClick={() => {
               if (!window.confirm("放弃续传后，已上传的半成品不再补传，这一卷可以立即改分（改完请整卷重新上传）。服务器上的半成品会话不会写入成绩。确定放弃吗？")) return;
               const result = scannerUploadManager.abandonGroupUpload(uploadCardId, groupId, sessionId);
-              setMessage(result.ok ? "已放弃这一卷的续传，现在可以改分；改完请整卷重新上传。" : result.message);
+              if (!result.ok) { setMessage(result.message); return; }
+              // 调用方的「已入队」标记必须一起清掉：留着它，改完的整卷再也不会被排进上传队列。
+              onUploadAbandoned?.();
+              setMessage("已放弃这一卷的续传，现在可以改分；保存后这一卷会整卷重新上传。");
             }}>放弃续传</Button>
           )}
         </div>

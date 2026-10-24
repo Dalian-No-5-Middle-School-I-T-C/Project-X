@@ -38,6 +38,15 @@ function normalizeOptions(options: string[] | undefined, optionCount?: number): 
   return Array.from(new Set((options ?? []).map((item) => item.toUpperCase()).filter((item) => allowed.has(item)))).sort();
 }
 
+/** 识别结果里有没有被选项数过滤掉的标签（越界或畸形）。这类卷面不是考生空白，是识别异常。 */
+function hasOutOfRangeOption(options: string[] | undefined, optionCount?: number): boolean {
+  const allowed = new Set(OPTION_LABELS.slice(0, optionCount ?? OPTION_LABELS.length));
+  return (options ?? []).some(item => {
+    const label = item.toUpperCase();
+    return label.length > 0 && !allowed.has(label);
+  });
+}
+
 function sameOptions(left: string[], right: string[]): boolean {
   if (left.length !== right.length) return false;
   return left.every((item, index) => item === right[index]);
@@ -180,9 +189,12 @@ export function gradeObjectiveQuestion(
   const confidence = Number.isFinite(question.confidence) ? question.confidence : 0;
   const selectedOptions = normalizeOptions(question.selectedOptions, definition?.optionCount);
   // 没涂就是没涂：直接 0 分，不再用低置信度把它推进复核队列（issue #352）。
-  // 只看原始填涂，被选项数过滤掉的越界标签属于识别异常，仍要复核。
+  // 被选项数过滤掉的越界标签属于识别异常：`normalizeOptions` 已经把它丢掉，
+  // 只看置信度的话高置信度卷会带着空答案静默入库，所以过滤一发生就挂复核（评审 P2）。
+  const outOfRange = hasOutOfRangeOption(question.selectedOptions, definition?.optionCount);
   const blank = reportedOnThisPage && (question.selectedOptions?.length ?? 0) === 0;
-  const needsReview = !blank && confidence < confidenceThreshold;
+  const needsReview = !blank && (confidence < confidenceThreshold || outOfRange);
+  const reviewMessage = outOfRange ? "识别到超出选项范围的标签，已忽略该标签并需要复核" : "识别置信度偏低";
 
   if (!definition) {
     return {
@@ -239,7 +251,7 @@ export function gradeObjectiveQuestion(
       confidence,
       status: needsReview ? "review" : "correct",
       needsReview,
-      message: needsReview ? "识别置信度偏低" : undefined
+      message: needsReview ? reviewMessage : undefined
     };
   }
 
@@ -270,7 +282,7 @@ export function gradeObjectiveQuestion(
     confidence,
     status: score > 0 ? "partial" : needsReview ? "review" : "wrong",
     needsReview,
-    message: needsReview ? "识别置信度偏低" : undefined
+    message: needsReview ? reviewMessage : undefined
   };
 }
 

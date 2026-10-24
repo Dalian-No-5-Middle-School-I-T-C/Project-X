@@ -590,23 +590,51 @@ try {
 
 
   await clickText("去改这题");assert(jumped);
+  const releasedGroups: string[] = [];
   await act(async()=>root5!.render(createElement(TooltipProvider,null,createElement(PostprocessCorrectionView,{
     channel:reviewChannel,sessionId:"review",groupId:"0",draftOnly:true,onSaved:()=>{},
+    onUploadAbandoned:()=>{releasedGroups.push("review/0");},
   }))));
   await settle();assert(saveButton()?.disabled,"打开待确认卷不会自动确认");
-  // 上传在途时禁止保存改分：逐页现读本机订正，中途保存会让服务器收到半旧半新的识别结果。
-  const realGroupUploading = scannerUploadManager.isGroupUploading;
-  scannerUploadManager.isGroupUploading = () => true;
-  scannerUploadManager.notifyNetworkChanged();
-  await settle();
-  assert(saveButton()?.disabled, "上传在途时后处理页不允许保存改分");
-  scannerUploadManager.isGroupUploading = realGroupUploading;
-  scannerUploadManager.notifyNetworkChanged();
-  await settle();
-  assert(saveButton()?.disabled, "恢复后仍按「未改动不可保存」判定，说明禁用来源已切回脏数据规则");
   const scoreCell = () => document.querySelector(`[data-cell-id="${ten.id}"]`)!;
   await clickNode(scoreCell());await clickNode(scoreCell());await settle();
   assert(saveButton() && !saveButton()!.disabled,"点回原分数同样可以明确确认");
+  // 上传锁：逐页现读本机订正，在途或留着可续传的半成品时保存都会让服务器收到半旧半新的快照。
+  // 在途只让教师等；可续传的半成品必须给出「放弃续传」，并回调调用方清掉入队标记，
+  // 否则标记一直留着，syncAfterFix 会永远跳过这一组（评审 P1 + P2）。
+  const realGroupUploading = scannerUploadManager.isGroupUploading;
+  const realResumable = scannerUploadManager.isGroupUploadResumable;
+  const realAbandon = scannerUploadManager.abandonGroupUpload;
+  const abandonArgs: string[] = [];
+  let blockedByUpload = true;
+  let resumableSnapshot = false;
+  dom.window.confirm = (() => true) as typeof dom.window.confirm;
+  scannerUploadManager.isGroupUploading = () => blockedByUpload;
+  scannerUploadManager.isGroupUploadResumable = () => blockedByUpload && resumableSnapshot;
+  scannerUploadManager.abandonGroupUpload = ((cardId: string, groupId: string, sessionId: string) => {
+    abandonArgs.push(`${cardId}/${groupId}/${sessionId}`); blockedByUpload = false; return { ok: true as const };
+  }) as typeof scannerUploadManager.abandonGroupUpload;
+  // 订阅只在管理器状态变化时重渲染，桩换了还得让组件自己更新一次才会重读这把锁。
+  const findButton = (label: string) => [...document.querySelectorAll("button")].find(node => node.textContent?.trim() === label);
+  await clickText("放大"); await settle();
+  assert(saveButton()?.disabled, "上传在途时后处理页不允许保存改分");
+  assert(!findButton("放弃续传"), "正在传输时不提供放弃，只让教师等它传完或取消");
+  resumableSnapshot = true;
+  await clickText("放大"); await settle();
+  const abandonButton = findButton("放弃续传");
+  assert(abandonButton, "可续传的半成品要给出明确的解锁动作");
+  assert(saveButton()?.disabled, "半成品没放弃前不能保存改分");
+  await clickNode(abandonButton!); await settle();
+  assert.deepEqual(abandonArgs, [`${reviewCard.id}/0/review`], "放弃续传要按本卡本组本会话点名");
+  assert.deepEqual(releasedGroups, ["review/0"], "放弃成功后必须回调调用方清掉入队标记");
+  assert(!findButton("放弃续传"), "放弃后不再显示解锁按钮");
+  assert(text().includes("已放弃这一卷的续传"), "界面要说明接下来可以改分并整卷重传");
+  assert(saveButton() && !saveButton()!.disabled, "放弃续传后保存按钮回到正常脏数据规则");
+  blockedByUpload = false;
+  scannerUploadManager.isGroupUploading = realGroupUploading;
+  scannerUploadManager.isGroupUploadResumable = realResumable;
+  scannerUploadManager.abandonGroupUpload = realAbandon;
+  await clickText("放大"); await settle();
   await clickText("保存修改");assert(reviewed);
 
   // issue #347：横放原卷旋转到正向再点选，热区必须仍落在同一格上

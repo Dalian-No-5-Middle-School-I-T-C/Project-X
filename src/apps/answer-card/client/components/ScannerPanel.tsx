@@ -1068,7 +1068,14 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                                 <Button variant="ghost" size="sm" onClick={() => {
                                   if (!window.confirm("放弃续传后，已上传的半成品不再补传，这一卷可以立即整卡改分（改完请整卷重新上传）。服务器上的半成品会话不会写入成绩。确定放弃吗？")) return;
                                   const result = scannerUploadManager.abandonGroupUpload(cardId, sr.groupId, sessionId);
-                                  setResultMessage(result.ok ? "已放弃这一卷的续传，现在可以整卡改分；改完请整卷重新上传。" : result.message);
+                                  if (!result.ok) { setResultMessage(result.message); return; }
+                                  // 行内的「已入队」标记要一起清掉：留着它，queueSuccessfulUploads 会跳过这一组，
+                                  // 改完的整卷永远不再上传（评审 P2）。
+                                  const nextJobs = { ...uploadJobsRef.current };
+                                  delete nextJobs[sr.groupId];
+                                  uploadJobsRef.current = nextJobs;
+                                  setUploadJobs(nextJobs);
+                                  setResultMessage("已放弃这一卷的续传，现在可以整卡改分；保存后这一卷会随下一次上传整卷重传。");
                                 }}>
                                   放弃续传
                                 </Button>

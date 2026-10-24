@@ -212,6 +212,36 @@ try {
   await click("刷新汇总"); await settle();
   assert([...document.querySelectorAll("button")].some(node => node.textContent?.trim() === "整卡改分" && !node.disabled),
     "任务终态后工作台改分恢复可用");
+  // 可续传的半成品：禁用改分之外必须给出「放弃续传」，并把它自己的入队标记一起清掉，
+  // 否则 queueSuccessfulUploads 会永久跳过这一组，改完的整卷再也传不上去（评审 P2）。
+  const realResumable = scannerUploadManager.isGroupUploadResumable;
+  const realAbandon = scannerUploadManager.abandonGroupUpload;
+  const abandonedGroups: string[] = [];
+  const uploadsBeforeAbandon = uploads.length;
+  let blockedGroups = new Set(["0"]);
+  dom.window.confirm = (() => true) as typeof dom.window.confirm;
+  scannerUploadManager.isGroupUploading = (_cardId, groupId) => blockedGroups.has(groupId);
+  scannerUploadManager.isGroupUploadResumable = (_cardId, groupId) => blockedGroups.has(groupId);
+  scannerUploadManager.abandonGroupUpload = (_cardId, groupId) => {
+    abandonedGroups.push(groupId); blockedGroups.delete(groupId); return { ok: true as const };
+  };
+  await click("刷新汇总"); await settle();
+  assert(hasAction("放弃续传"), "可续传的半成品必须给出明确的解锁动作");
+  assert([...document.querySelectorAll("button")].some(node => node.textContent?.trim() === "整卡改分" && node.disabled),
+    "半成品没处理完时那一组不能改分");
+  assert(!document.body.textContent?.includes("待上传"), "入队标记还在时这两行都显示已加入队列");
+  await click("放弃续传"); await settle();
+  assert.deepEqual(abandonedGroups, ["0"], "放弃续传要点名到被点击的那一组");
+  assert(!hasAction("放弃续传"), "放弃后这一组不再需要解锁动作");
+  assert(document.body.textContent?.includes("待上传"), "放弃后要清掉行内入队标记，否则这一组永远不会重传");
+  blockedGroups = new Set();
+  scannerUploadManager.isGroupUploading = realGroupUploading;
+  scannerUploadManager.isGroupUploadResumable = realResumable;
+  scannerUploadManager.abandonGroupUpload = realAbandon;
+  await click("刷新汇总"); await settle();
+  assert.equal(uploads.length, uploadsBeforeAbandon + 1, "清掉标记后这一组重新排队整卷上传");
+  assert.equal(uploads.at(-1)?.pages[0]?.groupId, "0", "重新排队的必须是刚放弃的那一组");
+  const uploadBaseline = uploads.length;
   // 远端模式下这一卷已经随批次进入上传队列：从工作台改分必须当场说明改动不会回到服务器
   //（重复上传同一份卷子会被服务端当成第二份原卷，反而撤掉已保存的成绩）。
   await click("整卡改分"); await settle();
@@ -245,7 +275,7 @@ try {
   assert.match(summaryRequests.at(-1)!, /^POST .*\/validate$/);
   await click("保存成功部分"); await settle();
   assert.match(summaryRequests.at(-1)!, /^POST .*\/results$/);
-  assert.equal(uploads.length, 8, "Local partial results are saved locally");
+  assert.equal(uploads.length, uploadBaseline, "Local partial results are saved locally");
   assert(document.body.textContent?.includes("走纸中断，本机已保留页面"));
   await click("开始新扫描"); await settle();
   await click("上传服务器"); await settle();
@@ -256,9 +286,9 @@ try {
   await act(async () => { streams[6].emit({ type: "error", message: "迟到的终态错误" }); }); await settle();
   assert(document.body.textContent?.includes("扫描中断，已保留 2 页"));
   assert(document.body.textContent?.includes("91001") && hasAction("整卡改分") && hasAction("重新识别此卡"));
-  assert.equal(uploads.length, 8, "Terminal replay hydrates persisted pages without uploading");
+  assert.equal(uploads.length, uploadBaseline, "Terminal replay hydrates persisted pages without uploading");
   await click("保存成功部分到服务器"); await settle();
-  assert.equal(uploads.length, 10);
+  assert.equal(uploads.length, uploadBaseline + 2);
   await click("开始新扫描"); await settle();
   await click("开始扫描"); await settle();
   // Missing page events during a disconnect must also recover from persisted records.
@@ -271,11 +301,11 @@ try {
   await click("刷新汇总"); await settle();
   assert(document.body.textContent?.includes("扫描中断，已保留 2 页"), "Persisted count replaces the incomplete SSE page list");
   assert(document.body.textContent?.includes("重连后扫描中断"));
-  assert.equal(uploads.length, 10);
+  assert.equal(uploads.length, uploadBaseline + 2);
   await click("开始新扫描"); await settle();
   await click("开始扫描"); await settle();
   await act(async () => { streams[9].done(); }); await settle();
-  assert.equal(uploads.length, 12, "The next completed session still uploads normally after terminal recovery");
+  assert.equal(uploads.length, uploadBaseline + 4, "The next completed session still uploads normally after terminal recovery");
   assert(!document.body.textContent?.includes("重连后扫描中断"));
   assert(document.body.textContent?.includes("扫描完成"));
   assert(snapshotRequests.length >= 7, "Error classification reads persisted pages, including zero-page errors and refreshes");

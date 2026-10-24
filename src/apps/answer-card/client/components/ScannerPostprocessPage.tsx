@@ -341,6 +341,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
             initialSaved={isRemoteUploadOn() ? false : active.saved}
             draftOnly={isRemoteUploadOn()}
             highlightQuestion={highlight}
+            onUploadAbandoned={() => queuedByPage.current.delete(`${active.sessionId}/${active.groupId}`)}
             onSaved={() => syncAfterFix(active.sessionId, active.groupId)}
           />
         </div>

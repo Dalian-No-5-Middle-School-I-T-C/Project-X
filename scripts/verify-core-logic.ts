@@ -247,6 +247,16 @@ section("1d. 空题直接零分，不进入复核");
   check("空客观题直接 0 分且不复核", blankObjective.score === 0 && blankObjective.needsReview === false && blankObjective.status === "wrong");
   const invalidObjective = gradeObjectiveQuestion(card("shuxue", [objective]), { questionNumber: 1, selectedOptions: ["Z"], confidence: 0.05 });
   check("越界选项不能当成空白零分", invalidObjective.needsReview === true && invalidObjective.selectedOptions.length === 0);
+  // 高置信度也要拦住：normalizeOptions 已经把越界标签丢掉，只看置信度会让这种卷静默按空白入库（评审 P2）。
+  const invalidHighConfidence = gradeObjectiveQuestion(card("shuxue", [objective]), { questionNumber: 1, selectedOptions: ["Z"], confidence: 1 });
+  check("高置信度的越界标签同样要复核", invalidHighConfidence.needsReview === true
+    && invalidHighConfidence.status === "review" && invalidHighConfidence.score === 0
+    && String(invalidHighConfidence.message).includes("超出选项范围"));
+  const mixedInvalid = gradeObjectiveQuestion(card("shuxue", [objective]), { questionNumber: 1, selectedOptions: ["A", "Z"], confidence: 1 });
+  check("正确项与越界项混涂时留复核并说明原因", mixedInvalid.needsReview === true
+    && mixedInvalid.message?.includes("超出选项范围") && mixedInvalid.selectedOptions.join() === "A");
+  const duplicated = gradeObjectiveQuestion(card("shuxue", [objective]), { questionNumber: 1, selectedOptions: ["A", "A"], confidence: 1 });
+  check("重复的同一个合法选项只是去重，不算越界异常", duplicated.needsReview === false && duplicated.status === "correct");
 
   // 双面/多页：第二页没上报的题是合成的，不能把第一页真实存在的存疑答案顶掉。
   const pageWithDoubt = { status: "ok", pageNumber: 1, studentId: { status: "ok", value: "91001" },
