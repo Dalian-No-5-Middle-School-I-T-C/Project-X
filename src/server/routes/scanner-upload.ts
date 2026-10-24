@@ -55,7 +55,7 @@ const geometrySchema = z.object({
   imageWidth: z.number().int().positive().max(100000), imageHeight: z.number().int().positive().max(100000),
   imageToLayout: z.array(z.number().finite()).length(9), layoutToImage: z.array(z.number().finite()).length(9),
 });
-const recognitionSchema = z.object({
+export const recognitionSchema = z.object({
   geometry: geometrySchema.optional(),
   pageNumber: z.number().int().positive().optional(),
   identity: z.object({ status: z.enum(["verified", "unverified"]), code: z.string(), cardId: z.string().optional(), pageNumber: z.number().int().positive().optional() }),
@@ -69,6 +69,9 @@ const recognitionSchema = z.object({
     blockId: z.string().optional(), questionId: z.string(), questionNumber: z.union([z.number(), z.string()]),
     score: z.number().finite().nonnegative(), maxScore: z.number().finite().nonnegative(),
     status: z.string(), confidence: z.number().finite(),
+    // 判分要靠 `no_valid_subjective_score` 这道字串区分「没画斜线」与「画了但没采纳」，
+    // 这里丢字段就等于把空白大题一路退回存疑队列（issue #352）。
+    message: z.string().max(120).optional(),
     validCells: z.array(z.any()), invalidCells: z.array(z.any()),
   })).max(1000),
 });
@@ -679,10 +682,9 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
         res.status(409).json({ message: "图片已保存，但缺少本机识别结果；请使用新版扫描端重试上传，成绩尚未入库" });
         return;
       }
-      // 不传 blockUnreviewed。上传管理器没有「先确认存疑题再提交」的步骤，
-      // 低置信度或未配答案的题仍按原协议入库，并在结果里带 needsReviewCount。
+      // 存疑题不拦入库（issue #352 口径）：低置信度或未配答案的题照常写正式成绩，
+      // 回执里带回 needsReviewCount，复核在异常卷队列与成绩修改侧继续。
       // 若这里改成 409，双面订正等既有完成流程会停在 error，成绩也写不进去。
-      // 后处理页自己在 needsReviewCount > 0 时不入队。
       const batch = await processScannerSession(card, String(sessionId), "save", saveGroupId);
       reviewCards = batch.reviewCards ?? [];
       if (batch.failures.length) {
@@ -690,9 +692,8 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
         return;
       }
       if (saveGroupId !== undefined && !batch.results.some(result => result.groupId === saveGroupId && result.saved)) {
-        const unreviewed = batch.results.some(result => result.groupId === saveGroupId && result.needsReviewCount > 0);
         res.status(409).json({ ...batch, ok: false, saved: false, code: "SCAN_CARD_NOT_SAVED",
-          message: unreviewed ? "此卷仍有存疑题，请打开整卡改分逐题确认后再保存" : "此卷尚未入库，请刷新并核对处理结果" });
+          message: "此卷尚未入库，请刷新并核对处理结果" });
         return;
       }
       const { exam: savedExam } = await resolveScannerExam(session.card_id, String(sessionId));

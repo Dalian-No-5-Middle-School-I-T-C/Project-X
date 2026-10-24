@@ -4,14 +4,65 @@ import {
   getPermittedBlocks,
   getVisibleExamIds,
   isExamSoftDeleted,
+  requirePermissionCompat,
+  requireWholeExamGradingAccessForExam,
 } from "../../apps/answer-card/server/middleware";
+import { PERMISSIONS } from "../auth/permissions";
 import { getMysqlDb } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
-import { resolveScannerExam } from "../services/scannerExam";
+import { resolveScannerExam, scannerAuthorizationCandidates, type ScannerExamResolution } from "../services/scannerExam";
 import { isAuthEnforced } from "../lib/authEnforce";
 import { buildLayout } from "../../shared/layout";
 import { mapScanPageToLayout } from "../../shared/scanPages";
 import type { AnswerCard } from "../../shared/types";
+
+/**
+ * 归属不唯一时仍应保持可用的本地入口：整卡订正，以及后处理页进入订正前必须先读到的结果演算
+ * （本机模式 `POST /validate`、远端模式 `GET /results?previewOnly=1`）。
+ * 正式入库（`POST /results` 不带 previewOnly）不在其中，仍要求唯一考试归属。
+ */
+function isAmbiguousLocalSessionRead(req: Request): boolean {
+  if (isMachineCaller(req)) return false;
+  if (/^\/groups\/[^/]+\/correction\/?$/.test(req.path)) return true;
+  if (req.path === "/validate") return req.method === "POST";
+  if (req.path === "/results") {
+    if (req.method === "GET") return true;
+    const previewOnly = req.query.previewOnly;
+    return req.method === "POST" && previewOnly !== undefined && previewOnly !== "0" && previewOnly !== "false";
+  }
+  return false;
+}
+
+/**
+ * 歧义会话的统一本地授权：订正文档、文档里的原图与结果读取共用同一份候选考试，
+ * 避免出现「订正能打开、原图 403」这种半途失败（issue #352 评审 P2）。
+ * 教师/管理员 + 归档绑定检查 + 每场候选考试的整卷阅卷授权 + `GRADE_WRITE`。
+ */
+export async function authorizeAmbiguousLocalSession(
+  req: Request, res: Response, next: NextFunction, resolved: ScannerExamResolution
+): Promise<void> {
+  if (req.user && !["admin", "teacher"].includes(req.user.role_name)) {
+    res.status(403).json({ message: "权限不足：整卡订正仅限教师或管理员" }); return;
+  }
+  // 会话曾绑定已被保留策略清理的考试（含混合绑定）：按「考试不存在」拒绝，口径同 CR4。
+  const boundButArchived = resolved.boundExamIds.some(examId => !resolved.exams.some(exam => exam.id === examId));
+  if (boundButArchived && req.user && req.user.role_name !== "admin") {
+    res.status(404).json({ message: "考试不存在或已按数据保留策略清理" }); return;
+  }
+  const candidates = scannerAuthorizationCandidates(resolved);
+  if (req.user && candidates.length > 0) {
+    const visible = await getVisibleExamIds(req.user);
+    if (visible !== null && !candidates.every(examId => visible.includes(examId))) {
+      res.status(403).json({ message: "权限不足：无权修改该扫描会话" }); return;
+    }
+    for (const examId of candidates) {
+      let allowed = false;
+      await requireWholeExamGradingAccessForExam(req, res, () => { allowed = true; }, examId);
+      if (!allowed) return;
+    }
+  }
+  requirePermissionCompat(PERMISSIONS.GRADE_WRITE)(req, res, next);
+}
 
 /** 把「扫描记录 ID」映射到它所属的会话 ID（R04：记录级路由只有 recordId）。 */
 export async function sessionIdOfScanRecord(recordId: string): Promise<string | null> {
@@ -128,8 +179,10 @@ function refuseSoftDeletedOnly(res: Response, user: NonNullable<Request["user"]>
 // 是一个**真实存在、且仍在其保留期内**的对象。于是机器调用者走这条数据绑定校验：
 //   1. recordId / sessionId / cardId / examId 必须解析得到真实行，悬挂外键不放行；
 //   2. 记录 → 会话 → 答题卡 → 考试的归属链必须完整；
-//   3. 绑定的考试若**全部被软删除**（`exam_archives.is_deleted = 1`），按「不存在」处理——
-//      与 CR4 给人用的口径一致：已按数据保留策略清理过的原卷，机器也不该再读出来；
+//   3. 会话绑定过的考试里只要有一场被软删除（`exam_archives.is_deleted = 1`），整条归属链按
+//      「不存在」处理——与 CR4 给人用的口径一致：已按数据保留策略清理过的原卷，机器也不该再
+//      读出来，混合绑定（在用 A + 已清理 B）同样不放行（评审 P1）；卡级还没有会话时，
+//      「绑过的考试全部被清理」按「不存在」处理。
 //   4. 尚未绑定任何考试的本机扫描（还没提交过）照旧放行，这是扫描流程的正常起点。
 // 拒绝时沿用与用户路径**相同的状态码与文案**，避免「换个凭据就能探测 ID 是否存在」。
 //
@@ -169,6 +222,12 @@ async function enforceMachineRecordBinding(
     "SELECT card_id FROM twain_scan_sessions WHERE id = ?", sessionId);
   if (!session) return refuseUnbound(res, "扫描会话不存在");
   const resolved = await resolveScannerExam(session.card_id, sessionId);
+  // 会话真正绑定过「已被保留策略清理 / 已不存在」的考试：机器调用者同样按「不存在」拒绝。
+  // 只拒绝「全部绑定都已清理」的话，混合绑定（在用 A + 已清理 B）的整卡订正仍可被扫描 Key
+  // 读写，等于换一根凭据继续改写那场已清理考试的成绩快照（评审 P1）。
+  if (resolved.boundExamIds.some(examId => !resolved.exams.some(exam => exam.id === examId))) {
+    return refuseUnbound(res, "考试不存在或已按数据保留策略清理");
+  }
   if (allBoundExamsSoftDeleted(resolved)) return refuseUnbound(res, "考试不存在或已按数据保留策略清理");
   return true;
 }
@@ -237,7 +296,14 @@ export function requireScannerRecordScope(params: { recordIdParam?: string } = {
       // 但「绑过的考试全被软删除」不能算这一类——否则删除考试反而放宽了范围校验（CR4）。
       if (refuseSoftDeletedOnly(res, req.user, resolved)) return;
       if (resolved.exams.length === 0) { attachScanPageScope(res, { restricted: false, pages: new Set(), blocks: new Set() }); next(); return; }
-      const candidateIds = (resolved.exam ? [resolved.exam.id] : resolved.exams.map(e => e.id)).map(Number);
+      // 会话绑过的考试里有已被保留策略清理的：非管理员按「不存在」拒绝，口径与整卡订正一致。
+      // 记录级路由会连带删除共享的 scan_correction_pages，放行就等于毁掉那场已清理考试的保留证据。
+      if (req.user.role_name !== "admin"
+        && resolved.boundExamIds.some(examId => !resolved.exams.some(exam => exam.id === examId))) {
+        res.status(404).json({ message: "考试不存在或已按数据保留策略清理" }); return;
+      }
+      // 与整卡订正共用同一份候选考试：同卡被无关考试复用时，不能拿那场考试拒掉本会话的原图。
+      const candidateIds = resolved.exam ? [Number(resolved.exam.id)] : scannerAuthorizationCandidates(resolved);
 
       if (req.user.role_name === "student") {
         res.status(403).json({ message: "权限不足：扫描原卷仅限阅卷侧访问" }); return;
@@ -400,7 +466,12 @@ export async function requireScannerExamScope(req: Request, res: Response, next:
       // Same distinction as above: exams that were soft-deleted are not "unbound" (CR4).
       if (refuseSoftDeletedOnly(res, req.user, resolved)) return;
       if (!resolved.exam && resolved.exams.length === 0) { next(); return; }
-      if (!resolved.exam) { res.status(409).json({ message: "无法确定扫描会话的考试归属" }); return; }
+      if (!resolved.exam) {
+        // 本地整卡订正只改扫描记录，不写考试成绩；归属有歧义时也应能改卡。
+        // 进订正必读的结果演算一起放行，且与订正共用同一套候选考试授权。
+        if (isAmbiguousLocalSessionRead(req)) { await authorizeAmbiguousLocalSession(req, res, next, resolved); return; }
+        res.status(409).json({ message: "无法确定扫描会话的考试归属" }); return;
+      }
       examId = resolved.exam.id;
     }
     if (!Number.isSafeInteger(examId) || examId < 1) { res.status(400).json({ message: "无效的考试编号" }); return; }

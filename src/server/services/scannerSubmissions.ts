@@ -508,11 +508,11 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
     const response = await collectSessionResults(card, activeRecords, cached, mode === "save" ? async result => {
       const candidate = candidates.find(c => c.pages.some(p => p.recordId === result.pages[0]?.recordId));
       if (!candidate || discarded.has(candidate.groupId) || (saveGroupId !== undefined && candidate.groupId !== saveGroupId)) return false;
-      // 点名保存（整批 groupIds，或订正这一组的 saveGroupId）在仍有存疑题时只留草稿。
-      // blockUnreviewed 只在调用方显式打开时拦住整会话保存。上传完成接口不打开它：
-      // 那条链路没有确认步骤，必须继续把带复核标记的成绩入库。
       if (saveGroupIds && !saveGroupIds.has(candidate.groupId)) return false;
-      if ((blockUnreviewed || saveGroupIds != null || saveGroupId !== undefined) && result.needsReviewCount > 0) return false;
+      // 存疑题不拦入库（issue #352 维护者口径）：带低置信度标记的成绩照常写正式成绩，
+      // 复核在异常卷队列与 Web 成绩修改里继续做。只有调用方显式打开 blockUnreviewed
+      // 时才拦住入库，作为可选的保守入口保留。
+      if (blockUnreviewed && result.needsReviewCount > 0) return false;
       await db.transaction(async tx => {
         await lockExam(tx, exam.id);
         const current = await receipts(tx, exam.id);

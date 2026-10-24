@@ -15,8 +15,62 @@ const recoverySchema = z.object({
 });
 export type ScanUploadRecovery = z.infer<typeof recoverySchema>;
 
+const recoveryPrefix = "projectx-scanner-upload-recovery/";
 const recoveryKey = (cardId: string, sessionId: string, groupId: string) =>
-  `projectx-scanner-upload-recovery/${JSON.stringify([cardId, sessionId, groupId])}`;
+  `${recoveryPrefix}${JSON.stringify([cardId, sessionId, groupId])}`;
+
+/** 恢复记录对改分锁的意义：没有 / 还差页面可续传 / 页面全传完只差提交 / 记录读不出来。 */
+export type ScanUploadRecoveryState = "none" | "partial-pages" | "completion-pending" | "damaged";
+
+function recoveryStateOf(raw: string): ScanUploadRecoveryState {
+  try {
+    const parsed = recoverySchema.safeParse(JSON.parse(raw) as unknown);
+    // 记录读不出来时按「有半成品」处理：无法证明服务器上没有部分结果，就不能放开改分。
+    if (!parsed.success) return "damaged";
+    if (parsed.data.completed) return "none";
+    return parsed.data.pages.some(page => !page.done) ? "partial-pages" : "completion-pending";
+  } catch { return "damaged"; }
+}
+
+const stateSeverity: ScanUploadRecoveryState[] = ["damaged", "partial-pages", "completion-pending", "none"];
+
+/**
+ * 关闭进度卡只把任务从内存里摘掉，恢复记录还在，所以「这一卷还没交出终态」这件事
+ * 必须和删除本机原图一样继续挡住整卡改分（评审 P1：否则 dismiss 后改分→再上传仍是撕裂快照）。
+ * `cardId` 缺失时按会话 + 分组扫描全部记录，与内存任务判断里的通配口径一致。
+ */
+export function scanUploadRecoveryState(cardId: string | null | undefined, sessionId: string, groupId: string): ScanUploadRecoveryState {
+  if (typeof localStorage === "undefined") return "none";
+  const found: ScanUploadRecoveryState[] = [];
+  if (cardId) {
+    const raw = localStorage.getItem(recoveryKey(cardId, sessionId, groupId));
+    if (raw !== null) found.push(recoveryStateOf(raw));
+  } else {
+    for (let index = 0; index < localStorage.length; index++) {
+      const key = localStorage.key(index);
+      if (!key || !key.startsWith(recoveryPrefix)) continue;
+      let parts: unknown;
+      try { parts = JSON.parse(key.slice(recoveryPrefix.length)) as unknown; } catch { continue; }
+      if (!Array.isArray(parts) || parts[1] !== sessionId || parts[2] !== groupId) continue;
+      const raw = localStorage.getItem(key);
+      if (raw !== null) found.push(recoveryStateOf(raw));
+    }
+  }
+  return stateSeverity.find(state => found.includes(state)) ?? "none";
+}
+
+/**
+ * 损坏记录里还能认出来的远端会话号：记录截断/字段不全时 schema 校验会整体失败，
+ * 但 `remoteSessionId` 往往还完好。核对服务器时要用它，不然教师根本不知道该查哪一份。
+ */
+export function damagedScanUploadRecoverySessionId(cardId: string, sessionId: string, groupId: string): string | null {
+  if (typeof localStorage === "undefined") return null;
+  const raw = localStorage.getItem(recoveryKey(cardId, sessionId, groupId));
+  if (raw === null) return null;
+  if (recoveryStateOf(raw) !== "damaged") return null;
+  const matched = /"remoteSessionId"\s*:\s*"([^"\\]{1,200})"/.exec(raw);
+  return matched ? matched[1] : null;
+}
 
 export function readScanUploadRecovery(cardId: string, sessionId: string, groupId: string): ScanUploadRecovery | null {
   if (typeof localStorage === "undefined") return null;
@@ -76,9 +130,24 @@ export function readQueuedGroups(cardId: string): Set<string> {
   return readStringSet(queuedKey(cardId));
 }
 
+/**
+ * 完成标记（不抛异常）。`readScanUploadRecovery()` 遇到损坏记录会抛错，而这条路是
+ * 后处理页 reload、工作台入队判断必经的读路径——一条坏记录不能让整页渲染不出来，
+ * 损坏与未完成在这里一律按「没传完」处理，锁定与告警交给 `scanUploadRecoveryState()`。
+ */
+export function hasCompletedScanUploadRecovery(cardId: string, sessionId: string, groupId: string): boolean {
+  if (typeof localStorage === "undefined") return false;
+  const raw = localStorage.getItem(recoveryKey(cardId, sessionId, groupId));
+  if (raw === null) return false;
+  try {
+    const parsed = recoverySchema.safeParse(JSON.parse(raw) as unknown);
+    return parsed.success && parsed.data.completed;
+  } catch { return false; }
+}
+
 export function isGroupQueued(cardId: string, sessionId: string, groupId: string): boolean {
   return readQueuedGroups(cardId).has(queuedGroupKey(sessionId, groupId))
-    || readScanUploadRecovery(cardId, sessionId, groupId)?.completed === true;
+    || hasCompletedScanUploadRecovery(cardId, sessionId, groupId);
 }
 
 export function rememberQueuedGroup(cardId: string, sessionId: string, groupId: string): boolean {

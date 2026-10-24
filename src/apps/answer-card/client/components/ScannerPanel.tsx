@@ -466,7 +466,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     const nextJobs = { ...uploadJobsRef.current };
     let queued = 0;
     for (const result of data.results) {
-      if (result.needsReviewCount > 0) continue;
+      // 存疑题随结果一起上传，由服务器保存并返回 needsReviewCount；不要在上传前拦下整份卷。
       if (nextJobs[result.groupId]) continue;
       if (isGroupQueued(metadata.cardId, sid, result.groupId)) continue;
       if (scannerUploadManager.hasGroupUpload(metadata.cardId, result.groupId, sid)) continue;
@@ -499,6 +499,14 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     uploadJobsRef.current = nextJobs;
     setUploadJobs(nextJobs);
     if (queued > 0) setResultMessage("成功答题卡已加入上传队列，图片将在后台续传；失败答题卡保留在本机，可继续订正。");
+  }
+
+  /** 这一组不再有上传任务占位：清掉行内标记，否则 queueSuccessfulUploads 会永久跳过它（评审 P2）。 */
+  function forgetQueuedMarker(groupId: string) {
+    const nextJobs = { ...uploadJobsRef.current };
+    delete nextJobs[groupId];
+    uploadJobsRef.current = nextJobs;
+    setUploadJobs(nextJobs);
   }
 
   async function saveSuccessful() {
@@ -1043,7 +1051,57 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                         )}
                       </TableCell>
                       <TableCell>
-                        {!sr.saved && <CardCorrectionButton disabled={resultsBusy} url={`/api/scanner/session/${sessionId}/groups/${sr.groupId}/correction`} onSaved={() => fetchCombinedResults(sessionId)} />}
+                        {!sr.saved && (() => {
+                          // 逐页上传时每页现读本机订正：在途或仍留着可续传的半成品时改分，
+                          // 先传出去的页保留旧识别、后传出去的页带上新识别，服务器会收到半旧半新的一份快照。
+                          const cardId = sessionUploadRef.current?.cardId ?? null;
+                          const block = scannerUploadManager.groupUploadBlock(cardId, sr.groupId, sessionId);
+                          const resumable = block === "partial-pages";
+                          return (
+                            <>
+                              <CardCorrectionButton disabled={resultsBusy || block !== null}
+                                disabledReason={block === "recovery-damaged"
+                                  ? "本机上传恢复记录已损坏，读不出远端会话与逐页进度；这一卷可能已经入库，改分或重传都会改写正式成绩。请先在服务器核对原上传会话，再点「已核对服务器，清除损坏记录」"
+                                  : block === "completion-pending"
+                                  ? "这一卷的页面都已上传、只差提交（重复学号这类冲突是服务器拒的）；现在改分会让服务器收到半旧半新的识别结果，请先「重试保存」或处理冲突卷"
+                                  : resumable
+                                  ? "这一卷已上传一部分、还有失败页可续传；现在改分会让服务器收到半旧半新的识别结果。请先「重试失败页」，或点「放弃续传」后再改分"
+                                  : "这一卷正在上传；现在改分会让服务器收到半旧半新的识别结果，请等它传完或先取消任务"}
+                                url={`/api/scanner/session/${sessionId}/groups/${sr.groupId}/correction`} onSaved={() => {
+                                // 远端模式下本机 saved 不会因上传完成而变化：这一卷已经交给服务器，
+                                // 工作台再改分只留本机，不提示就会静默分歧（与后处理页同一句话）。
+                                if (scannerMode === "remote" && uploadJobs[sr.groupId]) {
+                                  setResultMessage("该卷已随本批上传，本机改动不再重复上传；服务器成绩请走 Web 成绩修改。");
+                                }
+                                void fetchCombinedResults(sessionId);
+                              }}
+                              />
+                              {resumable && cardId && (
+                                <Button variant="ghost" size="sm" onClick={() => {
+                                  if (!window.confirm("放弃续传后，已上传的半成品不再补传，这一卷可以立即整卡改分（改完请整卷重新上传）。服务器上的半成品会话不会写入成绩。确定放弃吗？")) return;
+                                  const result = scannerUploadManager.abandonGroupUpload(cardId, sr.groupId, sessionId);
+                                  if (!result.ok) { setResultMessage(result.message); return; }
+                                  forgetQueuedMarker(sr.groupId);
+                                  setResultMessage("已放弃这一卷的续传，现在可以整卡改分；保存后这一卷会随下一次上传整卷重传。");
+                                }}>
+                                  放弃续传
+                                </Button>
+                              )}
+                              {block === "recovery-damaged" && cardId && (
+                                <Button variant="ghost" size="sm" onClick={() => {
+                                  const remoteSessionId = scannerUploadManager.damagedRecoverySessionId(cardId, sr.groupId, sessionId);
+                                  if (!window.confirm(`本机上传恢复记录已损坏，无法确认这份卷在服务器上是否已经入库${remoteSessionId ? `（原上传会话 ${remoteSessionId}）` : ""}。请先在成绩或异常卷列表里核对那一份：确认没有已保存的成绩之后，再清除本机记录；清除后这一卷会按新会话重新上传。确定已经核对过吗？`)) return;
+                                  const result = scannerUploadManager.discardDamagedRecovery(cardId, sr.groupId, sessionId);
+                                  if (!result.ok) { setResultMessage(result.message); return; }
+                                  forgetQueuedMarker(sr.groupId);
+                                  setResultMessage("已清除损坏的恢复记录；请先把这一卷的填涂核对确认，再整卷重新上传。");
+                                }}>
+                                  已核对服务器，清除损坏记录
+                                </Button>
+                              )}
+                            </>
+                          );
+                        })()}
                         <span className="mr-2 text-xs text-muted-foreground">{scannerMode === "remote" ? (uploadState.jobs.find(j => j.id === uploadJobs[sr.groupId])?.message || (uploadJobs[sr.groupId] ? "已加入上传队列" : "待上传")) : (sr.saved ? "已保存" : "待保存")}</span>
                         <Button
                           variant="ghost"

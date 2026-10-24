@@ -1,15 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Save } from "lucide-react";
 import {
   Badge, Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-  Spinner, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableWrap,
+  Spinner, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableWrap, Tip,
 } from "../ui/v2";
 import { CorrectionCanvas } from "./CorrectionCanvas";
 import { RotationButtons, type ImageRotation } from "../RotatedCardImage";
 import type { PostprocessChannel } from "./postprocessChannel";
+import { scannerUploadManager } from "../../lib/scannerUploadManager";
 import { replaceScopedSelection } from "../../../../../shared/scanPostprocess";
 import {
-  correctionCells, correctionState, isUnconfirmedCorrectionCell, lowConfidenceTouchedIds, toggleCorrectionCell,
+  correctionCells, correctionState, isUnconfirmedCorrectionCell, lowConfidenceTouchedIds, mergeRecognitions, toggleCorrectionCell,
   type CorrectionCell, type CorrectionDocument, type CorrectionEdit,
 } from "../../../../../shared/scanCorrection";
 import { matchesCorrectionFocus, selectObjectiveOptionCells, selectScoreCells } from "../../../../../shared/correctionCellSelect";
@@ -27,6 +28,8 @@ export interface PostprocessCorrectionViewProps {
   draftOnly?: boolean;
   /** 从异常队列「去改这题」带过来的题号：挂载后把该行滚进视野 */
   highlightQuestion?: SubjectiveQuestionNumber | null;
+  /** 放弃半成品续传成功后回调：调用方要清掉自己的「已入队」标记，否则改完不会再整卷上传 */
+  onUploadAbandoned?: () => void;
   onSaved: () => void | Promise<void>;
 }
 
@@ -67,23 +70,7 @@ function optionLetters(count: number | undefined): string[] {
   return Array.from({ length: Math.max(0, count ?? 0) }, (_, index) => String.fromCharCode(65 + index));
 }
 
-/** 各页 recognition 拼成整份卡的识别结果（与本机按组判分同一口径）。 */
-function mergeRecognitions(document: CorrectionDocument): CombinedRecognitionResult {
-  const base = document.pages[0]?.recognition;
-  const merged: CombinedRecognitionResult = {
-    status: base?.status ?? "ok",
-    studentId: base?.studentId ?? { status: "ok", value: null },
-    questions: [],
-    subjectiveQuestions: [],
-  };
-  for (const page of document.pages) {
-    merged.questions.push(...(page.recognition.questions ?? []));
-    merged.subjectiveQuestions.push(...(page.recognition.subjectiveQuestions ?? []));
-  }
-  return merged;
-}
-
-export function PostprocessCorrectionView({ channel, sessionId, groupId, initialSaved = false, draftOnly = false, highlightQuestion, onSaved }: PostprocessCorrectionViewProps) {
+export function PostprocessCorrectionView({ channel, sessionId, groupId, initialSaved = false, draftOnly = false, highlightQuestion, onUploadAbandoned, onSaved }: PostprocessCorrectionViewProps) {
   const url = channel.correctionUrl(sessionId, groupId);
   const [document, setDocument] = useState<CorrectionDocument | null>(null);
   const [edits, setEdits] = useState<CorrectionEdit[]>([]);
@@ -164,13 +151,22 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
     ? gradeCombinedRecognition(document.card, `后处理_${groupId}`, liveMerged, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD)
     : null), [document, liveMerged, groupId]);
 
+  // 复核题号直接取共享判分的结果：界面不再自己写一套「低置信度 = 存疑」判定，
+  // 空白题、越界选项、整张卡没红笔这些口径都由 gradeCombinedRecognition 统一裁断。
+  // 订阅上传进度：任务在途时每一页都现读本机订正，这时保存会让服务器收到半旧半新的快照。
+  useSyncExternalStore(scannerUploadManager.subscribe, scannerUploadManager.getState);
+  const uploadCardId = document?.card.id ?? null;
+  const uploadBlock = scannerUploadManager.groupUploadBlock(uploadCardId, groupId, sessionId);
+  const uploadBusy = uploadBlock !== null;
+  const uploadResumable = uploadBlock === "partial-pages";
+
   const reviewQuestions = useMemo(() => {
     const set = new Set<SubjectiveQuestionNumber>();
-    if (!liveMerged) return set;
-    for (const q of liveMerged.questions ?? []) if ((q.confidence ?? 0) < OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD) set.add(q.questionNumber);
-    for (const q of liveMerged.subjectiveQuestions ?? []) if (q.status !== "ok") set.add(q.questionNumber);
+    if (!graded) return set;
+    for (const q of graded.questions) if (q.needsReview) set.add(q.questionNumber);
+    for (const q of graded.subjectiveQuestions) if (q.needsReview) set.add(q.questionNumber);
     return set;
-  }, [liveMerged]);
+  }, [graded]);
 
   const rows = useMemo<Row[]>(() => {
     if (!document || !graded) return [];
@@ -301,7 +297,39 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
           <span className="tabular-nums">{Math.round(zoom * 100)}%</span>
           <Button size="sm" variant="outline" disabled={zoom >= 4} onClick={() => setZoom(z => Math.min(4, z + 0.5))}>放大</Button>
           <RotationButtons rotation={rotation} onChange={setRotation} disabled={saving} />
-          <Button variant="primary" size="sm" icon={<Save />} disabled={!dirty || saving || errors.length > 0 || locked} loading={saving} onClick={() => void save()}>保存修改</Button>
+          {uploadBusy ? (
+            <Tip label={uploadBlock === "recovery-damaged"
+              ? "本机上传恢复记录已损坏，读不出远端会话与逐页进度；这一卷可能已经入库，保存或重传都会改写正式成绩。请先在服务器核对原上传会话，再点「已核对服务器，清除损坏记录」"
+              : uploadBlock === "completion-pending"
+              ? "这一卷的页面都已上传、只差提交（重复学号这类冲突是服务器拒的）；现在保存会让服务器收到半旧半新的识别结果，请先「重试保存」或处理冲突卷"
+              : uploadResumable
+              ? "这一卷已上传一部分、还有失败页可续传；现在保存会让服务器收到半旧半新的识别结果。请先重试失败页，或点「放弃续传」后再保存"
+              : "这一卷正在上传；现在保存会让服务器收到半旧半新的识别结果，请等它传完或先取消任务"}>
+              <Button variant="primary" size="sm" icon={<Save />} disabled loading>保存修改</Button>
+            </Tip>
+          ) : (
+            <Button variant="primary" size="sm" icon={<Save />} disabled={!dirty || saving || errors.length > 0 || locked} loading={saving} onClick={() => void save()}>保存修改</Button>
+          )}
+          {uploadResumable && uploadCardId && (
+            <Button size="sm" variant="outline" onClick={() => {
+              if (!window.confirm("放弃续传后，已上传的半成品不再补传，这一卷可以立即改分（改完请整卷重新上传）。服务器上的半成品会话不会写入成绩。确定放弃吗？")) return;
+              const result = scannerUploadManager.abandonGroupUpload(uploadCardId, groupId, sessionId);
+              if (!result.ok) { setMessage(result.message); return; }
+              // 调用方的「已入队」标记必须一起清掉：留着它，改完的整卷再也不会被排进上传队列。
+              onUploadAbandoned?.();
+              setMessage("已放弃这一卷的续传，现在可以改分；保存后这一卷会整卷重新上传。");
+            }}>放弃续传</Button>
+          )}
+          {uploadBlock === "recovery-damaged" && uploadCardId && (
+            <Button size="sm" variant="outline" onClick={() => {
+              const remoteSessionId = scannerUploadManager.damagedRecoverySessionId(uploadCardId, groupId, sessionId);
+              if (!window.confirm(`本机上传恢复记录已损坏，无法确认这一卷在服务器上是否已经入库${remoteSessionId ? `（原上传会话 ${remoteSessionId}）` : ""}。请先在成绩或异常卷列表里核对那一份：确认没有已保存的成绩之后，再清除本机记录；清除后这一卷会按新会话重新上传。确定已经核对过吗？`)) return;
+              const result = scannerUploadManager.discardDamagedRecovery(uploadCardId, groupId, sessionId);
+              if (!result.ok) { setMessage(result.message); return; }
+              onUploadAbandoned?.();
+              setMessage("已清除损坏的恢复记录；请先把这一卷的填涂核对确认，再整卷重新上传。");
+            }}>已核对服务器，清除损坏记录</Button>
+          )}
         </div>
       </div>
       <div className="flex min-h-0 flex-1 gap-4 p-4">

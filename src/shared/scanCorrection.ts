@@ -146,6 +146,22 @@ export function correctionState(card: AnswerCard, page: CorrectionPage, selected
   });
   return { invalid, recognition, errors };
 }
+/** 各页 recognition 拼成整份卡的识别结果（与本机按组判分同一口径）。 */
+export function mergeRecognitions(document: Pick<CorrectionDocument, "pages">): CombinedRecognitionResult {
+  const base = document.pages[0]?.recognition;
+  const merged: CombinedRecognitionResult = {
+    status: base?.status ?? "ok",
+    studentId: base?.studentId ?? { status: "ok", value: null },
+    questions: [],
+    subjectiveQuestions: [],
+  };
+  for (const page of document.pages) {
+    merged.questions.push(...(page.recognition.questions ?? []));
+    merged.subjectiveQuestions.push(...(page.recognition.subjectiveQuestions ?? []));
+  }
+  return merged;
+}
+
 export function projectRect(rect: Rect, matrix: number[]): string {
   return [[rect.x,rect.y],[rect.x+rect.width,rect.y],[rect.x+rect.width,rect.y+rect.height],[rect.x,rect.y+rect.height]].map(([x,y]) => {
     const z = matrix[6]*x + matrix[7]*y + matrix[8];

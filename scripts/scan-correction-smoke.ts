@@ -395,8 +395,8 @@ try {
     status: "ok", pageNumber: 1, identity: partialIdentity, geometry: recognition.geometry,
     studentId: { status: "ok", value: "91001" },
     questions: [
-      { questionNumber: 1, selectedOptions: [], confidence: 0.05 },
-      { questionNumber: 2, selectedOptions: [], confidence: 0.05 },
+      { questionNumber: 1, selectedOptions: ["C"], confidence: 0.05 },
+      { questionNumber: 2, selectedOptions: ["D"], confidence: 0.05 },
     ],
     subjectiveQuestions: [],
   };
@@ -414,20 +414,27 @@ try {
     selected: toggleCorrectionCell(partialCurrent, partialPage, partialPage.selected, partialA.id),
     touched: [partialA.id],
   };
+  // 带存疑也直接入库（issue #352 口径）：确认一题就写一题的成绩，剩下的复核标记随回执留着。
   const partialSaved = await saveSessionCorrection(partialCurrent, partialSession.id, "0", [partialEdit], null);
-  assert.equal(partialSaved.saved, false, JSON.stringify(partialSaved));
-  assert.match(partialSaved.message, /存疑/);
-  assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id=?", partialExamId), null, "仍有存疑题时不写正式成绩");
+  assert.equal(partialSaved.saved, true, JSON.stringify(partialSaved));
+  assert.match(partialSaved.message, /存疑/, "入库后仍要告诉老师还剩几题待复核");
+  assert.notEqual(await db.get("SELECT id FROM student_scores WHERE exam_id=?", partialExamId), null, "存疑卷照常写正式成绩");
   const partialAgain = await sessionCorrection(partialCurrent, partialSession.id, "0");
-  assert.equal(partialAgain.pages.length, 1, "草稿还在，剩余存疑题可以继续打开");
+  assert.equal(partialAgain.pages.length, 1, "已入库的卷仍可打开核对，确认过的填涂留着");
+  assert.deepEqual(partialAgain.pages[0].recognition.questions?.map(q => q.selectedOptions.join()), ["A", "D"], "订正写入识别结果，未确认的那题保持原识别");
   const partialB = partialCells.find(cell => cell.type === "objective_option" && cell.questionNumber === 2 && cell.option === "B")!;
   const partialPage2 = partialAgain.pages[0];
-  const finished = await saveSessionCorrection(partialCurrent, partialSession.id, "0", [{
-    sourceId: partialPage2.sourceId, revision: partialPage2.revision,
-    selected: toggleCorrectionCell(partialCurrent, partialPage2, partialPage2.selected, partialB.id),
-    touched: [partialB.id],
-  }], null);
-  assert.equal(finished.saved, true, finished.message);
-  assert.notEqual(await db.get("SELECT id FROM student_scores WHERE exam_id=?", partialExamId), null, "全部确认后才入库");
+  let lateSaved = "";
+  try {
+    await saveSessionCorrection(partialCurrent, partialSession.id, "0", [{
+      sourceId: partialPage2.sourceId, revision: partialPage2.revision,
+      selected: toggleCorrectionCell(partialCurrent, partialPage2, partialPage2.selected, partialB.id),
+      touched: [partialB.id],
+    }], null);
+    lateSaved = "unexpectedly saved";
+  } catch (error) {
+    lateSaved = error instanceof Error ? error.message : String(error);
+  }
+  assert.match(lateSaved, /已入库/, "入库后的本机订正要让位给成绩修改侧，不能改出两份不一致的成绩");
   console.log(`PASS scan correction: ${db.dialect}; geometry, colours, toggles, draft isolation, stale-write rejection, persisted answers, rankings/publication, review preservation and scanner replay`);
 } finally { await fixture.close(); }

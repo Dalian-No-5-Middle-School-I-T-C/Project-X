@@ -20,5 +20,18 @@ export async function resolveScannerExam(cardId: string, sessionId: string) {
   const exam = bound.length > 0
     ? bound.length === 1 ? exams.find(e => e.id === bound[0].exam_id) : undefined
     : active.length === 1 ? active[0] : active.length === 0 && exams.length === 1 ? exams[0] : undefined;
-  return { exams, exam, allExamIds: rows.map(e => Number(e.id)) };
+  return { exams, exam, allExamIds: rows.map(e => Number(e.id)), boundExamIds: bound.map(row => Number(row.exam_id)) };
+}
+
+export type ScannerExamResolution = Awaited<ReturnType<typeof resolveScannerExam>>;
+
+/**
+ * 「这场扫描真正可能属于谁」：会话已经绑定过仍在用的考试时只认这些绑定；从未提交过才退回
+ * 同卡的全部在用考试。订正文档、原图与结果读取必须共用同一份候选，否则订正能打开、
+ * 文档里的原图却因另一场无关复用考试被拒（issue #352 评审 P2）。
+ */
+export function scannerAuthorizationCandidates(resolved: ScannerExamResolution): number[] {
+  const active = new Set(resolved.exams.map(exam => Number(exam.id)));
+  const boundActive = resolved.boundExamIds.map(Number).filter(examId => active.has(examId));
+  return boundActive.length > 0 ? boundActive : Array.from(active);
 }

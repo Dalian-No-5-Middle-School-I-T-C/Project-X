@@ -12,8 +12,8 @@ import { getScannerMode, isRemoteServerConfigured } from "../../lib/scannerMode"
 import { replaceScopedSelection, type PostprocessQueueItem } from "../../../../../shared/scanPostprocess";
 import { selectStudentDigitCells } from "../../../../../shared/correctionCellSelect";
 import { uniqueScanConflictCards, type ScanConflictCard } from "../../../../../shared/scanPages";
-import { correctionCells, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../../shared/scanCorrection";
-import { OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
+import { correctionCells, mergeRecognitions, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../../shared/scanCorrection";
+import { gradeCombinedRecognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
 import type { SubjectiveQuestionNumber } from "../../../../../shared/types";
 
 export interface ScanMeta { recordId: string; createdAt: string; scanQuality: number | null; }
@@ -610,16 +610,16 @@ function LowConfidencePanel({ item, channel, onJump }: {
   const rows = useMemo(() => {
     if (!document) return [];
     const list: Array<{ questionNumber: SubjectiveQuestionNumber; label: string; confidence: number; value: string }> = [];
-    for (const page of document.pages) {
-      const recognition = page.recognition;
-      for (const question of recognition.questions ?? []) {
-        if ((question.confidence ?? 0) >= OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD) continue;
-        list.push({ questionNumber: question.questionNumber, label: `第 ${question.questionNumber} 题（客观）`, confidence: question.confidence ?? 0, value: question.selectedOptions.join(",") || "未答" });
-      }
-      for (const question of recognition.subjectiveQuestions ?? []) {
-        if (question.status === "ok") continue;
-        list.push({ questionNumber: question.questionNumber, label: `第 ${question.questionNumber} 题（主观 ${question.status}）`, confidence: question.confidence ?? 0, value: String(question.score) });
-      }
+    // 整份卡合并后判一次：逐页判分会把「本页没上报的题」当成空白低置信度，
+    // 双面卡的另一页因此会列出根本不属于该页的存疑条目（评审 P2）。
+    const graded = gradeCombinedRecognition(document.card, item.groupId, mergeRecognitions(document), OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD);
+    for (const question of graded.questions) {
+      if (!question.needsReview) continue;
+      list.push({ questionNumber: question.questionNumber, label: `第 ${question.questionNumber} 题（客观）`, confidence: question.confidence ?? 0, value: question.selectedOptions.join(",") || "未答" });
+    }
+    for (const question of graded.subjectiveQuestions) {
+      if (!question.needsReview) continue;
+      list.push({ questionNumber: question.questionNumber, label: `第 ${question.questionNumber} 题（主观 ${question.status}）`, confidence: question.confidence ?? 0, value: String(question.score) });
     }
     return list.sort((a, b) => a.confidence - b.confidence);
   }, [document]);

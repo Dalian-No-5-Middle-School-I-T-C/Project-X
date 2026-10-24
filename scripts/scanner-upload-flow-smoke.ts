@@ -28,7 +28,7 @@ const manager = createScannerUploadManager({ remoteFetch: request, isOnline: () 
       identity: { status: "verified", code: "QR_VERIFIED", cardId: fixture.cardId, pageNumber: 1 },
       studentId: kind && numbers[kind] ? { status: "ok", value: numbers[kind] } : { status: "missing" },
       quality: { matchCount: kind === "unreadable" ? 0 : 4, missingRoles: [] },
-      questions: [{ questionNumber: 1, selectedOptions: ["A"], confidence: 1 }], subjectiveQuestions: [] });
+      questions: [{ questionNumber: 1, selectedOptions: ["A"], confidence: kind === "normal" ? 0.05 : 1 }], subjectiveQuestions: [] });
   },
 });
 async function terminal(id: string): Promise<UploadJobSnapshot> {
@@ -47,7 +47,7 @@ function enqueue(kind: string, kinds = [kind]) {
 async function state() {
   return await (await request("/test/state")).json() as {
     scores: Array<{ student_number: string; total_score: number }>;
-    receipts: Array<{ session_id: string; group_id: string; student_number: string; state: string }>;
+    receipts: Array<{ session_id: string; group_id: string; student_number: string; state: string; result_json?: string | null }>;
   };
 }
 function cards(id: string) {
@@ -55,6 +55,17 @@ function cards(id: string) {
   return uniqueScanConflictCards([...(job.reviewCards ?? []), ...(job.failures?.flatMap(f => f.conflicts ?? []) ?? [])]);
 }
 try {
+  // 上传契约必须保留主观题的失败原因字串：丢了它，服务端就把「没画斜线」继续当存疑（#352）。
+  const { recognitionSchema } = await import("../src/server/routes/scanner-upload");
+  const parsedRecognition = recognitionSchema.parse({
+    identity: { status: "verified", code: "QR_VERIFIED", cardId: fixture.cardId, pageNumber: 1 },
+    status: "ok", studentId: { status: "ok", value: "91001" },
+    questions: [{ questionNumber: 1, selectedOptions: [], confidence: 0 }],
+    subjectiveQuestions: [{ questionId: "q1", questionNumber: 7, score: 0, maxScore: 10, status: "invalid",
+      confidence: 0, message: "no_valid_subjective_score", validCells: [], invalidCells: [] }],
+  });
+  assert.equal(parsedRecognition.subjectiveQuestions[0].message, "no_valid_subjective_score", "上传契约必须留下 message 字段");
+
   const original = enqueue("original");
   assert.equal((await terminal(original)).status, "done");
   const originalSession = (await state()).receipts.find(r => r.state === "saved")!.session_id;
@@ -69,7 +80,10 @@ try {
   const unknown = enqueue("unknown");
   const normal = enqueue("normal");
   for (const id of [duplicate, blank, unreadable, unknown]) assert.equal((await terminal(id)).status, "error");
-  assert.equal((await terminal(normal)).status, "done", "normal upload following all abnormal cards completes");
+  assert.equal((await terminal(normal)).status, "done", "存疑卷也要上传并入库，复核由服务器标记");
+  const normalReceipt = (await state()).receipts.find(r => r.student_number === "91002" && r.state === "saved");
+  assert(normalReceipt, "存疑卷也要留下已保存回执");
+  assert.equal((JSON.parse(normalReceipt.result_json!) as { needsReviewCount: number }).needsReviewCount, 1, "复核计数随结果保留");
   assert.deepEqual((await state()).scores.map(s => s.student_number), ["91002"]);
   assert.equal((await terminal(original)).status, "error", "withdrawn grade is not displayed as saved");
 
@@ -82,8 +96,9 @@ try {
   assert.equal((await terminal(unreadable)).status, "error", "unreadable original remains available without blocking its rescan");
 
   const unknownCard = manager.getState().jobs.find(j => j.id === unknown)!.reviewCards![0];
-  assert((await manager.requestJob(unknown, `/api/scanner/upload/sessions/${unknownCard.sessionId}/correct`,
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupId: unknownCard.groupId, studentId: "91007" }) })).ok);
+  const unknownFix = await manager.requestJob(unknown, `/api/scanner/upload/sessions/${unknownCard.sessionId}/correct`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupId: unknownCard.groupId, studentId: "91007" }) });
+  assert(unknownFix.ok);
   assert((await manager.saveSession(unknown, unknownCard.sessionId, unknownCard.groupId)).ok);
   await manager.refreshResults(unknown);
   assert.equal((await terminal(unknown)).status, "done", "roster error recovers through remote correction and save");

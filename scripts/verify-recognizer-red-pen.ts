@@ -87,7 +87,7 @@ try {
   assert.equal(gray.studentId?.value, STUDENT, "灰度：只是红笔丢了，定位/学号/客观题不受影响");
   assert.deepEqual(gray.questions[0]?.selectedOptions, ["A"], "灰度：客观题照常读取（证明失败面只在红笔）");
   assert.equal(gray.subjectiveQuestions[0]?.score, 0, "灰度：红笔斜线读不到，分数按 0 计");
-  assert.equal(gray.subjectiveQuestions[0]?.status, "invalid", "灰度：该题必须留待复核，不能被当成正常的 0 分");
+  assert.equal(gray.subjectiveQuestions[0]?.status, "invalid", "灰度：识别层必须如实报 invalid，不能伪造成正常的 0 分（判分层按 #352 归零，红笔丢失由 #331 ③ 的按页告警兜住）");
   assert.equal(gray.subjectiveQuestions[0]?.message, "no_valid_subjective_score", "灰度：失败原因要能归因到「没有红笔笔迹」");
   assert.equal(gray.subjectiveQuestions[0]?.validCells.length, 0, "灰度：不该有任何有效分数格");
 

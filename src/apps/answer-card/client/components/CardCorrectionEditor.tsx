@@ -1,17 +1,18 @@
 import { recoverCorrectionDocument } from "../lib/scanCorrectionRecovery";
 import { useEffect, useState } from "react";
 import { authFetch } from "../auth/api";
-import { Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter } from "./ui/v2";
+import { Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogBody, DialogFooter, Tip } from "./ui/v2";
 import { correctionState, isUnconfirmedCorrectionCell, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../shared/scanCorrection";
 import { CorrectionCanvas } from "./scanner-postprocess/CorrectionCanvas";
 import { RotationButtons, type ImageRotation } from "./RotatedCardImage";
 
 type Request = (url: string, init?: RequestInit) => Promise<Response>;
-export function CardCorrectionButton({ url, request = authFetch, onSaved, disabled = false, allowUnchangedSave = false }: {
-  url: string; request?: Request; onSaved?: () => void | Promise<void>; disabled?: boolean; allowUnchangedSave?: boolean;
+export function CardCorrectionButton({ url, request = authFetch, onSaved, disabled = false, disabledReason, allowUnchangedSave = false }: {
+  url: string; request?: Request; onSaved?: () => void | Promise<void>; disabled?: boolean; disabledReason?: string; allowUnchangedSave?: boolean;
 }) {
   const [open,setOpen] = useState(false);
-  return <><Button size="sm" variant="outline" disabled={disabled} onClick={() => setOpen(true)}>整卡改分</Button>
+  const trigger = <Button size="sm" variant="outline" disabled={disabled} onClick={() => setOpen(true)}>整卡改分</Button>;
+  return <>{disabled && disabledReason ? <Tip label={disabledReason}>{trigger}</Tip> : trigger}
     {open && <CardCorrectionEditor url={url} request={request} onClose={() => setOpen(false)} onSaved={onSaved} allowUnchangedSave={allowUnchangedSave} />}</>;
 }
 export function CardCorrectionEditor({url,request = authFetch,onClose,onSaved,allowUnchangedSave=false}: {
