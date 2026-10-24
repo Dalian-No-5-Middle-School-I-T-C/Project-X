@@ -145,8 +145,10 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
       let failures = 0;
       let savedGroups = 0;
       for (const { sessionId } of sessions) {
+        // 存疑卷一起提交（issue #352）：低置信度只作为复核标记，不拦入库。
+        // failures 里的那些没有学号或没有完整页，本来就不在 results 里，跟着提交只会写出无主成绩。
         const groupIds = (batches[sessionId]?.results ?? [])
-          .filter(row => !row.saved && row.needsReviewCount === 0)
+          .filter(row => !row.saved)
           .map(row => row.groupId);
         if (!groupIds.length) continue;
         const saved = await channel.saveResults(sessionId, groupIds);
@@ -154,9 +156,9 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
         savedGroups += groupIds.length;
       }
       if (!savedGroups) {
-        notify.info("没有可入库的正常卷");
+        notify.info("没有待入库的试卷");
       } else {
-        notify.success(failures ? `已保存正常卷，仍有 ${failures} 份待处理` : "本批正常卷已写成本机正式成绩");
+        notify.success(failures ? `已提交 ${savedGroups} 份试卷，另有 ${failures} 份待处理` : `本批 ${savedGroups} 份试卷已写成本机正式成绩`);
       }
       await reload();
     } catch (e) {

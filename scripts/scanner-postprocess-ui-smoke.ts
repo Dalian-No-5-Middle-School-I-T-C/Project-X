@@ -283,7 +283,7 @@ try {
   await settle();
   assert.equal(saveCalls.length, 1, "「保存成绩入库」走 POST results（save 模式）");
   assert.match(saveCalls[0], /POST .*\/session\/scan-1\/results$/, "入库打到本会话的 results 端点");
-  assert.deepEqual(saveBodies[0], { groupIds: ["2"] }, "只入库无异常的组，待复核组和失败组不能跟着 POST");
+  assert.deepEqual(saveBodies[0], { groupIds: ["0", "2"] }, "存疑卷与正常卷一起入库；没有学号的失败组不跟着 POST");
 
   // ── 多选删除：无 force → 服务端 409 → 代价文案 → 二次确认带 force ──
   await clickText("选择");

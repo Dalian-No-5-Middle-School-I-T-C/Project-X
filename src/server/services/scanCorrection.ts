@@ -300,10 +300,10 @@ export async function saveSessionCorrection(card: AnswerCard, sessionId: string,
     const batch = await processScannerSessionInQueue(card,sessionId,"save",groupId);
     const row = batch.results.find(r => r.groupId === groupId);
     const saved = Boolean(row?.saved);
-    if (row && !saved && row.needsReviewCount > 0) {
-      return {saved:false,message:"仍有存疑题，本次订正已留下，全部确认后再入库"};
-    }
-    return {saved,message:saved ? "改分已保存" : batch.failures.find(f=>f.groupId===groupId)?.message ?? "订正已保存，请继续处理重复卷"};
+    // 存疑题不再拦入库（issue #352 口径）：改一部分就入一部分，复核标记随成绩一起留着，
+    // 之后的改动走成绩修改侧（本机订正对已入库卷会明确拒绝，避免改出与正式成绩不一致的草稿）。
+    if (saved) return {saved:true,message:row && row.needsReviewCount > 0 ? `改分已入库，这一卷仍有 ${row.needsReviewCount} 题存疑待复核` : "改分已保存"};
+    return {saved,message:batch.failures.find(f=>f.groupId===groupId)?.message ?? "订正已保存，请继续处理重复卷"};
   });
 }
 /** Patch only changed objective answers / paper-marked scores. Never rewrite online review submissions. */

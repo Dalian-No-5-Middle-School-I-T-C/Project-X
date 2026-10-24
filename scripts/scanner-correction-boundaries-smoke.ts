@@ -110,21 +110,22 @@ try {
   await confirmPendingScan(exam.id, recovered.id, "0", "accept", freshItem.token, admin.lastInsertRowid, null);
   assert.equal(Number((await score("91001"))!.total_score), 5);
 
-  // A selected unreviewed save must return an actionable failure and keep its draft.
+  // 带存疑的点名保存直接入库（issue #352 口径）：低置信度只是复核标记，不再拦正式成绩。
   const low = await createSession("unreviewed selected save");
   const lowPage = await addPage(low.id, "91002", 1, .1);
   await correction.storeCorrectionPage(card, "twain_scan_record", lowPage.id, recognition("91002", .1));
   await processScannerSession(card, low.id, "validate");
   await db.run("UPDATE scanner_submissions SET state='correction' WHERE session_id=?", low.id);
-  const unsaved = await complete(low.id, "0");
-  assert.equal(unsaved.status, 409); assert.equal(unsaved.body.code, "SCAN_CARD_NOT_SAVED");
-  assert.match(unsaved.body.message, /存疑题/);
-  assert.equal((await db.get<{ state: string }>("SELECT state FROM scanner_submissions WHERE session_id=?", low.id))!.state, "correction");
-  assert.equal(await score("91002") ?? null, null);
+  const admitted = await complete(low.id, "0");
+  assert.equal(admitted.status, 200, JSON.stringify(admitted.body));
+  const admittedReceipt = await db.get<{ result_json: string }>("SELECT result_json FROM scanner_submissions WHERE session_id=?", low.id);
+  assert.equal(JSON.parse(admittedReceipt!.result_json!).needsReviewCount, 1, "入库的回执仍带复核计数");
+  assert.equal((await db.get<{ state: string }>("SELECT state FROM scanner_submissions WHERE session_id=?", low.id))!.state, "saved", "存疑卷点名保存即入库");
+  assert.equal(Number((await score("91002"))!.total_score), 5, "存疑卷照常写正式成绩");
+  // 入库之后本机订正让位给成绩修改侧，不能再改出两份不一致的成绩。
   const lowDoc = await correction.sessionCorrection(card, low.id, "0", true);
-  const confirmed = await request(low.id, "groups/0/correction", { pages: edits(lowDoc).map(page => ({ ...page, touched: page.selected })) }, "PUT");
-  assert.equal(confirmed.status, 200); assert.equal(confirmed.body.saved, true);
-  assert.equal(Number((await score("91002"))!.total_score), 5);
+  const late = await request(low.id, "groups/0/correction", { pages: edits(lowDoc).map(page => ({ ...page, touched: page.selected })) }, "PUT");
+  assert.equal(late.status, 409); assert.match(late.body.message, /已入库/);
 
   // An unrelated incomplete/blank-ID page cannot block or be rewritten by a named save.
   const partial = await createSession("selected save with broken sibling");
