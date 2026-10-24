@@ -99,6 +99,21 @@ async function main() {
 
     bodies.length = 0;
     assert((await waitTerminal(mgr, mgr.startUpload(baseInput(1)))).status === "done", "带指纹的上传正常完成");
+
+    {
+      // 整卡改分要按「任务是否还在途」禁用：逐页上传时每页现读本机订正，
+      // 在途保存会让服务器收到半旧半新的一份识别快照。
+      const scanJob = mgr.startUpload({
+        kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "扫描_82048",
+        localSessionId: "scan-smoke-1", identityMode: "strict",
+        pages: [{ pageNum: 1, side: "front", groupId: "0", getBlob: async () => blob() }],
+      });
+      assert(mgr.isGroupUploading("card_1", "0", "scan-smoke-1"), "任务未终态时视为正在上传");
+      assert(!mgr.isGroupUploading("card_1", "9", "scan-smoke-1"), "别的组不被误判为在途");
+      const scanResult = await waitTerminal(mgr, scanJob);
+      assert(scanResult.status === "done" || scanResult.status === "error", `扫描任务应进入终态，实际 ${scanResult.status}`);
+      assert(!mgr.isGroupUploading("card_1", "0", "scan-smoke-1"), "终态后不再阻止改分");
+    }
     const sessionBody = JSON.parse(bodies.find((b) => b.url.endsWith(SESSIONS))!.body);
     const completeBody = JSON.parse(bodies.find((b) => b.url.endsWith(COMPLETE))!.body);
     assert(sessionBody.cardVersion === TEST_CARD_VERSION && sessionBody.cardId === "card_1",

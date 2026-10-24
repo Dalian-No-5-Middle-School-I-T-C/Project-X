@@ -72,7 +72,7 @@ export async function startScannerFlowFixture(port = 0, host = "127.0.0.1", opti
   app.get("/test/state", async (req, res) => {
     if (req.headers["x-api-key"] !== key) { res.sendStatus(401); return; }
     res.json({ scores: await db.all("SELECT u.student_number,ss.total_score FROM student_scores ss JOIN users u ON u.id=ss.student_id WHERE ss.exam_id=?", exam.lastInsertRowid),
-      receipts: await db.all("SELECT session_id,group_id,student_number,state FROM scanner_submissions WHERE exam_id=?", exam.lastInsertRowid) });
+      receipts: await db.all("SELECT session_id,group_id,student_number,state,result_json FROM scanner_submissions WHERE exam_id=?", exam.lastInsertRowid) });
   });
   app.use("/api/scanner/upload", router);
   if (options.scoreEditing) {

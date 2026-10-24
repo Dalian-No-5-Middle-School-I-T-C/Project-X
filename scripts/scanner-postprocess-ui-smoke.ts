@@ -215,6 +215,10 @@ const { ScannerPostprocessPage } = await import("../src/apps/answer-card/client/
 const { TooltipProvider } = await import("../src/apps/answer-card/client/components/ui/v2");
 const { scannerUploadManager } = await import("../src/apps/answer-card/client/lib/scannerUploadManager");
 const uploads: StartUploadInput[] = [];
+const { notify } = await import("../src/apps/answer-card/client/components/ui/v2");
+const notices: string[] = [];
+const realNotifyInfo = notify.info;
+notify.info = ((message: string) => { notices.push(message); return realNotifyInfo(message); }) as typeof notify.info;
 const realStartUpload = scannerUploadManager.startUpload;
 scannerUploadManager.startUpload = (input => { uploads.push(input); return `upload-${uploads.length}`; }) as typeof scannerUploadManager.startUpload;
 
@@ -223,6 +227,7 @@ let root2: ReturnType<typeof createRoot> | null = null;
 let root3: ReturnType<typeof createRoot> | null = null;
 let root4: ReturnType<typeof createRoot> | null = null;
 let root5: ReturnType<typeof createRoot> | null = null;
+let root6: ReturnType<typeof createRoot> | null = null;
 async function settle(ms = 12) { await act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); }); }
 async function clickNode(node: Element) {
   await act(async () => {
@@ -396,8 +401,8 @@ try {
   secondGroupResolved = true;
   await act(async () => { confirm.click(); });
   await settle();
-  assert.equal(uploads.length, 2, "汇总没排上的正常卷由后处理页补上首传，已处理组也在其中");
-  assert.deepEqual(uploads.map(item => item.name), ["扫描_10003", "扫描_10002"]);
+  assert.equal(uploads.length, 3, "后处理页首传会带上所有识别成功的卷，已处理组也在其中");
+  assert.deepEqual(uploads.map(item => item.name), ["扫描_10001", "扫描_10003", "扫描_10002"]);
   for (const upload of uploads) {
     assert.equal(upload.cardVersion, scanVersion, "补传必须上报扫描当时的卡版本");
     assert.notEqual(upload.cardVersion, version, "不能改用页面后来拉到的最新卡指纹");
@@ -406,7 +411,7 @@ try {
     assert.equal(upload.kind, "scan");
     assert.equal(upload.pages.length, 1);
   }
-  assert.equal(uploads.some(item => item.name === "扫描_10001"), false, "仍有存疑的卷不能先上传");
+  assert.equal(uploads.some(item => item.name === "扫描_10001"), true, "存疑卷也要先上传，复核在服务器侧完成");
 
   // ── 队列进度：处理完一条后条数减少、已处理计数保留 ──
   await settle();
@@ -430,6 +435,9 @@ try {
   assert(puts.some(entry => entry.groupId === "0" && entry.draft), "远端模式确认存疑题时只写草稿，不把本机入库当成已上传");
   assert(uploads.some(item => item.name === "扫描_10001" && item.localSessionId === "scan-1"), "存疑题全部确认后仍要补传到远端");
   assert(puts.some(entry => entry.groupId === "2" && !entry.draft), "仅本地模式的改分仍然正式入库");
+  assert.equal(uploads.length, 3, "已经上传过的存疑卷不能再建第二份回执");
+  assert(notices.some(message => message.includes("已随本批上传")),
+    "已上传组的本机改分必须指路 Web 成绩修改，不能静默留在本机");
 
   // ── 续扫第二批：groupId 跨会话重号，删除与选择都必须按会话隔离 ──
   await act(async () => { root.unmount(); });
@@ -558,12 +566,44 @@ try {
     layoutPageCountFor:()=>1,onResolved:()=>{},onPreviewDiscard:()=>{},onDelete:async()=>{},
     onJumpToCorrection:(_sid,_gid,question)=>{assert.equal(question,2);jumped=true;},
   }))));
-  await settle();assert.match(text(),/第 2 题（主观 review）/);assert(!text().includes("没有低于阈值的题"));
+  // 列表现直接复用共享判分的结果，所以状态取判分侧的归类（missing_score_grid），不再是识别原始字串。
+  await settle();assert.match(text(),/第 2 题（主观 missing_score_grid）/);assert(!text().includes("没有低于阈值的题"));
+  // ── 双面卡的低置信度面板：按整份卡判一次，别把另一页「没上报的题」列成存疑 ──
+  const pageTwoRecognition = {...recognition, pageNumber: 2, questions: [], subjectiveQuestions: []};
+  const twoPageDoc: CorrectionDocument = {card, version, pages: [
+    {sourceType:"twain_scan_record", sourceId:"multi-1", revision:0, layout,
+      recognition, ...recognizedCells(layout, recognition), imageUrl:"/multi-1"},
+    {sourceType:"twain_scan_record", sourceId:"multi-2", revision:0, layout,
+      recognition:pageTwoRecognition as typeof recognition, ...recognizedCells(layout, pageTwoRecognition), imageUrl:"/multi-2"},
+  ]};
+  const twoPageChannel = {...localChannel(), request:async () => Response.json(twoPageDoc)};
+  const twoPageHost = document.createElement("div");document.body.append(twoPageHost);root6 = createRoot(twoPageHost);
+  await act(async()=>root6!.render(createElement(TooltipProvider,null,createElement(PostprocessQueueView,{
+    channel:twoPageChannel,queue:[{id:"subjective",kind:"low_confidence",sessionId:"multi",groupId:"0",studentId:"10001",
+      label:"10001",conflicts:[],missingLayoutPages:[],needsReviewCount:1}],scans:[],examIdForSession:()=>null,
+    layoutPageCountFor:()=>2,onResolved:()=>{},onPreviewDiscard:()=>{},onDelete:async()=>{},onJumpToCorrection:()=>{},
+  }))));
+  await settle();
+  assert.match(text(),/第 2 题（客观）/, "真实存在的低置信度题要列出来");
+  assert.equal((text().match(/题（客观）/g) ?? []).length, 1, "第二页没上报的题不能被重复列成存疑");
+  assert(!text().includes("未答"), "合成条目不能伪装成本页的空白作答");
+
+
   await clickText("去改这题");assert(jumped);
   await act(async()=>root5!.render(createElement(TooltipProvider,null,createElement(PostprocessCorrectionView,{
     channel:reviewChannel,sessionId:"review",groupId:"0",draftOnly:true,onSaved:()=>{},
   }))));
   await settle();assert(saveButton()?.disabled,"打开待确认卷不会自动确认");
+  // 上传在途时禁止保存改分：逐页现读本机订正，中途保存会让服务器收到半旧半新的识别结果。
+  const realGroupUploading = scannerUploadManager.isGroupUploading;
+  scannerUploadManager.isGroupUploading = () => true;
+  scannerUploadManager.notifyNetworkChanged();
+  await settle();
+  assert(saveButton()?.disabled, "上传在途时后处理页不允许保存改分");
+  scannerUploadManager.isGroupUploading = realGroupUploading;
+  scannerUploadManager.notifyNetworkChanged();
+  await settle();
+  assert(saveButton()?.disabled, "恢复后仍按「未改动不可保存」判定，说明禁用来源已切回脏数据规则");
   const scoreCell = () => document.querySelector(`[data-cell-id="${ten.id}"]`)!;
   await clickNode(scoreCell());await clickNode(scoreCell());await settle();
   assert(saveButton() && !saveButton()!.disabled,"点回原分数同样可以明确确认");
@@ -591,7 +631,8 @@ try {
 } catch (error) {
   failure = error;
 } finally {
-  await act(async () => { root.unmount(); root2?.unmount(); root3?.unmount(); root4?.unmount(); root5?.unmount(); });
+  await act(async () => { root.unmount(); root2?.unmount(); root3?.unmount(); root4?.unmount(); root5?.unmount(); root6?.unmount(); });
+  notify.info = realNotifyInfo;
   scannerUploadManager.startUpload = realStartUpload;
   // 不关掉 jsdom 的 window，其定时器与观察者会让进程一直挂着
   dom.window.close();

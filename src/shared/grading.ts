@@ -165,16 +165,24 @@ function wrongOrExtraScoreFor(rule: ObjectiveScoringRule | undefined): number {
   return rule?.wrongOrExtraScore ?? 0;
 }
 
+/**
+ * @param reportedOnThisPage 该题是否出现在这一页的识别结果里。多页/双面卡里没上报的题是由
+ *   `gradeObjectiveRecognition` 合成的，不是本页的作答，不能当成考生空白。
+ */
 export function gradeObjectiveQuestion(
   card: AnswerCard,
   question: ObjectiveRecognitionQuestion,
-  confidenceThreshold = OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD
+  confidenceThreshold = OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD,
+  reportedOnThisPage = true
 ): ObjectiveQuestionGrade {
   const target = findObjectiveQuestion(card, question.questionNumber);
   const definition = target?.definition;
   const confidence = Number.isFinite(question.confidence) ? question.confidence : 0;
   const selectedOptions = normalizeOptions(question.selectedOptions, definition?.optionCount);
-  const needsReview = confidence < confidenceThreshold;
+  // 没涂就是没涂：直接 0 分，不再用低置信度把它推进复核队列（issue #352）。
+  // 只看原始填涂，被选项数过滤掉的越界标签属于识别异常，仍要复核。
+  const blank = reportedOnThisPage && (question.selectedOptions?.length ?? 0) === 0;
+  const needsReview = !blank && confidence < confidenceThreshold;
 
   if (!definition) {
     return {
@@ -203,6 +211,21 @@ export function gradeObjectiveQuestion(
       status: "missing_key",
       needsReview: true,
       message: "未配置标准答案"
+    };
+  }
+
+  // 空题不是识别失败：没有填涂就直接 0 分，不再用低置信度把它推进复核队列。
+  if (blank) {
+    return {
+      questionNumber: question.questionNumber,
+      selectedOptions,
+      correctOptions,
+      score: 0,
+      maxScore,
+      confidence,
+      status: "wrong",
+      needsReview: false,
+      message: "未作答，按 0 分"
     };
   }
 
@@ -263,12 +286,13 @@ export function gradeObjectiveRecognition(
   for (const block of card.bodyBlocks) {
     if (block.type !== "objective") continue;
     for (const questionNumber of objectiveQuestionNumbers(block)) {
-      const recognized = questionMap.get(questionNumber) ?? {
-        questionNumber,
-        selectedOptions: [],
-        confidence: 0
-      };
-      grades.push(gradeObjectiveQuestion(card, recognized, confidenceThreshold));
+      const recognized = questionMap.get(questionNumber);
+      grades.push(gradeObjectiveQuestion(
+        card,
+        recognized ?? { questionNumber, selectedOptions: [], confidence: 0 },
+        confidenceThreshold,
+        recognized !== undefined
+      ));
     }
   }
 
@@ -315,6 +339,13 @@ function findSubjectiveQuestion(card: AnswerCard, questionId: string, blockId?: 
   return undefined;
 }
 
+/** 识别器确认「这一题没画给分斜线」的空白分数格：直接 0 分，不进复核（issue #352）。 */
+export function isBlankSubjectiveRecognition(recognition: SubjectiveRecognitionQuestion): boolean {
+  return recognition.status === "invalid"
+    && recognition.message === "no_valid_subjective_score"
+    && (recognition.invalidCells?.length ?? 0) === 0;
+}
+
 export function gradeSubjectiveRecognition(
   card: AnswerCard,
   recognition: SubjectiveRecognitionQuestion
@@ -326,6 +357,20 @@ export function gradeSubjectiveRecognition(
   // 未知 questionId 的自报分数与满分一律丢弃，不得计入成绩。
   if (!question) return null;
   const maxScore = Number.isFinite(question.score) ? Math.max(0, question.score) : 0;
+  if (isBlankSubjectiveRecognition(recognition)) {
+    return {
+      questionId: recognition.questionId,
+      questionNumber: question.number,
+      score: 0,
+      maxScore,
+      status: "ok",
+      needsReview: false,
+      confidence: recognition.confidence,
+      validCells: [],
+      invalidCells: [],
+      message: "未作答，按 0 分"
+    };
+  }
   const needsReview = recognition.status !== "ok";
 
   let status: SubjectiveQuestionGradeStatus = "ok";

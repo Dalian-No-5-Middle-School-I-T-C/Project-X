@@ -7,7 +7,7 @@ import { startScannerFlowFixture } from "./scanner-upload-flow-fixture";
 import { cardFingerprint } from "../src/shared/cardVersion";
 import { correctionCells, toggleCorrectionCell, type CorrectionDocument } from "../src/shared/scanCorrection";
 
-const fixture = await startScannerFlowFixture(0,"127.0.0.1",{scoreEditing:true});
+const fixture = await startScannerFlowFixture(0,"127.0.0.1",{scoreEditing:true,localScanner:true});
 try {
   const info = await (await fetch(`${fixture.baseUrl}/test/fixture`)).json();
   const { getMysqlDb, getDatabase, initMariadbSchema } = await import("../src/server/db");
@@ -119,7 +119,7 @@ try {
   await db.run("UPDATE users SET password_hash=? WHERE id IN (?,?)",passwordHash,admin.lastInsertRowid,student.id);
   const adminToken = (await authService.login("legacy_admin",password)).token!;
   const studentToken = (await authService.login("flow_91010",password)).token!;
-  await db.run("INSERT INTO users(username,password_hash,name,role_id) VALUES ('legacy_outsider',?,'无关教师',2)",passwordHash);
+  await db.run("INSERT INTO users(username,password_hash,name,role_id,teacher_role) VALUES ('legacy_outsider',?,'无关教师',2,'subject_teacher')",passwordHash);
   const outsiderToken = (await authService.login("legacy_outsider",password)).token!;
   const scoreUrl = `${fixture.baseUrl}/api/exams/${exam.id}/student/${student.id}/correction`;
   const scoreRequest = (method="GET",body?:unknown,token=adminToken,suffix="") => fetch(scoreUrl+suffix,{method,
@@ -127,6 +127,33 @@ try {
   assert.equal((await fetch(scoreUrl+"/recognize",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})).status,401);
   assert.equal((await scoreRequest("POST",{},studentToken,"/recognize")).status,403);
   assert.equal((await scoreRequest("POST",{},outsiderToken,"/recognize")).status,403);
+  // 多场考试/归属不唯一时，本地整卡改分仍应可用；正式成绩入库才要求唯一归属。
+  {
+    const ambiguousSession = await store.createSession(card.id, "ambiguous local correction");
+    await db.run("UPDATE twain_scan_sessions SET card_version=?,version_source='upload',status='completed' WHERE id=?", cardFingerprint(card), ambiguousSession.id);
+    const imagePath = path.join(process.env.ANSWER_CARD_DATA_DIR!, "ambiguous.png");
+    await writeFile(imagePath, bytes);
+    const record = await store.createScanRecord({ sessionId: ambiguousSession.id, cardId: card.id, pageNum: 1, imagePath });
+    await db.run("UPDATE twain_scan_records SET student_id=?,identity_json=?,ocr_status='done' WHERE id=?", "91010", JSON.stringify(identity), record.id);
+    await store.upsertRecognitionResult({ scanRecordId: record.id, objectiveJson: JSON.stringify(recognition("91010").questions), subjectiveJson: "[]" });
+    await storeCorrectionPage(card, "twain_scan_record", record.id, recognition("91010"));
+    const extraExam = await db.run("INSERT INTO exams(name,card_id,status) VALUES('归属歧义测试',?,'grading')", card.id);
+    const localUrl = `${fixture.baseUrl}/api/scanner/session/${ambiguousSession.id}/groups/0/correction`;
+    const localCorrection = await fetch(localUrl, { headers: { Authorization: `Bearer ${adminToken}` } });
+    assert.equal(localCorrection.status, 200, "多场考试时本地整卡改分不应被 409 挡住");
+    const localDoc = await localCorrection.json() as CorrectionDocument;
+    assert.equal((await fetch(localUrl, { headers: { Authorization: `Bearer ${studentToken}` } })).status, 403, "学生不能打开本地整卡改分");
+    assert.equal((await fetch(localUrl, { headers: { Authorization: `Bearer ${outsiderToken}` } })).status, 403, "看不到任一场关联考试的教师不能改卡");
+    const localSave = await fetch(localUrl, { method: "PUT", headers: { Authorization: `Bearer ${adminToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ pages: localDoc.pages.map(p => ({ sourceId: p.sourceId, revision: p.revision, selected: p.selected })) }) });
+    assert.equal(localSave.status, 200, "归属不唯一时本地整卡订正也应能保存");
+    assert.equal((await localSave.json() as { saved: boolean }).saved, false, "保存后等待上传，不能凭空入库");
+    await db.run("DELETE FROM exams WHERE id=?", extraExam.lastInsertRowid);
+    await db.run("DELETE FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?", record.id);
+    await db.run("DELETE FROM twain_recognition_results WHERE scan_record_id=?", record.id);
+    await db.run("DELETE FROM twain_scan_records WHERE session_id=?", ambiguousSession.id);
+    await db.run("DELETE FROM twain_scan_sessions WHERE id=?", ambiguousSession.id);
+  }
   await writeFile(records[0].image_path,await sharp({create:{width:2100,height:2970,channels:3,background:"red"}}).png().toBuffer());
   const reverifyRead = await scoreRequest(); assert.equal(reverifyRead.status,200);
   const reverifyDoc = await reverifyRead.json() as CorrectionDocument;

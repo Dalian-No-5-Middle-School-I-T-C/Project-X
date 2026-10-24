@@ -395,8 +395,8 @@ try {
     status: "ok", pageNumber: 1, identity: partialIdentity, geometry: recognition.geometry,
     studentId: { status: "ok", value: "91001" },
     questions: [
-      { questionNumber: 1, selectedOptions: [], confidence: 0.05 },
-      { questionNumber: 2, selectedOptions: [], confidence: 0.05 },
+      { questionNumber: 1, selectedOptions: ["C"], confidence: 0.05 },
+      { questionNumber: 2, selectedOptions: ["D"], confidence: 0.05 },
     ],
     subjectiveQuestions: [],
   };

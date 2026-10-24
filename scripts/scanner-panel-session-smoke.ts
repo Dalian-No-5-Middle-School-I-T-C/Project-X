@@ -2,6 +2,8 @@
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import { act, createElement } from "react";
+import { buildLayout } from "../src/shared/layout";
+import { recognizedCells } from "../src/shared/scanCorrection";
 import { createDefaultCard } from "../src/shared/defaultCard";
 import { cardFingerprint } from "../src/shared/cardVersion";
 import type { StartUploadInput } from "../src/apps/answer-card/client/lib/scannerUploadManager";
@@ -48,6 +50,7 @@ let retainedPageCount = 2;
 const snapshotRequests: string[] = [];
 const summaryRequests: string[] = [];
 const retryRequests: unknown[] = [];
+const correctionSaves: Array<{ pages: unknown[] }> = [];
 const summary = () => ({ failures: includeFailure ? [{ groupId: "1", studentId: null, stage: "recognition",
   message: "未识别学号", pages: [{ recordId: "page-2", pageNum: 2, layoutPage: 1, side: "front" }] }] : [],
   results: [
@@ -84,7 +87,26 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
     retryRequests.push(JSON.parse(String(init?.body)));
     return Response.json({ ...summary(), warnings: ["重识别告警：历史灰度卷需改用彩色"] });
   }
+  if (url.includes("/scan-image/")) return new Response("img", { headers: { "content-type": "image/png" } });
   if (url.endsWith("/health")) return Response.json({ ok: true, capabilities: { scannerClientApi: true } });
+  if (/\/api\/scanner\/session\/[^/]+\/groups\/[^/]+\/correction$/.test(url)) {
+    if (init?.method === "PUT") {
+      correctionSaves.push(JSON.parse(String(init.body)) as { pages: unknown[] });
+      return Response.json({ ok: true, saved: false, message: "填涂订正已保存，等待上传到关联考试" });
+    }
+    const page = buildLayout(card).pages[0];
+    const sheet = {
+      status: "ok", pageNumber: 1,
+      studentId: { status: "ok", value: "91001" },
+      questions: [{ questionNumber: 1, selectedOptions: ["A"], confidence: 1 }],
+      subjectiveQuestions: [],
+      geometry: { imageWidth: 1000, imageHeight: 1414, layoutToImage: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+    } as never;
+    return Response.json({ card, version: cardFingerprint(card), pages: [{
+      sourceType: "twain_scan_record", sourceId: "page-1", revision: 1, layout: page,
+      recognition: sheet, ...recognizedCells(page, sheet), imageUrl: "/api/scanner/scan-image/page-1",
+    }] });
+  }
   throw new Error(`Uncovered panel request: ${url}`);
 });
 const { createRoot } = await import("react-dom/client");
@@ -122,8 +144,8 @@ try {
   // This handler was installed by the scan-start render, before the legacy
   // session state was committed. It must still upload with the session snapshot.
   await act(async () => { streams[0].done(); }); await settle();
-  assert.equal(uploads.length, 1);
-  assert.equal(uploads.some(item => item.name === "扫描_91009"), false, "低置信度卷不随完成自动上传");
+  assert.equal(uploads.length, 2);
+  assert.equal(uploads.some(item => item.name === "扫描_91009"), true, "存疑卷也要随完成自动上传");
   assert.equal(uploads[0].identityMode, "legacy");
   assert.equal(uploads[0].cardVersion, version);
   await click("开始新扫描"); await settle();
@@ -132,9 +154,9 @@ try {
   await click("开始扫描"); await settle();
   assert.equal(scans[1].identityMode, "strict", "Legacy mode applies to one session");
   await act(async () => { streams[1].done(); }); await settle();
-  assert.equal(uploads.length, 2);
-  assert.equal(uploads[1].identityMode, "strict");
-  assert.equal(uploads[1].cardVersion, nextVersion);
+  assert.equal(uploads.length, 4);
+  assert.equal(uploads[2].identityMode, "strict");
+  assert.equal(uploads[2].cardVersion, nextVersion);
   assert.equal(uploads[0].cardVersion, version, "Later card loads cannot replace the original session version");
   await click("开始新扫描"); await settle();
   includeFailure = true;
@@ -157,7 +179,7 @@ try {
   assert(hasAction("查看") && hasAction("查看失败卡"), "Both successful and failed cards can be viewed");
   assert(hasAction("整卡改分") && hasAction("重新识别此卡"), "Correction controls remain available");
   assert(hasAction("保存成功部分到服务器"), "Partial results retain the explicit save action");
-  assert.equal(uploads.length, 2, "A failed batch does not automatically upload partial results");
+  assert.equal(uploads.length, 4, "A failed batch does not automatically upload partial results");
   await click("查看"); await settle();
   assert(document.querySelector('[role="dialog"] img[src*="page-1"]'), "View opens the retained page image");
   await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="关闭"]')!.click(); }); await settle();
@@ -166,11 +188,11 @@ try {
   assert(document.body.textContent?.includes("重识别告警：历史灰度卷需改用彩色"),
     "重新识别返回的告警要显示在扫描告警区");
   await click("刷新汇总"); await settle();
-  assert.equal(uploads.length, 2, "Refreshing or correcting a partial session cannot auto-upload its successful cards");
+  assert.equal(uploads.length, 4, "Refreshing or correcting a partial session cannot auto-upload its successful cards");
   assert(document.body.textContent?.includes("实际输出 DPI 与设置不一致"), "Refresh and retry preserve the device error");
   await click("保存成功部分到服务器"); await settle();
-  assert.equal(uploads.length, 3, "An explicit save uploads retained successful cards");
-  assert.equal(uploads[2].cardVersion, nextVersion);
+  assert.equal(uploads.length, 6, "An explicit save uploads retained successful cards");
+  assert.equal(uploads[4].cardVersion, nextVersion);
   assert(document.body.textContent?.includes("实际输出 DPI 与设置不一致"), "Explicit save also preserves the device error");
   await act(async () => { partial.onerror?.(); }); await settle();
   assert.equal(streams.length, 3, "Terminal errors do not reconnect the stream");
@@ -179,7 +201,30 @@ try {
   includeFailure = false;
   await click("开始扫描"); await settle();
   await act(async () => { streams[3].done(); }); await settle();
-  assert.equal(uploads.length, 4, "A new complete session resumes normal automatic uploads");
+  assert.equal(uploads.length, 8, "A new complete session resumes normal automatic uploads");
+  // 上传在途时禁用整卡改分：逐页现读本机订正，中途保存会让服务器收到半旧半新的快照。
+  const realGroupUploading = scannerUploadManager.isGroupUploading;
+  scannerUploadManager.isGroupUploading = () => true;
+  await click("刷新汇总"); await settle();
+  assert([...document.querySelectorAll("button")].filter(node => node.textContent?.trim() === "整卡改分")
+    .every(node => node.disabled), "上传在途时工作台不允许改分");
+  scannerUploadManager.isGroupUploading = realGroupUploading;
+  await click("刷新汇总"); await settle();
+  assert([...document.querySelectorAll("button")].some(node => node.textContent?.trim() === "整卡改分" && !node.disabled),
+    "任务终态后工作台改分恢复可用");
+  // 远端模式下这一卷已经随批次进入上传队列：从工作台改分必须当场说明改动不会回到服务器
+  //（重复上传同一份卷子会被服务端当成第二份原卷，反而撤掉已保存的成绩）。
+  await click("整卡改分"); await settle();
+  const cell = document.querySelector("svg polygon") as SVGElement | null;
+  assert(cell, "改分弹层渲染出可点选的填涂格");
+  await act(async () => { cell.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+  await settle();
+  await click("保存修改"); await settle();
+  assert.equal(correctionSaves.length, 1, "工作台改分写入本机订正端点");
+  assert(document.body.textContent?.includes("已随本批上传"), "工作台也要给出与后处理页一致的指路提示");
+
+  await act(async () => { document.querySelector<HTMLButtonElement>('[aria-label="关闭"]')?.click(); }); await settle();
+
   await click("开始新扫描"); await settle();
   await click("开始扫描"); await settle();
   const summariesBeforeEmpty = summaryRequests.length;
@@ -200,7 +245,7 @@ try {
   assert.match(summaryRequests.at(-1)!, /^POST .*\/validate$/);
   await click("保存成功部分"); await settle();
   assert.match(summaryRequests.at(-1)!, /^POST .*\/results$/);
-  assert.equal(uploads.length, 4, "Local partial results are saved locally");
+  assert.equal(uploads.length, 8, "Local partial results are saved locally");
   assert(document.body.textContent?.includes("走纸中断，本机已保留页面"));
   await click("开始新扫描"); await settle();
   await click("上传服务器"); await settle();
@@ -211,9 +256,9 @@ try {
   await act(async () => { streams[6].emit({ type: "error", message: "迟到的终态错误" }); }); await settle();
   assert(document.body.textContent?.includes("扫描中断，已保留 2 页"));
   assert(document.body.textContent?.includes("91001") && hasAction("整卡改分") && hasAction("重新识别此卡"));
-  assert.equal(uploads.length, 4, "Terminal replay hydrates persisted pages without uploading");
+  assert.equal(uploads.length, 8, "Terminal replay hydrates persisted pages without uploading");
   await click("保存成功部分到服务器"); await settle();
-  assert.equal(uploads.length, 5);
+  assert.equal(uploads.length, 10);
   await click("开始新扫描"); await settle();
   await click("开始扫描"); await settle();
   // Missing page events during a disconnect must also recover from persisted records.
@@ -226,11 +271,11 @@ try {
   await click("刷新汇总"); await settle();
   assert(document.body.textContent?.includes("扫描中断，已保留 2 页"), "Persisted count replaces the incomplete SSE page list");
   assert(document.body.textContent?.includes("重连后扫描中断"));
-  assert.equal(uploads.length, 5);
+  assert.equal(uploads.length, 10);
   await click("开始新扫描"); await settle();
   await click("开始扫描"); await settle();
   await act(async () => { streams[9].done(); }); await settle();
-  assert.equal(uploads.length, 6, "The next completed session still uploads normally after terminal recovery");
+  assert.equal(uploads.length, 12, "The next completed session still uploads normally after terminal recovery");
   assert(!document.body.textContent?.includes("重连后扫描中断"));
   assert(document.body.textContent?.includes("扫描完成"));
   assert(snapshotRequests.length >= 7, "Error classification reads persisted pages, including zero-page errors and refreshes");

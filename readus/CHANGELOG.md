@@ -76,6 +76,20 @@
 - **验证**：`verify:core-logic` 第 14 节新增 5 条回归断言（复现路径、旧卡无逐题配置、逐题覆盖、浮点尾差），全绿；`typecheck` 与 `build:web` 通过。浏览器端点击流程未在本机实跑（dev 会连仓库配置的库），改动为纯函数接线。
 - **存量数据**：库里 `score_per_question` 已被写成 5 的卡不回填——无法判断历史意图。这类卡上线后需老师重新填一次每题分值，届时会正确同步到逐题与标题。
 
+## 2026-10-23：#352 扫描端整卡改分归属、存疑卷上传与空白题零分
+
+- **归属不唯一仍可整卡改分**：本地扫描会话的 `GET/PUT /api/scanner/session/:sessionId/groups/:groupId/correction` 不再因「多场候选考试」或「只剩归档考试」直接 409。会话作用域只对本地订正路径放行，订正路由再要求教师/管理员、`GRADE_WRITE`，并且**每一场候选考试都要过整卷阅卷授权**（与归属唯一时同一条门：只有单题块授权、或与某场考试无归属关系的教师仍被拒绝）。候选考试按「这场扫描真正可能属于谁」取：会话已经绑过在用考试就只认这些绑定，同卡被别的在用考试复用不再牵连授权；从未提交过才退回同卡全部在用考试。整套判定抽成 `scannerAuthorizationCandidates`（`scannerExam.ts`）+ `authorizeAmbiguousLocalSession`（`scanner-scope.ts`）一处实现，由**订正文档、文档里的原图（`/api/scanner/scan-image/:recordId`）与进订正前必读的结果演算**（本机 `POST /session/:id/validate`、远端 `GET /session/:id/results?previewOnly=1`）共用：此前只放行 `/correction`，教师拿到 200 的订正文档却在原图上吃 403（改分视图停在「完整答题卡图片加载失败」），或者后处理页连结果都加载不出来、根本点不进订正。`POST /results`（正式入库）不在放行范围内，归属不唯一仍然 409。正式成绩入库仍要求唯一考试归属，归属不唯一时只保存本机草稿。会话只要有**任意一条**回执绑定落在已被保留策略清理的考试上（含「一场已清理 + 一场仍在用」的混合绑定），同样按「考试不存在」拒绝（管理员除外）——整卡订正保存会连带改写这些保留回执里的成绩快照，只看「还有没有在用考试」会把已清理考试的保留数据暴露出去。
+- **存疑卷照常上传**：扫描工作台与后处理页不再用 `needsReviewCount > 0` 拦下整卷上传；图片与识别结果先上传，复核计数随回执返回，后续在服务器或异常卷流程处理。边界写清：**未识别学号、缺页、冲突副本这类没有身份或归属的失败卷仍留在本机**（服务端没有可挂这份成绩的归属，硬上传只会造出无主回执），教师改考号或重识别后照原路径上传。
+- **上传在途禁止改分**：远端模式下存疑卷随批立即入队，而逐页上传时每一页都现读本机订正——任务还在飞就保存，先传出去的页保留旧识别、后传出去的页带上新识别，服务器会收到半旧半新的一份快照。上传管理器新增 `isGroupUploading` / `isUploadingStatus`（未到终态即在途），扫描工作台与后处理页据此禁用整卡改分/保存并给出原因。回归：`verify:scanner-upload-manager` 断言在途为真、终态为假，两条 UI 冒烟分别断言两个入口在途时禁用、恢复后按原规则可用。
+- **先上传后改分不再静默**：存疑卷现在随批上传，之后在本机改分不会重传（重复上传同一份卷子会被服务端判成第二份原卷并撤掉已保存成绩）。后处理页与扫描工作台改分保存后都会明确提示「该卷已随本批上传，改动请走 Web 成绩修改」。
+- **记录级读取与删除同样认归档绑定**：`/api/scanner/scan-image/:recordId`、`/api/scanner/record/:recordId` 此前只看「还有没有在用考试」，混合绑定（在用 A + 已清理 B）时持有 A 的教师能读原卷、甚至删除记录，连带清掉共享的 `scan_correction_pages`，把已清理考试的保留证据毁掉。现在与整卡订正同口径：非管理员一律 404。
+- **空白题直接零分**：客观题没涂（原始选项为空）直接 0 分，不再因低置信度进复核；主观题分数格没画给分斜线（`invalid + no_valid_subjective_score` 且没有 `invalidCells`）同样按 0 分确认。两条现场例外继续保留：被选项数过滤掉的越界标签算识别异常，多页/双面卡里本页未上报的题（`gradeObjectiveRecognition` 合成的条目）算「未上报」，不会把另一页真实的存疑答案顶掉。扫描端改分视图与低置信度面板不再各自写一套「低于阈值就算存疑」，统一复用共享判分的 `needsReview`。
+- **已确认接受的风险**：分数格里读不到任何红笔时，「考生没画斜线」与「用黑笔/蓝笔写了分数」在识别结果里完全同形（`status invalid` + `no_valid_subjective_score` + 有效格与拒绝格都为空）。按上面的口径两者都算未作答 0 分且不再挂复核，也就是说非红笔写的分数会被静默判 0。兜底只剩「阅卷必须用红笔」的规范，以及 issue #331 ③ 的强制彩色 + 整页零红笔告警；判分侧不再加额外分支。`verify:recognizer-red-line` 的 blank grid 与 black pen 两例期望随之改为 0 分不复核，并在用例注释里写明这一取舍。
+- **上传契约保留主观题失败原因**：`scanner-upload` 的识别结果校验此前会丢掉 `subjectiveQuestions[].message`，服务端因此永远认不出 `no_valid_subjective_score`，空白大题传上去仍算存疑。字段补进白名单（限长 120），并在 `verify:scanner-upload-flow` 里直接解析一次钉住。
+- **异常队列按整份卡判一次**：低置信度面板原先逐页判分，双面卡的另一页会把「本页没上报的客观题」列成一堆置信度 0 的「未答」存疑项。改为合并整份卡后判一次，与改分视图同一口径。
+- **已上传的存疑卷给出明确指路**：存疑卷现在先上传，之后在本机改分不再重复排队（重复上传同一份考卷会被服务端当成第二份原卷，反而撤掉已保存的成绩），界面会提示「已随本批上传，改动请走 Web 成绩修改」，不再静默。
+- **验证**：`typecheck`、Web 与扫描端构建；`verify:core-logic`（111 项，含空客观题、越界选项、跨页合成题不被空白顶掉、空白大题零分）；`verify:scanner-upload-flow`（低置信度卷仍上传、入库并保留 `needsReviewCount`）；`verify:scanner-panel-session`、`verify:scanner-postprocess-all`、`verify:scanner-legacy-correction`、`verify:scanner-local-correction`（多场候选下的本地改分、单题块授权 403、整卷授权 200、归档绑定与混合绑定 404、复用卡不牵连授权、歧义会话的原图与结果预览/演算 200 而正式入库 409）、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-correction-boundaries`、`verify:scanner-pending`、`verify:scanner-batch-results`、`verify:scanner-duplex-correction`、`verify:scanner-upload-manager`、`verify:scanner-review-regressions`、`verify:security-critical`（533/0）、`verify:permission-scope`（148/0）、`verify:recognizer-red-line`（18 例 × 150/300 DPI，本机用随包 win-x64 识别器）通过。本机只运行 SQLite，MariaDB 由 CI 执行。
+
 ## 2026-10-23：鲁棒性审查——小数题号、模板总分、计分边界与失败回显
 
 - **MariaDB 小题号**：语文模板的 13.1/17.1 等题号原先写入 `INT` 列，strict mode 会 500、非 strict 会把 13.1/13.2 截成同一个 13。迁移 v65 把 `subjective_questions.number`、`question_scores.question_number`、`knowledge_points.question_number`、`answer_overrides.question_number` 改为 DOUBLE；SQLite 新建表同步为 REAL（旧库动态类型本就能存小数）。

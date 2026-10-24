@@ -466,7 +466,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     const nextJobs = { ...uploadJobsRef.current };
     let queued = 0;
     for (const result of data.results) {
-      if (result.needsReviewCount > 0) continue;
+      // 存疑题随结果一起上传，由服务器保存并返回 needsReviewCount；不要在上传前拦下整份卷。
       if (nextJobs[result.groupId]) continue;
       if (isGroupQueued(metadata.cardId, sid, result.groupId)) continue;
       if (scannerUploadManager.hasGroupUpload(metadata.cardId, result.groupId, sid)) continue;
@@ -1043,7 +1043,24 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                         )}
                       </TableCell>
                       <TableCell>
-                        {!sr.saved && <CardCorrectionButton disabled={resultsBusy} url={`/api/scanner/session/${sessionId}/groups/${sr.groupId}/correction`} onSaved={() => fetchCombinedResults(sessionId)} />}
+                        {!sr.saved && (() => {
+                          // 逐页上传时每页现读本机订正：任务在途时改分，先传出去的页保留旧识别、
+                          // 后传出去的页带上新识别，服务器会收到半旧半新的一份快照。
+                          const uploading = scannerUploadManager.isGroupUploading(sessionUploadRef.current?.cardId ?? null, sr.groupId, sessionId);
+                          return (
+                            <CardCorrectionButton disabled={resultsBusy || uploading}
+                              disabledReason="这一卷正在上传，等它完成后再改分；中途保存会让服务器收到半旧半新的识别结果"
+                              url={`/api/scanner/session/${sessionId}/groups/${sr.groupId}/correction`} onSaved={() => {
+                              // 远端模式下本机 saved 不会因上传完成而变化：这一卷已经交给服务器，
+                              // 工作台再改分只留本机，不提示就会静默分歧（与后处理页同一句话）。
+                              if (scannerMode === "remote" && uploadJobs[sr.groupId]) {
+                                setResultMessage("该卷已随本批上传，本机改动不再重复上传；服务器成绩请走 Web 成绩修改。");
+                              }
+                              void fetchCombinedResults(sessionId);
+                            }}
+                            />
+                          );
+                        })()}
                         <span className="mr-2 text-xs text-muted-foreground">{scannerMode === "remote" ? (uploadState.jobs.find(j => j.id === uploadJobs[sr.groupId])?.message || (uploadJobs[sr.groupId] ? "已加入上传队列" : "待上传")) : (sr.saved ? "已保存" : "待保存")}</span>
                         <Button
                           variant="ghost"

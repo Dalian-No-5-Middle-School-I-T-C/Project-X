@@ -32,7 +32,7 @@ import {
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { gradeCombinedRecognition, gradeObjectiveQuestion, gradeSubjectiveRecognition, normalizeObjectiveQuestions, objectiveBlockTotalScore, objectiveQuestionDefinitions } from "../src/shared/grading";
+import { gradeCombinedRecognition, gradeObjectiveQuestion, gradeObjectiveRecognition, gradeSessionStudentResults, gradeSubjectiveRecognition, normalizeObjectiveQuestions, objectiveBlockTotalScore, objectiveQuestionDefinitions } from "../src/shared/grading";
 import { applyScorePerQuestion } from "../src/apps/answer-card/client/cardModel";
 import { createDefaultCard } from "../src/shared/defaultCard";
 import { applySubjectTemplate } from "../src/shared/cardTemplates";
@@ -226,6 +226,71 @@ section("1c. 客观题模式与计分规则边界");
     questions: [{ ...indeterminate.questions![0], scoringRule: { type: "per_selected_count", partialScores: { 1: 2 }, wrongOrExtraScore: -99 } }]
   }]), { questionNumber: 1, selectedOptions: ["C"], confidence: 1 });
   check("错选负分不会超过该题负满分", negative.score === -5);
+}
+
+section("1d. 空题直接零分，不进入复核");
+{
+  const objective: ObjectiveBlock = {
+    id: "obj-blank",
+    type: "objective",
+    title: "客观题",
+    questionStart: 1,
+    questionCount: 1,
+    optionCount: 4,
+    mode: "single",
+    scorePerQuestion: 5,
+    density: "compact",
+    answerKey: { 1: ["A"] },
+    questions: [{ questionNumber: 1, mode: "single", optionCount: 4, score: 5, answerKey: ["A"] }]
+  };
+  const blankObjective = gradeObjectiveQuestion(card("shuxue", [objective]), { questionNumber: 1, selectedOptions: [], confidence: 0 });
+  check("空客观题直接 0 分且不复核", blankObjective.score === 0 && blankObjective.needsReview === false && blankObjective.status === "wrong");
+  const invalidObjective = gradeObjectiveQuestion(card("shuxue", [objective]), { questionNumber: 1, selectedOptions: ["Z"], confidence: 0.05 });
+  check("越界选项不能当成空白零分", invalidObjective.needsReview === true && invalidObjective.selectedOptions.length === 0);
+
+  // 双面/多页：第二页没上报的题是合成的，不能把第一页真实存在的存疑答案顶掉。
+  const pageWithDoubt = { status: "ok", pageNumber: 1, studentId: { status: "ok", value: "91001" },
+    questions: [{ questionNumber: 1, selectedOptions: ["C"], confidence: 0.05 }], subjectiveQuestions: [] };
+  const pageWithoutQuestion = { status: "ok", pageNumber: 2, studentId: { status: "ok", value: "91001" },
+    questions: [], subjectiveQuestions: [] };
+  const synthesized = gradeObjectiveRecognition(card("shuxue", [objective]), "page2.png", pageWithoutQuestion as never);
+  check("本页未上报的题按「未上报」留复核，不当成考生空白", synthesized.needsReviewCount === 1);
+  const combined = gradeSessionStudentResults(card("shuxue", [objective]), [
+    { recordId: "r1", pageNum: 1, side: "front", imagePath: "a.png", recognition: pageWithDoubt as never, ocrStatus: "done" },
+    { recordId: "r2", pageNum: 2, side: "back", imagePath: "b.png", recognition: pageWithoutQuestion as never, ocrStatus: "done" },
+  ]);
+  check("跨页择优后存疑计数不被合成空白清零", combined.needsReviewCount === 1 && combined.totalScore === 0);
+
+  const blankSubjective = gradeSubjectiveRecognition(subjectiveCard(), {
+    questionId: "s1", questionNumber: 28, score: 0, maxScore: 10,
+    status: "invalid", confidence: 0, validCells: [], invalidCells: [],
+    message: "no_valid_subjective_score"
+  });
+  check("空白分数格直接 0 分且不复核", blankSubjective?.score === 0 && blankSubjective?.needsReview === false && blankSubjective?.status === "ok");
+
+  const rejected = gradeSubjectiveRecognition(subjectiveCard(), {
+    questionId: "s1", questionNumber: 28, score: 0, maxScore: 10,
+    status: "invalid", confidence: 0.1,
+    validCells: [],
+    invalidCells: [{ score: 5, rect: { x: 0, y: 0, width: 1, height: 1 } }] as never,
+    message: "ambiguous_subjective_score"
+  });
+  check("读到红笔但未采纳仍保留复核", rejected?.needsReview === true);
+
+  // 整张卡都没画斜线也按 0 分确认（issue #352 的现场口径）；红笔整批丢失另有 #331 ③ 的按页告警兜住。
+  const allNoRed = gradeCombinedRecognition(card("shuxue", [{
+    id: "subj2", type: "subjective", title: "解答题",
+    questions: [
+      { id: "s1", number: 28, score: 10, style: "manual_score_grid", kind: "plain_box", minHeightMm: 30 },
+      { id: "s2", number: 29, score: 10, style: "manual_score_grid", kind: "plain_box", minHeightMm: 30 }
+    ]
+  } as never]), "blank.png", {
+    status: "ok", questions: [], subjectiveQuestions: [
+      { questionId: "s1", questionNumber: 28, score: 0, maxScore: 10, status: "invalid", confidence: 0, validCells: [], invalidCells: [], message: "no_valid_subjective_score" },
+      { questionId: "s2", questionNumber: 29, score: 0, maxScore: 10, status: "invalid", confidence: 0, validCells: [], invalidCells: [], message: "no_valid_subjective_score" }
+    ]
+  } as never);
+  check("全部大题没画斜线时按 0 分且不存疑", allNoRed.subjectiveQuestions.every(q => q.needsReview === false && q.score === 0) && allNoRed.needsReviewCount === 0);
 }
 
 section("2. validateCardScores —— 客观题异常分");{
