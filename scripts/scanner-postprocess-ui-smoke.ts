@@ -631,6 +631,33 @@ try {
   assert(!findButton("放弃续传"), "放弃后不再显示解锁按钮");
   assert(text().includes("已放弃这一卷的续传"), "界面要说明接下来可以改分并整卷重传");
   assert(saveButton() && !saveButton()!.disabled, "放弃续传后保存按钮回到正常脏数据规则");
+  // 恢复记录损坏：不许保存、也不给放弃（放弃会把同一份原卷当新会话再传一遍、撤掉已有成绩），
+  // 只给「已核对服务器，清除损坏记录」，且必须教师在确认框里认过核对才真的清（评审 P2）。
+  uploadBlock = "recovery-damaged";
+  const discardCalls: string[] = [];
+  const realDiscard = scannerUploadManager.discardDamagedRecovery;
+  const realDamagedSession = scannerUploadManager.damagedRecoverySessionId;
+  scannerUploadManager.damagedRecoverySessionId = () => "remote-corrupt";
+  scannerUploadManager.discardDamagedRecovery = ((cardId: string, groupId: string, sessionId: string) => {
+    discardCalls.push(`${cardId}/${groupId}/${sessionId}`); uploadBlock = null;
+    return { ok: true as const, remoteSessionId: "remote-corrupt" };
+  }) as typeof scannerUploadManager.discardDamagedRecovery;
+  await clickText("放大"); await settle();
+  assert(saveButton()?.disabled, "损坏记录时不允许保存改分");
+  assert(!findButton("放弃续传"), "损坏记录不提供放弃");
+  const discardButton = findButton("已核对服务器，清除损坏记录");
+  assert(discardButton, "损坏记录要给出核对后的清除入口");
+  dom.window.confirm = (() => false) as typeof dom.window.confirm;
+  await clickNode(discardButton!); await settle();
+  assert.deepEqual(discardCalls, [], "没确认核对过就不清除记录");
+  dom.window.confirm = (() => true) as typeof dom.window.confirm;
+  await clickNode(findButton("已核对服务器，清除损坏记录")!); await settle();
+  assert.deepEqual(discardCalls, [`${reviewCard.id}/0/review`], "确认核对后按本卡本组本会话清除");
+  assert.deepEqual(releasedGroups, ["review/0", "review/0"], "清除后也要回调调用方清掉入队标记");
+  assert(text().includes("已清除损坏的恢复记录"), "界面要说明清除后的下一步");
+  assert(saveButton() && !saveButton()!.disabled, "清除损坏记录后保存回到正常脏数据规则");
+  scannerUploadManager.discardDamagedRecovery = realDiscard;
+  scannerUploadManager.damagedRecoverySessionId = realDamagedSession;
   scannerUploadManager.groupUploadBlock = realGroupBlock;
   scannerUploadManager.abandonGroupUpload = realAbandon;
   await clickText("放大"); await settle();

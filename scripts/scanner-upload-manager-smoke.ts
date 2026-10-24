@@ -221,6 +221,25 @@ async function main() {
         assert((await waitTerminal(pending, pendingId)).status === "done", "补一次提交就能完成");
         assert(pending.groupUploadBlock("card_1", "0", "scan-pending") === null, "提交完成后不再阻止改分");
 
+        // 损坏的恢复记录：读不出逐页进度，也读不出这份卷是否已经入库，所以既不能改分也不能放弃——
+        // 放弃会把同一份原卷当新会话再传一遍，把已保存的成绩撤掉（评审 P2）。唯一出口是核对后显式清除。
+        const corruptKey = `projectx-scanner-upload-recovery/${JSON.stringify(["card_1", "scan-corrupt", "0"])}`;
+        values.set(corruptKey, `{"remoteSessionId":"corrupt-session","completed":false`);
+        const corruptMgr = createScannerUploadManager(deps());
+        assert(corruptMgr.groupUploadBlock("card_1", "0", "scan-corrupt") === "recovery-damaged", "损坏记录单独成一种锁");
+        const corruptAbandon = corruptMgr.abandonGroupUpload("card_1", "0", "scan-corrupt");
+        assert(corruptAbandon.ok === false && corruptAbandon.message.includes("损坏"), "损坏记录不能被放弃");
+        assert(corruptMgr.groupUploadBlock("card_1", "0", "scan-corrupt") === "recovery-damaged", "放弃被拒后仍然锁着");
+        assert(corruptMgr.discardDamagedRecovery("card_1", "0", "scan-held").ok === false, "没有损坏记录时不能走清除入口");
+        assert(corruptMgr.damagedRecoverySessionId("card_1", "0", "scan-corrupt") === "corrupt-session",
+          "记录尾部截断时仍要读出原远端会话号，教师才知道去核对哪一份");
+        values.set(corruptKey, `{"remoteSessionId":"corrupt-ses`);
+        assert(corruptMgr.damagedRecoverySessionId("card_1", "0", "scan-corrupt") === null, "连会话号都读不出来时如实返回 null");
+        const discarded = corruptMgr.discardDamagedRecovery("card_1", "0", "scan-corrupt");
+        assert(discarded.ok === true && discarded.remoteSessionId === null, "核对后清除要如实报告没能认出会话号");
+        assert(corruptMgr.groupUploadBlock("card_1", "0", "scan-corrupt") === null, "清除后这一组恢复可改分");
+        assert(readScanUploadRecovery("card_1", "scan-corrupt", "0") === null, "清除要真的删掉损坏记录");
+
         // 一条任务里混着别组的页时不能整条摘掉，否则那组的半成品锁会被连带解开。
         const mixed = createScannerUploadManager(deps({
           remoteFetch: async url => {

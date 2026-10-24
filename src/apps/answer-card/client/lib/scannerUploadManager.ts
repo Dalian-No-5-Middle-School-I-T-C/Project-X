@@ -8,7 +8,7 @@ import { SERVER_URL_KEY, readServerUrl } from "./scannerMode";
 import { assertCredentialTransportAllowed } from "./remoteCredentialTransport";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
 import { applyScanStudentId, uniqueScanConflictCards } from "../../../../shared/scanPages";
-import { forgetScanUploadRecovery, scanUploadRecoveryState, readScanUploadRecovery, rememberQueuedGroup, writeScanUploadRecovery } from "./scannerUploadLedger";
+import { damagedScanUploadRecoverySessionId, forgetScanUploadRecovery, scanUploadRecoveryState, readScanUploadRecovery, rememberQueuedGroup, writeScanUploadRecovery } from "./scannerUploadLedger";
 import type { ScanBatchFailure, ScanConflictCard, ScanBatchResponse } from "../../../../shared/scanPages";
 import type { CombinedGradingRow } from "../../../../shared/types";
 
@@ -39,7 +39,7 @@ export function isUploadLocking(status: UploadJobStatus, remoteSessionId?: strin
 }
 
 /** 改分锁的来源，决定界面文案与能不能「放弃续传」。 */
-export type GroupUploadBlock = "in-flight" | "partial-pages" | "completion-pending" | null;
+export type GroupUploadBlock = "in-flight" | "partial-pages" | "completion-pending" | "recovery-damaged" | null;
 
 export interface UploadPageInput {
   pageNum: number;
@@ -783,7 +783,10 @@ if (j.cancelled) throw cancelledError(j);
    * - `in-flight`：还在传输，等它结束或在进度卡里取消；
    * - `partial-pages`：有些页已经传出去、还有页失败可续传——可以「放弃续传」后改分；
    * - `completion-pending`：页都传完了只差提交（重复学号这类业务拒绝）——只能重试保存，
-   *   放弃会留下已经建好的回执，下一次reload还会把同一份卷当新会话再传一遍（评审 P2）。
+   *   放弃会留下已经建好的回执，下一次reload还会把同一份卷当新会话再传一遍（评审 P2）；
+   * - `recovery-damaged`：本机恢复记录损坏，读不出远端会话与逐页进度。可能是「只差提交」，
+   *   也可能是 complete 成功但响应丢了——放弃会把同一份原卷当新会话再传一遍并撤掉已有成绩，
+   *   所以这里既不给放弃也不能改分，只能先核对服务器上的原会话再清除记录（评审 P2）。
    * 内存任务被 `dismissJob()` 摘掉后，未完成的恢复记录给出同样的判断。
    */
   function groupUploadBlock(cardId: string | null | undefined, groupId: string, localSessionId?: string): GroupUploadBlock {
@@ -793,7 +796,8 @@ if (j.cancelled) throw cancelledError(j);
     const failed = groupJobs.find(job => job.status === "error" && job.remoteSessionId);
     if (failed) return failed.pages.some(page => !page.done) ? "partial-pages" : "completion-pending";
     const state = scanUploadRecoveryState(cardId, localSessionId, groupId);
-    if (state === "partial-pages" || state === "damaged") return "partial-pages";
+    if (state === "damaged") return "recovery-damaged";
+    if (state === "partial-pages") return "partial-pages";
     return state === "completion-pending" ? "completion-pending" : null;
   }
 
@@ -807,6 +811,9 @@ if (j.cancelled) throw cancelledError(j);
     if (block === "completion-pending") {
       return { ok: false, message: "这一卷的页面都已上传，只差提交（重复学号这类冲突由服务器拒的）；请点「重试保存」或先处理冲突卷，放弃会再传出一份原卷" };
     }
+    if (block === "recovery-damaged") {
+      return { ok: false, message: "本机恢复记录已损坏，无法确认服务器上这份卷是否已经入库；请先核对原上传会话，再用「已核对服务器，清除损坏记录」" };
+    }
     const groupJobs = lockableGroupJobs(cardId, groupId, localSessionId);
     const foreign = groupJobs.filter(job => job.pages.some(page => page.input.groupId !== groupId));
     if (foreign.length > 0) return { ok: false, message: "这一条任务里还有其他试卷，请在进度卡里逐条重试或取消" };
@@ -818,6 +825,28 @@ if (j.cancelled) throw cancelledError(j);
     forgetScanUploadRecovery(cardId, localSessionId, groupId);
     notify();
     return { ok: true };
+  }
+
+  /** 损坏记录里还能认出来的远端会话号（供界面告诉教师去核对哪一份），认不出就返回 null。 */
+  function damagedRecoverySessionId(cardId: string, groupId: string, localSessionId: string): string | null {
+    return groupUploadBlock(cardId, groupId, localSessionId) === "recovery-damaged"
+      ? damagedScanUploadRecoverySessionId(cardId, localSessionId, groupId)
+      : null;
+  }
+
+  /**
+   * 教师已按提示到服务器核对过原会话（那一卷没有已保存的成绩）后，清掉损坏的恢复记录。
+   * 这是唯一能解开 `recovery-damaged` 的入口：它删掉的可能是「已入库」的唯一线索，
+   * 所以只在该状态下开放，且由调用方在核对后显式确认。
+   */
+  function discardDamagedRecovery(cardId: string, groupId: string, localSessionId: string): { ok: true; remoteSessionId: string | null } | { ok: false; message: string } {
+    if (groupUploadBlock(cardId, groupId, localSessionId) !== "recovery-damaged") {
+      return { ok: false, message: "这一卷没有损坏的恢复记录，不需要清除" };
+    }
+    const remoteSessionId = damagedScanUploadRecoverySessionId(cardId, localSessionId, groupId);
+    forgetScanUploadRecovery(cardId, localSessionId, groupId);
+    notify();
+    return { ok: true, remoteSessionId };
   }
 
   /** 这份扫描原卷是否已经占住上传资格。导入任务没有本机会话号，不能拿来挡新扫描；缺会话号也不当通配。 */
@@ -1082,6 +1111,8 @@ if (j.cancelled) throw cancelledError(j);
     hasGroupUpload,
     groupUploadBlock,
     abandonGroupUpload,
+    damagedRecoverySessionId,
+    discardDamagedRecovery,
     localGroupDeleteBlock,
     releaseGroupForLocalDelete,
     retryFailed,

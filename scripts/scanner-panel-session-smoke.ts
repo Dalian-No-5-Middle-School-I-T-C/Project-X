@@ -219,7 +219,7 @@ try {
   const abandonedGroups: string[] = [];
   const uploadsBeforeAbandon = uploads.length;
   let blockedGroups = new Set(["0"]);
-  let blockKind: "partial-pages" | "completion-pending" = "partial-pages";
+  let blockKind: "partial-pages" | "completion-pending" | "recovery-damaged" = "partial-pages";
   dom.window.confirm = (() => true) as typeof dom.window.confirm;
   scannerUploadManager.groupUploadBlock = (_cardId, groupId) => (blockedGroups.has(groupId) ? blockKind : null);
   scannerUploadManager.abandonGroupUpload = (_cardId, groupId) => {
@@ -249,6 +249,32 @@ try {
   assert(!hasAction("放弃续传"), "只差提交时不提供放弃续传");
   assert([...document.querySelectorAll("button")].filter(node => node.textContent?.trim() === "整卡改分")
     .every(node => node.disabled), "只差提交时同样禁止改分");
+  // 恢复记录损坏：照样锁着，但**不给**放弃——放弃会把同一份原卷当新会话再传一遍、撤掉已保存的成绩；
+  // 唯一出口是教师核对服务器后显式清除（评审 P2）。
+  blockKind = "recovery-damaged";
+  const discardCalls: string[] = [];
+  const realDiscard = scannerUploadManager.discardDamagedRecovery;
+  const realDamagedSession = scannerUploadManager.damagedRecoverySessionId;
+  scannerUploadManager.damagedRecoverySessionId = () => "remote-corrupt";
+  scannerUploadManager.discardDamagedRecovery = ((cardId: string, groupId: string, localSessionId: string) => {
+    discardCalls.push(`${cardId}/${groupId}/${localSessionId}`); blockedGroups.delete(groupId);
+    return { ok: true as const, remoteSessionId: "remote-corrupt" };
+  }) as typeof scannerUploadManager.discardDamagedRecovery;
+  await click("刷新汇总"); await settle();
+  assert(!hasAction("放弃续传"), "损坏记录不提供放弃");
+  assert(hasAction("已核对服务器，清除损坏记录"), "损坏记录要给出核对后的清除入口");
+  assert([...document.querySelectorAll("button")].filter(node => node.textContent?.trim() === "整卡改分")
+    .every(node => node.disabled), "损坏记录同样禁止改分");
+  dom.window.confirm = (() => false) as typeof dom.window.confirm;
+  await click("已核对服务器，清除损坏记录"); await settle();
+  assert.deepEqual(discardCalls, [], "没确认核对过就不清除记录");
+  dom.window.confirm = (() => true) as typeof dom.window.confirm;
+  await click("已核对服务器，清除损坏记录"); await settle();
+  assert.equal(discardCalls.length, 1, "确认核对后清除这一组的损坏记录");
+  assert.equal(discardCalls[0].split("/")[1], "0", "清除要点名到被点击的那一组");
+  assert(document.body.textContent?.includes("待上传"), "清除后这一组回到待上传");
+  scannerUploadManager.discardDamagedRecovery = realDiscard;
+  scannerUploadManager.damagedRecoverySessionId = realDamagedSession;
   blockedGroups = new Set();
   scannerUploadManager.groupUploadBlock = realGroupBlock;
   await click("刷新汇总"); await settle();

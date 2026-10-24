@@ -298,7 +298,9 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
           <Button size="sm" variant="outline" disabled={zoom >= 4} onClick={() => setZoom(z => Math.min(4, z + 0.5))}>放大</Button>
           <RotationButtons rotation={rotation} onChange={setRotation} disabled={saving} />
           {uploadBusy ? (
-            <Tip label={uploadBlock === "completion-pending"
+            <Tip label={uploadBlock === "recovery-damaged"
+              ? "本机上传恢复记录已损坏，读不出远端会话与逐页进度；这一卷可能已经入库，保存或重传都会改写正式成绩。请先在服务器核对原上传会话，再点「已核对服务器，清除损坏记录」"
+              : uploadBlock === "completion-pending"
               ? "这一卷的页面都已上传、只差提交（重复学号这类冲突是服务器拒的）；现在保存会让服务器收到半旧半新的识别结果，请先「重试保存」或处理冲突卷"
               : uploadResumable
               ? "这一卷已上传一部分、还有失败页可续传；现在保存会让服务器收到半旧半新的识别结果。请先重试失败页，或点「放弃续传」后再保存"
@@ -317,6 +319,16 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
               onUploadAbandoned?.();
               setMessage("已放弃这一卷的续传，现在可以改分；保存后这一卷会整卷重新上传。");
             }}>放弃续传</Button>
+          )}
+          {uploadBlock === "recovery-damaged" && uploadCardId && (
+            <Button size="sm" variant="outline" onClick={() => {
+              const remoteSessionId = scannerUploadManager.damagedRecoverySessionId(uploadCardId, groupId, sessionId);
+              if (!window.confirm(`本机上传恢复记录已损坏，无法确认这一卷在服务器上是否已经入库${remoteSessionId ? `（原上传会话 ${remoteSessionId}）` : ""}。请先在成绩或异常卷列表里核对那一份：确认没有已保存的成绩之后，再清除本机记录；清除后这一卷会按新会话重新上传。确定已经核对过吗？`)) return;
+              const result = scannerUploadManager.discardDamagedRecovery(uploadCardId, groupId, sessionId);
+              if (!result.ok) { setMessage(result.message); return; }
+              onUploadAbandoned?.();
+              setMessage("已清除损坏的恢复记录；请先把这一卷的填涂核对确认，再整卷重新上传。");
+            }}>已核对服务器，清除损坏记录</Button>
           )}
         </div>
       </div>

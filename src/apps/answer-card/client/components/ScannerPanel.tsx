@@ -501,6 +501,14 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     if (queued > 0) setResultMessage("成功答题卡已加入上传队列，图片将在后台续传；失败答题卡保留在本机，可继续订正。");
   }
 
+  /** 这一组不再有上传任务占位：清掉行内标记，否则 queueSuccessfulUploads 会永久跳过它（评审 P2）。 */
+  function forgetQueuedMarker(groupId: string) {
+    const nextJobs = { ...uploadJobsRef.current };
+    delete nextJobs[groupId];
+    uploadJobsRef.current = nextJobs;
+    setUploadJobs(nextJobs);
+  }
+
   async function saveSuccessful() {
     if (resultsBusyRef.current) return;
     resultsBusyRef.current = true;
@@ -1052,7 +1060,9 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                           return (
                             <>
                               <CardCorrectionButton disabled={resultsBusy || block !== null}
-                                disabledReason={block === "completion-pending"
+                                disabledReason={block === "recovery-damaged"
+                                  ? "本机上传恢复记录已损坏，读不出远端会话与逐页进度；这一卷可能已经入库，改分或重传都会改写正式成绩。请先在服务器核对原上传会话，再点「已核对服务器，清除损坏记录」"
+                                  : block === "completion-pending"
                                   ? "这一卷的页面都已上传、只差提交（重复学号这类冲突是服务器拒的）；现在改分会让服务器收到半旧半新的识别结果，请先「重试保存」或处理冲突卷"
                                   : resumable
                                   ? "这一卷已上传一部分、还有失败页可续传；现在改分会让服务器收到半旧半新的识别结果。请先「重试失败页」，或点「放弃续传」后再改分"
@@ -1071,15 +1081,22 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                                   if (!window.confirm("放弃续传后，已上传的半成品不再补传，这一卷可以立即整卡改分（改完请整卷重新上传）。服务器上的半成品会话不会写入成绩。确定放弃吗？")) return;
                                   const result = scannerUploadManager.abandonGroupUpload(cardId, sr.groupId, sessionId);
                                   if (!result.ok) { setResultMessage(result.message); return; }
-                                  // 行内的「已入队」标记要一起清掉：留着它，queueSuccessfulUploads 会跳过这一组，
-                                  // 改完的整卷永远不再上传（评审 P2）。
-                                  const nextJobs = { ...uploadJobsRef.current };
-                                  delete nextJobs[sr.groupId];
-                                  uploadJobsRef.current = nextJobs;
-                                  setUploadJobs(nextJobs);
+                                  forgetQueuedMarker(sr.groupId);
                                   setResultMessage("已放弃这一卷的续传，现在可以整卡改分；保存后这一卷会随下一次上传整卷重传。");
                                 }}>
                                   放弃续传
+                                </Button>
+                              )}
+                              {block === "recovery-damaged" && cardId && (
+                                <Button variant="ghost" size="sm" onClick={() => {
+                                  const remoteSessionId = scannerUploadManager.damagedRecoverySessionId(cardId, sr.groupId, sessionId);
+                                  if (!window.confirm(`本机上传恢复记录已损坏，无法确认这份卷在服务器上是否已经入库${remoteSessionId ? `（原上传会话 ${remoteSessionId}）` : ""}。请先在成绩或异常卷列表里核对那一份：确认没有已保存的成绩之后，再清除本机记录；清除后这一卷会按新会话重新上传。确定已经核对过吗？`)) return;
+                                  const result = scannerUploadManager.discardDamagedRecovery(cardId, sr.groupId, sessionId);
+                                  if (!result.ok) { setResultMessage(result.message); return; }
+                                  forgetQueuedMarker(sr.groupId);
+                                  setResultMessage("已清除损坏的恢复记录；请先把这一卷的填涂核对确认，再整卷重新上传。");
+                                }}>
+                                  已核对服务器，清除损坏记录
                                 </Button>
                               )}
                             </>

@@ -59,6 +59,19 @@ export function scanUploadRecoveryState(cardId: string | null | undefined, sessi
   return stateSeverity.find(state => found.includes(state)) ?? "none";
 }
 
+/**
+ * 损坏记录里还能认出来的远端会话号：记录截断/字段不全时 schema 校验会整体失败，
+ * 但 `remoteSessionId` 往往还完好。核对服务器时要用它，不然教师根本不知道该查哪一份。
+ */
+export function damagedScanUploadRecoverySessionId(cardId: string, sessionId: string, groupId: string): string | null {
+  if (typeof localStorage === "undefined") return null;
+  const raw = localStorage.getItem(recoveryKey(cardId, sessionId, groupId));
+  if (raw === null) return null;
+  if (recoveryStateOf(raw) !== "damaged") return null;
+  const matched = /"remoteSessionId"\s*:\s*"([^"\\]{1,200})"/.exec(raw);
+  return matched ? matched[1] : null;
+}
+
 export function readScanUploadRecovery(cardId: string, sessionId: string, groupId: string): ScanUploadRecovery | null {
   if (typeof localStorage === "undefined") return null;
   const raw = localStorage.getItem(recoveryKey(cardId, sessionId, groupId));
