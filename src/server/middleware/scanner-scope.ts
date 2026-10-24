@@ -288,6 +288,12 @@ export function requireScannerRecordScope(params: { recordIdParam?: string } = {
       // 但「绑过的考试全被软删除」不能算这一类——否则删除考试反而放宽了范围校验（CR4）。
       if (refuseSoftDeletedOnly(res, req.user, resolved)) return;
       if (resolved.exams.length === 0) { attachScanPageScope(res, { restricted: false, pages: new Set(), blocks: new Set() }); next(); return; }
+      // 会话绑过的考试里有已被保留策略清理的：非管理员按「不存在」拒绝，口径与整卡订正一致。
+      // 记录级路由会连带删除共享的 scan_correction_pages，放行就等于毁掉那场已清理考试的保留证据。
+      if (req.user.role_name !== "admin"
+        && resolved.boundExamIds.some(examId => !resolved.exams.some(exam => exam.id === examId))) {
+        res.status(404).json({ message: "考试不存在或已按数据保留策略清理" }); return;
+      }
       // 与整卡订正共用同一份候选考试：同卡被无关考试复用时，不能拿那场考试拒掉本会话的原图。
       const candidateIds = resolved.exam ? [Number(resolved.exam.id)] : scannerAuthorizationCandidates(resolved);
 

@@ -106,6 +106,14 @@ try {
   await db.run("UPDATE exams SET created_by=? WHERE id IN (?,?)", owner.lastInsertRowid, firstExam.lastInsertRowid, secondExam.lastInsertRowid);
   assert.equal((await fetch(url, { headers: { Authorization: `Bearer ${ownerLogin.token}` } })).status, 404,
     "mixed archived + active bindings must still reject the archived receipt");
+  // 记录级路由会连带删除共享的订正快照，同一会话不能被「还有一场在用考试」放行（评审 P1）。
+  const boundRecord = await db.get<{ id: string }>("SELECT id FROM twain_scan_records WHERE session_id=? LIMIT 1", session.id);
+  assert(boundRecord, "混绑场景仍有本机扫描记录");
+  assert.equal((await fetch(`${fixture.baseUrl}/api/scanner/scan-image/${boundRecord.id}`, { headers: { Authorization: `Bearer ${ownerLogin.token}` } })).status, 404,
+    "mixed bindings must not expose the archived session's original image");
+  assert.equal((await fetch(`${fixture.baseUrl}/api/scanner/record/${boundRecord.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${ownerLogin.token}` } })).status, 404,
+    "mixed bindings must not allow deleting shared correction evidence");
+  assert(await db.get("SELECT id FROM twain_scan_records WHERE id=?", boundRecord.id), "被拒的删除不得真的移除记录");
   await db.run("UPDATE exams SET created_by=NULL WHERE id IN (?,?)", firstExam.lastInsertRowid, secondExam.lastInsertRowid);
   await db.run("DELETE FROM scanner_submissions WHERE session_id=?", session.id);
   await db.run("DELETE FROM exam_archives WHERE exam_id=?", secondExam.lastInsertRowid);
