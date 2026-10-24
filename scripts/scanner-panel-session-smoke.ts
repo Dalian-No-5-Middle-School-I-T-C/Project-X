@@ -203,25 +203,25 @@ try {
   await act(async () => { streams[3].done(); }); await settle();
   assert.equal(uploads.length, 8, "A new complete session resumes normal automatic uploads");
   // 上传在途时禁用整卡改分：逐页现读本机订正，中途保存会让服务器收到半旧半新的快照。
-  const realGroupUploading = scannerUploadManager.isGroupUploading;
-  scannerUploadManager.isGroupUploading = () => true;
+  const realGroupBlock = scannerUploadManager.groupUploadBlock;
+  scannerUploadManager.groupUploadBlock = () => "in-flight";
   await click("刷新汇总"); await settle();
   assert([...document.querySelectorAll("button")].filter(node => node.textContent?.trim() === "整卡改分")
     .every(node => node.disabled), "上传在途时工作台不允许改分");
-  scannerUploadManager.isGroupUploading = realGroupUploading;
+  assert(!hasAction("放弃续传"), "正在传输时不提供放弃，只让教师等它结束或取消");
+  scannerUploadManager.groupUploadBlock = realGroupBlock;
   await click("刷新汇总"); await settle();
   assert([...document.querySelectorAll("button")].some(node => node.textContent?.trim() === "整卡改分" && !node.disabled),
     "任务终态后工作台改分恢复可用");
   // 可续传的半成品：禁用改分之外必须给出「放弃续传」，并把它自己的入队标记一起清掉，
   // 否则 queueSuccessfulUploads 会永久跳过这一组，改完的整卷再也传不上去（评审 P2）。
-  const realResumable = scannerUploadManager.isGroupUploadResumable;
   const realAbandon = scannerUploadManager.abandonGroupUpload;
   const abandonedGroups: string[] = [];
   const uploadsBeforeAbandon = uploads.length;
   let blockedGroups = new Set(["0"]);
+  let blockKind: "partial-pages" | "completion-pending" = "partial-pages";
   dom.window.confirm = (() => true) as typeof dom.window.confirm;
-  scannerUploadManager.isGroupUploading = (_cardId, groupId) => blockedGroups.has(groupId);
-  scannerUploadManager.isGroupUploadResumable = (_cardId, groupId) => blockedGroups.has(groupId);
+  scannerUploadManager.groupUploadBlock = (_cardId, groupId) => (blockedGroups.has(groupId) ? blockKind : null);
   scannerUploadManager.abandonGroupUpload = (_cardId, groupId) => {
     abandonedGroups.push(groupId); blockedGroups.delete(groupId); return { ok: true as const };
   };
@@ -235,12 +235,23 @@ try {
   assert(!hasAction("放弃续传"), "放弃后这一组不再需要解锁动作");
   assert(document.body.textContent?.includes("待上传"), "放弃后要清掉行内入队标记，否则这一组永远不会重传");
   blockedGroups = new Set();
-  scannerUploadManager.isGroupUploading = realGroupUploading;
-  scannerUploadManager.isGroupUploadResumable = realResumable;
+  scannerUploadManager.groupUploadBlock = realGroupBlock;
   scannerUploadManager.abandonGroupUpload = realAbandon;
   await click("刷新汇总"); await settle();
   assert.equal(uploads.length, uploadsBeforeAbandon + 1, "清掉标记后这一组重新排队整卷上传");
   assert.equal(uploads.at(-1)?.pages[0]?.groupId, "0", "重新排队的必须是刚放弃的那一组");
+  // 页面都传完、只差提交被服务器拒（重复学号这类）：照样不能改分，但也不能放弃——
+  // 放弃会清掉去重凭据，下一次 reload 把同一份原卷当成新会话再传一遍（评审 P2）。
+  blockedGroups = new Set(["0", "9"]);
+  blockKind = "completion-pending";
+  scannerUploadManager.groupUploadBlock = (_cardId, groupId) => (blockedGroups.has(groupId) ? blockKind : null);
+  await click("刷新汇总"); await settle();
+  assert(!hasAction("放弃续传"), "只差提交时不提供放弃续传");
+  assert([...document.querySelectorAll("button")].filter(node => node.textContent?.trim() === "整卡改分")
+    .every(node => node.disabled), "只差提交时同样禁止改分");
+  blockedGroups = new Set();
+  scannerUploadManager.groupUploadBlock = realGroupBlock;
+  await click("刷新汇总"); await settle();
   const uploadBaseline = uploads.length;
   // 远端模式下这一卷已经随批次进入上传队列：从工作台改分必须当场说明改动不会回到服务器
   //（重复上传同一份卷子会被服务端当成第二份原卷，反而撤掉已保存的成绩）。

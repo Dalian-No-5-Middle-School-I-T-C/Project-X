@@ -283,6 +283,22 @@ section("1d. 空题直接零分，不进入复核");
   ]);
   check("没有任何一页上报的题仍按「未上报」挂复核", neverReported.needsReviewCount === 1
     && neverReported.objectiveQuestions[0]?.selectedOptions.length === 0);
+  // 真实结果带负分时，「比分」那一级会把「本页没上报」的合成 0 分抬上去，把实际涂选的结果整条换掉
+  // （评审 P1）。所以「谁真的上报过」必须排在比分之前，且与页序无关。
+  const penaltyBlock = { ...objective, mode: "multiple",
+    questions: [{ questionNumber: 1, mode: "multiple", optionCount: 4, score: 5, answerKey: ["A", "B"],
+      scoringRule: { type: "per_selected_count", partialScores: { 1: -2 }, wrongOrExtraScore: 0, allowWrongOptions: true } }] };
+  const partialWrong = { status: "ok", pageNumber: 1, studentId: { status: "ok", value: "91001" },
+    questions: [{ questionNumber: 1, selectedOptions: ["A", "C"], confidence: 1 }], subjectiveQuestions: [] };
+  const wrongReported = { recordId: "r1", pageNum: 1, side: "front" as const, imagePath: "a.png", recognition: partialWrong as never, ocrStatus: "done" };
+  const wrongUnreported = { recordId: "r2", pageNum: 2, side: "back" as const, imagePath: "b.png", recognition: pageWithoutQuestion as never, ocrStatus: "done" };
+  for (const pages of [[wrongReported, wrongUnreported], [wrongUnreported, wrongReported]]) {
+    const penalizedResult = gradeSessionStudentResults(card("shuxue", [penaltyBlock]), pages);
+    check("漏选倒扣分的真实结果不被本页未上报的合成 0 分顶掉（页序无关）",
+      penalizedResult.objectiveQuestions[0]?.score === -2
+      && penalizedResult.objectiveQuestions[0]?.selectedOptions.join() === "A,C"
+      && penalizedResult.totalScore === -2);
+  }
 
   const blankSubjective = gradeSubjectiveRecognition(subjectiveCard(), {
     questionId: "s1", questionNumber: 28, score: 0, maxScore: 10,

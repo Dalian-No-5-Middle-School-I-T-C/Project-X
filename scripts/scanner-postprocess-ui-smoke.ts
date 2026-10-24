@@ -599,27 +599,28 @@ try {
   const scoreCell = () => document.querySelector(`[data-cell-id="${ten.id}"]`)!;
   await clickNode(scoreCell());await clickNode(scoreCell());await settle();
   assert(saveButton() && !saveButton()!.disabled,"点回原分数同样可以明确确认");
-  // 上传锁：逐页现读本机订正，在途或留着可续传的半成品时保存都会让服务器收到半旧半新的快照。
-  // 在途只让教师等；可续传的半成品必须给出「放弃续传」，并回调调用方清掉入队标记，
+  // 上传锁：逐页现读本机订正，在途、只差提交或留着可续传的半成品时保存都会让服务器收到半旧半新的快照。
+  // 在途与只差提交都只让教师等或重试；可续传的半成品必须给出「放弃续传」，并回调调用方清掉入队标记，
   // 否则标记一直留着，syncAfterFix 会永远跳过这一组（评审 P1 + P2）。
-  const realGroupUploading = scannerUploadManager.isGroupUploading;
-  const realResumable = scannerUploadManager.isGroupUploadResumable;
+  const realGroupBlock = scannerUploadManager.groupUploadBlock;
   const realAbandon = scannerUploadManager.abandonGroupUpload;
   const abandonArgs: string[] = [];
-  let blockedByUpload = true;
-  let resumableSnapshot = false;
+  let uploadBlock: "in-flight" | "partial-pages" | "completion-pending" | null = "in-flight";
   dom.window.confirm = (() => true) as typeof dom.window.confirm;
-  scannerUploadManager.isGroupUploading = () => blockedByUpload;
-  scannerUploadManager.isGroupUploadResumable = () => blockedByUpload && resumableSnapshot;
+  scannerUploadManager.groupUploadBlock = () => uploadBlock;
   scannerUploadManager.abandonGroupUpload = ((cardId: string, groupId: string, sessionId: string) => {
-    abandonArgs.push(`${cardId}/${groupId}/${sessionId}`); blockedByUpload = false; return { ok: true as const };
+    abandonArgs.push(`${cardId}/${groupId}/${sessionId}`); uploadBlock = null; return { ok: true as const };
   }) as typeof scannerUploadManager.abandonGroupUpload;
   // 订阅只在管理器状态变化时重渲染，桩换了还得让组件自己更新一次才会重读这把锁。
   const findButton = (label: string) => [...document.querySelectorAll("button")].find(node => node.textContent?.trim() === label);
   await clickText("放大"); await settle();
   assert(saveButton()?.disabled, "上传在途时后处理页不允许保存改分");
   assert(!findButton("放弃续传"), "正在传输时不提供放弃，只让教师等它传完或取消");
-  resumableSnapshot = true;
+  uploadBlock = "completion-pending";
+  await clickText("放大"); await settle();
+  assert(saveButton()?.disabled, "页面传完只差提交时同样不允许保存改分");
+  assert(!findButton("放弃续传"), "只差提交时不提供放弃，否则同一份原卷会被当成新会话再传一遍");
+  uploadBlock = "partial-pages";
   await clickText("放大"); await settle();
   const abandonButton = findButton("放弃续传");
   assert(abandonButton, "可续传的半成品要给出明确的解锁动作");
@@ -630,9 +631,7 @@ try {
   assert(!findButton("放弃续传"), "放弃后不再显示解锁按钮");
   assert(text().includes("已放弃这一卷的续传"), "界面要说明接下来可以改分并整卷重传");
   assert(saveButton() && !saveButton()!.disabled, "放弃续传后保存按钮回到正常脏数据规则");
-  blockedByUpload = false;
-  scannerUploadManager.isGroupUploading = realGroupUploading;
-  scannerUploadManager.isGroupUploadResumable = realResumable;
+  scannerUploadManager.groupUploadBlock = realGroupBlock;
   scannerUploadManager.abandonGroupUpload = realAbandon;
   await clickText("放大"); await settle();
   await clickText("保存修改");assert(reviewed);

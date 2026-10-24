@@ -477,14 +477,14 @@ function isBetterObjective(
 ): boolean {
   const candMissing = candidate.status === "missing_key";
   const existMissing = existing.status === "missing_key";
+  // 真实上报的结果先胜出：另一页的合成条目只是「本页没上报」，既不是空白也不该参与比分。
+  // 放在比分之前，否则漏选倒扣分的真实结果会被合成 0 分整条换掉（评审 P1）。
+  if (candidateReported !== existingReported) return candidateReported;
   if (existMissing !== candMissing) return existMissing; // 用有答案的替换 missing_key
   if (candMissing) return false;
   if (candidate.score !== existing.score) return candidate.score > existing.score;
   // 同分：优先保留不需要复核（置信度更高）的结果
   if (existing.needsReview !== candidate.needsReview) return existing.needsReview;
-  // 同分同存疑：真正上报过这一题的结果胜出。另一页的合成条目是「本页没上报」，
-  // 不是考生的空白，留着它会把实际涂了的答案抹成未作答（评审 P1）。
-  if (candidateReported !== existingReported) return candidateReported;
   return false;
 }
 

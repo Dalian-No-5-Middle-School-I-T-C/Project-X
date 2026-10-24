@@ -156,8 +156,9 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
   // 订阅上传进度：任务在途时每一页都现读本机订正，这时保存会让服务器收到半旧半新的快照。
   useSyncExternalStore(scannerUploadManager.subscribe, scannerUploadManager.getState);
   const uploadCardId = document?.card.id ?? null;
-  const uploadBusy = scannerUploadManager.isGroupUploading(uploadCardId, groupId, sessionId);
-  const uploadResumable = uploadBusy && scannerUploadManager.isGroupUploadResumable(uploadCardId, groupId, sessionId);
+  const uploadBlock = scannerUploadManager.groupUploadBlock(uploadCardId, groupId, sessionId);
+  const uploadBusy = uploadBlock !== null;
+  const uploadResumable = uploadBlock === "partial-pages";
 
   const reviewQuestions = useMemo(() => {
     const set = new Set<SubjectiveQuestionNumber>();
@@ -297,7 +298,9 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
           <Button size="sm" variant="outline" disabled={zoom >= 4} onClick={() => setZoom(z => Math.min(4, z + 0.5))}>放大</Button>
           <RotationButtons rotation={rotation} onChange={setRotation} disabled={saving} />
           {uploadBusy ? (
-            <Tip label={uploadResumable
+            <Tip label={uploadBlock === "completion-pending"
+              ? "这一卷的页面都已上传、只差提交（重复学号这类冲突是服务器拒的）；现在保存会让服务器收到半旧半新的识别结果，请先「重试保存」或处理冲突卷"
+              : uploadResumable
               ? "这一卷已上传一部分、还有失败页可续传；现在保存会让服务器收到半旧半新的识别结果。请先重试失败页，或点「放弃续传」后再保存"
               : "这一卷正在上传；现在保存会让服务器收到半旧半新的识别结果，请等它传完或先取消任务"}>
               <Button variant="primary" size="sm" icon={<Save />} disabled loading>保存修改</Button>

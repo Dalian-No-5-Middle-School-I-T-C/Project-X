@@ -108,12 +108,12 @@ async function main() {
         localSessionId: "scan-smoke-1", identityMode: "strict",
         pages: [{ pageNum: 1, side: "front", groupId: "0", getBlob: async () => blob() }],
       });
-      assert(mgr.isGroupUploading("card_1", "0", "scan-smoke-1"), "任务未终态时视为正在上传");
-      assert(!mgr.isGroupUploading("card_1", "9", "scan-smoke-1"), "别的组不被误判为在途");
+      assert(mgr.groupUploadBlock("card_1", "0", "scan-smoke-1") !== null, "任务未终态时视为正在上传");
+      assert(mgr.groupUploadBlock("card_1", "9", "scan-smoke-1") === null, "别的组不被误判为在途");
       const scanResult = await waitTerminal(mgr, scanJob);
       assert(scanResult.status === "done" || scanResult.status === "error", `扫描任务应进入终态，实际 ${scanResult.status}`);
       // 完成即解锁；失败但已建远端会话的续传场景由下面一段专门覆盖。
-      if (scanResult.status === "done") assert(!mgr.isGroupUploading("card_1", "0", "scan-smoke-1"), "完整上传后不再阻止改分");
+      if (scanResult.status === "done") assert(mgr.groupUploadBlock("card_1", "0", "scan-smoke-1") === null, "完整上传后不再阻止改分");
     }
 
     {
@@ -154,17 +154,17 @@ async function main() {
         assert(tornResult.status === "error", `坏页任务应 error，实际 ${tornResult.status}/${tornResult.message}`);
         const liveTorn = torn.getState().jobs.find(job => job.id === tornId)!;
         assert(liveTorn.status === "error" && Boolean(liveTorn.remoteSessionId), "失败任务应已建立远端会话，可继续重试失败页");
-        assert(torn.isGroupUploading("card_1", "0", "scan-torn"), "可续传的失败任务仍锁住整卡改分");
-        assert(torn.isGroupUploadResumable("card_1", "0", "scan-torn"), "这一卷的锁应能被「放弃续传」解开");
+        assert(torn.groupUploadBlock("card_1", "0", "scan-torn") !== null, "可续传的失败任务仍锁住整卡改分");
+        assert(torn.groupUploadBlock("card_1", "0", "scan-torn") === "partial-pages", "这一卷的锁应能被「放弃续传」解开");
         assert(readScanUploadRecovery("card_1", "scan-torn", "0")?.completed === false, "半成品进度要写入恢复记录供重启后续传");
         assert(torn.dismissJob(tornId), "教师可以关闭这张进度卡");
-        assert(torn.isGroupUploading("card_1", "0", "scan-torn"), "关闭进度卡后恢复记录仍锁住整卡改分");
-        assert(torn.isGroupUploadResumable("card_1", "0", "scan-torn"), "关闭进度卡后这一卷仍可放弃续传");
+        assert(torn.groupUploadBlock("card_1", "0", "scan-torn") !== null, "关闭进度卡后恢复记录仍锁住整卡改分");
+        assert(torn.groupUploadBlock("card_1", "0", "scan-torn") === "partial-pages", "关闭进度卡后这一卷仍可放弃续传");
         const reloaded = createScannerUploadManager(deps());
-        assert(reloaded.isGroupUploading("card_1", "0", "scan-torn"), "重启后仍按未完成的恢复记录锁住改分");
+        assert(reloaded.groupUploadBlock("card_1", "0", "scan-torn") !== null, "重启后仍按未完成的恢复记录锁住改分");
         assert(reloaded.localGroupDeleteBlock("card_1", "0", "scan-torn") !== null, "半成品仍要保住本机原图");
         const abandoned = reloaded.abandonGroupUpload("card_1", "0", "scan-torn");
-        assert(abandoned.ok === true && reloaded.isGroupUploading("card_1", "0", "scan-torn") === false,
+        assert(abandoned.ok === true && reloaded.groupUploadBlock("card_1", "0", "scan-torn") === null,
           "放弃续传后整卡改分恢复可用");
         assert(readScanUploadRecovery("card_1", "scan-torn", "0") === null, "放弃续传要删掉恢复记录");
         assert(reloaded.localGroupDeleteBlock("card_1", "0", "scan-torn") === null, "放弃后本机原图不再为续传保留");
@@ -189,11 +189,37 @@ async function main() {
           ],
         });
         assert((await waitTerminal(holder, heldId)).status === "error", "未关闭的坏页任务停在 error");
-        assert(holder.isGroupUploading("card_1", "0", "scan-held"), "未关闭的半成品任务同样锁住改分");
+        assert(holder.groupUploadBlock("card_1", "0", "scan-held") !== null, "未关闭的半成品任务同样锁住改分");
         assert(holder.abandonGroupUpload("card_1", "0", "scan-held").ok === true, "放弃续传不要求先关闭进度卡");
         assert(holder.getState().jobs.some(job => job.id === heldId) === false, "放弃后这条任务从队列里摘掉");
-        assert(!holder.isGroupUploading("card_1", "0", "scan-held"), "放弃后改分恢复可用");
+        assert(holder.groupUploadBlock("card_1", "0", "scan-held") === null, "放弃后改分恢复可用");
         assert(readScanUploadRecovery("card_1", "scan-held", "0") === null, "放弃要删掉这一组的恢复记录");
+
+        // 页面全都传完、只差提交被业务拒绝（重复学号那类）：这一卷仍锁改分，但不能放弃，
+        // 否则下一次的 reload 会把同一份原卷当成新会话再传一遍（评审 P2）。
+        let completeFails = true;
+        const pending = createScannerUploadManager(deps({
+          remoteFetch: async url => {
+            if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "completion-pending", uploadTokens: ["t1"] });
+            if (url.endsWith(COMPLETE)) return completeFails ? jsonRes({ message: "重复学号：所有相关答题卡需订正后重新保存", failures: [] }, 409) : jsonRes({ ok: true });
+            return jsonRes({ ok: true });
+          },
+        }));
+        const pendingId = pending.startUpload({
+          kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "扫描_82048",
+          localSessionId: "scan-pending", identityMode: "strict",
+          pages: [{ pageNum: 1, side: "front", groupId: "0", getBlob: async () => blob() }],
+        });
+        assert((await waitTerminal(pending, pendingId)).status === "error", "提交被拒时任务停在 error");
+        assert(readScanUploadRecovery("card_1", "scan-pending", "0")?.pages.every(page => page.done) === true, "只差提交时逐页进度都是完成态");
+        assert(pending.groupUploadBlock("card_1", "0", "scan-pending") === "completion-pending", "只差提交的卷仍锁改分但不算可续传");
+        const refusedPending = pending.abandonGroupUpload("card_1", "0", "scan-pending");
+        assert(refusedPending.ok === false && refusedPending.message.includes("只差提交"), "只差提交的任务不能放弃后再传一份原卷");
+        assert(pending.groupUploadBlock("card_1", "0", "scan-pending") === "completion-pending", "放弃被拒后这一卷继续锁着");
+        completeFails = false;
+        pending.retryFailed(pendingId);
+        assert((await waitTerminal(pending, pendingId)).status === "done", "补一次提交就能完成");
+        assert(pending.groupUploadBlock("card_1", "0", "scan-pending") === null, "提交完成后不再阻止改分");
 
         // 一条任务里混着别组的页时不能整条摘掉，否则那组的半成品锁会被连带解开。
         const mixed = createScannerUploadManager(deps({
@@ -211,10 +237,10 @@ async function main() {
           ],
         });
         assert((await waitTerminal(mixed, mixedId)).status === "error", "混组任务应停在 error");
-        assert(mixed.isGroupUploading("card_1", "1", "scan-mixed"), "混组任务的另一组同样锁住改分");
+        assert(mixed.groupUploadBlock("card_1", "1", "scan-mixed") !== null, "混组任务的另一组同样锁住改分");
         const refused = mixed.abandonGroupUpload("card_1", "0", "scan-mixed");
         assert(refused.ok === false && refused.message.includes("其他试卷"), "跨组任务不得整条放弃");
-        assert(mixed.isGroupUploading("card_1", "0", "scan-mixed"), "放弃被拒后这一组仍然锁着");
+        assert(mixed.groupUploadBlock("card_1", "0", "scan-mixed") !== null, "放弃被拒后这一组仍然锁着");
 
         // 正在传输的任务不能被「放弃续传」顶掉：页面资源还握在任务里。
         let releaseGate!: () => void;

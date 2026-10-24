@@ -1047,12 +1047,14 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                           // 逐页上传时每页现读本机订正：在途或仍留着可续传的半成品时改分，
                           // 先传出去的页保留旧识别、后传出去的页带上新识别，服务器会收到半旧半新的一份快照。
                           const cardId = sessionUploadRef.current?.cardId ?? null;
-                          const uploading = scannerUploadManager.isGroupUploading(cardId, sr.groupId, sessionId);
-                          const resumable = uploading && scannerUploadManager.isGroupUploadResumable(cardId, sr.groupId, sessionId);
+                          const block = scannerUploadManager.groupUploadBlock(cardId, sr.groupId, sessionId);
+                          const resumable = block === "partial-pages";
                           return (
                             <>
-                              <CardCorrectionButton disabled={resultsBusy || uploading}
-                                disabledReason={resumable
+                              <CardCorrectionButton disabled={resultsBusy || block !== null}
+                                disabledReason={block === "completion-pending"
+                                  ? "这一卷的页面都已上传、只差提交（重复学号这类冲突是服务器拒的）；现在改分会让服务器收到半旧半新的识别结果，请先「重试保存」或处理冲突卷"
+                                  : resumable
                                   ? "这一卷已上传一部分、还有失败页可续传；现在改分会让服务器收到半旧半新的识别结果。请先「重试失败页」，或点「放弃续传」后再改分"
                                   : "这一卷正在上传；现在改分会让服务器收到半旧半新的识别结果，请等它传完或先取消任务"}
                                 url={`/api/scanner/session/${sessionId}/groups/${sr.groupId}/correction`} onSaved={() => {

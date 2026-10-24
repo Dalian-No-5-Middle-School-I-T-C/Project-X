@@ -19,36 +19,44 @@ const recoveryPrefix = "projectx-scanner-upload-recovery/";
 const recoveryKey = (cardId: string, sessionId: string, groupId: string) =>
   `${recoveryPrefix}${JSON.stringify([cardId, sessionId, groupId])}`;
 
-/** 未完成记录还指向一个可续传的远端会话：重新入队时 `restoreRecovery` 会接回它，已成功的页不再重传。 */
-function isIncompleteRecoveryValue(raw: string): boolean {
+/** 恢复记录对改分锁的意义：没有 / 还差页面可续传 / 页面全传完只差提交 / 记录读不出来。 */
+export type ScanUploadRecoveryState = "none" | "partial-pages" | "completion-pending" | "damaged";
+
+function recoveryStateOf(raw: string): ScanUploadRecoveryState {
   try {
     const parsed = recoverySchema.safeParse(JSON.parse(raw) as unknown);
-    // 记录读不出完成状态时按「未完成」处理：无法证明服务器上没有半成品，就不能放开改分。
-    return !parsed.success || !parsed.data.completed;
-  } catch { return true; }
+    // 记录读不出来时按「有半成品」处理：无法证明服务器上没有部分结果，就不能放开改分。
+    if (!parsed.success) return "damaged";
+    if (parsed.data.completed) return "none";
+    return parsed.data.pages.some(page => !page.done) ? "partial-pages" : "completion-pending";
+  } catch { return "damaged"; }
 }
 
+const stateSeverity: ScanUploadRecoveryState[] = ["damaged", "partial-pages", "completion-pending", "none"];
+
 /**
- * 关闭进度卡只把任务从内存里摘掉，恢复记录还在，所以「这一卷还有半成品可续传」这件事
+ * 关闭进度卡只把任务从内存里摘掉，恢复记录还在，所以「这一卷还没交出终态」这件事
  * 必须和删除本机原图一样继续挡住整卡改分（评审 P1：否则 dismiss 后改分→再上传仍是撕裂快照）。
  * `cardId` 缺失时按会话 + 分组扫描全部记录，与内存任务判断里的通配口径一致。
  */
-export function hasIncompleteScanUploadRecovery(cardId: string | null | undefined, sessionId: string, groupId: string): boolean {
-  if (typeof localStorage === "undefined") return false;
+export function scanUploadRecoveryState(cardId: string | null | undefined, sessionId: string, groupId: string): ScanUploadRecoveryState {
+  if (typeof localStorage === "undefined") return "none";
+  const found: ScanUploadRecoveryState[] = [];
   if (cardId) {
     const raw = localStorage.getItem(recoveryKey(cardId, sessionId, groupId));
-    return raw !== null && isIncompleteRecoveryValue(raw);
+    if (raw !== null) found.push(recoveryStateOf(raw));
+  } else {
+    for (let index = 0; index < localStorage.length; index++) {
+      const key = localStorage.key(index);
+      if (!key || !key.startsWith(recoveryPrefix)) continue;
+      let parts: unknown;
+      try { parts = JSON.parse(key.slice(recoveryPrefix.length)) as unknown; } catch { continue; }
+      if (!Array.isArray(parts) || parts[1] !== sessionId || parts[2] !== groupId) continue;
+      const raw = localStorage.getItem(key);
+      if (raw !== null) found.push(recoveryStateOf(raw));
+    }
   }
-  for (let index = 0; index < localStorage.length; index++) {
-    const key = localStorage.key(index);
-    if (!key || !key.startsWith(recoveryPrefix)) continue;
-    let parts: unknown;
-    try { parts = JSON.parse(key.slice(recoveryPrefix.length)) as unknown; } catch { continue; }
-    if (!Array.isArray(parts) || parts[1] !== sessionId || parts[2] !== groupId) continue;
-    const raw = localStorage.getItem(key);
-    if (raw !== null && isIncompleteRecoveryValue(raw)) return true;
-  }
-  return false;
+  return stateSeverity.find(state => found.includes(state)) ?? "none";
 }
 
 export function readScanUploadRecovery(cardId: string, sessionId: string, groupId: string): ScanUploadRecovery | null {
