@@ -86,7 +86,7 @@ try {
   assert.equal((await fetch(url, { headers: { Authorization: `Bearer ${scopedLogin.token}` } })).status, 403,
     "block-scoped teachers must not correct an ambiguous whole card");
   // 有整卷授权（这里是考试创建者）的教师仍可用，说明收口没有把正常改分也挡掉。
-  const owner = await db.run("INSERT INTO users(username,password_hash,name,role_id) VALUES ('local_owner',?,'整卷教师',2)", hash);
+  const owner = await db.run("INSERT INTO users(username,password_hash,name,role_id,teacher_role,subject) VALUES ('local_owner',?,'整卷教师',2,'subject_teacher','shuxue')", hash);
   await db.run("UPDATE exams SET created_by=? WHERE id IN (?,?)", owner.lastInsertRowid, firstExam.lastInsertRowid, secondExam.lastInsertRowid);
   const ownerLogin = await authService.login("local_owner", password);
   assert(ownerLogin.success && ownerLogin.token);
@@ -119,6 +119,21 @@ try {
   await db.run("UPDATE exams SET created_by=? WHERE id IN (?,?)", owner.lastInsertRowid, firstExam.lastInsertRowid, secondExam.lastInsertRowid);
   assert.equal((await fetch(url, { headers: { Authorization: `Bearer ${ownerLogin.token}` } })).status, 200,
     "reused-card exams must not be part of the authorization candidates when the session is already bound");
+  // 订正文档、文档里的原图与进订正前必读的结果演算必须是同一套候选范围，
+  // 否则页面能打开、图片却 403，或者根本点不进订正（评审 P2）。
+  const authHeaders = { Authorization: `Bearer ${ownerLogin.token}` };
+  const readProbe = async (path: string, init?: RequestInit) => {
+    const response = await fetch(fixture.baseUrl + path, { ...init, headers: { ...authHeaders, ...(init?.headers ?? {}) } });
+    return `${response.status} ${(await response.clone().text()).slice(0, 120)}`;
+  };
+  assert.equal((await fetch(`${fixture.baseUrl}/api/scanner/scan-image/${record.id}`, { headers: authHeaders })).status, 200,
+    "订正文档里的原图必须与订正同范围放行");
+  assert.match(await readProbe(`/api/scanner/session/${session.id}/results?previewOnly=1`), /^200 /,
+    "远端模式后处理页的结果预览必须放行，否则进不去订正");
+  assert.match(await readProbe(`/api/scanner/session/${session.id}/validate`, { method: "POST" }), /^200 /,
+    "本机模式的结果演算必须放行，否则进不去订正");
+  assert.match(await readProbe(`/api/scanner/session/${session.id}/results`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }),
+    /^409 .*无法确定扫描会话的考试归属/, "正式入库仍要求唯一考试归属，不能被一起放开");
   await db.run("UPDATE exams SET created_by=NULL WHERE id IN (?,?)", firstExam.lastInsertRowid, secondExam.lastInsertRowid);
   await db.run("DELETE FROM scanner_submissions WHERE session_id=?", session.id);
   await db.run("DELETE FROM exams WHERE id=?", thirdExam.lastInsertRowid);

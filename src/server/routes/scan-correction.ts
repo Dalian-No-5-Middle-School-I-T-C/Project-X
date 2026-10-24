@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { getMysqlDb } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
-import { requirePermissionCompat, requireWholeExamGradingAccess, requireWholeExamGradingAccessForExam, getVisibleExamIds } from "../../apps/answer-card/server/middleware";
+import { requirePermissionCompat, requireWholeExamGradingAccess } from "../../apps/answer-card/server/middleware";
+import { authorizeAmbiguousLocalSession } from "../../server/middleware/scanner-scope";
 import { PERMISSIONS } from "../auth/permissions";
 import { resolveScannerExam } from "../services/scannerExam";
 import { recognizeSessionCorrection, saveSessionCorrection, sessionCorrection } from "../services/scanCorrection";
@@ -23,33 +24,9 @@ export function scanCorrectionRouter(prefix: "session" | "sessions", remote: boo
       // 多场未归档考试、只剩归档考试等无法唯一确定归属的情况也一样：本地整卡改分
       // 只改本机扫描记录，不应因为归属不唯一而整页不可用；正式成绩入库仍在后续流程校验。
       if (!remote && (!resolved.exam || resolved.allExamIds.length === 0)) {
-        if (req.user && !["admin", "teacher"].includes(req.user.role_name)) {
-          res.status(403).json({message:"权限不足：整卡订正仅限教师或管理员"}); return;
-        }
-        // 会话已经绑定过考试，但那些考试全被软删除：这张卡属于被清理的那场考试，
-        // 不能改挂到同卡片的另一场在用考试上放行（评审 P1）。与 CR4 同口径按「不存在」处理。
-        const boundButArchived = resolved.boundExamIds.some(examId => !resolved.exams.some(exam => exam.id === examId));
-        if (boundButArchived && req.user && req.user.role_name !== "admin") {
-          res.status(404).json({message:"考试不存在或已按数据保留策略清理"}); return;
-        }
-        // 归属不唯一时按「这场扫描真正可能属于谁」收口：会话已经绑过在用考试就只认这些绑定，
-        // 还没提交过才退回到同卡的全部在用考试。对每一场候选都要有整卷阅卷授权，口径与归属唯一时一致。
-        const boundActiveIds = resolved.boundExamIds.filter(examId => resolved.exams.some(exam => exam.id === examId));
-        const candidates = boundActiveIds.length > 0
-          ? resolved.exams.filter(exam => boundActiveIds.includes(exam.id))
-          : resolved.exams;
-        if (req.user && candidates.length > 0) {
-          const visible = await getVisibleExamIds(req.user);
-          if (visible !== null && !candidates.every(exam => visible.includes(exam.id))) {
-            res.status(403).json({message:"权限不足：无权修改该扫描会话"}); return;
-          }
-          for (const exam of candidates) {
-            let allowed = false;
-            await requireWholeExamGradingAccessForExam(req, res, () => { allowed = true; }, exam.id);
-            if (!allowed) return;
-          }
-        }
-        requirePermissionCompat(PERMISSIONS.GRADE_WRITE)(req,res,next);
+        // 教师/管理员 + 归档绑定检查 + 每场候选考试的整卷授权 + GRADE_WRITE，
+        // 与订正文档里原图、结果读取用的是同一个 helper。
+        await authorizeAmbiguousLocalSession(req, res, next, resolved);
         return;
       }
       if (!resolved.exam && req.user) { res.status(409).json({message:"无法确定考试归属"}); return; }
