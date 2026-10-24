@@ -594,6 +594,16 @@ try {
     channel:reviewChannel,sessionId:"review",groupId:"0",draftOnly:true,onSaved:()=>{},
   }))));
   await settle();assert(saveButton()?.disabled,"打开待确认卷不会自动确认");
+  // 上传在途时禁止保存改分：逐页现读本机订正，中途保存会让服务器收到半旧半新的识别结果。
+  const realGroupUploading = scannerUploadManager.isGroupUploading;
+  scannerUploadManager.isGroupUploading = () => true;
+  scannerUploadManager.notifyNetworkChanged();
+  await settle();
+  assert(saveButton()?.disabled, "上传在途时后处理页不允许保存改分");
+  scannerUploadManager.isGroupUploading = realGroupUploading;
+  scannerUploadManager.notifyNetworkChanged();
+  await settle();
+  assert(saveButton()?.disabled, "恢复后仍按「未改动不可保存」判定，说明禁用来源已切回脏数据规则");
   const scoreCell = () => document.querySelector(`[data-cell-id="${ten.id}"]`)!;
   await clickNode(scoreCell());await clickNode(scoreCell());await settle();
   assert(saveButton() && !saveButton()!.disabled,"点回原分数同样可以明确确认");

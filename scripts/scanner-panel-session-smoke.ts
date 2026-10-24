@@ -202,6 +202,16 @@ try {
   await click("开始扫描"); await settle();
   await act(async () => { streams[3].done(); }); await settle();
   assert.equal(uploads.length, 8, "A new complete session resumes normal automatic uploads");
+  // 上传在途时禁用整卡改分：逐页现读本机订正，中途保存会让服务器收到半旧半新的快照。
+  const realGroupUploading = scannerUploadManager.isGroupUploading;
+  scannerUploadManager.isGroupUploading = () => true;
+  await click("刷新汇总"); await settle();
+  assert([...document.querySelectorAll("button")].filter(node => node.textContent?.trim() === "整卡改分")
+    .every(node => node.disabled), "上传在途时工作台不允许改分");
+  scannerUploadManager.isGroupUploading = realGroupUploading;
+  await click("刷新汇总"); await settle();
+  assert([...document.querySelectorAll("button")].some(node => node.textContent?.trim() === "整卡改分" && !node.disabled),
+    "任务终态后工作台改分恢复可用");
   // 远端模式下这一卷已经随批次进入上传队列：从工作台改分必须当场说明改动不会回到服务器
   //（重复上传同一份卷子会被服务端当成第二份原卷，反而撤掉已保存的成绩）。
   await click("整卡改分"); await settle();

@@ -23,6 +23,12 @@ export type UploadJobStatus =
   | "error"        // 会话创建失败 / 存在彻底失败页
   | "cancelled";   // 用户取消（队列中或暂停中）
 
+/** 任务还没交出终态：这一卷的识别结果正在被逐页读走，此时改分会让服务器收到半旧半新的快照。 */
+export function isUploadingStatus(status: UploadJobStatus): boolean {
+  return status === "queued" || status === "creating" || status === "uploading"
+    || status === "completing" || status === "paused";
+}
+
 export interface UploadPageInput {
   pageNum: number;
   side: "front" | "back";
@@ -753,6 +759,14 @@ if (j.cancelled) throw cancelledError(j);
       && job.pages.some(page => page.input.groupId === groupId));
   }
 
+  /** 这一卷是否正在上传（未到终态）。整卡改分要据此禁用，避免多页任务送出撕裂的识别快照。 */
+  function isGroupUploading(cardId: string | null | undefined, groupId: string, localSessionId?: string): boolean {
+    if (!localSessionId) return false;
+    return jobs.filter(job => job.kind === "scan" && job.localSessionId === localSessionId
+      && job.pages.some(page => page.input.groupId === groupId)
+      && (!cardId || job.cardId === cardId)).some(job => isUploadingStatus(job.status));
+  }
+
   /** 这份扫描原卷是否已经占住上传资格。导入任务没有本机会话号，不能拿来挡新扫描；缺会话号也不当通配。 */
   function hasGroupUpload(cardId: string, groupId: string, localSessionId?: string): boolean {
     if (!localSessionId) return false;
@@ -1013,6 +1027,7 @@ if (j.cancelled) throw cancelledError(j);
     },
     startUpload,
     hasGroupUpload,
+    isGroupUploading,
     localGroupDeleteBlock,
     releaseGroupForLocalDelete,
     retryFailed,

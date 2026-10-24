@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Save } from "lucide-react";
 import {
   Badge, Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-  Spinner, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableWrap,
+  Spinner, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableWrap, Tip,
 } from "../ui/v2";
 import { CorrectionCanvas } from "./CorrectionCanvas";
 import { RotationButtons, type ImageRotation } from "../RotatedCardImage";
 import type { PostprocessChannel } from "./postprocessChannel";
+import { scannerUploadManager } from "../../lib/scannerUploadManager";
 import { replaceScopedSelection } from "../../../../../shared/scanPostprocess";
 import {
   correctionCells, correctionState, isUnconfirmedCorrectionCell, lowConfidenceTouchedIds, mergeRecognitions, toggleCorrectionCell,
@@ -150,6 +151,10 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
 
   // 复核题号直接取共享判分的结果：界面不再自己写一套「低置信度 = 存疑」判定，
   // 空白题、越界选项、整张卡没红笔这些口径都由 gradeCombinedRecognition 统一裁断。
+  // 订阅上传进度：任务在途时每一页都现读本机订正，这时保存会让服务器收到半旧半新的快照。
+  useSyncExternalStore(scannerUploadManager.subscribe, scannerUploadManager.getState);
+  const uploadBusy = scannerUploadManager.isGroupUploading(document?.card.id ?? null, groupId, sessionId);
+
   const reviewQuestions = useMemo(() => {
     const set = new Set<SubjectiveQuestionNumber>();
     if (!graded) return set;
@@ -287,7 +292,13 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
           <span className="tabular-nums">{Math.round(zoom * 100)}%</span>
           <Button size="sm" variant="outline" disabled={zoom >= 4} onClick={() => setZoom(z => Math.min(4, z + 0.5))}>放大</Button>
           <RotationButtons rotation={rotation} onChange={setRotation} disabled={saving} />
-          <Button variant="primary" size="sm" icon={<Save />} disabled={!dirty || saving || errors.length > 0 || locked} loading={saving} onClick={() => void save()}>保存修改</Button>
+          {uploadBusy ? (
+            <Tip label="这一卷正在上传，等它完成后再保存；中途改分会让服务器收到半旧半新的识别结果">
+              <Button variant="primary" size="sm" icon={<Save />} disabled loading>保存修改</Button>
+            </Tip>
+          ) : (
+            <Button variant="primary" size="sm" icon={<Save />} disabled={!dirty || saving || errors.length > 0 || locked} loading={saving} onClick={() => void save()}>保存修改</Button>
+          )}
         </div>
       </div>
       <div className="flex min-h-0 flex-1 gap-4 p-4">
