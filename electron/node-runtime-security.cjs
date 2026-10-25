@@ -158,7 +158,11 @@ const decodeConfiguredSessions = new WeakMap();
 const decodeReattachPending = new WeakSet();
 const decodeInstallPromises = new WeakMap();
 const decodeReady = new WeakSet();
+const decodeSuspended = new WeakSet();
+const suspendedContentIds = new Set();
 const navigationHolds = new WeakSet();
+const protectionRestoredHandlers = new WeakMap();
+const networkPauseSessions = new WeakSet();
 
 function writeRuntimeLog(log, level, message) {
   if (typeof log === "function") log(level, message);
@@ -264,25 +268,90 @@ function chromiumBrotliProtectionEnabled() {
   return String(process.env.PROJECTX_SERVER_MODE || "").toLowerCase() === "remote";
 }
 
+function isChromiumBrotliDecodeReady(webContents) {
+  return decodeReady.has(webContents);
+}
+
+function rememberProtectionRestored(webContents, handler) {
+  let handlers = protectionRestoredHandlers.get(webContents);
+  if (!handlers) {
+    handlers = new Set();
+    protectionRestoredHandlers.set(webContents, handlers);
+  }
+  handlers.add(handler);
+}
+
+function notifyProtectionRestored(webContents) {
+  const handlers = protectionRestoredHandlers.get(webContents);
+  if (!handlers) return;
+  for (const handler of handlers) handler();
+}
+
+// Network 代理断开时，Chromium 会清掉 setAcceptedEncodings。必须先停网，再重连。
+function suspendChromiumBrotliContents(webContents) {
+  decodeReady.delete(webContents);
+  decodeSuspended.add(webContents);
+  decodeConfiguredSessions.delete(webContents);
+  if (typeof webContents?.id === "number") suspendedContentIds.add(webContents.id);
+  try {
+    if (typeof webContents.stop === "function") webContents.stop();
+  } catch {
+    /* 窗口可能已经销毁 */
+  }
+}
+
+function releaseChromiumBrotliSuspension(webContents) {
+  decodeSuspended.delete(webContents);
+  if (typeof webContents?.id === "number") suspendedContentIds.delete(webContents.id);
+}
+
+// onBeforeRequest 在请求发出前取消，不会把 br 交给解码器。响应头那一层来不及。
+function installChromiumBrotliNetworkPause(targetSession, log) {
+  if (!targetSession || !targetSession.webRequest || typeof targetSession.webRequest.onBeforeRequest !== "function") {
+    throw new Error(`${CVE_2026_111497}：没有可用的会话，无法在调试通道断开时暂停网络请求。扫描端不会继续加载页面。`);
+  }
+  if (networkPauseSessions.has(targetSession)) return;
+  networkPauseSessions.add(targetSession);
+  const finish = (callback, value) => {
+    try {
+      callback(value);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      writeRuntimeLog(log, "ERROR", `[Electron] 暂停请求的回调失败: ${detail}`);
+    }
+  };
+  targetSession.webRequest.onBeforeRequest(CHROMIUM_REQUEST_FILTER, (details, callback) => {
+    try {
+      if (typeof details?.webContentsId === "number" && suspendedContentIds.has(details.webContentsId)) {
+        writeRuntimeLog(log, "WARN", `[Electron] 调试通道断开，已暂停请求 url=${details.url}`);
+        finish(callback, { cancel: true });
+        return;
+      }
+      finish(callback, {});
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      writeRuntimeLog(log, "ERROR", `[Electron] 暂停请求失败，已取消 url=${details?.url} error=${detail}`);
+      finish(callback, { cancel: true });
+    }
+  });
+}
+
 function scheduleChromiumBrotliReattach(webContents, dbg, log, options, state, reason) {
   if (typeof webContents.isDestroyed === "function" && webContents.isDestroyed()) return;
-  if (decodeReattachPending.has(webContents)) return;
+  // 先停掉当前加载并清掉「已保护」标记，再等待重连。这段时间里页面不能继续发请求。
+  const alreadyPending = decodeReattachPending.has(webContents);
+  suspendChromiumBrotliContents(webContents);
+  if (alreadyPending) return;
   const maxAttempts = options?.maxReattachAttempts ?? 3;
   const delayMs = options?.reattachDelayMs ?? 200;
   state.failures += 1;
   if (state.failures > maxAttempts) {
     const error = chromiumBrotliBlockError(reason || "调试通道反复断开");
     writeRuntimeLog(log, "ERROR", `[Electron] 重新关闭 Chromium Brotli 解码失败: ${error.message}`);
-    try {
-      if (typeof webContents.stop === "function") webContents.stop();
-    } catch {
-      /* 页面可能已经销毁 */
-    }
     if (typeof options?.onFatal === "function") options.onFatal(error);
     return;
   }
   decodeReattachPending.add(webContents);
-  decodeConfiguredSessions.delete(webContents);
   writeRuntimeLog(log, "ERROR", `[Electron] Brotli 解码拦截通道断开 reason=${reason}，第 ${state.failures} 次重新装上`);
   setTimeout(() => {
     decodeReattachPending.delete(webContents);
@@ -357,9 +426,16 @@ async function installChromiumBrotliDecodeBlockOnce(webContents, log, options) {
     if (!dbg.isAttached()) dbg.attach("1.3");
     await applyChromiumAcceptedEncodings(dbg);
     decodeReady.add(webContents);
+    releaseChromiumBrotliSuspension(webContents);
     writeRuntimeLog(log, "INFO", "[Electron] 已限制 Chromium 只接受 gzip 与 deflate，不再解码 br");
   } catch (error) {
     throw chromiumBrotliBlockError(error);
+  }
+  try {
+    notifyProtectionRestored(webContents);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    writeRuntimeLog(log, "ERROR", `[Electron] 编码限制恢复后继续导航失败: ${detail}`);
   }
 }
 
@@ -373,6 +449,10 @@ function holdNavigationUntilBrotliBlock(contents, options) {
     if (typeof options?.onFatal === "function") options.onFatal(error);
   };
   const isAbout = (url) => !url || String(url).startsWith("about:");
+  rememberProtectionRestored(contents, () => {
+    resuming = false;
+    resume();
+  });
   const resume = () => {
     if (typeof contents.isDestroyed === "function" && contents.isDestroyed()) return;
     if (!queuedUrl || resuming) return;
@@ -405,11 +485,24 @@ function holdNavigationUntilBrotliBlock(contents, options) {
   // 不能在 did-start-navigation 里同步 stop()，Electron 39 会在这里崩溃。
   // 取消交给 will-navigate 的 preventDefault；这里只记住地址，等这一轮结束再装调试通道。
   contents.on("did-start-navigation", (_event, url) => {
+    if (decodeSuspended.has(contents)) {
+      if (!isAbout(url)) queuedUrl = url;
+      return;
+    }
     if (decodeReady.has(contents) || resuming || isAbout(url)) return;
     queuedUrl = url;
     setImmediate(arm);
   });
   contents.on("will-navigate", (event, url) => {
+    // 通道断开后 decodeReady 已清掉，但上一轮导航可能还留着 resuming。
+    // 这里不能放行，否则重连完成前的地址会直接进解码器。
+    if (decodeSuspended.has(contents)) {
+      if (!isAbout(url)) {
+        event.preventDefault();
+        queuedUrl = url;
+      }
+      return;
+    }
     if (decodeReady.has(contents) || resuming || isAbout(url)) return;
     event.preventDefault();
     queuedUrl = url;
@@ -440,7 +533,9 @@ module.exports = {
   responseUsesBrotli,
   acceptEncodingWithoutBrotli,
   installChromiumBrotliHeaderBlock,
+  installChromiumBrotliNetworkPause,
   installChromiumBrotliDecodeBlock,
   registerChromiumBrotliProtection,
   chromiumBrotliProtectionEnabled,
+  isChromiumBrotliDecodeReady,
 };

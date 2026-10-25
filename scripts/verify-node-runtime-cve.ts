@@ -42,6 +42,8 @@ const cjs = require("../electron/node-runtime-security.cjs") as {
   responseUsesBrotli: (headers: unknown) => boolean;
   acceptEncodingWithoutBrotli: (value: unknown) => string;
   installChromiumBrotliHeaderBlock: (session: unknown, log?: (level: string, message: string) => void) => void;
+  installChromiumBrotliNetworkPause: (session: unknown, log?: (level: string, message: string) => void) => void;
+  isChromiumBrotliDecodeReady: (webContents: unknown) => boolean;
   installChromiumBrotliDecodeBlock: (
     webContents: unknown,
     log?: (level: string, message: string) => void,
@@ -172,7 +174,10 @@ const permissionAt = readyBody.indexOf("installDevicePermissionPolicy();");
 const headerAt = readyBody.indexOf("installChromiumBrotliHeaderBlock(session.defaultSession");
 const createAt = readyBody.indexOf("await createWindow();");
 check(permissionAt > -1 && headerAt > permissionAt && createAt > headerAt, "权限策略和 Brotli 响应头拦截都在创建窗口之前");
+const pauseAt = readyBody.indexOf("installChromiumBrotliNetworkPause(session.defaultSession");
+check(pauseAt > headerAt && pauseAt < createAt, "默认会话在创建窗口前装上重连期间的请求暂停");
 check(mainCjs.includes('app.on("session-created"'), "新建 session 同样拦截 br 响应头");
+check(mainCjs.includes("installChromiumBrotliNetworkPause(createdSession"), "新建 session 同样在重连期间暂停请求");
 check(mainCjs.includes("registerChromiumBrotliProtection") && mainCjs.includes("chromiumBrotliProtectionEnabled()"), "远程模式给之后创建的每个窗口安装解码拦截");
 check(mainCjs.includes('app.commandLine.appendSwitch("disable-features", "ServiceWorker")'), "远程模式关掉 service worker，避免它绕开页面级调试通道");
 const syntax = await run(process.execPath, ["--check", "electron/main.cjs"]);
@@ -339,13 +344,38 @@ await cjs.installChromiumBrotliDecodeBlock(detached, () => {}, {
   maxReattachAttempts: 1,
   reattachDelayMs: 0,
 });
+detached.id = 41;
+check(cjs.isChromiumBrotliDecodeReady(detached) === true, "编码限制装上之后窗口标记为已保护");
+const pauseLogs: string[] = [];
+let beforeRequest: ((details: { webContentsId?: number; url?: string }, callback: (value: { cancel?: boolean }) => void) => void) | undefined;
+const pauseSession = {
+  webRequest: {
+    onBeforeRequest(_filter: unknown, listener: typeof beforeRequest) {
+      beforeRequest = listener;
+    },
+  },
+};
+cjs.installChromiumBrotliNetworkPause(pauseSession, (_level, message) => { pauseLogs.push(message); });
+cjs.installChromiumBrotliNetworkPause(pauseSession, () => { pauseLogs.push("second"); });
+check(pauseLogs.length === 0 && typeof beforeRequest === "function", "同一个会话的请求暂停只装一层");
 detached.calls.length = 0;
 detached.debugger.sendCommand = () => Promise.reject(new Error("reattach failed"));
 detached.debugger.emit("detach", "replaced_with_devtools");
-check(fatalMessage === "", "调试通道第一次断开不会立刻停掉页面");
+let gapCancelled = false;
+beforeRequest?.({ webContentsId: 41, url: "https://remote.example/gap" }, (value) => { gapCancelled = value.cancel === true; });
+let otherCancelled = false;
+beforeRequest?.({ webContentsId: 99, url: "https://remote.example/other" }, (value) => { otherCancelled = value.cancel === true; });
+check(
+  fatalMessage === ""
+    && detached.stopped()
+    && cjs.isChromiumBrotliDecodeReady(detached) === false
+    && gapCancelled
+    && !otherCancelled,
+  "调试通道一断开就停掉加载并取消这个窗口的新请求，其他窗口不受影响",
+);
 await new Promise((resolve) => setTimeout(resolve, 0));
 await new Promise((resolve) => setTimeout(resolve, 0));
-check(detached.devtoolsClosed() && detached.stopped() && fatalMessage.includes(CVE_2026_111497), "调试通道重试仍失败后才停掉页面");
+check(detached.devtoolsClosed() && cjs.isChromiumBrotliDecodeReady(detached) === false && fatalMessage.includes(CVE_2026_111497), "调试通道重试仍失败后才停掉页面，期间不会被重新标成已保护");
 
 const savedServerMode = process.env.PROJECTX_SERVER_MODE;
 delete process.env.PROJECTX_SERVER_MODE;
@@ -383,6 +413,23 @@ releaseBlank?.();
 await new Promise((resolve) => setImmediate(resolve));
 await new Promise((resolve) => setImmediate(resolve));
 check(openedUrls.includes("http://127.0.0.1/child"), "解码限制装上之后才打开新窗口的目标地址");
+opened.id = 77;
+opened.debugger.emit("detach", "replaced_with_devtools");
+let gapNavigationBlocked = false;
+pageHandlers["will-navigate"]?.({ preventDefault() { gapNavigationBlocked = true; } }, "http://127.0.0.1/during-gap");
+check(
+  gapNavigationBlocked
+    && !openedUrls.includes("http://127.0.0.1/during-gap")
+    && cjs.isChromiumBrotliDecodeReady(opened) === false,
+  "通道断开后，即使上一轮导航还留着放行标记，新地址也会先停住",
+);
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setImmediate(resolve));
+check(
+  cjs.isChromiumBrotliDecodeReady(opened) === true
+    && openedUrls.includes("http://127.0.0.1/during-gap"),
+  "编码限制重新装上之后才继续被拦住的导航",
+);
 
 console.log("\n== 已修复的运行时保持 Brotli 可用 ==");
 const allowed = enforceNodeRuntimeCve2026111497({ version: process.versions.node, electron: false, exitProcess: false });

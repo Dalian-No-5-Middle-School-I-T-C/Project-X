@@ -7,6 +7,7 @@ const {
   chromiumBrotliProtectionEnabled,
   installChromiumBrotliDecodeBlock,
   installChromiumBrotliHeaderBlock,
+  installChromiumBrotliNetworkPause,
   registerChromiumBrotliProtection,
 } = require("./node-runtime-security.cjs");
 const fs = require("node:fs");
@@ -424,6 +425,7 @@ function failClosedChromiumBrotli(error) {
 
 app.on("session-created", (createdSession) => {
   installChromiumBrotliHeaderBlock(createdSession, appendLog);
+  if (chromiumBrotliProtectionEnabled()) installChromiumBrotliNetworkPause(createdSession, appendLog);
 });
 
 if (chromiumBrotliProtectionEnabled()) {
@@ -442,6 +444,7 @@ app.whenReady().then(async () => {
     installDevicePermissionPolicy();
     // defaultSession 可能在 session-created 监听挂上之前就已经存在，这里再装一次（内部会去重）。
     installChromiumBrotliHeaderBlock(session.defaultSession, appendLog);
+    if (chromiumBrotliProtectionEnabled()) installChromiumBrotliNetworkPause(session.defaultSession, appendLog);
     await createWindow();
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
