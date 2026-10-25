@@ -15,7 +15,6 @@ const NODE_RUNTIME_CVE_SHELL_CHECK =
 
 const ENFORCED = Symbol.for("projectx.cve-2026-111497");
 const GUARD_INSTALLED = Symbol.for("projectx.cve-2026-111497-brotli-guard");
-const TRACKED = Symbol.for("projectx.cve-2026-111497-tracked");
 
 function parseNodeVersion(version) {
   const match = /^v?(\d+)\.(\d+)\.(\d+)(.*)$/.exec(String(version).trim());
@@ -187,6 +186,7 @@ const navigationHolds = new WeakSet();
 const protectionRestoredHandlers = new WeakMap();
 const networkPauseSessions = new WeakSet();
 const contentsById = new Map();
+const trackedContents = new WeakSet();
 const heldRemoteRequests = new Map();
 const remoteGateBlocked = new Set();
 let remoteGateHandler = null;
@@ -303,12 +303,26 @@ function chromiumBrotliFailureScope(webContents, mainWebContents) {
   return "window";
 }
 
+function mappedIpv4(host) {
+  if (!host.startsWith("::ffff:")) return "";
+  const rest = host.slice("::ffff:".length);
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(rest)) return rest;
+  const halves = rest.split(":");
+  if (halves.length !== 2) return "";
+  if (!/^[0-9a-f]{1,4}$/.test(halves[0]) || !/^[0-9a-f]{1,4}$/.test(halves[1])) return "";
+  const hi = Number.parseInt(halves[0], 16);
+  const lo = Number.parseInt(halves[1], 16);
+  if (!Number.isFinite(hi) || !Number.isFinite(lo)) return "";
+  return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+}
+
 function isLoopbackHostname(hostname) {
   let host = String(hostname || "").replace(/^\[|\]$/g, "").toLowerCase();
   if (host.endsWith(".")) host = host.slice(0, -1);
+  const mapped = mappedIpv4(host);
+  if (mapped) host = mapped;
   if (host === "localhost" || host.endsWith(".localhost")) return true;
   if (host === "::1" || host === "0:0:0:0:0:0:0:1") return true;
-  if (host.startsWith("::ffff:")) return isLoopbackHostname(host.slice("::ffff:".length));
   const match = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
   if (!match) return false;
   const parts = match.slice(1).map((item) => Number(item));
@@ -334,10 +348,11 @@ function configureChromiumBrotliRemoteGate(options) {
 function trackChromiumWebContents(webContents) {
   if (!webContents || typeof webContents.id !== "number") return;
   contentsById.set(webContents.id, webContents);
-  if (webContents[TRACKED]) return;
-  webContents[TRACKED] = true;
+  if (trackedContents.has(webContents)) return;
+  trackedContents.add(webContents);
   if (typeof webContents.once === "function") {
     webContents.once("destroyed", () => {
+      if (contentsById.get(webContents.id) !== webContents) return;
       contentsById.delete(webContents.id);
       remoteGateBlocked.delete(webContents.id);
       flushHeldRemoteRequests(webContents.id, true);

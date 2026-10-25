@@ -8,6 +8,56 @@
 #    --merge       把 main 合并到当前分支（默认只更新本地 main）
 #    --dry-run     仅显示将要执行的操作，不实际执行
 # ==============================================================
+
+# 候选运行时要逐个看版本。Program Files 里常年留着未修复的 node.exe，
+# 后面的 Kimi 运行时或 PATH 上可能已经是 22.23.4 及以上。
+node_runtime_supports_cve_fix() {
+  env -u PROJECTX_NODE_VERSION_UNDER_TEST "$1" -e 'const version=process.env.PROJECTX_NODE_VERSION_UNDER_TEST||process.versions.node;const m=/^v?(\d+)\.(\d+)\.(\d+)(.*)$/.exec(String(version).trim());if(!m)process.exit(1);const M=+m[1],n=+m[2],p=+m[3];const bad=m[4]!==""||M<22||M===23||M===25||(M===22&&(n<23||(n===23&&p<4)))||(M===24&&(n<22||(n===22&&p<1)))||(M===26&&(n<12||(n===12&&p<1)));if(bad)process.exit(1);'
+}
+
+# 找到已修复的运行时时打印路径并返回 0。
+# 只有未修复的候选时打印第一个并返回 2，调用方据此给出版本提示。
+# 一个都跑不起来时返回 1。
+detect_node() {
+  local candidate outdated=""
+  local -a candidates
+  if [ "$#" -gt 0 ]; then
+    candidates=("$@")
+  else
+    candidates=(
+      "/c/Program Files/nodejs/node.exe"
+      "$HOME/AppData/Local/Programs/kimi-desktop/resources/resources/runtime/node.exe"
+      "/c/Program Files (x86)/nodejs/node.exe"
+      "node"
+    )
+  fi
+  for candidate in "${candidates[@]}"; do
+    if [ -z "$candidate" ]; then
+      continue
+    fi
+    if ! "$candidate" --version >/dev/null 2>&1; then
+      continue
+    fi
+    if node_runtime_supports_cve_fix "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    if [ -z "$outdated" ]; then
+      outdated=$candidate
+    fi
+  done
+  if [ -n "$outdated" ]; then
+    printf '%s\n' "$outdated"
+    return 2
+  fi
+  return 1
+}
+
+# 验证脚本 source 本文件时只取上面的选择逻辑，不启动更新。
+if [ "${PROJECTX_UPDATE_LIB_ONLY:-}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 set -euo pipefail
 
 # ── 配置 ────────────────────────────────────────────────────
@@ -26,29 +76,19 @@ for arg in "$@"; do
   esac
 done
 
-# ── 自动探测 Node 可执行文件 ───────────────────────────────
-detect_node() {
-  # 按优先级尝试
-  for candidate in \
-    "/c/Program Files/nodejs/node.exe" \
-    "$HOME/AppData/Local/Programs/kimi-desktop/resources/resources/runtime/node.exe" \
-    "/c/Program Files (x86)/nodejs/node.exe" \
-    "node"; do
-    if "$candidate" --version &>/dev/null; then
-      echo "$candidate"
-      return
-    fi
-  done
-  echo ""
-}
-
-NODE="$(detect_node)"
-if [ -z "$NODE" ]; then
-  echo "❌ 未找到可用的 Node.js。CVE-2026-111497 要求 22.23.4、24.22.1 或 26.12.1 及以上。"
+NODE=""
+detect_status=0
+if NODE="$(detect_node)"; then
+  detect_status=0
+else
+  detect_status=$?
+fi
+if [ "$detect_status" -eq 2 ]; then
+  echo "❌ $("$NODE" --version 2>/dev/null || echo "$NODE") 未修复 CVE-2026-111497。请安装 Node.js 22.23.4、24.22.1 或 26.12.1 及以上。"
   exit 1
 fi
-if ! env -u PROJECTX_NODE_VERSION_UNDER_TEST "$NODE" -e 'const version=process.env.PROJECTX_NODE_VERSION_UNDER_TEST||process.versions.node;const m=/^v?(\d+)\.(\d+)\.(\d+)(.*)$/.exec(String(version).trim());if(!m)process.exit(1);const M=+m[1],n=+m[2],p=+m[3];const bad=m[4]!==""||M<22||M===23||M===25||(M===22&&(n<23||(n===23&&p<4)))||(M===24&&(n<22||(n===22&&p<1)))||(M===26&&(n<12||(n===12&&p<1)));if(bad)process.exit(1);'; then
-  echo "❌ $("$NODE" --version) 未修复 CVE-2026-111497。请安装 Node.js 22.23.4、24.22.1 或 26.12.1 及以上。"
+if [ "$detect_status" -ne 0 ] || [ -z "$NODE" ]; then
+  echo "❌ 未找到可用的 Node.js。CVE-2026-111497 要求 22.23.4、24.22.1 或 26.12.1 及以上。"
   exit 1
 fi
 

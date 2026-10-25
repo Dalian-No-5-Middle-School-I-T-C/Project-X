@@ -6,6 +6,7 @@
 - **扫描端 Node**：Electron 39.8.10 自带的 Node 22.22.1 仍未修复。同步解码和 `new BrotliDecompress()` / `.end(chunk)` 直接拒绝。`createBrotliDecompress` 不在调用当场抛错：这个版本的 undici 接不住同步异常，进程会退出；改成把字节挡在普通流里，等 `fetch` 接上读取器后再失败。gzip 保持可用。
 - **扫描端 Chromium**：已核对 Electron 39.8.10 的 Chromium 142.0.7444.265 仍会解码 Brotli。`PROJECTX_SERVER_MODE=remote` 时，每个非 DevTools 的 webContents（含同源 `window.open`）在首次网络请求前只接受 gzip 与 deflate。本地壳加载的是 `127.0.0.1`，页面里填写的远端地址由渲染进程直接请求；这种非本机 http(s) 请求会先被按住，等同一个编码限制装上再发出。装不上时取消这些远端请求。调试通道一旦断开（例如打开开发者工具），立刻停掉当前加载、清掉已保护标记，并在请求发出前取消这个窗口的新请求；编码限制重新装上之后才继续导航。只有远端壳的主窗口在拦截失效时退出整个扫描端；预览、答案、PDF 这类辅助窗口只关闭自己。Service worker 在扫描端始终关闭。纯本机使用不挂调试通道。
 - **Accept-Encoding**：去掉 `br` 时按编码令牌判断，`br;q=1.0` 也会去掉。
+- **update.sh**：按候选逐个检查版本。`Program Files` 里的 Node 未修复时，继续看 Kimi 运行时和 PATH，不再在第一个能启动的旧版本上直接退出。候选路径含空格也能选中。IPv4 映射地址 `::ffff:127.0.0.1`（URL 主机名会变成 `::ffff:7f00:1`）仍算本机，不会为了它挂上调试通道。
 - **验证**：`verify:node-runtime-cve`。有 Electron 二进制时，用 `ELECTRON_RUN_AS_NODE=1` 再跑一遍 Node 闸门，并另跑 Chromium 实机对照：不挂拦截的窗口能解出 br，挂上之后顶层文档、同源新窗口、iframe 和 Worker 都返回 `ERR_CONTENT_DECODING_FAILED`，且请求不再声明 `br`。CI 的 Electron 作业负责这条实机检查；其余作业仍用 `--ignore-scripts`，不下载 Electron。
 
 ## 2026-10-22：#349 交错客观/主观题块顺序保存后丢失

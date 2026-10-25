@@ -153,6 +153,52 @@ check(readFileSync("tools/repair-benchmark/wsl-runtime.sh", "utf8").includes("no
 check(readFileSync("scripts/setup-wsl-e2e.sh", "utf8").includes("node-v22.23.4-linux-x64"), "WSL e2e 指向 Node.js 22.23.4");
 check(!readFileSync("tools/repair-benchmark/wsl-runtime.sh", "utf8").includes("v22.22.0"), "基准环境不再下载 22.22.0");
 
+console.log("\n== update.sh 跳过未修复的 Node ==");
+const nodePick = await run("bash", ["-c", String.raw`
+set -euo pipefail
+export PROJECTX_UPDATE_LIB_ONLY=1
+source ./update.sh
+dir=$(mktemp -d)
+old="$dir/old node"
+new="$dir/new-node"
+bomb="$dir/bomb-node"
+missing="$dir/missing node"
+cat > "$old" << 'EOF'
+#!/bin/bash
+if [ "$1" = "--version" ]; then echo v22.14.0; exit 0; fi
+exit 1
+EOF
+cat > "$new" << 'EOF'
+#!/bin/bash
+if [ "$1" = "--version" ]; then echo v22.23.4; exit 0; fi
+exit 0
+EOF
+cat > "$bomb" << 'EOF'
+#!/bin/bash
+echo bomb >> "$BOMB_LOG"
+exit 0
+EOF
+chmod +x "$old" "$new" "$bomb"
+export BOMB_LOG="$dir/bomb.log"
+picked=$(detect_node "$old" "$new")
+status=0
+only_old=$(detect_node "$old") || status=$?
+skipped=$(detect_node "$missing" "$new")
+first=$(detect_node "$new" "$bomb")
+quiet=QUIET
+if [ -f "$BOMB_LOG" ]; then quiet=BOMB; fi
+printf '%s\n' "$picked" "$status" "$only_old" "$skipped" "$first" "$quiet"
+rm -rf "$dir"
+`]);
+const pickLines = nodePick.stdout.trim().split(/\r?\n/);
+check((readFileSync("update.sh", "utf8").match(/^detect_node\(\)/gm) || []).length === 1, "update.sh 只定义一次 detect_node，后面的定义不会把版本检查盖掉");
+check(nodePick.code === 0 && pickLines[0]?.endsWith("new-node") && pickLines[1] === "2" && pickLines[2]?.includes("old node"), "第一个候选未修复时继续找后面的已修复运行时，全都过期则返回 2");
+check(pickLines[3]?.endsWith("new-node") && pickLines[4]?.endsWith("new-node") && pickLines[5] === "QUIET", "不存在的候选会被跳过，已修复的候选不会再去启动后面的运行时");
+if (nodePick.code !== 0) {
+  console.log(nodePick.stdout);
+  console.log(nodePick.stderr);
+}
+
 console.log("\n== 部署与入口接线 ==");
 const unit = packaging.createSystemdUnit();
 check(unit.includes("RestartPreventExitStatus=78"), "systemd 对退出码 78 不再重启循环");
@@ -431,6 +477,9 @@ loopbackPage.id = 8;
 cjs.trackChromiumWebContents(loopbackPage);
 beforeRequest?.({ webContentsId: 8, url: "http://127.0.0.2:5174/api/health" }, (value) => { loopbackCancelled = value.cancel === true; });
 check(loopbackCancelled === false && !loopbackPage.calls.some((call) => call.method === "attach"), "127.0.0.0/8 的本机请求不挂调试通道");
+let mappedCancelled = false;
+beforeRequest?.({ webContentsId: 8, url: "http://[::ffff:127.0.0.1]/api/health" }, (value) => { mappedCancelled = value.cancel === true; });
+check(mappedCancelled === false && !loopbackPage.calls.some((call) => call.method === "attach"), "IPv4 映射的 127.0.0.1 仍算本机，不挂调试通道");
 let unknownCancelled = false;
 beforeRequest?.({ webContentsId: 12345, url: "https://school.example/api/unknown" }, (value) => { unknownCancelled = value.cancel === true; });
 check(unknownCancelled, "还没登记的窗口不能把远端请求放出去");
