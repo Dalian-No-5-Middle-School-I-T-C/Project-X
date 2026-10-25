@@ -1,5 +1,12 @@
 # Project-X CHANGELOG
 
+## 2026-10-25：CVE-2026-111497 运行时门槛与扫描端 Brotli 解码拦截
+
+- **服务端**：Node.js 低于 22.23.4、24.22.1、26.12.1，或属于已停更的 20 / 23 / 25 和预发布版本时，进程以退出码 78 结束，不监听端口。Ubuntu 安装脚本在 `/usr/bin/node` 未修复时拒绝安装，并清掉 `PROJECTX_NODE_VERSION_UNDER_TEST`，避免测试变量放行旧运行时。systemd 增加 `RestartPreventExitStatus=78`。
+- **扫描端 Node**：Electron 39.8.10 自带的 Node 仍未修复。主进程关掉 `createBrotliDecompress`、同步解码，以及 `new BrotliDecompress()` / `.end(chunk)` 这条不经过 `write` 的入口。gzip 保持可用。
+- **扫描端 Chromium**：已核对 Electron 39.8.10 的 Chromium 142.0.7444.265 仍会解码 Brotli。`PROJECTX_SERVER_MODE=remote` 时，每个非 DevTools 的 webContents（含同源 `window.open`）在首次网络请求前只接受 gzip 与 deflate；装不上或重试后仍挂不上调试通道，就停止加载。Service worker 在该模式下关闭。本地内嵌服务不走这条调试通道，避免打开开发者工具时扫描端直接退出。
+- **验证**：`verify:node-runtime-cve`。有 Electron 二进制时另跑实机对照：不挂拦截的窗口能解出 br，挂上之后顶层文档、同源新窗口、iframe 和 Worker 都返回 `ERR_CONTENT_DECODING_FAILED`，且请求不再声明 `br`。CI 的 Electron 作业负责这条实机检查；其余作业仍用 `--ignore-scripts`，不下载 Electron。
+
 ## 2026-10-22：#349 交错客观/主观题块顺序保存后丢失
 
 - **现象**：设计器里排成「一、二、三、四、五、六」（客观/主观交错），保存后重新打开、导出 PDF、`/layout` 和扫描识别都变成「先全部客观、再全部主观」。设计图与导出件不一致。

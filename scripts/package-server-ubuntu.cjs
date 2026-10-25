@@ -463,7 +463,7 @@ if [ ! -x "$NODE_BIN" ]; then
   echo "[install] 未找到 $NODE_BIN。CVE-2026-111497 要求 Node.js 22.23.4、24.22.1 或 26.12.1 及以上，且单元执行的就是这个路径。" >&2
   exit 1
 fi
-if ! "$NODE_BIN" -e '${NODE_RUNTIME_CVE_SHELL_CHECK}'; then
+if ! env -u PROJECTX_NODE_VERSION_UNDER_TEST "$NODE_BIN" -e '${NODE_RUNTIME_CVE_SHELL_CHECK}'; then
   echo "[install] $NODE_BIN ($("$NODE_BIN" -v 2>/dev/null || echo unknown)) 未修复 CVE-2026-111497。请安装 Node.js 22.23.4、24.22.1 或 26.12.1 及以上，并让 /usr/bin/node 指向它。" >&2
   exit 1
 fi

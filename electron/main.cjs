@@ -4,8 +4,10 @@ require("./node-runtime-security.cjs").enforceNodeRuntimeCve2026111497();
 
 const { app, BrowserWindow, dialog, session, shell } = require("electron");
 const {
+  chromiumBrotliProtectionEnabled,
   installChromiumBrotliDecodeBlock,
   installChromiumBrotliHeaderBlock,
+  registerChromiumBrotliProtection,
 } = require("./node-runtime-security.cjs");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -396,15 +398,13 @@ async function createWindow() {
     appendLog("INFO", "[Renderer] responsive (recovered)");
   });
 
-  // 远程页面的 br 由 Chromium 解码，不经过 node:zlib。覆盖没装上就不要 loadURL。
-  await installChromiumBrotliDecodeBlock(mainWindow.webContents, appendLog, {
-    onFatal(error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      appendLog("ERROR", `[Electron] Brotli 解码拦截失效: ${detail}`);
-      dialog.showErrorBox("扫描端已停止加载", detail);
-      app.quit();
-    },
-  });
+  // 远程页面的 br 由 Chromium 解码。本地内嵌服务不发送 br，不在这里挂调试通道，
+  // 避免老师打开开发者工具时通道被挤掉、扫描端直接退出。
+  if (chromiumBrotliProtectionEnabled()) {
+    await installChromiumBrotliDecodeBlock(mainWindow.webContents, appendLog, {
+      onFatal: failClosedChromiumBrotli,
+    });
+  }
   appendLog("INFO", `[Electron] loadURL ${baseUrl}`);
   await mainWindow.loadURL(baseUrl);
   appendLog("INFO", `[Electron] loadURL done status=${mainWindow.webContents.getURL()}`);
@@ -412,9 +412,29 @@ async function createWindow() {
 
 configureAppIdentity();
 
+let chromiumBrotliClosed = false;
+function failClosedChromiumBrotli(error) {
+  if (chromiumBrotliClosed) return;
+  chromiumBrotliClosed = true;
+  const detail = error instanceof Error ? error.message : String(error);
+  appendLog("ERROR", `[Electron] Brotli 解码拦截失效: ${detail}`);
+  dialog.showErrorBox("扫描端已停止加载", detail);
+  app.quit();
+}
+
 app.on("session-created", (createdSession) => {
   installChromiumBrotliHeaderBlock(createdSession, appendLog);
 });
+
+if (chromiumBrotliProtectionEnabled()) {
+  // Service worker 不是页面 target 的子目标，主窗口的 Target.setAutoAttach 盖不到。
+  // 扫描端页面不使用 service worker。开关必须在 app ready 之前。
+  app.commandLine.appendSwitch("disable-features", "ServiceWorker");
+  registerChromiumBrotliProtection(app, {
+    log: appendLog,
+    onFatal: failClosedChromiumBrotli,
+  });
+}
 
 app.whenReady().then(async () => {
   try {

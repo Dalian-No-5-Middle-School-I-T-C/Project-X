@@ -3,7 +3,7 @@ set -euo pipefail
 root=/var/tmp/projectx-e2e-20260905
 repo=$(cd "$(dirname "$0")/.." && pwd)
 node_home="$root/node-v22.23.4-linux-x64"
-if [[ ! -x "$node_home/bin/node" ]] || ! "$node_home/bin/node" -e 'const version=process.env.PROJECTX_NODE_VERSION_UNDER_TEST||process.versions.node;const m=/^v?(\d+)\.(\d+)\.(\d+)(.*)$/.exec(String(version).trim());if(!m)process.exit(1);const M=+m[1],n=+m[2],p=+m[3];const bad=m[4]!==""||M<22||M===23||M===25||(M===22&&(n<23||(n===23&&p<4)))||(M===24&&(n<22||(n===22&&p<1)))||(M===26&&(n<12||(n===12&&p<1)));if(bad)process.exit(1);'; then
+if [[ ! -x "$node_home/bin/node" ]] || ! env -u PROJECTX_NODE_VERSION_UNDER_TEST "$node_home/bin/node" -e 'const version=process.env.PROJECTX_NODE_VERSION_UNDER_TEST||process.versions.node;const m=/^v?(\d+)\.(\d+)\.(\d+)(.*)$/.exec(String(version).trim());if(!m)process.exit(1);const M=+m[1],n=+m[2],p=+m[3];const bad=m[4]!==""||M<22||M===23||M===25||(M===22&&(n<23||(n===23&&p<4)))||(M===24&&(n<22||(n===22&&p<1)))||(M===26&&(n<12||(n===12&&p<1)));if(bad)process.exit(1);'; then
   echo "需要已解压的 Node.js 22.23.4+（CVE-2026-111497）：$node_home" >&2
   exit 1
 fi

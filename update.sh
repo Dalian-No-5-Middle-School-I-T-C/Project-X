@@ -47,7 +47,7 @@ if [ -z "$NODE" ]; then
   echo "❌ 未找到可用的 Node.js。CVE-2026-111497 要求 22.23.4、24.22.1 或 26.12.1 及以上。"
   exit 1
 fi
-if ! "$NODE" -e 'const version=process.env.PROJECTX_NODE_VERSION_UNDER_TEST||process.versions.node;const m=/^v?(\d+)\.(\d+)\.(\d+)(.*)$/.exec(String(version).trim());if(!m)process.exit(1);const M=+m[1],n=+m[2],p=+m[3];const bad=m[4]!==""||M<22||M===23||M===25||(M===22&&(n<23||(n===23&&p<4)))||(M===24&&(n<22||(n===22&&p<1)))||(M===26&&(n<12||(n===12&&p<1)));if(bad)process.exit(1);'; then
+if ! env -u PROJECTX_NODE_VERSION_UNDER_TEST "$NODE" -e 'const version=process.env.PROJECTX_NODE_VERSION_UNDER_TEST||process.versions.node;const m=/^v?(\d+)\.(\d+)\.(\d+)(.*)$/.exec(String(version).trim());if(!m)process.exit(1);const M=+m[1],n=+m[2],p=+m[3];const bad=m[4]!==""||M<22||M===23||M===25||(M===22&&(n<23||(n===23&&p<4)))||(M===24&&(n<22||(n===22&&p<1)))||(M===26&&(n<12||(n===12&&p<1)));if(bad)process.exit(1);'; then
   echo "❌ $("$NODE" --version) 未修复 CVE-2026-111497。请安装 Node.js 22.23.4、24.22.1 或 26.12.1 及以上。"
   exit 1
 fi

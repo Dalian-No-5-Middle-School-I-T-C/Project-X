@@ -142,6 +142,7 @@ const shellCopies: Array<[string, string]> = [
 ];
 for (const [name, text] of shellCopies) {
   check(text.includes(NODE_RUNTIME_CVE_SHELL_CHECK), `${name} 嵌入了同一条版本检查`);
+  check(text.includes("env -u PROJECTX_NODE_VERSION_UNDER_TEST"), `${name} 清掉测试用的版本变量后再检查`);
 }
 check(readFileSync("tools/repair-benchmark/wsl-runtime.sh", "utf8").includes("node-v22.23.4-linux-x64"), "基准环境下载 Node.js 22.23.4");
 check(readFileSync("scripts/setup-wsl-e2e.sh", "utf8").includes("node-v22.23.4-linux-x64"), "WSL e2e 指向 Node.js 22.23.4");
@@ -172,12 +173,15 @@ const headerAt = readyBody.indexOf("installChromiumBrotliHeaderBlock(session.def
 const createAt = readyBody.indexOf("await createWindow();");
 check(permissionAt > -1 && headerAt > permissionAt && createAt > headerAt, "权限策略和 Brotli 响应头拦截都在创建窗口之前");
 check(mainCjs.includes('app.on("session-created"'), "新建 session 同样拦截 br 响应头");
+check(mainCjs.includes("registerChromiumBrotliProtection") && mainCjs.includes("chromiumBrotliProtectionEnabled()"), "远程模式给之后创建的每个窗口安装解码拦截");
+check(mainCjs.includes('app.commandLine.appendSwitch("disable-features", "ServiceWorker")'), "远程模式关掉 service worker，避免它绕开页面级调试通道");
 const syntax = await run(process.execPath, ["--check", "electron/main.cjs"]);
 check(syntax.code === 0, "electron/main.cjs 语法可解析");
 const cjsSyntax = await run(process.execPath, ["--check", "electron/node-runtime-security.cjs"]);
 check(cjsSyntax.code === 0, "node-runtime-security.cjs 语法可解析");
 const ci = readFileSync(".github/workflows/ci.yml", "utf8");
 check(!/node-version:\s*\[22\]/.test(ci) && ci.includes("22.23.4"), "CI 固定到 22.23.4，不再浮动大版本");
+check(ci.includes("electron-chromium-brotli") && ci.includes("xvfb-run -a npm run verify:node-runtime-cve"), "CI 另有 Electron 实机作业，ignore-scripts 的主作业不会把 Chromium 检查当成已跑过");
 
 console.log("\n== Chromium 不再接受 br ==");
 check(
@@ -332,13 +336,53 @@ await cjs.installChromiumBrotliDecodeBlock(detached, () => {}, {
   onFatal(error: unknown) {
     fatalMessage = error instanceof Error ? error.message : String(error);
   },
+  maxReattachAttempts: 1,
+  reattachDelayMs: 0,
 });
 detached.calls.length = 0;
 detached.debugger.sendCommand = () => Promise.reject(new Error("reattach failed"));
 detached.debugger.emit("detach", "replaced_with_devtools");
+check(fatalMessage === "", "调试通道第一次断开不会立刻停掉页面");
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(detached.devtoolsClosed() && detached.stopped() && fatalMessage.includes(CVE_2026_111497), "调试通道重试仍失败后才停掉页面");
+
+const savedServerMode = process.env.PROJECTX_SERVER_MODE;
+delete process.env.PROJECTX_SERVER_MODE;
+check(cjs.chromiumBrotliProtectionEnabled() === false, "本地模式不强制挂上 Chromium 调试通道");
+process.env.PROJECTX_SERVER_MODE = "remote";
+check(cjs.chromiumBrotliProtectionEnabled() === true, "remote 模式才启用 Chromium 解码拦截");
+if (savedServerMode === undefined) delete process.env.PROJECTX_SERVER_MODE;
+else process.env.PROJECTX_SERVER_MODE = savedServerMode;
+
+const opened = fakeWebContents();
+opened.getType = () => "window";
+let openedUrl = "";
+const openedUrls: string[] = [];
+let releaseBlank: (() => void) | undefined;
+opened.getURL = () => openedUrl;
+opened.loadURL = (next: string) => {
+  openedUrl = next;
+  openedUrls.push(next);
+  if (next === "about:blank") return new Promise<void>((resolve) => { releaseBlank = resolve; });
+  return Promise.resolve();
+};
+const pageHandlers: Record<string, (event: { preventDefault: () => void }, url?: string) => void> = {};
+opened.on = (event: string, listener: (event: { preventDefault: () => void }, url?: string) => void) => {
+  pageHandlers[event] = listener;
+};
+const fakeApp: { on: (event: string, listener: (event: unknown, contents: typeof opened) => void) => void; created?: (event: unknown, contents: typeof opened) => void } = {
+  on(event, listener) { if (event === "web-contents-created") fakeApp.created = listener; },
+};
+cjs.registerChromiumBrotliProtection(fakeApp, { log() {}, onFatal() {}, maxReattachAttempts: 1, reattachDelayMs: 0 });
+fakeApp.created?.(null, opened);
+let prevented = false;
+pageHandlers["will-navigate"]?.({ preventDefault() { prevented = true; } }, "http://127.0.0.1/child");
+check(prevented && !openedUrls.includes("http://127.0.0.1/child"), "同源新窗口的首次导航会先停住");
+releaseBlank?.();
 await new Promise((resolve) => setImmediate(resolve));
 await new Promise((resolve) => setImmediate(resolve));
-check(detached.devtoolsClosed() && detached.stopped() && fatalMessage.includes(CVE_2026_111497), "调试通道断开后重新挂载失败会停掉页面");
+check(openedUrls.includes("http://127.0.0.1/child"), "解码限制装上之后才打开新窗口的目标地址");
 
 console.log("\n== 已修复的运行时保持 Brotli 可用 ==");
 const allowed = enforceNodeRuntimeCve2026111497({ version: process.versions.node, electron: false, exitProcess: false });
@@ -371,6 +415,17 @@ try {
   zlib.brotliDecompressSync(br);
 } catch (error) {
   syncBlocked = error && error.code === "ERR_BROTLI_DISABLED";
+}
+let endCode = "";
+let endText = "";
+try {
+  const stream = new zlib.BrotliDecompress();
+  const chunks = [];
+  stream.on("data", (chunk) => chunks.push(chunk));
+  stream.end(br);
+  endText = Buffer.concat(chunks).toString();
+} catch (error) {
+  endCode = error && error.code || "";
 }
 const seen = [];
 const server = http.createServer((req, res) => {
@@ -408,6 +463,8 @@ server.listen(0, "127.0.0.1", async () => {
   server.close();
   console.log(JSON.stringify({
     syncBlocked,
+    endCode,
+    endText,
     gzipText,
     brotliRejected,
     garbageRejected,
@@ -429,7 +486,7 @@ check(tsRefuse.code === NODE_RUNTIME_REFUSAL_EXIT_CODE && !tsRefuse.stdout.inclu
 
 async function probeGuard(modulePath: string, label: string): Promise<void> {
   const result = await run(process.execPath, [probePath, modulePath, "guard"]);
-  let parsed: { syncBlocked?: boolean; gzipText?: string; brotliRejected?: boolean; garbageRejected?: boolean; acceptEncoding?: string[] } = {};
+  let parsed: { syncBlocked?: boolean; endCode?: string; endText?: string; gzipText?: string; brotliRejected?: boolean; garbageRejected?: boolean; acceptEncoding?: string[] } = {};
   try {
     parsed = JSON.parse(result.stdout.trim());
   } catch {
@@ -438,6 +495,7 @@ async function probeGuard(modulePath: string, label: string): Promise<void> {
   const encodings = parsed.acceptEncoding ?? [];
   const advertisedBrotli = encodings.some((value) => value.split(",").some((part) => part.trim() === "br"));
   check(result.code === 0 && parsed.syncBlocked === true, `${label}：brotliDecompressSync 在进入原生解码前被拒绝`);
+  check(result.code === 0 && parsed.endCode === "ERR_BROTLI_DISABLED" && parsed.endText !== "hello-brotli", `${label}：new BrotliDecompress().end(chunk) 不会解出原文`);
   check(result.code === 0 && parsed.gzipText === "hello-gzip", `${label}：gzip 响应仍能解开`);
   check(result.code === 0 && parsed.brotliRejected === true && parsed.garbageRejected === true, `${label}：合法与畸形的 br 响应都不会被解码`);
   check(result.code === 0 && encodings.length >= 2 && !advertisedBrotli, `${label}：出站 Accept-Encoding 不再声明 br`);
@@ -509,6 +567,19 @@ try {
   secondInstallThrew = true;
 }
 check(!secondInstallThrew, "重复安装闸门不会抛错");
+let constructorBlocked = false;
+let endText = "";
+try {
+  const stream = new zlib.BrotliDecompress();
+  const chunks: Buffer[] = [];
+  stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+  stream.end(zlib.brotliCompressSync(Buffer.from("hello benign brotli")));
+  endText = Buffer.concat(chunks).toString();
+} catch (error) {
+  constructorBlocked = (error as NodeJS.ErrnoException).code === "ERR_BROTLI_DISABLED";
+}
+check(constructorBlocked && endText !== "hello benign brotli", "服务端模块：new BrotliDecompress().end(chunk) 不会解出原文");
+check(zlib.gunzipSync(zlib.gzipSync(Buffer.from("gz-ok"))).toString() === "gz-ok", "关掉 Brotli 之后 gzip 同步解码仍可用");
 
 console.log("\n== Electron 里的 Chromium 实机 ==");
 const electronPathFile = path.resolve("node_modules/electron/path.txt");
@@ -531,36 +602,51 @@ if (!electronBinary || !existsSync(electronBinary)) {
     xvfbBin || electronBinary,
     xvfbBin ? ["-a", electronBinary, ...electronArgs] : electronArgs,
     {},
-    30000,
+    60000,
   );
   const line = probe.stdout.split(/\r?\n/).find((item) => item.startsWith("CHROMIUM_BROTLI_BLOCK "));
   let payload: {
     error?: string;
     gone?: { reason?: string } | null;
-    result?: { gzipText?: string; brText?: string | null; garbageText?: string | null };
-    seen?: Array<{ acceptEncoding?: string }>;
+    control?: { title?: string; acceptEncodingHasBr?: boolean };
+    document?: { error?: string; title?: string; requests?: number; acceptEncodingHasBr?: boolean; acceptEncodingHasGzip?: boolean; code?: number | null };
+    gzipTitle?: string;
+    child?: { code?: number | null; requests?: number; acceptEncodingHasBr?: boolean } | null;
+    iframe?: { title?: string; code?: number | null; requests?: number; acceptEncodingHasBr?: boolean };
+    worker?: { text?: string; error?: string; timeout?: boolean } | null;
+    workerRequest?: { requests?: number; acceptEncodingHasBr?: boolean };
+    serviceWorker?: string;
   } = {};
   try {
     payload = JSON.parse(line?.slice("CHROMIUM_BROTLI_BLOCK ".length) || "{}");
   } catch {
     payload = {};
   }
-  const advertisedBrotli = (payload.seen || []).some((entry) =>
-    String(entry.acceptEncoding || "").split(",").some((part) => part.trim().toLowerCase() === "br"));
-  const advertisedGzip = (payload.seen || []).some((entry) =>
-    String(entry.acceptEncoding || "").split(",").some((part) => part.trim().toLowerCase() === "gzip"));
-  check(
-    probe.code === 0
-      && !payload.error
-      && payload.result?.gzipText === "hello-gzip"
-      && payload.result?.brText !== "hello-br"
-      && payload.result?.garbageText !== "this-is-not-brotli"
-      && !payload.gone
-      && !advertisedBrotli
-      && advertisedGzip,
-    "Electron 窗口解开 gzip，不解码 br，也不再声明 br",
-  );
-  if (probe.code !== 0 || payload.result?.gzipText !== "hello-gzip" || payload.result?.brText === "hello-br" || advertisedBrotli) {
+  const workerText = payload.worker?.text ?? "";
+  const liveOk = probe.code === 0
+    && !payload.error
+    && payload.control?.title === "decoded-br"
+    && payload.control?.acceptEncodingHasBr === true
+    && (payload.document?.requests ?? 0) > 0
+    && payload.document?.code === -330
+    && payload.document?.title !== "decoded-br"
+    && payload.document?.acceptEncodingHasBr === false
+    && payload.document?.acceptEncodingHasGzip === true
+    && payload.gzipTitle === "gzip-ok"
+    && (payload.child?.requests ?? 0) > 0
+    && payload.child?.code === -330
+    && payload.child?.acceptEncodingHasBr === false
+    && payload.iframe?.title !== "decoded-iframe"
+    && payload.iframe?.code === -330
+    && payload.iframe?.acceptEncodingHasBr === false
+    && (payload.workerRequest?.requests ?? 0) > 0
+    && payload.workerRequest?.acceptEncodingHasBr === false
+    && workerText !== "hello-br"
+    && payload.worker?.timeout !== true
+    && (payload.serviceWorker === "missing" || payload.serviceWorker === "blocked")
+    && !payload.gone;
+  check(liveOk, "未装拦截时 br 能解开；装上 CDP 后文档、新窗口、iframe、Worker 都解不开，且这些请求不再声明 br");
+  if (!liveOk) {
     console.log(probe.stdout);
     console.log(probe.stderr);
   }

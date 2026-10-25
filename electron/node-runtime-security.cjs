@@ -46,7 +46,7 @@ function isNodeRuntimeVulnerableToCve2026111497(version) {
 function nodeRuntimeCveMessage(version, action) {
   const floors = "22.23.4、24.22.1 或 26.12.1";
   if (action === "guard") {
-    return `Electron 内嵌的 Node.js ${version} 仍受 ${CVE_2026_111497} 影响（Brotli 解码越界写）。稳定版 Electron 的 Node.js 与 Chromium 都还没带上这份补丁。扫描端已关闭 Node 的 Brotli 解码。窗口加载前会再限制 Chromium 只接受 gzip 与 deflate，避免 br 进入 Chromium 的解码器。上游发布同时包含已修复 Node.js（${floors} 及以上）和已修复 Chromium 的版本后请升级扫描端。`;
+    return `Electron 内嵌的 Node.js ${version} 仍受 ${CVE_2026_111497} 影响（Brotli 解码越界写）。已核对的 Electron 39.8.10 带的是未修复的 Node 与 Chromium 142.0.7444.265。扫描端已关闭 Node 的 Brotli 解码。远程模式的窗口在加载前只接受 gzip 与 deflate，避免 br 进入 Chromium 的解码器。上游发布同时包含已修复 Node.js（${floors} 及以上）和已修复 Chromium 的版本后请升级扫描端。`;
   }
   return `Node.js ${version} 受 ${CVE_2026_111497} 影响（Brotli 解码越界写，畸形压缩数据可导致崩溃、内存泄露或远程代码执行）。请安装 Node.js ${floors} 及以上后再启动。20.x、23.x、25.x 已停止维护，没有补丁。进程将以退出码 ${NODE_RUNTIME_REFUSAL_EXIT_CODE} 结束。`;
 }
@@ -80,14 +80,23 @@ function installBrotliDecodeGuard() {
   replaceZlibMethod(zlib, "brotliDecompressSync", () => {
     throw disabledError("brotliDecompressSync");
   });
-  proto.write = function guardedWrite() {
-    const error = disabledError("write");
-    const stream = this;
-    queueMicrotask(() => {
-      if (!stream.destroyed) stream.destroy(error);
-    });
-    return false;
+  // end(chunk) 不走实例 write，只换 write 仍会解码。构造器和 _transform 都要停。
+  proto._transform = function guardedTransform(_chunk, _encoding, callback) {
+    callback(disabledError("_transform"));
   };
+  proto._processChunk = function guardedProcessChunk(_chunk, _flushFlag, callback) {
+    const error = disabledError("_processChunk");
+    if (typeof callback === "function") {
+      callback(error);
+      return undefined;
+    }
+    throw error;
+  };
+  function DisabledBrotliDecompress() {
+    throw disabledError("BrotliDecompress");
+  }
+  DisabledBrotliDecompress.prototype = proto;
+  replaceZlibMethod(zlib, "BrotliDecompress", DisabledBrotliDecompress);
 }
 
 function enforceNodeRuntimeCve2026111497(options) {
@@ -113,9 +122,10 @@ function enforceNodeRuntimeCve2026111497(options) {
 }
 
 // Chromium 142 已去掉 brotli-encoding 这个 feature，--disable-features 关不掉解码。
-// URLRequestHttpJob 只在 accepted_stream_types 含 kBrotli 时才 CreateBrotliSourceStream；
-// 列表里没有 br 时，Content-Encoding: br 会原样透传，解码器不会跑。
-// 这组值交给 DevTools 的 Network.setAcceptedEncodings（必须先 Network.enable）。
+// URLRequestHttpJob 只在 accepted_stream_types 含 kBrotli 时才走成功的 Brotli 解码。
+// 在 Electron 39.8.10 上，列表里没有 br 时，合法 br 也不会解出原文，而是
+// ERR_CONTENT_DECODING_FAILED。这组值交给 DevTools 的 Network.setAcceptedEncodings
+// （必须先 Network.enable，且渲染进程已经出现，否则这条命令会一直挂起）。
 const CHROMIUM_ACCEPTED_ENCODINGS = Object.freeze(["gzip", "deflate"]);
 
 function headerValues(headers, name) {
@@ -146,6 +156,9 @@ const headerBlockedSessions = new WeakSet();
 const decodeListenersInstalled = new WeakSet();
 const decodeConfiguredSessions = new WeakMap();
 const decodeReattachPending = new WeakSet();
+const decodeInstallPromises = new WeakMap();
+const decodeReady = new WeakSet();
+const navigationHolds = new WeakSet();
 
 function writeRuntimeLog(log, level, message) {
   if (typeof log === "function") log(level, message);
@@ -247,7 +260,71 @@ function installChromiumBrotliHeaderBlock(targetSession, log) {
   headerBlockedSessions.add(targetSession);
 }
 
-async function installChromiumBrotliDecodeBlock(webContents, log, options) {
+function chromiumBrotliProtectionEnabled() {
+  return String(process.env.PROJECTX_SERVER_MODE || "").toLowerCase() === "remote";
+}
+
+function scheduleChromiumBrotliReattach(webContents, dbg, log, options, state, reason) {
+  if (typeof webContents.isDestroyed === "function" && webContents.isDestroyed()) return;
+  if (decodeReattachPending.has(webContents)) return;
+  const maxAttempts = options?.maxReattachAttempts ?? 3;
+  const delayMs = options?.reattachDelayMs ?? 200;
+  state.failures += 1;
+  if (state.failures > maxAttempts) {
+    const error = chromiumBrotliBlockError(reason || "调试通道反复断开");
+    writeRuntimeLog(log, "ERROR", `[Electron] 重新关闭 Chromium Brotli 解码失败: ${error.message}`);
+    try {
+      if (typeof webContents.stop === "function") webContents.stop();
+    } catch {
+      /* 页面可能已经销毁 */
+    }
+    if (typeof options?.onFatal === "function") options.onFatal(error);
+    return;
+  }
+  decodeReattachPending.add(webContents);
+  decodeConfiguredSessions.delete(webContents);
+  writeRuntimeLog(log, "ERROR", `[Electron] Brotli 解码拦截通道断开 reason=${reason}，第 ${state.failures} 次重新装上`);
+  setTimeout(() => {
+    decodeReattachPending.delete(webContents);
+    if (typeof webContents.isDestroyed === "function" && webContents.isDestroyed()) return;
+    try {
+      if (typeof webContents.isDevToolsOpened === "function" && webContents.isDevToolsOpened()) {
+        webContents.closeDevTools();
+      }
+    } catch {
+      /* 关不上开发者工具时，下面的重新挂载会失败并继续重试 */
+    }
+    // 父通道断开后，子目标的 session 一并失效。清掉记录，重连成功后再给新子目标装编码。
+    decodeConfiguredSessions.delete(webContents);
+    decodeInstallPromises.delete(webContents);
+    Promise.resolve(installChromiumBrotliDecodeBlock(webContents, log, options)).then(() => {
+      state.failures = 0;
+    }).catch((error) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      scheduleChromiumBrotliReattach(webContents, dbg, log, options, state, detail);
+    });
+  }, delayMs * state.failures);
+}
+
+function installChromiumBrotliDecodeBlock(webContents, log, options) {
+  const existing = decodeInstallPromises.get(webContents);
+  if (existing) return existing;
+  // 先占位再开始导航。loadURL 可能同步触发 will-navigate，那时再进来必须看到同一次安装。
+  let resolvePending = () => {};
+  let rejectPending = () => {};
+  const pending = new Promise((resolve, reject) => {
+    resolvePending = resolve;
+    rejectPending = reject;
+  });
+  decodeInstallPromises.set(webContents, pending);
+  installChromiumBrotliDecodeBlockOnce(webContents, log, options).then(resolvePending, (error) => {
+    if (decodeInstallPromises.get(webContents) === pending) decodeInstallPromises.delete(webContents);
+    rejectPending(error);
+  });
+  return pending;
+}
+
+async function installChromiumBrotliDecodeBlockOnce(webContents, log, options) {
   if (!webContents || typeof webContents.isDestroyed !== "function" || webContents.isDestroyed()) {
     throw chromiumBrotliBlockError("窗口已经关闭");
   }
@@ -270,43 +347,85 @@ async function installChromiumBrotliDecodeBlock(webContents, log, options) {
       }
       void configureChildTarget(webContents, dbg, childSessionId, log);
     });
+    const reattachState = { failures: 0 };
     dbg.on("detach", (_event, reason) => {
-      if (typeof webContents.isDestroyed === "function" && webContents.isDestroyed()) return;
-      if (decodeReattachPending.has(webContents)) return;
-      decodeReattachPending.add(webContents);
-      decodeConfiguredSessions.delete(webContents);
-      writeRuntimeLog(log, "ERROR", `[Electron] Brotli 解码拦截通道断开 reason=${reason}，正在重新装上`);
-      setImmediate(() => {
-        decodeReattachPending.delete(webContents);
-        if (typeof webContents.isDestroyed === "function" && webContents.isDestroyed()) return;
-        try {
-          if (typeof webContents.isDevToolsOpened === "function" && webContents.isDevToolsOpened()) {
-            webContents.closeDevTools();
-          }
-        } catch {
-          /* 关不上开发者工具时，下面的重新挂载会失败并停掉页面 */
-        }
-        Promise.resolve(installChromiumBrotliDecodeBlock(webContents, log, options)).catch((error) => {
-          const detail = error instanceof Error ? error.message : String(error);
-          writeRuntimeLog(log, "ERROR", `[Electron] 重新关闭 Chromium Brotli 解码失败: ${detail}`);
-          try {
-            if (typeof webContents.stop === "function") webContents.stop();
-          } catch {
-            /* 页面可能已经销毁 */
-          }
-          if (typeof options?.onFatal === "function") options.onFatal(error);
-        });
-      });
+      scheduleChromiumBrotliReattach(webContents, dbg, log, options, reattachState, reason);
     });
     decodeListenersInstalled.add(webContents);
   }
   try {
     if (!dbg.isAttached()) dbg.attach("1.3");
     await applyChromiumAcceptedEncodings(dbg);
+    decodeReady.add(webContents);
     writeRuntimeLog(log, "INFO", "[Electron] 已限制 Chromium 只接受 gzip 与 deflate，不再解码 br");
   } catch (error) {
     throw chromiumBrotliBlockError(error);
   }
+}
+
+function holdNavigationUntilBrotliBlock(contents, options) {
+  if (navigationHolds.has(contents)) return;
+  navigationHolds.add(contents);
+  let queuedUrl = null;
+  let resuming = false;
+  let opening = false;
+  const fail = (error) => {
+    if (typeof options?.onFatal === "function") options.onFatal(error);
+  };
+  const isAbout = (url) => !url || String(url).startsWith("about:");
+  const resume = () => {
+    if (typeof contents.isDestroyed === "function" && contents.isDestroyed()) return;
+    if (!queuedUrl || resuming) return;
+    if (typeof contents.isLoading === "function" && contents.isLoading()) {
+      contents.once("did-stop-loading", resume);
+      return;
+    }
+    const next = queuedUrl;
+    queuedUrl = null;
+    resuming = true;
+    contents.loadURL(next).catch(fail);
+  };
+  const arm = () => {
+    if (opening || decodeReady.has(contents)) {
+      if (decodeReady.has(contents)) resume();
+      return;
+    }
+    opening = true;
+    const run = () => {
+      installChromiumBrotliDecodeBlock(contents, options?.log, options).then(resume).catch(fail);
+    };
+    // stop() 之后马上 loadURL(about:blank) 会和还没停干净的导航打架，先等它停。
+    if (typeof contents.isLoading === "function" && contents.isLoading()) {
+      contents.once("did-stop-loading", run);
+      return;
+    }
+    run();
+  };
+  // window.open 先发出 did-start-navigation，will-navigate 才到。
+  // 不能在 did-start-navigation 里同步 stop()，Electron 39 会在这里崩溃。
+  // 取消交给 will-navigate 的 preventDefault；这里只记住地址，等这一轮结束再装调试通道。
+  contents.on("did-start-navigation", (_event, url) => {
+    if (decodeReady.has(contents) || resuming || isAbout(url)) return;
+    queuedUrl = url;
+    setImmediate(arm);
+  });
+  contents.on("will-navigate", (event, url) => {
+    if (decodeReady.has(contents) || resuming || isAbout(url)) return;
+    event.preventDefault();
+    queuedUrl = url;
+    arm();
+  });
+}
+
+function registerChromiumBrotliProtection(electronApp, options) {
+  if (!electronApp || typeof electronApp.on !== "function") {
+    throw new Error(`${CVE_2026_111497}：没有应用对象，无法给新窗口安装 Brotli 解码拦截。`);
+  }
+  electronApp.on("web-contents-created", (_event, contents) => {
+    const type = typeof contents.getType === "function" ? contents.getType() : "";
+    if (type === "devtools") return;
+    holdNavigationUntilBrotliBlock(contents, options);
+  });
 }
 
 module.exports = {
@@ -322,4 +441,6 @@ module.exports = {
   acceptEncodingWithoutBrotli,
   installChromiumBrotliHeaderBlock,
   installChromiumBrotliDecodeBlock,
+  registerChromiumBrotliProtection,
+  chromiumBrotliProtectionEnabled,
 };

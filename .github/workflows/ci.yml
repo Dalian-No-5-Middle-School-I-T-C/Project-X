@@ -462,3 +462,33 @@ jobs:
 
       - name: Build (scanner)
         run: npm run build:scanner:full
+
+  electron-chromium-brotli:
+    name: Electron Chromium Brotli gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.4"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Install Linux platform binaries (npm bug #4828)
+        run: npm install --no-save --ignore-scripts @rollup/rollup-linux-x64-gnu @esbuild/linux-x64
+
+      # 其余 CI 用 --ignore-scripts，没有 Electron 二进制，Chromium 实机检查会被跳过。
+      - name: Download Electron
+        run: node node_modules/electron/install.js
+
+      - name: Install Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgtk-3-0 libnss3 libgbm1 libxss1 libxtst6
+          sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2
+
+      - name: Chromium Brotli decode gate
+        run: xvfb-run -a npm run verify:node-runtime-cve

@@ -4,10 +4,10 @@
  * 触发条件是进程用 `node:zlib` 解开攻击者提供的 Brotli（含 `fetch` 自动解码 `Content-Encoding: br`）。
  *
  * 服务端跑在系统 Node 上，版本不够就退出 78，不监听端口。
- * 扫描端跑在 Electron 内嵌的 Node 上。截至 2026-10-23，稳定版 Electron（含 45.0.0）仍带有
- * 未修复的 Node（24.22.0 或更早）和未修复的 Chromium 142，升级 Electron 不能补上这个洞。
- * 这里关掉 Node 的 Brotli 解码。Chromium 那条路径在 `electron/main.cjs` 里另行关掉：
- * 窗口只接受 gzip 与 deflate，br 不会进入 Chromium 的解码器。
+ * 扫描端跑在 Electron 内嵌的 Node 上。已核对的 Electron 39.8.10 带 Node 22.22.1 与
+ * Chromium 142.0.7444.265，两边的 Brotli 解码都还没有这份补丁。Electron 45.0.0 的 Node 是
+ * 24.22.0，仍低于 24.22.1；它的 Chromium 是 156，不在这次已核对的范围内。
+ * 这里关掉 Node 的 Brotli 解码。远程模式下 Chromium 那条路径在 `electron/main.cjs` 里另行关掉。
  *
  * `electron/node-runtime-security.cjs` 是同一套规则的副本（主进程不能加载这份 TypeScript）。
  * `scripts/verify-node-runtime-cve.ts` 会核对两边的判定和下面这行 shell 检查。
@@ -33,16 +33,17 @@ export type NodeRuntimeCveDecision = {
 };
 
 type BrotliPrototype = {
-  write: (chunk?: unknown, encoding?: unknown, cb?: unknown) => boolean;
-  destroyed?: boolean;
-  destroy?: (error?: Error) => void;
+  _transform: (chunk: unknown, encoding: unknown, callback: (error?: Error) => void) => void;
+  _processChunk: (chunk: unknown, flushFlag: unknown, callback?: (error?: Error) => void) => unknown;
 } & Record<symbol, boolean>;
+
+type BrotliConstructor = { prototype: BrotliPrototype };
 
 type BrotliZlib = {
   createBrotliDecompress: () => unknown;
   brotliDecompress: () => unknown;
   brotliDecompressSync: () => unknown;
-  BrotliDecompress: { prototype: BrotliPrototype };
+  BrotliDecompress: BrotliConstructor;
 };
 
 function parseNodeVersion(version: string): { major: number; minor: number; patch: number; prerelease: boolean } | null {
@@ -77,7 +78,7 @@ export function isNodeRuntimeVulnerableToCve2026111497(version: string): boolean
 export function nodeRuntimeCveMessage(version: string, action: Exclude<NodeRuntimeCveAction, "allow">): string {
   const floors = "22.23.4、24.22.1 或 26.12.1";
   if (action === "guard") {
-    return `Electron 内嵌的 Node.js ${version} 仍受 ${CVE_2026_111497} 影响（Brotli 解码越界写）。稳定版 Electron 的 Node.js 与 Chromium 都还没带上这份补丁。扫描端已关闭 Node 的 Brotli 解码。窗口加载前会再限制 Chromium 只接受 gzip 与 deflate，避免 br 进入 Chromium 的解码器。上游发布同时包含已修复 Node.js（${floors} 及以上）和已修复 Chromium 的版本后请升级扫描端。`;
+    return `Electron 内嵌的 Node.js ${version} 仍受 ${CVE_2026_111497} 影响（Brotli 解码越界写）。已核对的 Electron 39.8.10 带的是未修复的 Node 与 Chromium 142.0.7444.265。扫描端已关闭 Node 的 Brotli 解码。远程模式的窗口在加载前只接受 gzip 与 deflate，避免 br 进入 Chromium 的解码器。上游发布同时包含已修复 Node.js（${floors} 及以上）和已修复 Chromium 的版本后请升级扫描端。`;
   }
   return `Node.js ${version} 受 ${CVE_2026_111497} 影响（Brotli 解码越界写，畸形压缩数据可导致崩溃、内存泄露或远程代码执行）。请安装 Node.js ${floors} 及以上后再启动。20.x、23.x、25.x 已停止维护，没有补丁。进程将以退出码 ${NODE_RUNTIME_REFUSAL_EXIT_CODE} 结束。`;
 }
@@ -98,16 +99,28 @@ function disabledError(api: string): Error {
 }
 
 /**
- * 替换 Node 公开的 Brotli 解码入口。内置 `fetch` 在收到 `content-encoding: br` 时走
- * `BrotliDecompress.write`；把它挡在原生 `_transform` 之前，解码器就不会处理这段字节。
- * `createBrotliDecompress` 直接抛错，undici 的能力探测会把 `br` 从 Accept-Encoding 里拿掉，
- * 正常的 HTTPS 响应改用 gzip。压缩方向不动。
+ * 替换 Node 公开的 Brotli 解码入口。`Writable.end(chunk)` 走的是流内部的 `_write`，
+ * 不会调用实例上的 `write`，所以只换 `write` 挡不住 `new BrotliDecompress().end(chunk)`。
+ * 构造器直接抛错；已经拿到旧构造器的实例则在 `_transform` / `_processChunk` 停住，
+ * 字节不会进入原生解码器。`createBrotliDecompress` 抛错后，undici 会把 `br` 从
+ * Accept-Encoding 里拿掉，正常响应改走 gzip。压缩方向不动。
  */
 export function installBrotliDecodeGuard(): void {
   const api = zlib as unknown as BrotliZlib;
   const proto = api.BrotliDecompress.prototype;
   if (proto[GUARD_INSTALLED]) return;
   proto[GUARD_INSTALLED] = true;
+  proto._transform = function guardedTransform(_chunk, _encoding, callback) {
+    callback(disabledError("_transform"));
+  };
+  proto._processChunk = function guardedProcessChunk(_chunk, _flushFlag, callback) {
+    const error = disabledError("_processChunk");
+    if (typeof callback === "function") {
+      callback(error);
+      return undefined;
+    }
+    throw error;
+  };
   // createBrotliDecompress 在 22.23.4 上是 configurable 但不可写，直接赋值会抛 TypeError。
   replaceZlibMethod(api, "createBrotliDecompress", () => {
     throw disabledError("createBrotliDecompress");
@@ -118,14 +131,11 @@ export function installBrotliDecodeGuard(): void {
   replaceZlibMethod(api, "brotliDecompressSync", () => {
     throw disabledError("brotliDecompressSync");
   });
-  proto.write = function guardedWrite(this: BrotliPrototype) {
-    const error = disabledError("write");
-    const stream = this;
-    queueMicrotask(() => {
-      if (!stream.destroyed) stream.destroy?.(error);
-    });
-    return false;
-  };
+  const DisabledBrotliDecompress = function DisabledBrotliDecompress(this: unknown) {
+    throw disabledError("BrotliDecompress");
+  } as unknown as BrotliConstructor;
+  DisabledBrotliDecompress.prototype = proto;
+  replaceZlibMethod(api, "BrotliDecompress", DisabledBrotliDecompress as unknown as () => never);
 }
 
 export function enforceNodeRuntimeCve2026111497(options?: {
