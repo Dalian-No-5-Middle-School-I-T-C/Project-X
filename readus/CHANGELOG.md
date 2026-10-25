@@ -2,10 +2,11 @@
 
 ## 2026-10-25：CVE-2026-111497 运行时门槛与扫描端 Brotli 解码拦截
 
-- **服务端**：Node.js 低于 22.23.4、24.22.1、26.12.1，或属于已停更的 20 / 23 / 25 和预发布版本时，进程以退出码 78 结束，不监听端口。Ubuntu 安装脚本在 `/usr/bin/node` 未修复时拒绝安装，并清掉 `PROJECTX_NODE_VERSION_UNDER_TEST`，避免测试变量放行旧运行时。systemd 增加 `RestartPreventExitStatus=78`。
-- **扫描端 Node**：Electron 39.8.10 自带的 Node 仍未修复。主进程关掉 `createBrotliDecompress`、同步解码，以及 `new BrotliDecompress()` / `.end(chunk)` 这条不经过 `write` 的入口。gzip 保持可用。
-- **扫描端 Chromium**：已核对 Electron 39.8.10 的 Chromium 142.0.7444.265 仍会解码 Brotli。`PROJECTX_SERVER_MODE=remote` 时，每个非 DevTools 的 webContents（含同源 `window.open`）在首次网络请求前只接受 gzip 与 deflate；装不上或重试后仍挂不上调试通道，就停止加载。调试通道一旦断开（例如打开开发者工具），立刻停掉当前加载、清掉已保护标记，并在请求发出前取消这个窗口的新请求；编码限制重新装上之后才继续导航。Service worker 在该模式下关闭。本地内嵌服务不走这条调试通道，避免打开开发者工具时扫描端直接退出。
-- **验证**：`verify:node-runtime-cve`。有 Electron 二进制时另跑实机对照：不挂拦截的窗口能解出 br，挂上之后顶层文档、同源新窗口、iframe 和 Worker 都返回 `ERR_CONTENT_DECODING_FAILED`，且请求不再声明 `br`。CI 的 Electron 作业负责这条实机检查；其余作业仍用 `--ignore-scripts`，不下载 Electron。
+- **服务端**：Node.js 低于 22.23.4、24.22.1、26.12.1，或属于已停更的 20 / 23 / 25 和预发布版本时，进程以退出码 78 结束，不监听端口。检查放在 `startServer()` 里，导入 `createApp` 本身不会退出。Ubuntu 安装脚本在 `/usr/bin/node` 未修复时拒绝安装，并清掉 `PROJECTX_NODE_VERSION_UNDER_TEST`，避免测试变量放行旧运行时。systemd 增加 `RestartPreventExitStatus=78`。
+- **扫描端 Node**：Electron 39.8.10 自带的 Node 22.22.1 仍未修复。同步解码和 `new BrotliDecompress()` / `.end(chunk)` 直接拒绝。`createBrotliDecompress` 不在调用当场抛错：这个版本的 undici 接不住同步异常，进程会退出；改成把字节挡在普通流里，等 `fetch` 接上读取器后再失败。gzip 保持可用。
+- **扫描端 Chromium**：已核对 Electron 39.8.10 的 Chromium 142.0.7444.265 仍会解码 Brotli。`PROJECTX_SERVER_MODE=remote` 时，每个非 DevTools 的 webContents（含同源 `window.open`）在首次网络请求前只接受 gzip 与 deflate。本地壳加载的是 `127.0.0.1`，页面里填写的远端地址由渲染进程直接请求；这种非本机 http(s) 请求会先被按住，等同一个编码限制装上再发出。装不上时取消这些远端请求。调试通道一旦断开（例如打开开发者工具），立刻停掉当前加载、清掉已保护标记，并在请求发出前取消这个窗口的新请求；编码限制重新装上之后才继续导航。只有远端壳的主窗口在拦截失效时退出整个扫描端；预览、答案、PDF 这类辅助窗口只关闭自己。Service worker 在扫描端始终关闭。纯本机使用不挂调试通道。
+- **Accept-Encoding**：去掉 `br` 时按编码令牌判断，`br;q=1.0` 也会去掉。
+- **验证**：`verify:node-runtime-cve`。有 Electron 二进制时，用 `ELECTRON_RUN_AS_NODE=1` 再跑一遍 Node 闸门，并另跑 Chromium 实机对照：不挂拦截的窗口能解出 br，挂上之后顶层文档、同源新窗口、iframe 和 Worker 都返回 `ERR_CONTENT_DECODING_FAILED`，且请求不再声明 `br`。CI 的 Electron 作业负责这条实机检查；其余作业仍用 `--ignore-scripts`，不下载 Electron。
 
 ## 2026-10-22：#349 交错客观/主观题块顺序保存后丢失
 

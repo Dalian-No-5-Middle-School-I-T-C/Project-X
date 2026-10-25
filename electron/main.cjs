@@ -4,11 +4,14 @@ require("./node-runtime-security.cjs").enforceNodeRuntimeCve2026111497();
 
 const { app, BrowserWindow, dialog, session, shell } = require("electron");
 const {
+  chromiumBrotliFailureScope,
   chromiumBrotliProtectionEnabled,
+  configureChromiumBrotliRemoteGate,
   installChromiumBrotliDecodeBlock,
   installChromiumBrotliHeaderBlock,
   installChromiumBrotliNetworkPause,
   registerChromiumBrotliProtection,
+  trackChromiumWebContents,
 } = require("./node-runtime-security.cjs");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -399,8 +402,8 @@ async function createWindow() {
     appendLog("INFO", "[Renderer] responsive (recovered)");
   });
 
-  // 远程页面的 br 由 Chromium 解码。本地内嵌服务不发送 br，不在这里挂调试通道，
-  // 避免老师打开开发者工具时通道被挤掉、扫描端直接退出。
+  // 壳自己打开的就是远端页面时，加载前先关掉解码。本地壳加载 127.0.0.1，
+  // 调试通道改到页面第一次访问非本机地址时再挂，避免老师打开开发者工具就退出。
   if (chromiumBrotliProtectionEnabled()) {
     await installChromiumBrotliDecodeBlock(mainWindow.webContents, appendLog, {
       onFatal: failClosedChromiumBrotli,
@@ -423,18 +426,45 @@ function failClosedChromiumBrotli(error) {
   app.quit();
 }
 
-app.on("session-created", (createdSession) => {
-  installChromiumBrotliHeaderBlock(createdSession, appendLog);
-  if (chromiumBrotliProtectionEnabled()) installChromiumBrotliNetworkPause(createdSession, appendLog);
+function reportChromiumBrotliWindowFailure(webContents, error) {
+  if (chromiumBrotliFailureScope(webContents, mainWindow ? mainWindow.webContents : null) === "process") {
+    failClosedChromiumBrotli(error);
+    return;
+  }
+  const detail = error instanceof Error ? error.message : String(error);
+  appendLog("ERROR", `[Electron] 这个窗口的 Brotli 解码拦截失效，主窗口继续运行: ${detail}`);
+  if (!webContents || (mainWindow && webContents === mainWindow.webContents)) return;
+  try {
+    const owner = BrowserWindow.fromWebContents(webContents);
+    if (owner && !owner.isDestroyed()) owner.destroy();
+  } catch (destroyError) {
+    const destroyDetail = destroyError instanceof Error ? destroyError.message : String(destroyError);
+    appendLog("ERROR", `[Electron] 关闭未受保护的窗口失败: ${destroyDetail}`);
+  }
+}
+
+app.on("web-contents-created", (_event, contents) => {
+  trackChromiumWebContents(contents);
 });
 
+configureChromiumBrotliRemoteGate({
+  log: appendLog,
+  onWindowFatal: reportChromiumBrotliWindowFailure,
+});
+
+app.on("session-created", (createdSession) => {
+  installChromiumBrotliHeaderBlock(createdSession, appendLog);
+  installChromiumBrotliNetworkPause(createdSession, appendLog);
+});
+
+// Service worker 不是页面 target 的子目标，主窗口的调试通道盖不到。扫描端页面不使用它。
+// 开关必须在 app ready 之前，本地壳和远端壳都关掉。
+app.commandLine.appendSwitch("disable-features", "ServiceWorker");
+
 if (chromiumBrotliProtectionEnabled()) {
-  // Service worker 不是页面 target 的子目标，主窗口的 Target.setAutoAttach 盖不到。
-  // 扫描端页面不使用 service worker。开关必须在 app ready 之前。
-  app.commandLine.appendSwitch("disable-features", "ServiceWorker");
   registerChromiumBrotliProtection(app, {
     log: appendLog,
-    onFatal: failClosedChromiumBrotli,
+    onWindowFatal: reportChromiumBrotliWindowFailure,
   });
 }
 
@@ -444,7 +474,7 @@ app.whenReady().then(async () => {
     installDevicePermissionPolicy();
     // defaultSession 可能在 session-created 监听挂上之前就已经存在，这里再装一次（内部会去重）。
     installChromiumBrotliHeaderBlock(session.defaultSession, appendLog);
-    if (chromiumBrotliProtectionEnabled()) installChromiumBrotliNetworkPause(session.defaultSession, appendLog);
+    installChromiumBrotliNetworkPause(session.defaultSession, appendLog);
     await createWindow();
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);

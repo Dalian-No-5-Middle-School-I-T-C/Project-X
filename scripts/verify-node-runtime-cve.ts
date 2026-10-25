@@ -49,6 +49,9 @@ const cjs = require("../electron/node-runtime-security.cjs") as {
     log?: (level: string, message: string) => void,
     options?: { onFatal?: (error: unknown) => void },
   ) => Promise<void>;
+  chromiumBrotliFailureScope: (webContents: unknown, mainWebContents: unknown) => "process" | "window";
+  configureChromiumBrotliRemoteGate: (options: { onWindowFatal?: (webContents: unknown, error: unknown) => void; log?: (level: string, message: string) => void } | null) => void;
+  trackChromiumWebContents: (webContents: { id?: number }) => void;
 };
 const packaging = require("../scripts/package-server-ubuntu.cjs") as {
   createInstallScript: () => string;
@@ -162,7 +165,13 @@ check(!readme.includes("apt install -y nodejs"), "部署说明不再把 Ubuntu �
 const rootPackage = JSON.parse(readFileSync("package.json", "utf8")) as { engines?: { node?: string } };
 check(rootPackage.engines?.node === runtime.engines?.node, "仓库 package.json 与 Ubuntu 包的 engines 相同");
 const serverEntry = readFileSync("src/apps/answer-card/server/index.ts", "utf8");
-check(serverEntry.includes("enforceNodeRuntimeCve2026111497()"), "服务端入口在监听前执行运行时检查");
+const startFn = serverEntry.slice(serverEntry.indexOf("export async function startServer"));
+const enforceCall = "enforceNodeRuntimeCve2026111497()";
+check(
+  startFn.indexOf(enforceCall) > -1 && startFn.indexOf(enforceCall) < startFn.indexOf("server.listen("),
+  "服务端在 startServer 里、监听前执行运行时检查",
+);
+check(serverEntry.indexOf(enforceCall) === serverEntry.lastIndexOf(enforceCall), "导入服务端模块不会在顶层退出");
 const mainCjs = readFileSync("electron/main.cjs", "utf8");
 check(mainCjs.startsWith("//") && mainCjs.includes('require("./node-runtime-security.cjs").enforceNodeRuntimeCve2026111497()'), "扫描端主进程在加载 Electron 之前执行同一检查");
 check(nodeRuntimeCveMessage("24.22.0", "guard") === cjs.nodeRuntimeCveMessage("24.22.0", "guard"), "Electron 提示文案两边一致");
@@ -179,7 +188,7 @@ check(pauseAt > headerAt && pauseAt < createAt, "默认会话在创建窗口前�
 check(mainCjs.includes('app.on("session-created"'), "新建 session 同样拦截 br 响应头");
 check(mainCjs.includes("installChromiumBrotliNetworkPause(createdSession"), "新建 session 同样在重连期间暂停请求");
 check(mainCjs.includes("registerChromiumBrotliProtection") && mainCjs.includes("chromiumBrotliProtectionEnabled()"), "远程模式给之后创建的每个窗口安装解码拦截");
-check(mainCjs.includes('app.commandLine.appendSwitch("disable-features", "ServiceWorker")'), "远程模式关掉 service worker，避免它绕开页面级调试通道");
+check(mainCjs.includes('app.commandLine.appendSwitch("disable-features", "ServiceWorker")'), "扫描端关掉 service worker，避免它绕开页面级调试通道");
 const syntax = await run(process.execPath, ["--check", "electron/main.cjs"]);
 check(syntax.code === 0, "electron/main.cjs 语法可解析");
 const cjsSyntax = await run(process.execPath, ["--check", "electron/node-runtime-security.cjs"]);
@@ -199,8 +208,12 @@ check(
 check(cjs.acceptEncodingWithoutBrotli("gzip, deflate, br") === "gzip, deflate", "Accept-Encoding 去掉 br 令牌");
 check(cjs.acceptEncodingWithoutBrotli("br") === "gzip, deflate", "只声明 br 时退回 gzip, deflate");
 check(cjs.acceptEncodingWithoutBrotli("gzip, BR , deflate") === "gzip, deflate", "br 令牌不区分大小写");
+check(cjs.acceptEncodingWithoutBrotli("gzip, br;q=1.0, deflate") === "gzip, deflate", "带 q 值的 br 令牌也会去掉");
+check(cjs.acceptEncodingWithoutBrotli("br;q=0.5") === "gzip, deflate", "只声明 br;q 时退回 gzip, deflate");
+check(cjs.acceptEncodingWithoutBrotli("gzip;q=0.8, br;q=1") === "gzip;q=0.8", "去掉 br 时保留其它编码的 q 值");
 check(cjs.acceptEncodingWithoutBrotli("") === "gzip, deflate", "空 Accept-Encoding 退回 gzip, deflate");
 check(cjs.responseUsesBrotli({ "Content-Encoding": "br" }), "Content-Encoding: br 判定为 Brotli");
+check(cjs.responseUsesBrotli({ "Content-Encoding": "br;q=1" }), "带参数的 br 内容编码也判定为 Brotli");
 check(cjs.responseUsesBrotli({ "content-encoding": ["gzip", "br"] }), "多值响应头里的 br 也会被发现");
 check(!cjs.responseUsesBrotli({ "Content-Encoding": "gzip" }), "gzip 响应不会被当成 Brotli");
 check(!cjs.responseUsesBrotli({ "Content-Encoding": "brotli" }), "只认 br 这个令牌");
@@ -364,14 +377,14 @@ detached.debugger.emit("detach", "replaced_with_devtools");
 let gapCancelled = false;
 beforeRequest?.({ webContentsId: 41, url: "https://remote.example/gap" }, (value) => { gapCancelled = value.cancel === true; });
 let otherCancelled = false;
-beforeRequest?.({ webContentsId: 99, url: "https://remote.example/other" }, (value) => { otherCancelled = value.cancel === true; });
+beforeRequest?.({ webContentsId: 99, url: "http://127.0.0.1/other" }, (value) => { otherCancelled = value.cancel === true; });
 check(
   fatalMessage === ""
     && detached.stopped()
     && cjs.isChromiumBrotliDecodeReady(detached) === false
     && gapCancelled
     && !otherCancelled,
-  "调试通道一断开就停掉加载并取消这个窗口的新请求，其他窗口不受影响",
+  "调试通道一断开就停掉加载并取消这个窗口的新请求，其它窗口的本机请求不受影响",
 );
 await new Promise((resolve) => setTimeout(resolve, 0));
 await new Promise((resolve) => setTimeout(resolve, 0));
@@ -379,11 +392,63 @@ check(detached.devtoolsClosed() && cjs.isChromiumBrotliDecodeReady(detached) ===
 
 const savedServerMode = process.env.PROJECTX_SERVER_MODE;
 delete process.env.PROJECTX_SERVER_MODE;
-check(cjs.chromiumBrotliProtectionEnabled() === false, "本地模式不强制挂上 Chromium 调试通道");
+check(cjs.chromiumBrotliProtectionEnabled() === false, "本地模式不在加载前强制挂上 Chromium 调试通道");
+const mainContents = { id: 1 };
+const auxContents = { id: 2 };
+check(cjs.chromiumBrotliFailureScope(mainContents, mainContents) === "window", "本地壳主窗口的拦截失败不退出整个进程");
 process.env.PROJECTX_SERVER_MODE = "remote";
-check(cjs.chromiumBrotliProtectionEnabled() === true, "remote 模式才启用 Chromium 解码拦截");
+check(cjs.chromiumBrotliProtectionEnabled() === true, "remote 模式才在加载前启用 Chromium 解码拦截");
+check(cjs.chromiumBrotliFailureScope(mainContents, mainContents) === "process", "远端壳主窗口的拦截失败才退出进程");
+check(cjs.chromiumBrotliFailureScope(auxContents, mainContents) === "window", "远端壳的辅助窗口失败只影响这个窗口");
 if (savedServerMode === undefined) delete process.env.PROJECTX_SERVER_MODE;
 else process.env.PROJECTX_SERVER_MODE = savedServerMode;
+
+const remotePage = fakeWebContents();
+remotePage.id = 7;
+(remotePage as { getURL: () => string }).getURL = () => "http://127.0.0.1/scanner";
+cjs.trackChromiumWebContents(remotePage);
+const remoteResult = await Promise.race([
+  new Promise<{ cancel?: boolean }>((resolve) => {
+    beforeRequest?.({ webContentsId: 7, url: "https://school.example/api/exams" }, resolve);
+  }),
+  new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("远端请求没等到编码限制")), 1000)),
+]);
+check(
+  remoteResult.cancel !== true
+    && remotePage.calls.some((call) => call.method === "Network.setAcceptedEncodings"),
+  "本地壳访问非本机地址时，先装上编码限制再放行这次请求",
+);
+const attachCalls = remotePage.calls.filter((call) => call.method === "attach").length;
+let protectedCancelled = false;
+beforeRequest?.({ webContentsId: 7, url: "https://school.example/api/next" }, (value) => { protectedCancelled = value.cancel === true; });
+check(
+  !protectedCancelled && remotePage.calls.filter((call) => call.method === "attach").length === attachCalls,
+  "同一个窗口后续的远端请求直接放行，不再重复挂调试通道",
+);
+let loopbackCancelled = false;
+const loopbackPage = fakeWebContents();
+loopbackPage.id = 8;
+cjs.trackChromiumWebContents(loopbackPage);
+beforeRequest?.({ webContentsId: 8, url: "http://127.0.0.2:5174/api/health" }, (value) => { loopbackCancelled = value.cancel === true; });
+check(loopbackCancelled === false && !loopbackPage.calls.some((call) => call.method === "attach"), "127.0.0.0/8 的本机请求不挂调试通道");
+let unknownCancelled = false;
+beforeRequest?.({ webContentsId: 12345, url: "https://school.example/api/unknown" }, (value) => { unknownCancelled = value.cancel === true; });
+check(unknownCancelled, "还没登记的窗口不能把远端请求放出去");
+const brokenPage = fakeWebContents({ failMethod: "Network.setAcceptedEncodings" });
+brokenPage.id = 9;
+(brokenPage as { getURL: () => string }).getURL = () => "http://127.0.0.1/scanner";
+let fatalContents: unknown = null;
+cjs.configureChromiumBrotliRemoteGate({
+  onWindowFatal(contents) { fatalContents = contents; },
+});
+cjs.trackChromiumWebContents(brokenPage);
+const brokenResult = await Promise.race([
+  new Promise<{ cancel?: boolean }>((resolve) => {
+    beforeRequest?.({ webContentsId: 9, url: "https://school.example/api/fail" }, resolve);
+  }),
+  new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("失败的远端请求没有结束")), 1000)),
+]);
+check(brokenResult.cancel === true && fatalContents === brokenPage, "编码限制装不上时取消这次远端请求，并把失败交给这个窗口");
 
 const opened = fakeWebContents();
 opened.getType = () => "window";
@@ -531,8 +596,8 @@ const tsRefuse = await run(process.execPath, [
 ]);
 check(tsRefuse.code === NODE_RUNTIME_REFUSAL_EXIT_CODE && !tsRefuse.stdout.includes("SURVIVED"), "服务端模块：22.22.0 非 Electron 退出 78");
 
-async function probeGuard(modulePath: string, label: string): Promise<void> {
-  const result = await run(process.execPath, [probePath, modulePath, "guard"]);
+async function probeGuard(modulePath: string, label: string, command = process.execPath, env: NodeJS.ProcessEnv = {}): Promise<void> {
+  const result = await run(command, [probePath, modulePath, "guard"], env);
   let parsed: { syncBlocked?: boolean; endCode?: string; endText?: string; gzipText?: string; brotliRejected?: boolean; garbageRejected?: boolean; acceptEncoding?: string[] } = {};
   try {
     parsed = JSON.parse(result.stdout.trim());
@@ -641,6 +706,7 @@ if (existsSync(electronPathFile)) {
 if (!electronBinary || !existsSync(electronBinary)) {
   console.log("  - 当前环境没有 Electron 二进制，跳过 Chromium 实机检查（CI 使用 npm install --ignore-scripts）");
 } else {
+  await probeGuard(path.resolve("electron/node-runtime-security.cjs"), "Electron 自带 Node", electronBinary, { ELECTRON_RUN_AS_NODE: "1" });
   const xvfb = spawnSync("sh", ["-c", "command -v xvfb-run"], { encoding: "utf8" });
   const xvfbBin = xvfb.status === 0 ? xvfb.stdout.trim() : "";
   const probeScript = path.resolve("scripts/verify-chromium-brotli-block.cjs");

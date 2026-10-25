@@ -6,6 +6,7 @@
 "use strict";
 
 const zlib = require("node:zlib");
+const { Transform } = require("node:stream");
 
 const CVE_2026_111497 = "CVE-2026-111497";
 const NODE_RUNTIME_REFUSAL_EXIT_CODE = 78;
@@ -14,6 +15,7 @@ const NODE_RUNTIME_CVE_SHELL_CHECK =
 
 const ENFORCED = Symbol.for("projectx.cve-2026-111497");
 const GUARD_INSTALLED = Symbol.for("projectx.cve-2026-111497-brotli-guard");
+const TRACKED = Symbol.for("projectx.cve-2026-111497-tracked");
 
 function parseNodeVersion(version) {
   const match = /^v?(\d+)\.(\d+)\.(\d+)(.*)$/.exec(String(version).trim());
@@ -46,7 +48,7 @@ function isNodeRuntimeVulnerableToCve2026111497(version) {
 function nodeRuntimeCveMessage(version, action) {
   const floors = "22.23.4、24.22.1 或 26.12.1";
   if (action === "guard") {
-    return `Electron 内嵌的 Node.js ${version} 仍受 ${CVE_2026_111497} 影响（Brotli 解码越界写）。已核对的 Electron 39.8.10 带的是未修复的 Node 与 Chromium 142.0.7444.265。扫描端已关闭 Node 的 Brotli 解码。远程模式的窗口在加载前只接受 gzip 与 deflate，避免 br 进入 Chromium 的解码器。上游发布同时包含已修复 Node.js（${floors} 及以上）和已修复 Chromium 的版本后请升级扫描端。`;
+    return `Electron 内嵌的 Node.js ${version} 仍受 ${CVE_2026_111497} 影响（Brotli 解码越界写）。已核对的 Electron 39.8.10 带的是未修复的 Node 与 Chromium 142.0.7444.265。扫描端已关闭 Node 的 Brotli 解码。壳直接加载远端页面时，窗口在加载前只接受 gzip 与 deflate；本地壳访问非本机地址时，会在该请求发出前装上同样的限制。上游发布同时包含已修复 Node.js（${floors} 及以上）和已修复 Chromium 的版本后请升级扫描端。`;
   }
   return `Node.js ${version} 受 ${CVE_2026_111497} 影响（Brotli 解码越界写，畸形压缩数据可导致崩溃、内存泄露或远程代码执行）。请安装 Node.js ${floors} 及以上后再启动。20.x、23.x、25.x 已停止维护，没有补丁。进程将以退出码 ${NODE_RUNTIME_REFUSAL_EXIT_CODE} 结束。`;
 }
@@ -66,14 +68,28 @@ function replaceZlibMethod(target, key, value) {
   target[key] = value;
 }
 
+function createDisabledBrotliDecompress() {
+  const error = disabledError("createBrotliDecompress");
+  // undici 在读响应头时同步调用这里。Node 22.22.1（Electron 39.8.10）里同步抛错
+  // 会变成没有监听器的 error 事件，进程直接退出；在 _transform 里同步 callback(error)
+  // 又会赶在 fetch 的读取器接上之前，res.text() 一直挂着。
+  // 字节停在这个普通 Transform 里，等调用方接上 error 监听之后再销毁。
+  const stream = new Transform({
+    transform() {},
+  });
+  stream.on("error", () => {});
+  setImmediate(() => {
+    if (!stream.destroyed) stream.destroy(error);
+  });
+  return stream;
+}
+
 function installBrotliDecodeGuard() {
   const proto = zlib.BrotliDecompress.prototype;
   if (proto[GUARD_INSTALLED]) return;
   proto[GUARD_INSTALLED] = true;
   // createBrotliDecompress 在 22.23.4 上是 configurable 但不可写，直接赋值会抛 TypeError。
-  replaceZlibMethod(zlib, "createBrotliDecompress", () => {
-    throw disabledError("createBrotliDecompress");
-  });
+  replaceZlibMethod(zlib, "createBrotliDecompress", createDisabledBrotliDecompress);
   replaceZlibMethod(zlib, "brotliDecompress", () => {
     throw disabledError("brotliDecompress");
   });
@@ -137,15 +153,22 @@ function headerValues(headers, name) {
   return parts.flatMap((item) => String(item).split(",")).map((item) => item.trim()).filter(Boolean);
 }
 
+function contentCodingToken(value) {
+  return String(value || "").split(";")[0].trim().toLowerCase();
+}
+
 function responseUsesBrotli(headers) {
-  return headerValues(headers, "content-encoding").some((item) => item.toLowerCase() === "br");
+  return headerValues(headers, "content-encoding").some((item) => contentCodingToken(item) === "br");
 }
 
 function acceptEncodingWithoutBrotli(value) {
   const kept = String(value || "")
     .split(",")
     .map((item) => item.trim())
-    .filter((item) => item && item.toLowerCase() !== "br");
+    .filter((item) => {
+      const token = contentCodingToken(item);
+      return token && token !== "br";
+    });
   return kept.length > 0 ? kept.join(", ") : "gzip, deflate";
 }
 
@@ -163,6 +186,11 @@ const suspendedContentIds = new Set();
 const navigationHolds = new WeakSet();
 const protectionRestoredHandlers = new WeakMap();
 const networkPauseSessions = new WeakSet();
+const contentsById = new Map();
+const heldRemoteRequests = new Map();
+const remoteGateBlocked = new Set();
+let remoteGateHandler = null;
+const REMOTE_GATE_TIMEOUT_MS = 5000;
 
 function writeRuntimeLog(log, level, message) {
   if (typeof log === "function") log(level, message);
@@ -268,6 +296,108 @@ function chromiumBrotliProtectionEnabled() {
   return String(process.env.PROJECTX_SERVER_MODE || "").toLowerCase() === "remote";
 }
 
+function chromiumBrotliFailureScope(webContents, mainWebContents) {
+  if (webContents && mainWebContents && webContents === mainWebContents && chromiumBrotliProtectionEnabled()) {
+    return "process";
+  }
+  return "window";
+}
+
+function isLoopbackHostname(hostname) {
+  let host = String(hostname || "").replace(/^\[|\]$/g, "").toLowerCase();
+  if (host.endsWith(".")) host = host.slice(0, -1);
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (host === "::1" || host === "0:0:0:0:0:0:0:1") return true;
+  if (host.startsWith("::ffff:")) return isLoopbackHostname(host.slice("::ffff:".length));
+  const match = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
+  if (!match) return false;
+  const parts = match.slice(1).map((item) => Number(item));
+  return parts.every((item) => item <= 255) && parts[0] === 127;
+}
+
+function isLoopbackRequestUrl(url) {
+  if (!url) return false;
+  let parsed;
+  try {
+    parsed = new URL(String(url));
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return true;
+  return isLoopbackHostname(parsed.hostname);
+}
+
+function configureChromiumBrotliRemoteGate(options) {
+  remoteGateHandler = options || null;
+}
+
+function trackChromiumWebContents(webContents) {
+  if (!webContents || typeof webContents.id !== "number") return;
+  contentsById.set(webContents.id, webContents);
+  if (webContents[TRACKED]) return;
+  webContents[TRACKED] = true;
+  if (typeof webContents.once === "function") {
+    webContents.once("destroyed", () => {
+      contentsById.delete(webContents.id);
+      remoteGateBlocked.delete(webContents.id);
+      flushHeldRemoteRequests(webContents.id, true);
+    });
+  }
+}
+
+function flushHeldRemoteRequests(id, cancel) {
+  const entry = heldRemoteRequests.get(id);
+  if (!entry) return;
+  heldRemoteRequests.delete(id);
+  clearTimeout(entry.timer);
+  for (const callback of entry.callbacks) {
+    try {
+      callback(cancel ? { cancel: true } : {});
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      writeRuntimeLog(remoteGateHandler?.log, "ERROR", `[Electron] 放行远端请求的回调失败: ${detail}`);
+    }
+  }
+}
+
+function holdRemoteRequest(webContents, callback, log) {
+  const id = webContents.id;
+  let entry = heldRemoteRequests.get(id);
+  if (!entry) {
+    entry = { callbacks: [], timer: null };
+    heldRemoteRequests.set(id, entry);
+    entry.timer = setTimeout(() => {
+      if (heldRemoteRequests.get(id) !== entry) return;
+      remoteGateBlocked.add(id);
+      flushHeldRemoteRequests(id, true);
+      const error = chromiumBrotliBlockError("等待编码限制超时");
+      writeRuntimeLog(log, "ERROR", `[Electron] ${error.message}`);
+      if (typeof remoteGateHandler?.onWindowFatal === "function") remoteGateHandler.onWindowFatal(webContents, error);
+    }, REMOTE_GATE_TIMEOUT_MS);
+    const options = {
+      log,
+      onFatal(error) {
+        remoteGateBlocked.add(id);
+        flushHeldRemoteRequests(id, true);
+        if (typeof remoteGateHandler?.onWindowFatal === "function") remoteGateHandler.onWindowFatal(webContents, error);
+      },
+    };
+    Promise.resolve(installChromiumBrotliDecodeBlock(webContents, log, options)).then(() => {
+      if (heldRemoteRequests.get(id) !== entry) return;
+      if (decodeReady.has(webContents) && !decodeSuspended.has(webContents)) flushHeldRemoteRequests(id, false);
+      else flushHeldRemoteRequests(id, true);
+    }).catch((error) => {
+      if (heldRemoteRequests.get(id) !== entry) return;
+      remoteGateBlocked.add(id);
+      flushHeldRemoteRequests(id, true);
+      const detail = error instanceof Error ? error.message : String(error);
+      writeRuntimeLog(log, "ERROR", `[Electron] 远端请求发出前没能关掉 Brotli 解码: ${detail}`);
+      if (typeof remoteGateHandler?.onWindowFatal === "function") remoteGateHandler.onWindowFatal(webContents, error);
+    });
+  }
+  entry.callbacks.push(callback);
+}
+
 function isChromiumBrotliDecodeReady(webContents) {
   return decodeReady.has(webContents);
 }
@@ -292,7 +422,10 @@ function suspendChromiumBrotliContents(webContents) {
   decodeReady.delete(webContents);
   decodeSuspended.add(webContents);
   decodeConfiguredSessions.delete(webContents);
-  if (typeof webContents?.id === "number") suspendedContentIds.add(webContents.id);
+  if (typeof webContents?.id === "number") {
+    suspendedContentIds.add(webContents.id);
+    flushHeldRemoteRequests(webContents.id, true);
+  }
   try {
     if (typeof webContents.stop === "function") webContents.stop();
   } catch {
@@ -322,12 +455,28 @@ function installChromiumBrotliNetworkPause(targetSession, log) {
   };
   targetSession.webRequest.onBeforeRequest(CHROMIUM_REQUEST_FILTER, (details, callback) => {
     try {
-      if (typeof details?.webContentsId === "number" && suspendedContentIds.has(details.webContentsId)) {
+      const id = typeof details?.webContentsId === "number" ? details.webContentsId : null;
+      if (id !== null && suspendedContentIds.has(id)) {
         writeRuntimeLog(log, "WARN", `[Electron] 调试通道断开，已暂停请求 url=${details.url}`);
         finish(callback, { cancel: true });
         return;
       }
-      finish(callback, {});
+      // 本地壳加载的是 127.0.0.1，页面自己的 fetch 才会碰到远端。这类请求要等编码限制装上再发出。
+      if (isLoopbackRequestUrl(details?.url)) {
+        finish(callback, {});
+        return;
+      }
+      const contents = id === null ? null : contentsById.get(id);
+      if (!contents || remoteGateBlocked.has(id) || (typeof contents.getType === "function" && contents.getType() === "devtools")) {
+        writeRuntimeLog(log, "WARN", `[Electron] 远端请求还没有 Brotli 解码限制，已取消 url=${details?.url}`);
+        finish(callback, { cancel: true });
+        return;
+      }
+      if (decodeReady.has(contents) && !decodeSuspended.has(contents)) {
+        finish(callback, {});
+        return;
+      }
+      holdRemoteRequest(contents, (value) => finish(callback, value), log);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       writeRuntimeLog(log, "ERROR", `[Electron] 暂停请求失败，已取消 url=${details?.url} error=${detail}`);
@@ -426,6 +575,7 @@ async function installChromiumBrotliDecodeBlockOnce(webContents, log, options) {
     if (!dbg.isAttached()) dbg.attach("1.3");
     await applyChromiumAcceptedEncodings(dbg);
     decodeReady.add(webContents);
+    if (typeof webContents.id === "number") remoteGateBlocked.delete(webContents.id);
     releaseChromiumBrotliSuspension(webContents);
     writeRuntimeLog(log, "INFO", "[Electron] 已限制 Chromium 只接受 gzip 与 deflate，不再解码 br");
   } catch (error) {
@@ -515,9 +665,16 @@ function registerChromiumBrotliProtection(electronApp, options) {
     throw new Error(`${CVE_2026_111497}：没有应用对象，无法给新窗口安装 Brotli 解码拦截。`);
   }
   electronApp.on("web-contents-created", (_event, contents) => {
+    trackChromiumWebContents(contents);
     const type = typeof contents.getType === "function" ? contents.getType() : "";
     if (type === "devtools") return;
-    holdNavigationUntilBrotliBlock(contents, options);
+    holdNavigationUntilBrotliBlock(contents, {
+      ...options,
+      onFatal(error) {
+        if (typeof options?.onWindowFatal === "function") options.onWindowFatal(contents, error);
+        else if (typeof options?.onFatal === "function") options.onFatal(error);
+      },
+    });
   });
 }
 
@@ -537,5 +694,8 @@ module.exports = {
   installChromiumBrotliDecodeBlock,
   registerChromiumBrotliProtection,
   chromiumBrotliProtectionEnabled,
+  chromiumBrotliFailureScope,
+  configureChromiumBrotliRemoteGate,
+  trackChromiumWebContents,
   isChromiumBrotliDecodeReady,
 };

@@ -7,12 +7,14 @@
  * 扫描端跑在 Electron 内嵌的 Node 上。已核对的 Electron 39.8.10 带 Node 22.22.1 与
  * Chromium 142.0.7444.265，两边的 Brotli 解码都还没有这份补丁。Electron 45.0.0 的 Node 是
  * 24.22.0，仍低于 24.22.1；它的 Chromium 是 156，不在这次已核对的范围内。
- * 这里关掉 Node 的 Brotli 解码。远程模式下 Chromium 那条路径在 `electron/main.cjs` 里另行关掉。
+ * 这里关掉 Node 的 Brotli 解码。Chromium 那条路径在 `electron/main.cjs` 里另行关掉：
+ * 壳直接打开远端页面时，加载前就限制编码；本地壳一旦向非本机地址发请求，也会在请求发出前装上同一限制。
  *
  * `electron/node-runtime-security.cjs` 是同一套规则的副本（主进程不能加载这份 TypeScript）。
  * `scripts/verify-node-runtime-cve.ts` 会核对两边的判定和下面这行 shell 检查。
  */
 
+import { Transform } from "node:stream";
 import zlib from "node:zlib";
 
 export const CVE_2026_111497 = "CVE-2026-111497";
@@ -78,12 +80,12 @@ export function isNodeRuntimeVulnerableToCve2026111497(version: string): boolean
 export function nodeRuntimeCveMessage(version: string, action: Exclude<NodeRuntimeCveAction, "allow">): string {
   const floors = "22.23.4、24.22.1 或 26.12.1";
   if (action === "guard") {
-    return `Electron 内嵌的 Node.js ${version} 仍受 ${CVE_2026_111497} 影响（Brotli 解码越界写）。已核对的 Electron 39.8.10 带的是未修复的 Node 与 Chromium 142.0.7444.265。扫描端已关闭 Node 的 Brotli 解码。远程模式的窗口在加载前只接受 gzip 与 deflate，避免 br 进入 Chromium 的解码器。上游发布同时包含已修复 Node.js（${floors} 及以上）和已修复 Chromium 的版本后请升级扫描端。`;
+    return `Electron 内嵌的 Node.js ${version} 仍受 ${CVE_2026_111497} 影响（Brotli 解码越界写）。已核对的 Electron 39.8.10 带的是未修复的 Node 与 Chromium 142.0.7444.265。扫描端已关闭 Node 的 Brotli 解码。壳直接加载远端页面时，窗口在加载前只接受 gzip 与 deflate；本地壳访问非本机地址时，会在该请求发出前装上同样的限制。上游发布同时包含已修复 Node.js（${floors} 及以上）和已修复 Chromium 的版本后请升级扫描端。`;
   }
   return `Node.js ${version} 受 ${CVE_2026_111497} 影响（Brotli 解码越界写，畸形压缩数据可导致崩溃、内存泄露或远程代码执行）。请安装 Node.js ${floors} 及以上后再启动。20.x、23.x、25.x 已停止维护，没有补丁。进程将以退出码 ${NODE_RUNTIME_REFUSAL_EXIT_CODE} 结束。`;
 }
 
-function replaceZlibMethod(target: object, key: string, value: () => never): void {
+function replaceZlibMethod(target: object, key: string, value: (...args: never[]) => unknown): void {
   const descriptor = Object.getOwnPropertyDescriptor(target, key);
   if (descriptor?.configurable) {
     Object.defineProperty(target, key, { ...descriptor, value, writable: true });
@@ -102,9 +104,22 @@ function disabledError(api: string): Error {
  * 替换 Node 公开的 Brotli 解码入口。`Writable.end(chunk)` 走的是流内部的 `_write`，
  * 不会调用实例上的 `write`，所以只换 `write` 挡不住 `new BrotliDecompress().end(chunk)`。
  * 构造器直接抛错；已经拿到旧构造器的实例则在 `_transform` / `_processChunk` 停住，
- * 字节不会进入原生解码器。`createBrotliDecompress` 抛错后，undici 会把 `br` 从
- * Accept-Encoding 里拿掉，正常响应改走 gzip。压缩方向不动。
+ * 字节不会进入原生解码器。`createBrotliDecompress` 交给一个不会调用原生解码器的流，
+ * 并在下一轮事件循环销毁：Electron 自带的 Node 22.22.1 上同步抛错会打崩进程，
+ * 同步在 `_transform` 里报错又会让 `fetch` 的 `text()` 停住。压缩方向不动。
  */
+function createDisabledBrotliDecompress(): Transform {
+  const error = disabledError("createBrotliDecompress");
+  const stream = new Transform({
+    transform() {},
+  });
+  stream.on("error", () => {});
+  setImmediate(() => {
+    if (!stream.destroyed) stream.destroy(error);
+  });
+  return stream;
+}
+
 export function installBrotliDecodeGuard(): void {
   const api = zlib as unknown as BrotliZlib;
   const proto = api.BrotliDecompress.prototype;
@@ -122,9 +137,7 @@ export function installBrotliDecodeGuard(): void {
     throw error;
   };
   // createBrotliDecompress 在 22.23.4 上是 configurable 但不可写，直接赋值会抛 TypeError。
-  replaceZlibMethod(api, "createBrotliDecompress", () => {
-    throw disabledError("createBrotliDecompress");
-  });
+  replaceZlibMethod(api, "createBrotliDecompress", createDisabledBrotliDecompress);
   replaceZlibMethod(api, "brotliDecompress", () => {
     throw disabledError("brotliDecompress");
   });
@@ -135,7 +148,7 @@ export function installBrotliDecodeGuard(): void {
     throw disabledError("BrotliDecompress");
   } as unknown as BrotliConstructor;
   DisabledBrotliDecompress.prototype = proto;
-  replaceZlibMethod(api, "BrotliDecompress", DisabledBrotliDecompress as unknown as () => never);
+  replaceZlibMethod(api, "BrotliDecompress", DisabledBrotliDecompress as unknown as () => unknown);
 }
 
 export function enforceNodeRuntimeCve2026111497(options?: {

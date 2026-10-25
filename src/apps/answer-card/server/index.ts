@@ -30,9 +30,6 @@ import { createServer, type Server } from "node:http";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { enforceNodeRuntimeCve2026111497 } from "../../../shared/nodeRuntimeSecurity";
 
-// CVE-2026-111497：未修复的 Node 在监听之前退出。Electron 内嵌运行时走解码闸门，不在这里退出。
-enforceNodeRuntimeCve2026111497();
-
 // 服务端启动时一次性读取 package.json 拿到版本号，避免在源码各处写死 v1.x.x；
 // 与客户端 import.meta.env.VITE_APP_VERSION（vite.config.ts 注入）保持同源。
 const __filename = fileURLToPath(import.meta.url);
@@ -3172,6 +3169,8 @@ export async function createApp(): Promise<express.Express> {
 export type ProjectXServer = Server & { actualPort?: number; localUrl?: string };
 
 export async function startServer(port = Number(process.env.PORT ?? 5174)): Promise<ProjectXServer> {
+  // 放在监听前，而不是模块顶层：测试和其它入口可以 import createApp，不会在旧 Node 上直接退出。
+  enforceNodeRuntimeCve2026111497();
   const app = await createApp();
 
   return new Promise((resolve, reject) => {
