@@ -1,4 +1,19 @@
+// 先于 Electron 初始化执行：扫描端的 Node 由 Electron 自带，CVE-2026-111497 的补丁还没进稳定版。
+// Chromium 142 的解码器是另一条路径，在 loadURL 之前由 installChromiumBrotliDecodeBlock 关掉。
+require("./node-runtime-security.cjs").enforceNodeRuntimeCve2026111497();
+
 const { app, BrowserWindow, dialog, session, shell } = require("electron");
+const {
+  chromiumBrotliFailureScope,
+  chromiumBrotliProtectionEnabled,
+  clearChromiumServiceWorkers,
+  configureChromiumBrotliRemoteGate,
+  installChromiumBrotliDecodeBlock,
+  installChromiumBrotliHeaderBlock,
+  installChromiumBrotliNetworkPause,
+  registerChromiumBrotliProtection,
+  trackChromiumWebContents,
+} = require("./node-runtime-security.cjs");
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
@@ -158,6 +173,8 @@ async function startLocalServer() {
   const dataDir = path.join(userDataDir, "data", "answer-card");
 
   process.env.PROJECTX_ENABLE_SCANNER = "1";
+  // 只在本机壳生效：server 里据此注册 /api/app/brotli-gate（远端 Linux 服务不挂这条路由）。
+  process.env.PROJECTX_ELECTRON_BROTLI_GATE = "1";
   process.env.ANSWER_CARD_DATA_DIR = dataDir;
   process.env.ANSWER_CARD_CLIENT_DIST = clientDist;
   process.env.PROJECTX_DB_PATH = path.join(userDataDir, "data", "projectx.db");
@@ -388,6 +405,13 @@ async function createWindow() {
     appendLog("INFO", "[Renderer] responsive (recovered)");
   });
 
+  // 远端壳在加载前先关掉解码；本地壳加载 127.0.0.1，页面在第一次远端请求前
+  // 经本机回环调用 /api/app/brotli-gate，主进程装好限制后再让它发出请求。
+  if (chromiumBrotliProtectionEnabled()) {
+    await installChromiumBrotliDecodeBlock(mainWindow.webContents, appendLog, {
+      onFatal: failClosedChromiumBrotli,
+    });
+  }
   appendLog("INFO", `[Electron] loadURL ${baseUrl}`);
   await mainWindow.loadURL(baseUrl);
   appendLog("INFO", `[Electron] loadURL done status=${mainWindow.webContents.getURL()}`);
@@ -395,10 +419,116 @@ async function createWindow() {
 
 configureAppIdentity();
 
+let chromiumBrotliClosed = false;
+function failClosedChromiumBrotli(error) {
+  if (chromiumBrotliClosed) return;
+  chromiumBrotliClosed = true;
+  const detail = error instanceof Error ? error.message : String(error);
+  appendLog("ERROR", `[Electron] Brotli 解码拦截失效: ${detail}`);
+  dialog.showErrorBox("扫描端已停止加载", detail);
+  app.quit();
+}
+
+// 装不上时窗口会被停掉远端请求（可重试），只写日志的话现场只会看到「服务器不可达」。给一次可见提示。
+let chromiumBrotliNoticeShown = false;
+function showChromiumBrotliNotice(message, detail) {
+  if (chromiumBrotliNoticeShown) return;
+  chromiumBrotliNoticeShown = true;
+  try {
+    void dialog.showMessageBox({
+      type: "warning",
+      title: "扫描端暂时无法连接服务器",
+      message,
+      detail,
+      buttons: ["知道了"],
+    }).catch(() => {});
+  } catch (error) {
+    const failure = error instanceof Error ? error.message : String(error);
+    appendLog("ERROR", `[Electron] 显示 Brotli 拦截提示失败: ${failure}`);
+  }
+}
+
+function reportChromiumBrotliWindowFailure(webContents, error) {
+  if (chromiumBrotliFailureScope(webContents, mainWindow ? mainWindow.webContents : null) === "process") {
+    failClosedChromiumBrotli(error);
+    return;
+  }
+  const detail = error instanceof Error ? error.message : String(error);
+  appendLog("ERROR", `[Electron] 这个窗口的 Brotli 解码拦截失效，主窗口继续运行: ${detail}`);
+  if (!webContents || (mainWindow && webContents === mainWindow.webContents)) {
+    showChromiumBrotliNotice(
+      "远端页面暂时不能访问：扫描端没能关闭浏览器的 Brotli 解码。已取消这些请求，稍后会自动重试。",
+      "如果一直出现，请关闭开发者工具后重启扫描端；本机离线功能不受影响。",
+    );
+    return;
+  }
+  showChromiumBrotliNotice(
+    "一个预览窗口因为同样的安全限制装不上已关闭，扫描主窗口继续运行。",
+    "需要时请重新打开预览；如果反复出现，请关闭开发者工具后重启扫描端。",
+  );
+  try {
+    const owner = BrowserWindow.fromWebContents(webContents);
+    if (owner && !owner.isDestroyed()) owner.destroy();
+  } catch (destroyError) {
+    const destroyDetail = destroyError instanceof Error ? destroyError.message : String(destroyError);
+    appendLog("ERROR", `[Electron] 关闭未受保护的窗口失败: ${destroyDetail}`);
+  }
+}
+
+app.on("web-contents-created", (_event, contents) => {
+  trackChromiumWebContents(contents);
+});
+
+configureChromiumBrotliRemoteGate({
+  log: appendLog,
+  onWindowFatal: reportChromiumBrotliWindowFailure,
+});
+
+// 远端模式在启动时就注册；本地壳在第一次真正访问远端时装一次。后者不提前关开发者工具，
+// 但之后新开的 PDF/图片预览窗口会走「先停住导航、装好限制再重放」，不会被取消第一发。
+let windowProtectionRegistered = false;
+function registerWindowProtection() {
+  if (windowProtectionRegistered) return;
+  windowProtectionRegistered = true;
+  registerChromiumBrotliProtection(app, {
+    log: appendLog,
+    onWindowFatal: reportChromiumBrotliWindowFailure,
+  });
+}
+
+// 本地壳的页面在第一次远端请求前调用本机服务的 /api/app/brotli-gate：
+// 主进程先装好编码限制再返回 200，避免第一发请求带着旧的 accepted encodings 出去。
+async function armChromiumBrotliGateForMainWindow() {
+  if (!mainWindow || (typeof mainWindow.isDestroyed === "function" && mainWindow.isDestroyed())) {
+    throw new Error("扫描端主窗口尚未就绪");
+  }
+  const contents = mainWindow.webContents;
+  await installChromiumBrotliDecodeBlock(contents, appendLog, {
+    onFatal: (error) => reportChromiumBrotliWindowFailure(contents, error),
+  });
+  registerWindowProtection();
+}
+globalThis.__projectxArmChromiumBrotliGate = armChromiumBrotliGateForMainWindow;
+
+app.on("session-created", (createdSession) => {
+  installChromiumBrotliHeaderBlock(createdSession, appendLog);
+  installChromiumBrotliNetworkPause(createdSession, appendLog);
+});
+
+// Service Worker 脚本由会话请求拦截拒绝；默认会话的历史注册在创建窗口前清理。
+
+if (chromiumBrotliProtectionEnabled()) {
+  registerWindowProtection();
+}
+
 app.whenReady().then(async () => {
   try {
     // 必须在加载任何页面之前装好（安全 R23）：权限策略按会话生效，晚装就有一个窗口期。
     installDevicePermissionPolicy();
+    // defaultSession 可能在 session-created 监听挂上之前就已经存在，这里再装一次（内部会去重）。
+    installChromiumBrotliHeaderBlock(session.defaultSession, appendLog);
+    installChromiumBrotliNetworkPause(session.defaultSession, appendLog);
+    await clearChromiumServiceWorkers(session.defaultSession);
     await createWindow();
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);

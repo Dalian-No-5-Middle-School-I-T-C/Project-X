@@ -356,7 +356,7 @@ node scripts/hash-release-artifacts.cjs --check --root <产物目录>
 #### 环境要求
 
 - Windows 操作系统
-- Node.js 24+（开发）/ Node.js 22（Electron 打包）
+- Node.js 须满足 `>=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1`（开发、CI 与打包机同一范围）。25.x 已停更，没有 CVE-2026-111497 的补丁，服务端会拒绝启动。已核对的扫描端 Electron 39.8.10（Chromium 142.0.7444.265）在壳直接加载远端页面，或本地壳向非本机地址发请求时，只接受 gzip 与 deflate
 - Visual Studio 2022（编译 C++ 原生模块需要）
 - OpenCV 4.13+（识别引擎编译需要）
 

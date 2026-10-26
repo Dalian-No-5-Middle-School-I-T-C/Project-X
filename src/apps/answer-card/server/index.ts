@@ -34,6 +34,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { enforceNodeRuntimeCve2026111497 } from "../../../shared/nodeRuntimeSecurity";
 
 // 服务端启动时一次性读取 package.json 拿到版本号，避免在源码各处写死 v1.x.x；
 // 与客户端 import.meta.env.VITE_APP_VERSION（vite.config.ts 注入）保持同源。
@@ -887,6 +888,38 @@ export async function createApp(): Promise<express.Express> {
       }
     });
   });
+
+  // 仅本机 Electron 壳注册：页面在第一次远端请求前先等这里把 Chromium 编码限制装好。
+  // 远端 Linux 服务不设 PROJECTX_ELECTRON_BROTLI_GATE，不暴露这条路由。
+  if (process.env.PROJECTX_ELECTRON_BROTLI_GATE === "1") {
+    app.post("/api/app/brotli-gate", async (req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      const address = req.socket.remoteAddress || "";
+      const loopback = address === "::1"
+        || address === "::ffff:127.0.0.1"
+        || /^127\./.test(address);
+      if (!loopback) {
+        res.status(403).json({ ok: false, message: "仅允许本机扫描端页面调用" });
+        return;
+      }
+      const arm = (globalThis as {
+        __projectxArmChromiumBrotliGate?: () => Promise<void>;
+      }).__projectxArmChromiumBrotliGate;
+      if (typeof arm !== "function") {
+        res.status(503).json({ ok: false, message: "扫描端安全通道不可用" });
+        return;
+      }
+      try {
+        await arm();
+        res.json({ ok: true });
+      } catch (error) {
+        res.status(503).json({
+          ok: false,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+  }
 
   // 在所有 /api 路由前解析身份（有 token 即挂载 req.user，无 token 放行）
   app.use("/api", optionalAuth);
@@ -3250,6 +3283,8 @@ export async function createApp(): Promise<express.Express> {
 export type ProjectXServer = Server & { actualPort?: number; localUrl?: string };
 
 export async function startServer(port = Number(process.env.PORT ?? 5174)): Promise<ProjectXServer> {
+  // 放在监听前，而不是模块顶层：测试和其它入口可以 import createApp，不会在旧 Node 上直接退出。
+  enforceNodeRuntimeCve2026111497();
   const app = await createApp();
 
   return new Promise((resolve, reject) => {

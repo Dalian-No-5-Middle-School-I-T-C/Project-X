@@ -4,6 +4,9 @@
   "description": "Project-X answer card scanning desktop app; Web version deployed separately via dist/web/.",
   "author": "Project-X",
   "private": true,
+  "engines": {
+    "node": ">=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1"
+  },
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -51,6 +54,7 @@
     "verify:demo-credentials": "tsx scripts/verify-demo-credentials.ts",
     "verify:demo-credentials:mariadb": "tsx scripts/verify-demo-credentials.ts --mariadb",
     "verify:systemd-hardening": "tsx scripts/verify-systemd-hardening.ts",
+    "verify:node-runtime-cve": "tsx scripts/verify-node-runtime-cve.ts",
     "verify:release-integrity": "tsx scripts/verify-release-integrity.ts",
     "verify:card-export-revision": "tsx scripts/verify-card-export-revision.ts",
     "verify:card-export-revision:mariadb": "tsx scripts/verify-card-export-revision.ts --mariadb",
