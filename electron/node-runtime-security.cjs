@@ -47,7 +47,7 @@ function isNodeRuntimeVulnerableToCve2026111497(version) {
 function nodeRuntimeCveMessage(version, action) {
   const floors = "22.23.4、24.22.1 或 26.12.1";
   if (action === "guard") {
-    return `Electron 内嵌的 Node.js ${version} 仍受 ${CVE_2026_111497} 影响（Brotli 解码越界写）。已核对的 Electron 39.8.10 带的是未修复的 Node 与 Chromium 142.0.7444.265。扫描端已关闭 Node 的 Brotli 解码。壳直接加载远端页面时，窗口在加载前只接受 gzip 与 deflate；本地壳会在第一次远端请求创建前先装好同样的限制，装好前的远端请求一律取消。上游发布同时包含已修复 Node.js（${floors} 及以上）和已修复 Chromium 的版本后请升级扫描端。`;
+    return `Electron 内嵌的 Node.js ${version} 仍受 ${CVE_2026_111497} 影响（Brotli 解码越界写）。扫描端已关闭 Node 的 Brotli 解码。壳直接加载远端页面时，窗口在加载前只接受 gzip 与 deflate；本地壳会在第一次远端请求创建前先装好同样的限制，装好前的远端请求一律取消。上游发布同时包含已修复 Node.js（${floors} 及以上）和已修复 Chromium 的版本后请升级扫描端。`;
   }
   return `Node.js ${version} 受 ${CVE_2026_111497} 影响（Brotli 解码越界写，畸形压缩数据可导致崩溃、内存泄露或远程代码执行）。请安装 Node.js ${floors} 及以上后再启动。20.x、23.x、25.x 已停止维护，没有补丁。进程将以退出码 ${NODE_RUNTIME_REFUSAL_EXIT_CODE} 结束。`;
 }
