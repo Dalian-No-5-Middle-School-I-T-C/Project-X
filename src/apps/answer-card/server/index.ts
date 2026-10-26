@@ -882,6 +882,38 @@ export async function createApp(): Promise<express.Express> {
     });
   });
 
+  // 仅本机 Electron 壳注册：页面在第一次远端请求前先等这里把 Chromium 编码限制装好。
+  // 远端 Linux 服务不设 PROJECTX_ELECTRON_BROTLI_GATE，不暴露这条路由。
+  if (process.env.PROJECTX_ELECTRON_BROTLI_GATE === "1") {
+    app.post("/api/app/brotli-gate", async (req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      const address = req.socket.remoteAddress || "";
+      const loopback = address === "::1"
+        || address === "::ffff:127.0.0.1"
+        || /^127\./.test(address);
+      if (!loopback) {
+        res.status(403).json({ ok: false, message: "仅允许本机扫描端页面调用" });
+        return;
+      }
+      const arm = (globalThis as {
+        __projectxArmChromiumBrotliGate?: () => Promise<void>;
+      }).__projectxArmChromiumBrotliGate;
+      if (typeof arm !== "function") {
+        res.status(503).json({ ok: false, message: "扫描端安全通道不可用" });
+        return;
+      }
+      try {
+        await arm();
+        res.json({ ok: true });
+      } catch (error) {
+        res.status(503).json({
+          ok: false,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+  }
+
   // 在所有 /api 路由前解析身份（有 token 即挂载 req.user，无 token 放行）
   app.use("/api", optionalAuth);
 

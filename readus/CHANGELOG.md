@@ -4,12 +4,12 @@
 
 - **服务端**：Node.js 低于 22.23.4、24.22.1、26.12.1，或属于已停更的 20 / 23 / 25 和预发布版本时，进程以退出码 78 结束，不监听端口。检查放在 `startServer()` 里，导入 `createApp` 本身不会退出。Ubuntu 安装脚本在 `/usr/bin/node` 未修复时拒绝安装，并清掉 `PROJECTX_NODE_VERSION_UNDER_TEST`，避免测试变量放行旧运行时。systemd 增加 `RestartPreventExitStatus=78`。
 - **扫描端 Node**：Electron 39.8.10 自带的 Node 22.22.1 仍未修复。同步解码和 `new BrotliDecompress()` / `.end(chunk)` 直接拒绝。`createBrotliDecompress` 不在调用当场抛错：这个版本的 undici 接不住同步异常，进程会退出；改成把字节挡在普通流里，等 `fetch` 接上读取器后再失败。gzip 保持可用。
-- **扫描端 Chromium**：已核对 Electron 39.8.10 的 Chromium 142.0.7444.265 仍会解码 Brotli。`PROJECTX_SERVER_MODE=remote` 时，每个非 DevTools 的 webContents（含同源 `window.open`）在首次网络请求前只接受 gzip 与 deflate。本地壳加载的是 `127.0.0.1`，页面里填写的远端地址由渲染进程直接请求；这种非本机 http(s) 请求会先被按住，等同一个编码限制装上再发出。调试通道一旦断开（例如打开开发者工具），立刻停掉当前加载、清掉已保护标记，并在请求发出前取消这个窗口的新请求；编码限制重新装上之后才继续导航。只有远端壳的主窗口在拦截失效时退出整个扫描端；预览、答案、PDF 这类辅助窗口只关闭自己。Service worker 在扫描端始终关闭。纯本机使用不挂调试通道。
-- **拦截装不上时自动重试**：编码限制装不上不再是终态。失败后按指数退避（5 秒起、封顶 60 秒）记一个可重试时间点，下一次远端请求会再装一次，装上即恢复放行；期间扫描端会提示一次「扫描端暂时无法连接服务器」。首次安装与重连一样先关闭开发者工具（调试通道只允许一个使用者，开发者工具占着就装不上）。
+- **扫描端 Chromium**：已核对 Electron 39.8.10 的 Chromium 142.0.7444.265 仍会解码 Brotli。`PROJECTX_SERVER_MODE=remote` 时，每个非 DevTools 的 webContents（含同源 `window.open`）在首次网络请求前只接受 gzip 与 deflate。本地壳加载的是 `127.0.0.1`，页面里填写的远端地址由渲染进程直接请求；本地壳会在第一次远端请求创建前先经本机回环让主进程装好编码限制，装好前的远端请求一律取消，不再「按住后放行」——请求一创建，accepted encodings 就固定了，放行时再补 CDP 覆盖改不回来。调试通道一旦断开（例如打开开发者工具），立刻停掉当前加载、清掉已保护标记，并在请求发出前取消这个窗口的新请求；编码限制重新装上之后才继续导航。只有远端壳的主窗口在拦截失效时退出整个扫描端；预览、答案、PDF 这类辅助窗口只关闭自己。Service worker 在扫描端始终关闭。纯本机使用不挂调试通道。
+- **拦截装不上时自动重试**：编码限制装不上不再是终态。失败后按指数退避（5 秒起、封顶 60 秒）记一个可重试时间点，下一次远端请求会再装一次，装上即恢复放行；期间远端请求一律取消，页面自己的探活/上传重试会在装好后恢复，扫描端也会提示一次「扫描端暂时无法连接服务器」。首次安装与重连一样先关闭开发者工具（调试通道只允许一个使用者，开发者工具占着就装不上）。
 - **导航重放**：`did-start-navigation` 只记主框架的真实导航，子框架与 `pushState`/`replaceState` 这类同文档导航不再被当成顶层地址在恢复时重放。
 - **Accept-Encoding**：去掉 `br` 时按编码令牌判断，`br;q=1.0` 也会去掉。
 - **update.sh**：按候选逐个检查版本。`Program Files` 里的 Node 未修复时，继续看 Kimi 运行时和 PATH，不再在第一个能启动的旧版本上直接退出。候选路径含空格也能选中。IPv4 映射地址 `::ffff:127.0.0.1`（URL 主机名会变成 `::ffff:7f00:1`）仍算本机，不会为了它挂上调试通道。
-- **验证**：`verify:node-runtime-cve`。有 Electron 二进制时，用 `ELECTRON_RUN_AS_NODE=1` 再跑一遍 Node 闸门，并另跑 Chromium 实机对照：不挂拦截的窗口能解出 br，挂上之后顶层文档、同源新窗口（含 `noopener`）、iframe 和 Worker 都返回 `ERR_CONTENT_DECODING_FAILED`，且请求不再声明 `br`；另有一段「回环页面访问非本机地址」的闸门场景，同一份远端响应对照窗口能解出原文、装闸门后解不出。CI 的 Electron 作业设置 `PROJECTX_REQUIRE_ELECTRON_PROBE=1`，缺 Electron 二进制会直接失败而不是跳过；其余作业仍用 `--ignore-scripts`，不下载 Electron。`package.json` 的 `engines` 与两份锁文件同步更新。
+- **验证**：`verify:node-runtime-cve`。有 Electron 二进制时，用 `ELECTRON_RUN_AS_NODE=1` 再跑一遍 Node 闸门，并另跑 Chromium 实机对照：不挂拦截的窗口能解出 br，挂上之后顶层文档、同源新窗口（含 `noopener`）、iframe 和 Worker 都返回 `ERR_CONTENT_DECODING_FAILED`，且请求不再声明 `br`；另有一段「回环页面访问非本机地址」的闸门场景，第一发远端请求必须被取消、服务端不应收到，装好后重试才发出且不声明 br，恶意 br 响应也解不出原文。CI 的 Electron 作业设置 `PROJECTX_REQUIRE_ELECTRON_PROBE=1`，缺 Electron 二进制会直接失败而不是跳过；其余作业仍用 `--ignore-scripts`，不下载 Electron。`package.json` 的 `engines` 与两份锁文件同步更新。
 
 ## 2026-10-22：#349 交错客观/主观题块顺序保存后丢失
 

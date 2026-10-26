@@ -220,6 +220,30 @@ check(
 check(serverEntry.indexOf(enforceCall) === serverEntry.lastIndexOf(enforceCall), "导入服务端模块不会在顶层退出");
 const mainCjs = readFileSync("electron/main.cjs", "utf8");
 check(mainCjs.startsWith("//") && mainCjs.includes('require("./node-runtime-security.cjs").enforceNodeRuntimeCve2026111497()'), "扫描端主进程在加载 Electron 之前执行同一检查");
+check(
+  mainCjs.includes('process.env.PROJECTX_ELECTRON_BROTLI_GATE = "1"')
+    && mainCjs.includes("__projectxArmChromiumBrotliGate"),
+  "本机壳在服务端注册编码限制握手路由，并在主进程提供装限制的钩子",
+);
+check(
+  serverEntry.includes('process.env.PROJECTX_ELECTRON_BROTLI_GATE === "1"')
+    && serverEntry.includes('"/api/app/brotli-gate"'),
+  "编码限制握手路由只在 Electron 环境注册，远端 Linux 服务不暴露",
+);
+const apiSource = readFileSync("src/apps/answer-card/client/auth/api.ts", "utf8");
+const uploadSource = readFileSync("src/apps/answer-card/client/lib/scannerUploadManager.ts", "utf8");
+const serverDialogSource = readFileSync("src/apps/answer-card/client/components/ServerConfigDialog.tsx", "utf8");
+check(
+  apiSource.includes("ensureScannerRemoteGate")
+    && apiSource.includes('"/api/app/brotli-gate"')
+    && apiSource.includes("await ensureScannerRemoteGate()"),
+  "远端 fetch 在创建请求前先等本机壳装好编码限制",
+);
+check(
+  uploadSource.includes("ensureScannerRemoteGate()")
+    && serverDialogSource.includes("await ensureScannerRemoteGate()"),
+  "上传队列与连接测试同样先等编码限制，不绕开握手",
+);
 check(nodeRuntimeCveMessage("24.22.0", "guard") === cjs.nodeRuntimeCveMessage("24.22.0", "guard"), "Electron 提示文案两边一致");
 const decodeAt = mainCjs.indexOf("await installChromiumBrotliDecodeBlock(mainWindow.webContents");
 const loadAt = mainCjs.indexOf("await mainWindow.loadURL(baseUrl)");
@@ -459,11 +483,14 @@ const remoteResult = await Promise.race([
   }),
   new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("远端请求没等到编码限制")), 1000)),
 ]);
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
 check(
-  remoteResult.cancel !== true
+  remoteResult.cancel === true
     && remotePage.calls.some((call) => call.method === "Network.setAcceptedEncodings"),
-  "本地壳访问非本机地址时，先装上编码限制再放行这次请求",
+  "本地壳访问非本机地址时，闸门未就绪的第一发请求直接取消，同时开始装编码限制",
 );
+check(cjs.isChromiumBrotliDecodeReady(remotePage) === true, "取消第一发之后编码限制装上");
 const attachCalls = remotePage.calls.filter((call) => call.method === "attach").length;
 let protectedCancelled = false;
 beforeRequest?.({ webContentsId: 7, url: "https://school.example/api/next" }, (value) => { protectedCancelled = value.cancel === true; });
@@ -498,6 +525,10 @@ const brokenResult = await Promise.race([
   }),
   new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("失败的远端请求没有结束")), 1000)),
 ]);
+const fatalDeadline = Date.now() + 1000;
+while (!fatalContents && Date.now() < fatalDeadline) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
 check(brokenResult.cancel === true && fatalContents === brokenPage, "编码限制装不上时取消这次远端请求，并把失败交给这个窗口");
 const brokenAttachCalls = brokenPage.calls.filter((call) => call.method === "attach").length;
 let coolingCancelled = false;
@@ -519,9 +550,15 @@ const retryResult = await Promise.race([
   new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("重试的远端请求没有结束")), 1000)),
 ]);
 check(
-  retryResult.cancel !== true && cjs.isChromiumBrotliDecodeReady(brokenPage) === true,
-  "退避窗口过后会再装一次，装上就恢复放行，失败不是终态",
+  retryResult.cancel === true,
+  "退避窗口过后会再装一次，但当前这一发仍然取消，绝不带着旧 encodings 放行",
 );
+await new Promise((resolve) => setTimeout(resolve, 0));
+await new Promise((resolve) => setTimeout(resolve, 0));
+check(cjs.isChromiumBrotliDecodeReady(brokenPage) === true, "重装成功后窗口标记为已保护");
+let afterRetryCancelled = false;
+beforeRequest?.({ webContentsId: 9, url: "https://school.example/api/after-retry" }, (value) => { afterRetryCancelled = value.cancel === true; });
+check(!afterRetryCancelled, "装好之后下一发远端请求直接放行");
 
 const opened = fakeWebContents();
 opened.getType = () => "window";
@@ -820,7 +857,26 @@ if (!electronBinary || !existsSync(electronBinary)) {
     workerRequest?: { requests?: number; acceptEncodingHasBr?: boolean };
     serviceWorker?: string;
     gateControl?: { text?: string; error?: string; requests?: number; acceptEncodingHasBr?: boolean };
-    gate?: { text?: string; error?: string; gzipText?: string; gzipError?: string; requests?: number; acceptEncodingHasBr?: boolean };
+    gate?: {
+      firstAttemptRejected?: boolean;
+      firstAttemptError?: string;
+      firstDocumentRequests?: number;
+      gateReady?: boolean;
+      retryDocumentError?: string;
+      retryDocumentRequests?: number;
+      retryDocumentAcceptEncodingHasBr?: boolean;
+      retryDocumentTitle?: string;
+      text?: string;
+      error?: string;
+      gzipText?: string;
+      gzipError?: string;
+      requests?: number;
+      brRequests?: number;
+      brAcceptEncodingHasBr?: boolean;
+      acceptEncodingHasBr?: boolean;
+      pageError?: string;
+      skipped?: string;
+    };
     gateFailures?: string[];
   } = {};
   try {
@@ -858,12 +914,18 @@ if (!electronBinary || !existsSync(electronBinary)) {
   const gateOk = payload.gateControl?.text === "hello-br"
     && payload.gateControl?.acceptEncodingHasBr === true
     && (payload.gateControl?.requests ?? 0) > 0
+    && payload.gate?.firstAttemptRejected === true
+    && (payload.gate?.firstDocumentRequests ?? -1) === 0
+    && payload.gate?.gateReady === true
+    && (payload.gate?.retryDocumentRequests ?? 0) > 0
+    && payload.gate?.retryDocumentAcceptEncodingHasBr === false
+    && payload.gate?.retryDocumentTitle !== "decoded-br"
     && (payload.gate?.brRequests ?? 0) > 0
     && payload.gate?.brAcceptEncodingHasBr === false
     && payload.gate?.text !== "hello-br"
     && payload.gate?.gzipText === "hello-gzip-remote"
     && (payload.gateFailures?.length ?? 0) === 0;
-  check(gateOk, "非本机来源的页面：对照窗口能解出 br，装闸门后同源请求不再声明 br 且解不出，gzip 仍可用");
+  check(gateOk, "非本机来源的页面：对照窗口能解出 br；闸门未就绪时第一发被取消，装好后重试不声明 br、恶意 br 也解不出，gzip 仍可用");
   if (!liveOk || !gateOk) {
     console.log(probe.stdout);
     console.log(probe.stderr);

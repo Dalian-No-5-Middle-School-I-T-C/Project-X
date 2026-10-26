@@ -4,8 +4,8 @@
  * 装上 Network.setAcceptedEncodings 之后，顶层文档、同源新窗口（含 noopener）、iframe 和 Worker
  * 都解不出原文。
  *
- * 另有一段闸门场景：页面从「非本机」来源加载，第一次请求由 onBeforeRequest 先按住，
- * 等同一个编码限制装上再放行；同一扇页面在没有闸门的窗口里应能解出 br。
+ * 另有一段闸门场景：页面从「非本机」来源加载，闸门未就绪时第一次请求必须被取消，
+ * 等编码限制装上后再重试；同一扇页面在没有闸门的窗口里应能解出 br。
  * 这个来源必须是 https：Chromium 只在安全来源上声明 br（http 的非回环地址连 doc 都只发
  * gzip/deflate），http 下测出来的「解不出」是浏览器自己拦的，证明不了闸门。
  * 证书用 openssl 现场自签，CI 与 Git for Windows 都自带；生成不了就让检查失败，不静默跳过。
@@ -25,6 +25,7 @@ const {
   configureChromiumBrotliRemoteGate,
   installChromiumBrotliDecodeBlock,
   installChromiumBrotliNetworkPause,
+  isChromiumBrotliDecodeReady,
   registerChromiumBrotliProtection,
   trackChromiumWebContents,
 } = require("../electron/node-runtime-security.cjs");
@@ -170,6 +171,16 @@ const swTimer = setTimeout(() => {
 function remoteHandler(req, res) {
   record(remoteSeen, req);
   const pathname = String(req.url || "").split("?")[0];
+  if (pathname === "/gate-br-doc") {
+    // 恶意/被攻陷的远端：无视 Accept-Encoding 直接回 br 文档，用来测第一发请求不能进解码器。
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-encoding": "br",
+      "cache-control": "no-store",
+    });
+    res.end(brotli(decodedDoc));
+    return;
+  }
   if (pathname === "/gate" || pathname === "/gate-gz") {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(`<!doctype html><title>remote-gate</title><body>
@@ -275,9 +286,17 @@ app.whenReady().then(async () => {
   }
   const gateControlRequests = remoteRequestsFor("/gate-br-text").length;
   const gateControlHasBr = hasToken(remoteRequestsFor("/gate-br-text"), "br");
-  // 被按住的第一个请求，Accept-Encoding 在按住之前就已经算好了（这里能看到带 br）；
-  // 之后从这扇窗口发出的请求才吃得到 setAcceptedEncodings。生产里那一发由响应头层兜住。
+  // 没有闸门的对照窗口：第一发就带 br，能解出原文。
+  // 闸门场景验证同一发请求在未受保护时被取消、装好后重试不再声明 br。
   const gateControlBrCount = gateControlRequests;
+
+  // 闸门窗口必须在 registerChromiumBrotliProtection 之前创建：否则导航拦截会提前把限制装好，
+  // 就测不到「未就绪时第一发远端请求被取消」这条路径。
+  const gateWindowOptions = {
+    show: false,
+    webPreferences: { ...windowOptions.webPreferences, partition: "brotli-gate-probe" },
+  };
+  const gateWin = new BrowserWindow(gateWindowOptions);
 
   registerChromiumBrotliProtection(app, { log() {}, onFatal(error) { throw error; } });
   const win = new BrowserWindow(windowOptions);
@@ -307,13 +326,18 @@ app.whenReady().then(async () => {
     })
   `);
 
-  // 闸门场景：非本机页面 + 独立会话，第一次远端请求要等编码限制装上才放行。
-  const gateWindowOptions = {
-    show: false,
-    webPreferences: { ...windowOptions.webPreferences, partition: "brotli-gate-probe" },
+  // 闸门场景：非本机页面 + 独立会话，闸门未就绪时第一发必须取消，装好后再重试。
+  const gate = {
+    firstAttemptRejected: false,
+    firstAttemptError: "",
+    firstDocumentRequests: 0,
+    gateReady: false,
+    retryDocumentError: "",
+    retryDocumentRequests: 0,
+    retryDocumentAcceptEncodingHasBr: false,
+    retryDocumentTitle: "",
+    text: "", error: "", gzipText: "", gzipError: "",
   };
-  const gateWin = new BrowserWindow(gateWindowOptions);
-  const gate = { text: "", error: "", gzipText: "", gzipError: "" };
   configureChromiumBrotliRemoteGate({
     log() {},
     retryDelayMs: 50,
@@ -323,10 +347,35 @@ app.whenReady().then(async () => {
   });
   installChromiumBrotliNetworkPause(gateWin.webContents.session, () => {});
   trackChromiumWebContents(gateWin.webContents);
-  // 先在回环页面上落一次 URL，避免首次安装时的 about:blank 预热把正在被按住的导航冲掉。
+  // 先在回环页面上落一次 URL，避免首次安装时的 about:blank 预热把正在被取消的导航冲掉。
   await gateWin.loadURL(`${origin}/gz-doc`);
   const gateRemoteStart = remoteSeen.length;
   if (remoteServer) {
+    const gateFirstUrl = `${remoteOrigin}/gate-br-doc`;
+    // 第一发远端请求：闸门还没装好，onBeforeRequest 必须直接取消；服务端不应看到它。
+    try {
+      await gateWin.loadURL(gateFirstUrl);
+    } catch (error) {
+      gate.firstAttemptRejected = true;
+      gate.firstAttemptError = error instanceof Error ? error.message : String(error);
+    }
+    gate.firstDocumentRequests = remoteRequestsFor("/gate-br-doc").length;
+    const readyDeadline = Date.now() + 10000;
+    while (Date.now() < readyDeadline && !isChromiumBrotliDecodeReady(gateWin.webContents) && gateFailures.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    gate.gateReady = isChromiumBrotliDecodeReady(gateWin.webContents);
+    // 装好后重试同一发：请求这次才创建，服务端应看到它不带 br；恶意 br 响应不能解出原文。
+    try {
+      await gateWin.loadURL(gateFirstUrl);
+    } catch (error) {
+      gate.retryDocumentError = error instanceof Error ? error.message : String(error);
+    }
+    gate.retryDocumentTitle = gateWin.webContents.getTitle();
+    const retryDocEntries = remoteRequestsFor("/gate-br-doc").slice(gate.firstDocumentRequests);
+    gate.retryDocumentRequests = retryDocEntries.length;
+    gate.retryDocumentAcceptEncodingHasBr = hasToken(retryDocEntries, "br");
+    // 再加载正常闸门页：同源 br fetch 仍应解不出。
     gate.pageError = "";
     try {
       await gateWin.loadURL(remotePageUrl);
@@ -346,7 +395,6 @@ app.whenReady().then(async () => {
     const gateBrRequests = remoteRequestsFor("/gate-br-text").slice(gateControlBrCount);
     gate.brRequests = gateBrRequests.length;
     gate.brAcceptEncodingHasBr = hasToken(gateBrRequests, "br");
-    gate.firstDocumentHasBr = hasToken(remoteSeen.slice(gateRemoteStart, gateRemoteStart + 1), "br");
   } else {
     gate.skipped = gateControl.skipped;
     gate.requests = 0;

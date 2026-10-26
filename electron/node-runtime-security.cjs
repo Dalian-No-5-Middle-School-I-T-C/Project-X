@@ -47,7 +47,7 @@ function isNodeRuntimeVulnerableToCve2026111497(version) {
 function nodeRuntimeCveMessage(version, action) {
   const floors = "22.23.4、24.22.1 或 26.12.1";
   if (action === "guard") {
-    return `Electron 内嵌的 Node.js ${version} 仍受 ${CVE_2026_111497} 影响（Brotli 解码越界写）。已核对的 Electron 39.8.10 带的是未修复的 Node 与 Chromium 142.0.7444.265。扫描端已关闭 Node 的 Brotli 解码。壳直接加载远端页面时，窗口在加载前只接受 gzip 与 deflate；本地壳访问非本机地址时，会在该请求发出前装上同样的限制。上游发布同时包含已修复 Node.js（${floors} 及以上）和已修复 Chromium 的版本后请升级扫描端。`;
+    return `Electron 内嵌的 Node.js ${version} 仍受 ${CVE_2026_111497} 影响（Brotli 解码越界写）。已核对的 Electron 39.8.10 带的是未修复的 Node 与 Chromium 142.0.7444.265。扫描端已关闭 Node 的 Brotli 解码。壳直接加载远端页面时，窗口在加载前只接受 gzip 与 deflate；本地壳会在第一次远端请求创建前先装好同样的限制，装好前的远端请求一律取消。上游发布同时包含已修复 Node.js（${floors} 及以上）和已修复 Chromium 的版本后请升级扫描端。`;
   }
   return `Node.js ${version} 受 ${CVE_2026_111497} 影响（Brotli 解码越界写，畸形压缩数据可导致崩溃、内存泄露或远程代码执行）。请安装 Node.js ${floors} 及以上后再启动。20.x、23.x、25.x 已停止维护，没有补丁。进程将以退出码 ${NODE_RUNTIME_REFUSAL_EXIT_CODE} 结束。`;
 }
@@ -187,12 +187,11 @@ const protectionRestoredHandlers = new WeakMap();
 const networkPauseSessions = new WeakSet();
 const contentsById = new Map();
 const trackedContents = new WeakSet();
-const heldRemoteRequests = new Map();
+const remoteGateStarting = new Set();
 const remoteGateRetryAt = new Map();
 const remoteGateAttempts = new Map();
 let remoteGateHandler = null;
 let remoteGateRetryBaseMs = 5000;
-const REMOTE_GATE_TIMEOUT_MS = 5000;
 const REMOTE_GATE_RETRY_MAX_MS = 60000;
 const ENCODINGS_COMMAND_TIMEOUT_MS = 10000;
 
@@ -374,23 +373,8 @@ function trackChromiumWebContents(webContents) {
       contentsById.delete(webContents.id);
       clearRemoteGate(webContents.id);
       suspendedContentIds.delete(webContents.id);
-      flushHeldRemoteRequests(webContents.id, true);
+      remoteGateStarting.delete(webContents.id);
     });
-  }
-}
-
-function flushHeldRemoteRequests(id, cancel) {
-  const entry = heldRemoteRequests.get(id);
-  if (!entry) return;
-  heldRemoteRequests.delete(id);
-  clearTimeout(entry.timer);
-  for (const callback of entry.callbacks) {
-    try {
-      callback(cancel ? { cancel: true } : {});
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      writeRuntimeLog(remoteGateHandler?.log, "ERROR", `[Electron] 放行远端请求的回调失败: ${detail}`);
-    }
   }
 }
 
@@ -418,42 +402,26 @@ function blockRemoteGate(webContents, log, error) {
   if (typeof remoteGateHandler?.onWindowFatal === "function") remoteGateHandler.onWindowFatal(webContents, error);
 }
 
-// 按住请求，等编码限制装上再放行。注意：被按住这一发请求的 Accept-Encoding 在进入这里之前
-// 就已经算好，放行后不会再变；它靠响应头那一层去掉 br，之后从这扇窗口发出的请求才吃得到
-// Network.setAcceptedEncodings。
-function holdRemoteRequest(webContents, callback, log) {
-  const id = webContents.id;
-  let entry = heldRemoteRequests.get(id);
-  if (!entry) {
-    entry = { callbacks: [], timer: null };
-    heldRemoteRequests.set(id, entry);
-    entry.timer = setTimeout(() => {
-      if (heldRemoteRequests.get(id) !== entry) return;
-      flushHeldRemoteRequests(id, true);
-      blockRemoteGate(webContents, log, chromiumBrotliBlockError("等待编码限制超时"));
-    }, REMOTE_GATE_TIMEOUT_MS);
-    const options = {
-      log,
-      onFatal(error) {
-        flushHeldRemoteRequests(id, true);
-        blockRemoteGate(webContents, log, error);
-      },
-    };
-    Promise.resolve(installChromiumBrotliDecodeBlock(webContents, log, options)).then(() => {
-      if (heldRemoteRequests.get(id) !== entry) return;
-      if (decodeReady.has(webContents) && !decodeSuspended.has(webContents)) {
-        clearRemoteGate(id);
-        flushHeldRemoteRequests(id, false);
-        return;
-      }
-      flushHeldRemoteRequests(id, true);
-    }).catch((error) => {
-      if (heldRemoteRequests.get(id) !== entry) return;
-      flushHeldRemoteRequests(id, true);
+// 懒装兜底必须失败关闭：窗口还没受保护时，这一发远端请求不能放出去。
+// 请求的 accepted encodings 在进入 onBeforeRequest 之前就已固定，放行后再补
+// Network.setAcceptedEncodings 改不回来；只能取消这一发，装好后再由调用方重试。
+function startRemoteGateInstall(webContents, log) {
+  const id = webContents?.id;
+  if (typeof id !== "number" || remoteGateStarting.has(id)) return;
+  remoteGateStarting.add(id);
+  const options = {
+    log,
+    onFatal(error) {
       blockRemoteGate(webContents, log, error);
-    });
-  }
-  entry.callbacks.push(callback);
+    },
+  };
+  Promise.resolve(installChromiumBrotliDecodeBlock(webContents, log, options)).then(() => {
+    remoteGateStarting.delete(id);
+    if (decodeReady.has(webContents) && !decodeSuspended.has(webContents)) clearRemoteGate(id);
+  }).catch((error) => {
+    remoteGateStarting.delete(id);
+    blockRemoteGate(webContents, log, error);
+  });
 }
 
 function isChromiumBrotliDecodeReady(webContents) {
@@ -482,7 +450,6 @@ function suspendChromiumBrotliContents(webContents) {
   decodeConfiguredSessions.delete(webContents);
   if (typeof webContents?.id === "number") {
     suspendedContentIds.add(webContents.id);
-    flushHeldRemoteRequests(webContents.id, true);
   }
   try {
     if (typeof webContents.stop === "function") webContents.stop();
@@ -519,7 +486,9 @@ function installChromiumBrotliNetworkPause(targetSession, log) {
         finish(callback, { cancel: true });
         return;
       }
-      // 本地壳加载的是 127.0.0.1，页面自己的 fetch 才会碰到远端。这类请求要等编码限制装上再发出。
+      // 本地壳加载的是 127.0.0.1，页面自己的 fetch 才会碰到远端。
+      // 还没受保护的窗口不能把远端请求发出去：请求一创建，accepted encodings 就定死了，
+      // 补装 Network.setAcceptedEncodings 也改不回来。取消这一发，装好后由调用方重试。
       if (isLoopbackRequestUrl(details?.url)) {
         finish(callback, {});
         return;
@@ -538,7 +507,9 @@ function installChromiumBrotliNetworkPause(targetSession, log) {
         finish(callback, { cancel: true });
         return;
       }
-      holdRemoteRequest(contents, (value) => finish(callback, value), log);
+      writeRuntimeLog(log, "WARN", `[Electron] 编码限制尚未装好，已取消这一发远端请求 url=${details?.url}`);
+      startRemoteGateInstall(contents, log);
+      finish(callback, { cancel: true });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       writeRuntimeLog(log, "ERROR", `[Electron] 暂停请求失败，已取消 url=${details?.url} error=${detail}`);

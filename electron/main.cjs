@@ -172,6 +172,8 @@ async function startLocalServer() {
   const dataDir = path.join(userDataDir, "data", "answer-card");
 
   process.env.PROJECTX_ENABLE_SCANNER = "1";
+  // 只在本机壳生效：server 里据此注册 /api/app/brotli-gate（远端 Linux 服务不挂这条路由）。
+  process.env.PROJECTX_ELECTRON_BROTLI_GATE = "1";
   process.env.ANSWER_CARD_DATA_DIR = dataDir;
   process.env.ANSWER_CARD_CLIENT_DIST = clientDist;
   process.env.PROJECTX_DB_PATH = path.join(userDataDir, "data", "projectx.db");
@@ -402,8 +404,8 @@ async function createWindow() {
     appendLog("INFO", "[Renderer] responsive (recovered)");
   });
 
-  // 壳自己打开的就是远端页面时，加载前先关掉解码。本地壳加载 127.0.0.1，
-  // 调试通道改到页面第一次访问非本机地址时再挂，避免老师打开开发者工具就退出。
+  // 远端壳在加载前先关掉解码；本地壳加载 127.0.0.1，页面在第一次远端请求前
+  // 经本机回环调用 /api/app/brotli-gate，主进程装好限制后再让它发出请求。
   if (chromiumBrotliProtectionEnabled()) {
     await installChromiumBrotliDecodeBlock(mainWindow.webContents, appendLog, {
       onFatal: failClosedChromiumBrotli,
@@ -481,6 +483,31 @@ configureChromiumBrotliRemoteGate({
   onWindowFatal: reportChromiumBrotliWindowFailure,
 });
 
+// 远端模式在启动时就注册；本地壳在第一次真正访问远端时装一次。后者不提前关开发者工具，
+// 但之后新开的 PDF/图片预览窗口会走「先停住导航、装好限制再重放」，不会被取消第一发。
+let windowProtectionRegistered = false;
+function registerWindowProtection() {
+  if (windowProtectionRegistered) return;
+  windowProtectionRegistered = true;
+  registerChromiumBrotliProtection(app, {
+    log: appendLog,
+    onWindowFatal: reportChromiumBrotliWindowFailure,
+  });
+}
+
+// 本地壳的页面在第一次远端请求前调用本机服务的 /api/app/brotli-gate：
+// 主进程先装好编码限制再返回 200，避免第一发请求带着旧的 accepted encodings 出去。
+async function armChromiumBrotliGateForMainWindow() {
+  if (!mainWindow || (typeof mainWindow.isDestroyed === "function" && mainWindow.isDestroyed())) {
+    throw new Error("扫描端主窗口尚未就绪");
+  }
+  await installChromiumBrotliDecodeBlock(mainWindow.webContents, appendLog, {
+    onFatal: reportChromiumBrotliWindowFailure,
+  });
+  registerWindowProtection();
+}
+globalThis.__projectxArmChromiumBrotliGate = armChromiumBrotliGateForMainWindow;
+
 app.on("session-created", (createdSession) => {
   installChromiumBrotliHeaderBlock(createdSession, appendLog);
   installChromiumBrotliNetworkPause(createdSession, appendLog);
@@ -491,10 +518,7 @@ app.on("session-created", (createdSession) => {
 app.commandLine.appendSwitch("disable-features", "ServiceWorker");
 
 if (chromiumBrotliProtectionEnabled()) {
-  registerChromiumBrotliProtection(app, {
-    log: appendLog,
-    onWindowFatal: reportChromiumBrotliWindowFailure,
-  });
+  registerWindowProtection();
 }
 
 app.whenReady().then(async () => {

@@ -72,6 +72,49 @@ function getRemoteScannerBase(): string {
   return readServerUrl();
 }
 
+let scannerRemoteGatePromise: Promise<void> | null = null;
+
+/**
+ * 本地壳在第一次远端请求前先让主进程装好 Chromium 编码限制。
+ *
+ * 请求一创建，accepted encodings 就固定了；等 onBeforeRequest 看到它再补
+ * Network.setAcceptedEncodings 改不回来，只能取消这一发。这里先把限制装好，
+ * 让后续 fetch 从创建时就只接受 gzip/deflate。远端壳加载前已装好，直接跳过；
+ * 非 Electron 页面（Vite 开发页）没有这条路由，404 视为不需要。
+ */
+export function ensureScannerRemoteGate(): Promise<void> {
+  if (scannerRemoteGatePromise) return scannerRemoteGatePromise;
+  if (typeof window === "undefined" || !isScannerBuild()) return Promise.resolve();
+  const hostname = (window as { location?: { hostname?: string } }).location?.hostname ?? "";
+  const localShell = hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1" || hostname === "[::1]";
+  if (!localShell) return Promise.resolve();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  scannerRemoteGatePromise = fetch("/api/app/brotli-gate", {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+    signal: controller.signal,
+  }).then(async (res) => {
+    if (res.status === 404) return;
+    if (res.ok) return;
+    let message = "扫描端安全通道未就绪";
+    try {
+      const body = (await res.json()) as { message?: string };
+      if (body?.message) message = body.message;
+    } catch { /* keep default */ }
+    throw Object.assign(new Error(message), { code: "BROTLI_GATE_UNAVAILABLE" });
+  }).catch((error) => {
+    scannerRemoteGatePromise = null;
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw Object.assign(new Error("扫描端安全通道准备超时"), { code: "BROTLI_GATE_UNAVAILABLE" });
+    }
+    throw error;
+  }).finally(() => clearTimeout(timer));
+  return scannerRemoteGatePromise;
+}
+
 let authToken: string | null = null;
 
 export function apiUrl(url: string): string {
@@ -215,10 +258,10 @@ export function authFetch(url: string, options?: RequestInit): Promise<Response>
 }
 
 /** 扫描端专用：仅把远程上传请求发送到配置的 Project-X 服务器。 */
-export function remoteScannerFetch(url: string, options?: RequestInit): Promise<Response> {
+export async function remoteScannerFetch(url: string, options?: RequestInit): Promise<Response> {
   const base = getRemoteScannerBase();
   if (!base) {
-    return Promise.reject(new Error("未配置远端服务器地址"));
+    throw new Error("未配置远端服务器地址");
   }
 
   const headers = new Headers(options?.headers);
@@ -227,12 +270,10 @@ export function remoteScannerFetch(url: string, options?: RequestInit): Promise<
   // 安全（R32）：跨机明文 HTTP 上不发凭据。不带凭据的探测（健康检查）仍然放行，
   // 这样界面还能区分「服务器不可达」与「服务器可达但凭据被拦下」。
   if (wantsCredential) {
-    try {
-      assertCredentialTransportAllowed(base);
-    } catch (error) {
-      return Promise.reject(error);
-    }
+    assertCredentialTransportAllowed(base);
   }
+  // 先装好 Chromium 编码限制，再让 fetch 创建远端请求。
+  await ensureScannerRemoteGate();
   if (apiKey && !headers.has("X-Api-Key")) {
     headers.set("X-Api-Key", apiKey);
   }

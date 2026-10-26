@@ -3,7 +3,7 @@
 // 协议沿用服务端既有三步接口：POST sessions → POST pages(逐页 multipart) → POST complete。
 // 韧性：单页自动重试 2 次（退避 1s/3s，同 token 服务端幂等覆盖）；断线/api_disabled 转 paused，
 // 网络恢复自动续传；存在彻底失败页时不发 complete（服务端会话保持可续传态）。
-import { authFetch, getStoredApiKey, remoteScannerFetch } from "../auth/api";
+import { authFetch, ensureScannerRemoteGate, getStoredApiKey, remoteScannerFetch } from "../auth/api";
 import { SERVER_URL_KEY, readServerUrl } from "./scannerMode";
 import { assertCredentialTransportAllowed } from "./remoteCredentialTransport";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
@@ -245,7 +245,8 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       }
       if (j.apiKey && !headers.has("X-Api-Key")) headers.set("X-Api-Key", j.apiKey);
       const resolved = /^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `${j.remoteBase}${url.startsWith("/") ? url : `/${url}`}`;
-      return fetch(resolved, { ...init, headers });
+      // 与 remoteScannerFetch 同一口径：先装好编码限制，再创建远端请求。
+      return ensureScannerRemoteGate().then(() => fetch(resolved, { ...init, headers }));
     };
   }
 
