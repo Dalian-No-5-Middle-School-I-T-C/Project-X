@@ -426,6 +426,25 @@ function failClosedChromiumBrotli(error) {
   app.quit();
 }
 
+// 装不上时窗口会被停掉远端请求（可重试），只写日志的话现场只会看到「服务器不可达」。给一次可见提示。
+let chromiumBrotliNoticeShown = false;
+function showChromiumBrotliNotice(message, detail) {
+  if (chromiumBrotliNoticeShown) return;
+  chromiumBrotliNoticeShown = true;
+  try {
+    void dialog.showMessageBox({
+      type: "warning",
+      title: "扫描端暂时无法连接服务器",
+      message,
+      detail,
+      buttons: ["知道了"],
+    }).catch(() => {});
+  } catch (error) {
+    const failure = error instanceof Error ? error.message : String(error);
+    appendLog("ERROR", `[Electron] 显示 Brotli 拦截提示失败: ${failure}`);
+  }
+}
+
 function reportChromiumBrotliWindowFailure(webContents, error) {
   if (chromiumBrotliFailureScope(webContents, mainWindow ? mainWindow.webContents : null) === "process") {
     failClosedChromiumBrotli(error);
@@ -433,7 +452,17 @@ function reportChromiumBrotliWindowFailure(webContents, error) {
   }
   const detail = error instanceof Error ? error.message : String(error);
   appendLog("ERROR", `[Electron] 这个窗口的 Brotli 解码拦截失效，主窗口继续运行: ${detail}`);
-  if (!webContents || (mainWindow && webContents === mainWindow.webContents)) return;
+  if (!webContents || (mainWindow && webContents === mainWindow.webContents)) {
+    showChromiumBrotliNotice(
+      "远端页面暂时不能访问：扫描端没能关闭浏览器的 Brotli 解码。已取消这些请求，稍后会自动重试。",
+      "如果一直出现，请关闭开发者工具后重启扫描端；本机离线功能不受影响。",
+    );
+    return;
+  }
+  showChromiumBrotliNotice(
+    "一个预览窗口因为同样的安全限制装不上已关闭，扫描主窗口继续运行。",
+    "需要时请重新打开预览；如果反复出现，请关闭开发者工具后重启扫描端。",
+  );
   try {
     const owner = BrowserWindow.fromWebContents(webContents);
     if (owner && !owner.isDestroyed()) owner.destroy();

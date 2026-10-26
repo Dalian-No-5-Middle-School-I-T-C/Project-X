@@ -488,6 +488,7 @@ brokenPage.id = 9;
 (brokenPage as { getURL: () => string }).getURL = () => "http://127.0.0.1/scanner";
 let fatalContents: unknown = null;
 cjs.configureChromiumBrotliRemoteGate({
+  retryDelayMs: 20,
   onWindowFatal(contents) { fatalContents = contents; },
 });
 cjs.trackChromiumWebContents(brokenPage);
@@ -498,6 +499,29 @@ const brokenResult = await Promise.race([
   new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("失败的远端请求没有结束")), 1000)),
 ]);
 check(brokenResult.cancel === true && fatalContents === brokenPage, "编码限制装不上时取消这次远端请求，并把失败交给这个窗口");
+const brokenAttachCalls = brokenPage.calls.filter((call) => call.method === "attach").length;
+let coolingCancelled = false;
+beforeRequest?.({ webContentsId: 9, url: "https://school.example/api/cooling" }, (value) => { coolingCancelled = value.cancel === true; });
+check(
+  coolingCancelled && brokenPage.calls.filter((call) => call.method === "attach").length === brokenAttachCalls,
+  "失败后第一次请求落在退避窗口里，直接取消、不立刻重装",
+);
+const brokenSend = brokenPage.debugger.sendCommand;
+brokenPage.debugger.sendCommand = (method: string, params: Record<string, unknown>, sessionId?: string) => {
+  if (method === "Network.setAcceptedEncodings") return Promise.resolve({});
+  return brokenSend(method, params, sessionId);
+};
+await new Promise((resolve) => setTimeout(resolve, 30));
+const retryResult = await Promise.race([
+  new Promise<{ cancel?: boolean }>((resolve) => {
+    beforeRequest?.({ webContentsId: 9, url: "https://school.example/api/retry" }, resolve);
+  }),
+  new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("重试的远端请求没有结束")), 1000)),
+]);
+check(
+  retryResult.cancel !== true && cjs.isChromiumBrotliDecodeReady(brokenPage) === true,
+  "退避窗口过后会再装一次，装上就恢复放行，失败不是终态",
+);
 
 const opened = fakeWebContents();
 opened.getType = () => "window";
@@ -511,8 +535,8 @@ opened.loadURL = (next: string) => {
   if (next === "about:blank") return new Promise<void>((resolve) => { releaseBlank = resolve; });
   return Promise.resolve();
 };
-const pageHandlers: Record<string, (event: { preventDefault: () => void }, url?: string) => void> = {};
-opened.on = (event: string, listener: (event: { preventDefault: () => void }, url?: string) => void) => {
+const pageHandlers: Record<string, (event: { preventDefault: () => void; url?: string; isMainFrame?: boolean; isSameDocument?: boolean }, url?: string) => void> = {};
+opened.on = (event: string, listener: (event: { preventDefault: () => void; url?: string; isMainFrame?: boolean; isSameDocument?: boolean }, url?: string) => void) => {
   pageHandlers[event] = listener;
 };
 const fakeApp: { on: (event: string, listener: (event: unknown, contents: typeof opened) => void) => void; created?: (event: unknown, contents: typeof opened) => void } = {
@@ -520,6 +544,20 @@ const fakeApp: { on: (event: string, listener: (event: unknown, contents: typeof
 };
 cjs.registerChromiumBrotliProtection(fakeApp, { log() {}, onFatal() {}, maxReattachAttempts: 1, reattachDelayMs: 0 });
 fakeApp.created?.(null, opened);
+pageHandlers["did-start-navigation"]?.(
+  { preventDefault() {}, url: "http://127.0.0.1/iframe", isMainFrame: false, isSameDocument: false },
+  "http://127.0.0.1/iframe",
+);
+await new Promise((resolve) => setImmediate(resolve));
+pageHandlers["did-start-navigation"]?.(
+  { preventDefault() {}, url: "http://127.0.0.1/scanner?tab=2", isMainFrame: true, isSameDocument: true },
+  "http://127.0.0.1/scanner?tab=2",
+);
+await new Promise((resolve) => setImmediate(resolve));
+check(
+  !openedUrls.includes("http://127.0.0.1/iframe") && !openedUrls.includes("http://127.0.0.1/scanner?tab=2"),
+  "子框架与同文档导航不会被记成顶层地址重放",
+);
 let prevented = false;
 pageHandlers["will-navigate"]?.({ preventDefault() { prevented = true; } }, "http://127.0.0.1/child");
 check(prevented && !openedUrls.includes("http://127.0.0.1/child"), "同源新窗口的首次导航会先停住");
@@ -744,6 +782,7 @@ check(zlib.gunzipSync(zlib.gzipSync(Buffer.from("gz-ok"))).toString() === "gz-ok
 
 console.log("\n== Electron 里的 Chromium 实机 ==");
 const electronPathFile = path.resolve("node_modules/electron/path.txt");
+const requireElectronProbe = process.env.PROJECTX_REQUIRE_ELECTRON_PROBE === "1";
 let electronBinary = "";
 if (existsSync(electronPathFile)) {
   try {
@@ -754,6 +793,7 @@ if (existsSync(electronPathFile)) {
 }
 if (!electronBinary || !existsSync(electronBinary)) {
   console.log("  - 当前环境没有 Electron 二进制，跳过 Chromium 实机检查（CI 使用 npm install --ignore-scripts）");
+  check(!requireElectronProbe, "PROJECTX_REQUIRE_ELECTRON_PROBE=1 时必须真的跑实机检查，不能跳过");
 } else {
   await probeGuard(path.resolve("electron/node-runtime-security.cjs"), "Electron 自带 Node", electronBinary, { ELECTRON_RUN_AS_NODE: "1" });
   const xvfb = spawnSync("sh", ["-c", "command -v xvfb-run"], { encoding: "utf8" });
@@ -764,7 +804,7 @@ if (!electronBinary || !existsSync(electronBinary)) {
     xvfbBin || electronBinary,
     xvfbBin ? ["-a", electronBinary, ...electronArgs] : electronArgs,
     {},
-    60000,
+    90000,
   );
   const line = probe.stdout.split(/\r?\n/).find((item) => item.startsWith("CHROMIUM_BROTLI_BLOCK "));
   let payload: {
@@ -774,10 +814,14 @@ if (!electronBinary || !existsSync(electronBinary)) {
     document?: { error?: string; title?: string; requests?: number; acceptEncodingHasBr?: boolean; acceptEncodingHasGzip?: boolean; code?: number | null };
     gzipTitle?: string;
     child?: { code?: number | null; requests?: number; acceptEncodingHasBr?: boolean } | null;
+    noopenerChild?: { code?: number | null; requests?: number; acceptEncodingHasBr?: boolean } | null;
     iframe?: { title?: string; code?: number | null; requests?: number; acceptEncodingHasBr?: boolean };
     worker?: { text?: string; error?: string; timeout?: boolean } | null;
     workerRequest?: { requests?: number; acceptEncodingHasBr?: boolean };
     serviceWorker?: string;
+    gateControl?: { text?: string; error?: string; requests?: number; acceptEncodingHasBr?: boolean };
+    gate?: { text?: string; error?: string; gzipText?: string; gzipError?: string; requests?: number; acceptEncodingHasBr?: boolean };
+    gateFailures?: string[];
   } = {};
   try {
     payload = JSON.parse(line?.slice("CHROMIUM_BROTLI_BLOCK ".length) || "{}");
@@ -798,6 +842,9 @@ if (!electronBinary || !existsSync(electronBinary)) {
     && (payload.child?.requests ?? 0) > 0
     && payload.child?.code === -330
     && payload.child?.acceptEncodingHasBr === false
+    && (payload.noopenerChild?.requests ?? 0) > 0
+    && payload.noopenerChild?.code === -330
+    && payload.noopenerChild?.acceptEncodingHasBr === false
     && payload.iframe?.title !== "decoded-iframe"
     && payload.iframe?.code === -330
     && payload.iframe?.acceptEncodingHasBr === false
@@ -807,8 +854,17 @@ if (!electronBinary || !existsSync(electronBinary)) {
     && payload.worker?.timeout !== true
     && (payload.serviceWorker === "missing" || payload.serviceWorker === "blocked")
     && !payload.gone;
-  check(liveOk, "未装拦截时 br 能解开；装上 CDP 后文档、新窗口、iframe、Worker 都解不开，且这些请求不再声明 br");
-  if (!liveOk) {
+  check(liveOk, "未装拦截时 br 能解开；装上 CDP 后文档、新窗口（含 noopener）、iframe、Worker 都解不开，且这些请求不再声明 br");
+  const gateOk = payload.gateControl?.text === "hello-br"
+    && payload.gateControl?.acceptEncodingHasBr === true
+    && (payload.gateControl?.requests ?? 0) > 0
+    && (payload.gate?.brRequests ?? 0) > 0
+    && payload.gate?.brAcceptEncodingHasBr === false
+    && payload.gate?.text !== "hello-br"
+    && payload.gate?.gzipText === "hello-gzip-remote"
+    && (payload.gateFailures?.length ?? 0) === 0;
+  check(gateOk, "非本机来源的页面：对照窗口能解出 br，装闸门后同源请求不再声明 br 且解不出，gzip 仍可用");
+  if (!liveOk || !gateOk) {
     console.log(probe.stdout);
     console.log(probe.stderr);
   }

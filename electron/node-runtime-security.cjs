@@ -188,9 +188,13 @@ const networkPauseSessions = new WeakSet();
 const contentsById = new Map();
 const trackedContents = new WeakSet();
 const heldRemoteRequests = new Map();
-const remoteGateBlocked = new Set();
+const remoteGateRetryAt = new Map();
+const remoteGateAttempts = new Map();
 let remoteGateHandler = null;
+let remoteGateRetryBaseMs = 5000;
 const REMOTE_GATE_TIMEOUT_MS = 5000;
+const REMOTE_GATE_RETRY_MAX_MS = 60000;
+const ENCODINGS_COMMAND_TIMEOUT_MS = 10000;
 
 function writeRuntimeLog(log, level, message) {
   if (typeof log === "function") log(level, message);
@@ -204,6 +208,16 @@ function chromiumBrotliBlockError(cause) {
 function sendDebuggerCommand(dbg, method, params, sessionId) {
   if (sessionId) return dbg.sendCommand(method, params, sessionId);
   return dbg.sendCommand(method, params);
+}
+
+// 调试命令可能永久挂起（渲染进程没起来时 Network.enable 就不会返回），装不上要能变成一次可重试的失败。
+function withTimeout(promise, timeoutMs, message) {
+  let timer;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    if (typeof timer.unref === "function") timer.unref();
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function rememberDecodeSession(webContents, sessionId) {
@@ -223,15 +237,17 @@ function forgetDecodeSession(webContents, sessionId) {
 }
 
 async function applyChromiumAcceptedEncodings(dbg, sessionId) {
-  await sendDebuggerCommand(dbg, "Network.enable", {}, sessionId);
-  await sendDebuggerCommand(dbg, "Network.setAcceptedEncodings", {
-    encodings: CHROMIUM_ACCEPTED_ENCODINGS.slice(),
-  }, sessionId);
-  await sendDebuggerCommand(dbg, "Target.setAutoAttach", {
-    autoAttach: true,
-    waitForDebuggerOnStart: true,
-    flatten: true,
-  }, sessionId);
+  await withTimeout((async () => {
+    await sendDebuggerCommand(dbg, "Network.enable", {}, sessionId);
+    await sendDebuggerCommand(dbg, "Network.setAcceptedEncodings", {
+      encodings: CHROMIUM_ACCEPTED_ENCODINGS.slice(),
+    }, sessionId);
+    await sendDebuggerCommand(dbg, "Target.setAutoAttach", {
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true,
+    }, sessionId);
+  })(), ENCODINGS_COMMAND_TIMEOUT_MS, "调试命令没有返回");
 }
 
 async function configureChildTarget(webContents, dbg, childSessionId, log) {
@@ -343,6 +359,8 @@ function isLoopbackRequestUrl(url) {
 
 function configureChromiumBrotliRemoteGate(options) {
   remoteGateHandler = options || null;
+  const retryDelayMs = Number(options?.retryDelayMs);
+  remoteGateRetryBaseMs = Number.isFinite(retryDelayMs) && retryDelayMs >= 0 ? retryDelayMs : 5000;
 }
 
 function trackChromiumWebContents(webContents) {
@@ -354,7 +372,8 @@ function trackChromiumWebContents(webContents) {
     webContents.once("destroyed", () => {
       if (contentsById.get(webContents.id) !== webContents) return;
       contentsById.delete(webContents.id);
-      remoteGateBlocked.delete(webContents.id);
+      clearRemoteGate(webContents.id);
+      suspendedContentIds.delete(webContents.id);
       flushHeldRemoteRequests(webContents.id, true);
     });
   }
@@ -375,6 +394,33 @@ function flushHeldRemoteRequests(id, cancel) {
   }
 }
 
+function clearRemoteGate(id) {
+  if (typeof id !== "number") return;
+  remoteGateRetryAt.delete(id);
+  remoteGateAttempts.delete(id);
+}
+
+function remoteGateCoolingDown(id, now = Date.now()) {
+  const retryAt = remoteGateRetryAt.get(id);
+  return typeof retryAt === "number" && retryAt > now;
+}
+
+// 装不上不能变成终态：按指数退避记一个「下次可重试」的时间点，下一次远端请求会再试一次。
+function blockRemoteGate(webContents, log, error) {
+  const id = webContents?.id;
+  if (typeof id !== "number") return;
+  const attempts = (remoteGateAttempts.get(id) || 0) + 1;
+  remoteGateAttempts.set(id, attempts);
+  const delay = Math.min(REMOTE_GATE_RETRY_MAX_MS, remoteGateRetryBaseMs * 2 ** Math.min(attempts - 1, 4));
+  remoteGateRetryAt.set(id, Date.now() + delay);
+  const detail = error instanceof Error ? error.message : String(error);
+  writeRuntimeLog(log, "ERROR", `[Electron] 远端请求的 Brotli 解码限制装不上（第 ${attempts} 次），${Math.max(1, Math.round(delay / 1000))} 秒后再试 error=${detail}`);
+  if (typeof remoteGateHandler?.onWindowFatal === "function") remoteGateHandler.onWindowFatal(webContents, error);
+}
+
+// 按住请求，等编码限制装上再放行。注意：被按住这一发请求的 Accept-Encoding 在进入这里之前
+// 就已经算好，放行后不会再变；它靠响应头那一层去掉 br，之后从这扇窗口发出的请求才吃得到
+// Network.setAcceptedEncodings。
 function holdRemoteRequest(webContents, callback, log) {
   const id = webContents.id;
   let entry = heldRemoteRequests.get(id);
@@ -383,31 +429,28 @@ function holdRemoteRequest(webContents, callback, log) {
     heldRemoteRequests.set(id, entry);
     entry.timer = setTimeout(() => {
       if (heldRemoteRequests.get(id) !== entry) return;
-      remoteGateBlocked.add(id);
       flushHeldRemoteRequests(id, true);
-      const error = chromiumBrotliBlockError("等待编码限制超时");
-      writeRuntimeLog(log, "ERROR", `[Electron] ${error.message}`);
-      if (typeof remoteGateHandler?.onWindowFatal === "function") remoteGateHandler.onWindowFatal(webContents, error);
+      blockRemoteGate(webContents, log, chromiumBrotliBlockError("等待编码限制超时"));
     }, REMOTE_GATE_TIMEOUT_MS);
     const options = {
       log,
       onFatal(error) {
-        remoteGateBlocked.add(id);
         flushHeldRemoteRequests(id, true);
-        if (typeof remoteGateHandler?.onWindowFatal === "function") remoteGateHandler.onWindowFatal(webContents, error);
+        blockRemoteGate(webContents, log, error);
       },
     };
     Promise.resolve(installChromiumBrotliDecodeBlock(webContents, log, options)).then(() => {
       if (heldRemoteRequests.get(id) !== entry) return;
-      if (decodeReady.has(webContents) && !decodeSuspended.has(webContents)) flushHeldRemoteRequests(id, false);
-      else flushHeldRemoteRequests(id, true);
+      if (decodeReady.has(webContents) && !decodeSuspended.has(webContents)) {
+        clearRemoteGate(id);
+        flushHeldRemoteRequests(id, false);
+        return;
+      }
+      flushHeldRemoteRequests(id, true);
     }).catch((error) => {
       if (heldRemoteRequests.get(id) !== entry) return;
-      remoteGateBlocked.add(id);
       flushHeldRemoteRequests(id, true);
-      const detail = error instanceof Error ? error.message : String(error);
-      writeRuntimeLog(log, "ERROR", `[Electron] 远端请求发出前没能关掉 Brotli 解码: ${detail}`);
-      if (typeof remoteGateHandler?.onWindowFatal === "function") remoteGateHandler.onWindowFatal(webContents, error);
+      blockRemoteGate(webContents, log, error);
     });
   }
   entry.callbacks.push(callback);
@@ -482,13 +525,17 @@ function installChromiumBrotliNetworkPause(targetSession, log) {
         return;
       }
       const contents = id === null ? null : contentsById.get(id);
-      if (!contents || remoteGateBlocked.has(id) || (typeof contents.getType === "function" && contents.getType() === "devtools")) {
-        writeRuntimeLog(log, "WARN", `[Electron] 远端请求还没有 Brotli 解码限制，已取消 url=${details?.url}`);
+      if (!contents || (typeof contents.getType === "function" && contents.getType() === "devtools")) {
+        writeRuntimeLog(log, "WARN", `[Electron] 远端请求没有对应的窗口，已取消 url=${details?.url}`);
         finish(callback, { cancel: true });
         return;
       }
       if (decodeReady.has(contents) && !decodeSuspended.has(contents)) {
         finish(callback, {});
+        return;
+      }
+      if (remoteGateCoolingDown(id)) {
+        finish(callback, { cancel: true });
         return;
       }
       holdRemoteRequest(contents, (value) => finish(callback, value), log);
@@ -587,10 +634,18 @@ async function installChromiumBrotliDecodeBlockOnce(webContents, log, options) {
     decodeListenersInstalled.add(webContents);
   }
   try {
+    // 调试通道只允许一个客户端：开发者工具占着就 attach 不上。与重连分支同一口径，先关掉。
+    if (typeof webContents.isDevToolsOpened === "function" && webContents.isDevToolsOpened()) {
+      webContents.closeDevTools();
+    }
+  } catch {
+    /* 关不掉就交给下面的 attach 抛错，失败会进入可重试状态 */
+  }
+  try {
     if (!dbg.isAttached()) dbg.attach("1.3");
     await applyChromiumAcceptedEncodings(dbg);
     decodeReady.add(webContents);
-    if (typeof webContents.id === "number") remoteGateBlocked.delete(webContents.id);
+    if (typeof webContents.id === "number") clearRemoteGate(webContents.id);
     releaseChromiumBrotliSuspension(webContents);
     writeRuntimeLog(log, "INFO", "[Electron] 已限制 Chromium 只接受 gzip 与 deflate，不再解码 br");
   } catch (error) {
@@ -648,14 +703,19 @@ function holdNavigationUntilBrotliBlock(contents, options) {
   };
   // window.open 先发出 did-start-navigation，will-navigate 才到。
   // 不能在 did-start-navigation 里同步 stop()，Electron 39 会在这里崩溃。
-  // 取消交给 will-navigate 的 preventDefault；这里只记住地址，等这一轮结束再装调试通道。
-  contents.on("did-start-navigation", (_event, url) => {
+  // 取消交给 will-navigate 的 preventDefault；这里只记住主框架的真实导航地址，等这一轮结束再装调试通道。
+  // 子框架与 pushState/replaceState 这类同文档导航也会发这个事件，重放成顶层 loadURL 会把整页冲掉。
+  contents.on("did-start-navigation", (event, url, isInPlace, isMainFrame) => {
+    const target = typeof event?.url === "string" ? event.url : url;
+    const mainFrame = typeof event?.isMainFrame === "boolean" ? event.isMainFrame : isMainFrame !== false;
+    const sameDocument = typeof event?.isSameDocument === "boolean" ? event.isSameDocument : isInPlace === true;
+    if (!mainFrame || sameDocument) return;
     if (decodeSuspended.has(contents)) {
-      if (!isAbout(url)) queuedUrl = url;
+      if (!isAbout(target)) queuedUrl = target;
       return;
     }
-    if (decodeReady.has(contents) || resuming || isAbout(url)) return;
-    queuedUrl = url;
+    if (decodeReady.has(contents) || resuming || isAbout(target)) return;
+    queuedUrl = target;
     setImmediate(arm);
   });
   contents.on("will-navigate", (event, url) => {
