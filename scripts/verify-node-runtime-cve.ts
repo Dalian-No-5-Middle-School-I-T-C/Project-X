@@ -50,7 +50,7 @@ const cjs = require("../electron/node-runtime-security.cjs") as {
     options?: { onFatal?: (error: unknown) => void },
   ) => Promise<void>;
   chromiumBrotliFailureScope: (webContents: unknown, mainWebContents: unknown) => "process" | "window";
-  configureChromiumBrotliRemoteGate: (options: { onWindowFatal?: (webContents: unknown, error: unknown) => void; log?: (level: string, message: string) => void } | null) => void;
+  configureChromiumBrotliRemoteGate: (options: { retryDelayMs?: number; onWindowFatal?: (webContents: unknown, error: unknown) => void; log?: (level: string, message: string) => void } | null) => void;
   trackChromiumWebContents: (webContents: { id?: number }) => void;
 };
 const packaging = require("../scripts/package-server-ubuntu.cjs") as {
@@ -258,7 +258,9 @@ check(pauseAt > headerAt && pauseAt < createAt, "默认会话在创建窗口前�
 check(mainCjs.includes('app.on("session-created"'), "新建 session 同样拦截 br 响应头");
 check(mainCjs.includes("installChromiumBrotliNetworkPause(createdSession"), "新建 session 同样在重连期间暂停请求");
 check(mainCjs.includes("registerChromiumBrotliProtection") && mainCjs.includes("chromiumBrotliProtectionEnabled()"), "远程模式给之后创建的每个窗口安装解码拦截");
-check(mainCjs.includes('app.commandLine.appendSwitch("disable-features", "ServiceWorker")'), "扫描端关掉 service worker，避免它绕开页面级调试通道");
+const cleanupAt = readyBody.indexOf("await clearChromiumServiceWorkers(session.defaultSession)");
+check(cleanupAt > pauseAt && cleanupAt < createAt,
+  "加载页面前清理历史 Service Worker 注册");
 const syntax = await run(process.execPath, ["--check", "electron/main.cjs"]);
 check(syntax.code === 0, "electron/main.cjs 语法可解析");
 const cjsSyntax = await run(process.execPath, ["--check", "electron/node-runtime-security.cjs"]);
@@ -318,6 +320,12 @@ let stripCancelled = false;
   },
 );
 check(stripped === "gzip, deflate" && !stripCancelled, "发出请求前去掉已有的 br");
+let workerScriptCancelled = false;
+(headerSession as { before: (details: { requestHeaders?: Record<string, string> }, callback: HeaderCallback) => void }).before(
+  { requestHeaders: { "Service-Worker": "script" } },
+  (value) => { workerScriptCancelled = value.cancel === true; },
+);
+check(workerScriptCancelled, "Service Worker 注册脚本在发出请求前取消");
 let brCancelled = false;
 (headerSession as { received: (details: { url?: string; responseHeaders?: unknown }, callback: HeaderCallback) => void }).received(
   { url: "https://remote.example/app", responseHeaders: { "content-encoding": "br" } },
@@ -379,6 +387,18 @@ let primedUrl = "";
 };
 await cjs.installChromiumBrotliDecodeBlock(primed, () => {});
 check(primed.calls[0]?.method === "loadURL" && primed.calls[0]?.params.url === "about:blank" && primed.calls[1]?.method === "attach", "渲染进程还没出现时先打开 about:blank，避免编码命令挂起");
+const latePrimed = fakeWebContents();
+let lateUrl = "";
+let blankReady: (() => void) | undefined;
+latePrimed.getURL = () => lateUrl;
+latePrimed.once = (event: string, listener: () => void) => { if (event === "dom-ready") blankReady = listener; };
+latePrimed.loadURL = async () => {
+  setImmediate(() => { lateUrl = "about:blank"; blankReady?.(); });
+  throw new Error("ERR_FAILED (-2) loading 'about:blank'");
+};
+await cjs.installChromiumBrotliDecodeBlock(latePrimed, () => {});
+check(lateUrl === "about:blank" && cjs.isChromiumBrotliDecodeReady(latePrimed),
+  "旧导航误报失败后，等待空白文档实际就绪再安装防护");
 const decoded = fakeWebContents();
 await cjs.installChromiumBrotliDecodeBlock(decoded, () => {});
 const mainMethods = decoded.calls.map((call) => call.method);
@@ -428,6 +448,8 @@ await cjs.installChromiumBrotliDecodeBlock(detached, () => {}, {
   reattachDelayMs: 0,
 });
 detached.id = 41;
+cjs.trackChromiumWebContents(detached);
+cjs.configureChromiumBrotliRemoteGate({ retryDelayMs: 0 });
 check(cjs.isChromiumBrotliDecodeReady(detached) === true, "编码限制装上之后窗口标记为已保护");
 const pauseLogs: string[] = [];
 let beforeRequest: ((details: { webContentsId?: number; url?: string }, callback: (value: { cancel?: boolean }) => void) => void) | undefined;
@@ -459,6 +481,20 @@ check(
 await new Promise((resolve) => setTimeout(resolve, 0));
 await new Promise((resolve) => setTimeout(resolve, 0));
 check(detached.devtoolsClosed() && cjs.isChromiumBrotliDecodeReady(detached) === false && fatalMessage.includes(CVE_2026_111497), "调试通道重试仍失败后才停掉页面，期间不会被重新标成已保护");
+let localCancelled = true;
+beforeRequest?.({ webContentsId: 41, url: "http://127.0.0.1/api/app/brotli-gate" }, value => { localCancelled = value.cancel === true; });
+check(!localCancelled, "重连耗尽后本机 API 和恢复握手继续可用");
+const recoveredMethods: string[] = [];
+detached.debugger.sendCommand = async (method: string) => { recoveredMethods.push(method); return {}; };
+let recoveryRequestCancelled = false;
+beforeRequest?.({ webContentsId: 41, url: "https://remote.example/retry" }, value => { recoveryRequestCancelled = value.cancel === true; });
+await new Promise(resolve => setTimeout(resolve, 0));
+check(recoveryRequestCancelled && recoveredMethods.includes("Network.setAcceptedEncodings") && cjs.isChromiumBrotliDecodeReady(detached),
+  "重连耗尽后远端请求触发重新安装，当前请求先取消");
+let retryCancelled = true;
+beforeRequest?.({ webContentsId: 41, url: "https://remote.example/retry" }, value => { retryCancelled = value.cancel === true; });
+check(!retryCancelled, "恢复成功后重试请求可以通过");
+cjs.configureChromiumBrotliRemoteGate(null);
 
 const savedServerMode = process.env.PROJECTX_SERVER_MODE;
 delete process.env.PROJECTX_SERVER_MODE;
@@ -564,6 +600,10 @@ const opened = fakeWebContents();
 opened.getType = () => "window";
 let openedUrl = "";
 const openedUrls: string[] = [];
+let openingLoading = false;
+const stopHandlers: Record<string, () => void> = {};
+opened.isLoading = () => openingLoading;
+opened.once = (event: string, listener: () => void) => { stopHandlers[event] = listener; };
 let releaseBlank: (() => void) | undefined;
 opened.getURL = () => openedUrl;
 opened.loadURL = (next: string) => {
@@ -596,8 +636,13 @@ check(
   "子框架与同文档导航不会被记成顶层地址重放",
 );
 let prevented = false;
+openingLoading = true;
 pageHandlers["will-navigate"]?.({ preventDefault() { prevented = true; } }, "http://127.0.0.1/child");
 check(prevented && !openedUrls.includes("http://127.0.0.1/child"), "同源新窗口的首次导航会先停住");
+openingLoading = false;
+stopHandlers["did-stop-loading"]?.();
+check(!openedUrls.includes("about:blank"), "取消导航的收尾回调内不会重入 loadURL");
+await new Promise((resolve) => setImmediate(resolve));
 releaseBlank?.();
 await new Promise((resolve) => setImmediate(resolve));
 await new Promise((resolve) => setImmediate(resolve));
@@ -855,7 +900,7 @@ if (!electronBinary || !existsSync(electronBinary)) {
     iframe?: { title?: string; code?: number | null; requests?: number; acceptEncodingHasBr?: boolean };
     worker?: { text?: string; error?: string; timeout?: boolean } | null;
     workerRequest?: { requests?: number; acceptEncodingHasBr?: boolean };
-    serviceWorker?: string;
+    serviceWorker?: { controlRegistered?: boolean; remainingRegistrations?: number; blocked?: boolean; newScriptRequests?: number };
     gateControl?: { text?: string; error?: string; requests?: number; acceptEncodingHasBr?: boolean };
     gate?: {
       firstAttemptRejected?: boolean;
@@ -908,7 +953,10 @@ if (!electronBinary || !existsSync(electronBinary)) {
     && payload.workerRequest?.acceptEncodingHasBr === false
     && workerText !== "hello-br"
     && payload.worker?.timeout !== true
-    && (payload.serviceWorker === "missing" || payload.serviceWorker === "blocked")
+    && payload.serviceWorker?.controlRegistered === true
+    && payload.serviceWorker?.remainingRegistrations === 0
+    && payload.serviceWorker?.blocked === true
+    && payload.serviceWorker?.newScriptRequests === 0
     && !payload.gone;
   check(liveOk, "未装拦截时 br 能解开；装上 CDP 后文档、新窗口（含 noopener）、iframe、Worker 都解不开，且这些请求不再声明 br");
   const gateOk = payload.gateControl?.text === "hello-br"

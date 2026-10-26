@@ -178,10 +178,11 @@ const headerBlockedSessions = new WeakSet();
 const decodeListenersInstalled = new WeakSet();
 const decodeConfiguredSessions = new WeakMap();
 const decodeReattachPending = new WeakSet();
+const decodeReattachStates = new WeakMap();
+const serviceWorkerCleanup = new WeakMap();
 const decodeInstallPromises = new WeakMap();
 const decodeReady = new WeakSet();
 const decodeSuspended = new WeakSet();
-const suspendedContentIds = new Set();
 const navigationHolds = new WeakSet();
 const protectionRestoredHandlers = new WeakMap();
 const networkPauseSessions = new WeakSet();
@@ -276,6 +277,13 @@ function installChromiumBrotliHeaderBlock(targetSession, log) {
   };
   targetSession.webRequest.onBeforeSendHeaders(CHROMIUM_REQUEST_FILTER, (details, callback) => {
     try {
+      // Chromium 的 ServiceWorker feature 开关无效。注册和更新脚本都带这个
+      // 浏览器生成的请求头；在发到网络前拒绝，覆盖本地壳尚未挂 CDP 的阶段。
+      if (headerValues(details.requestHeaders, "service-worker").some((value) => value.toLowerCase() === "script")) {
+        writeRuntimeLog(log, "WARN", `[Electron] 已拒绝 Service Worker 脚本 url=${details.url}`);
+        finish(callback, { cancel: true });
+        return;
+      }
       if (!details.requestHeaders) {
         finish(callback, {});
         return;
@@ -305,6 +313,15 @@ function installChromiumBrotliHeaderBlock(targetSession, log) {
     }
   });
   headerBlockedSessions.add(targetSession);
+}
+
+function clearChromiumServiceWorkers(targetSession) {
+  const existing = serviceWorkerCleanup.get(targetSession);
+  if (existing) return existing;
+  const pending = Promise.resolve().then(() => targetSession.clearStorageData({ storages: ["serviceworkers"] }));
+  serviceWorkerCleanup.set(targetSession, pending);
+  pending.catch(() => serviceWorkerCleanup.delete(targetSession));
+  return pending;
 }
 
 function chromiumBrotliProtectionEnabled() {
@@ -372,7 +389,6 @@ function trackChromiumWebContents(webContents) {
       if (contentsById.get(webContents.id) !== webContents) return;
       contentsById.delete(webContents.id);
       clearRemoteGate(webContents.id);
-      suspendedContentIds.delete(webContents.id);
       remoteGateStarting.delete(webContents.id);
     });
   }
@@ -390,7 +406,7 @@ function remoteGateCoolingDown(id, now = Date.now()) {
 }
 
 // 装不上不能变成终态：按指数退避记一个「下次可重试」的时间点，下一次远端请求会再试一次。
-function blockRemoteGate(webContents, log, error) {
+function deferRemoteGateRetry(webContents, log, error) {
   const id = webContents?.id;
   if (typeof id !== "number") return;
   const attempts = (remoteGateAttempts.get(id) || 0) + 1;
@@ -399,6 +415,10 @@ function blockRemoteGate(webContents, log, error) {
   remoteGateRetryAt.set(id, Date.now() + delay);
   const detail = error instanceof Error ? error.message : String(error);
   writeRuntimeLog(log, "ERROR", `[Electron] 远端请求的 Brotli 解码限制装不上（第 ${attempts} 次），${Math.max(1, Math.round(delay / 1000))} 秒后再试 error=${detail}`);
+}
+
+function blockRemoteGate(webContents, log, error) {
+  deferRemoteGateRetry(webContents, log, error);
   if (typeof remoteGateHandler?.onWindowFatal === "function") remoteGateHandler.onWindowFatal(webContents, error);
 }
 
@@ -448,9 +468,6 @@ function suspendChromiumBrotliContents(webContents) {
   decodeReady.delete(webContents);
   decodeSuspended.add(webContents);
   decodeConfiguredSessions.delete(webContents);
-  if (typeof webContents?.id === "number") {
-    suspendedContentIds.add(webContents.id);
-  }
   try {
     if (typeof webContents.stop === "function") webContents.stop();
   } catch {
@@ -460,7 +477,6 @@ function suspendChromiumBrotliContents(webContents) {
 
 function releaseChromiumBrotliSuspension(webContents) {
   decodeSuspended.delete(webContents);
-  if (typeof webContents?.id === "number") suspendedContentIds.delete(webContents.id);
 }
 
 // onBeforeRequest 在请求发出前取消，不会把 br 交给解码器。响应头那一层来不及。
@@ -481,11 +497,6 @@ function installChromiumBrotliNetworkPause(targetSession, log) {
   targetSession.webRequest.onBeforeRequest(CHROMIUM_REQUEST_FILTER, (details, callback) => {
     try {
       const id = typeof details?.webContentsId === "number" ? details.webContentsId : null;
-      if (id !== null && suspendedContentIds.has(id)) {
-        writeRuntimeLog(log, "WARN", `[Electron] 调试通道断开，已暂停请求 url=${details.url}`);
-        finish(callback, { cancel: true });
-        return;
-      }
       // 本地壳加载的是 127.0.0.1，页面自己的 fetch 才会碰到远端。
       // 还没受保护的窗口不能把远端请求发出去：请求一创建，accepted encodings 就定死了，
       // 补装 Network.setAcceptedEncodings 也改不回来。取消这一发，装好后由调用方重试。
@@ -501,6 +512,12 @@ function installChromiumBrotliNetworkPause(targetSession, log) {
       }
       if (decodeReady.has(contents) && !decodeSuspended.has(contents)) {
         finish(callback, {});
+        return;
+      }
+      // 让正在执行的重连先完成；耗尽后由后续远端请求按退避重新安装。
+      // 回环 API 已在上面放行，本机扫描和恢复握手都可以继续使用。
+      if (decodeReattachPending.has(contents)) {
+        finish(callback, { cancel: true });
         return;
       }
       if (remoteGateCoolingDown(id)) {
@@ -530,6 +547,7 @@ function scheduleChromiumBrotliReattach(webContents, dbg, log, options, state, r
   if (state.failures > maxAttempts) {
     const error = chromiumBrotliBlockError(reason || "调试通道反复断开");
     writeRuntimeLog(log, "ERROR", `[Electron] 重新关闭 Chromium Brotli 解码失败: ${error.message}`);
+    deferRemoteGateRetry(webContents, log, error);
     if (typeof options?.onFatal === "function") options.onFatal(error);
     return;
   }
@@ -584,7 +602,21 @@ async function installChromiumBrotliDecodeBlockOnce(webContents, log, options) {
   // Network.enable 在渲染进程出现之前会一直挂起。about:blank 不走网络，也不会触发 Brotli。
   // 已经打开过页面时不能再导航到 about:blank，否则重连调试通道会把老师正在看的页面冲掉。
   if (typeof webContents.getURL === "function" && !webContents.getURL() && typeof webContents.loadURL === "function") {
-    await webContents.loadURL("about:blank");
+    // Electron 39 的普通 window.open 可能先报告旧导航结束，令新 loadURL
+    // 拒绝为 ERR_FAILED，随后才提交 about:blank。以实际文档就绪为恢复依据。
+    let onReady;
+    const ready = new Promise((resolve) => {
+      onReady = resolve;
+      if (typeof webContents.once === "function") webContents.once("dom-ready", onReady);
+    });
+    try {
+      await webContents.loadURL("about:blank");
+    } catch (error) {
+      await withTimeout(ready, ENCODINGS_COMMAND_TIMEOUT_MS, "空白预热页面未就绪");
+      if (webContents.getURL() !== "about:blank") throw error;
+    } finally {
+      if (typeof webContents.removeListener === "function") webContents.removeListener("dom-ready", onReady);
+    }
   }
   if (!decodeListenersInstalled.has(webContents)) {
     dbg.on("message", (_event, method, params, sessionId) => {
@@ -599,6 +631,7 @@ async function installChromiumBrotliDecodeBlockOnce(webContents, log, options) {
       void configureChildTarget(webContents, dbg, childSessionId, log);
     });
     const reattachState = { failures: 0 };
+    decodeReattachStates.set(webContents, reattachState);
     dbg.on("detach", (_event, reason) => {
       scheduleChromiumBrotliReattach(webContents, dbg, log, options, reattachState, reason);
     });
@@ -616,6 +649,8 @@ async function installChromiumBrotliDecodeBlockOnce(webContents, log, options) {
     if (!dbg.isAttached()) dbg.attach("1.3");
     await applyChromiumAcceptedEncodings(dbg);
     decodeReady.add(webContents);
+    const reattachState = decodeReattachStates.get(webContents);
+    if (reattachState) reattachState.failures = 0;
     if (typeof webContents.id === "number") clearRemoteGate(webContents.id);
     releaseChromiumBrotliSuspension(webContents);
     writeRuntimeLog(log, "INFO", "[Electron] 已限制 Chromium 只接受 gzip 与 deflate，不再解码 br");
@@ -665,9 +700,10 @@ function holdNavigationUntilBrotliBlock(contents, options) {
     const run = () => {
       installChromiumBrotliDecodeBlock(contents, options?.log, options).then(resume).catch(fail);
     };
-    // stop() 之后马上 loadURL(about:blank) 会和还没停干净的导航打架，先等它停。
+    // 原导航的 did-stop-loading 回调尚未退出时就 loadURL(about:blank)，
+    // Electron 会把旧导航的收尾误交给新 loadURL，导致 ERR_FAILED。等到下一轮再预热。
     if (typeof contents.isLoading === "function" && contents.isLoading()) {
-      contents.once("did-stop-loading", run);
+      contents.once("did-stop-loading", () => setImmediate(run));
       return;
     }
     run();
@@ -736,6 +772,7 @@ module.exports = {
   responseUsesBrotli,
   acceptEncodingWithoutBrotli,
   installChromiumBrotliHeaderBlock,
+  clearChromiumServiceWorkers,
   installChromiumBrotliNetworkPause,
   installChromiumBrotliDecodeBlock,
   registerChromiumBrotliProtection,

@@ -1,5 +1,12 @@
 # Project-X CHANGELOG
 
+## 2026-10-26：扫描端防护恢复与 Service Worker 注册拦截
+
+- 调试通道重连耗尽后，本机回环 API 继续可用；后续远端请求按退避重新安装编码限制，安装期间取消请求，成功后允许调用方重试。修正本地主窗口失败回调的窗口参数，提示和日志保留实际错误。
+- 移除无效的 `disable-features=ServiceWorker` 开关，在发送请求前拒绝带 `Service-Worker: script` 的注册及更新请求，并在默认会话首次加载页面前清理历史注册。
+- 实机回归提供有效 Service Worker 脚本：先验证无拦截时能够注册，再检查历史注册清理、缓存预热后的注册拒绝和服务端零新增脚本请求；超时直接判失败。HTTPS 测试域名直连本机夹具，避开开发机系统代理。
+- 新窗口取消首次导航后，在收尾事件退出后的下一轮执行 `about:blank` 预热；Electron 将旧导航收尾交给新加载而报 `ERR_FAILED` 时，等待空白文档实际就绪后才安装防护，超时则失败关闭。探针按完整 URL 分别等待普通与 `noopener` 窗口的结果。
+
 ## 2026-10-25：CVE-2026-111497 运行时门槛与扫描端 Brotli 解码拦截
 
 - **服务端**：Node.js 低于 22.23.4、24.22.1、26.12.1，或属于已停更的 20 / 23 / 25 和预发布版本时，进程以退出码 78 结束，不监听端口。检查放在 `startServer()` 里，导入 `createApp` 本身不会退出。Ubuntu 安装脚本在 `/usr/bin/node` 未修复时拒绝安装，并清掉 `PROJECTX_NODE_VERSION_UNDER_TEST`，避免测试变量放行旧运行时。systemd 增加 `RestartPreventExitStatus=78`。

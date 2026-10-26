@@ -6,6 +6,7 @@ const { app, BrowserWindow, dialog, session, shell } = require("electron");
 const {
   chromiumBrotliFailureScope,
   chromiumBrotliProtectionEnabled,
+  clearChromiumServiceWorkers,
   configureChromiumBrotliRemoteGate,
   installChromiumBrotliDecodeBlock,
   installChromiumBrotliHeaderBlock,
@@ -501,8 +502,9 @@ async function armChromiumBrotliGateForMainWindow() {
   if (!mainWindow || (typeof mainWindow.isDestroyed === "function" && mainWindow.isDestroyed())) {
     throw new Error("扫描端主窗口尚未就绪");
   }
-  await installChromiumBrotliDecodeBlock(mainWindow.webContents, appendLog, {
-    onFatal: reportChromiumBrotliWindowFailure,
+  const contents = mainWindow.webContents;
+  await installChromiumBrotliDecodeBlock(contents, appendLog, {
+    onFatal: (error) => reportChromiumBrotliWindowFailure(contents, error),
   });
   registerWindowProtection();
 }
@@ -513,9 +515,7 @@ app.on("session-created", (createdSession) => {
   installChromiumBrotliNetworkPause(createdSession, appendLog);
 });
 
-// Service worker 不是页面 target 的子目标，主窗口的调试通道盖不到。扫描端页面不使用它。
-// 开关必须在 app ready 之前，本地壳和远端壳都关掉。
-app.commandLine.appendSwitch("disable-features", "ServiceWorker");
+// Service Worker 脚本由会话请求拦截拒绝；默认会话的历史注册在创建窗口前清理。
 
 if (chromiumBrotliProtectionEnabled()) {
   registerWindowProtection();
@@ -528,6 +528,7 @@ app.whenReady().then(async () => {
     // defaultSession 可能在 session-created 监听挂上之前就已经存在，这里再装一次（内部会去重）。
     installChromiumBrotliHeaderBlock(session.defaultSession, appendLog);
     installChromiumBrotliNetworkPause(session.defaultSession, appendLog);
+    await clearChromiumServiceWorkers(session.defaultSession);
     await createWindow();
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
