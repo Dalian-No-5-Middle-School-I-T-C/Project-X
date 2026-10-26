@@ -50,9 +50,16 @@ const certResult = spawnSync("openssl", [
 const remoteTls = certResult.status === 0 && fs.existsSync(certFile) && fs.existsSync(keyFile)
   ? { key: fs.readFileSync(keyFile), cert: fs.readFileSync(certFile) }
   : null;
-app.on("will-quit", () => {
-  fs.rmSync(certDir, { recursive: true, force: true });
-});
+function cleanupCert() {
+  try {
+    fs.rmSync(certDir, { recursive: true, force: true });
+  } catch {
+    /* 临时目录清不掉不影响结论 */
+  }
+}
+app.on("will-quit", cleanupCert);
+// app.exit() 不会触发 will-quit，各条退出路径都要自己清。
+
 
 const decodedDoc = Buffer.from("<!doctype html><title>decoded-br</title>");
 const gzipDoc = Buffer.from("<!doctype html><title>gzip-ok</title>");
@@ -194,6 +201,7 @@ const remoteServer = remoteTls ? https.createServer(remoteTls, remoteHandler) : 
 
 const timeout = setTimeout(() => {
   console.error("chromium brotli probe timed out");
+  cleanupCert();
   app.exit(2);
 }, 50000);
 
@@ -427,10 +435,12 @@ app.whenReady().then(async () => {
     gone,
   });
   server.close();
-  remoteServer.close();
+  remoteServer?.close();
   clearTimeout(timeout);
+  cleanupCert();
   app.exit(0);
 }).catch((error) => {
   report({ error: error instanceof Error ? error.stack || error.message : String(error), seen, remoteSeen, failures, gateFailures, gone });
+  cleanupCert();
   app.exit(1);
 });
