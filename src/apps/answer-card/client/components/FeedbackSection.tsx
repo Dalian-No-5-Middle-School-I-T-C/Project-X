@@ -255,6 +255,11 @@ export function FeedbackSection() {
 
   const addAttachments = (files: File[]) => {
     setFormMsg(null);
+    const tooLarge = files.find((file) => file.size > MAX_FEEDBACK_ATTACHMENT_BYTES);
+    if (tooLarge) {
+      setFormMsg({ tone: "error", text: `${tooLarge.name} 超过 ${MAX_FEEDBACK_ATTACHMENT_BYTES / 1024 / 1024} MB` });
+      return;
+    }
     if (attachments.length + files.length > MAX_FEEDBACK_ATTACHMENTS) {
       setFormMsg({ tone: "error", text: `最多附加 ${MAX_FEEDBACK_ATTACHMENTS} 个文件` });
       return;
@@ -427,7 +432,7 @@ export function FeedbackSection() {
             <UploadZone
               accept=""
               multiple
-              maxSize={MAX_FEEDBACK_ATTACHMENT_BYTES}
+              maxSize={0}
               onFiles={addAttachments}
               label="点击或拖拽添加附件"
               sublabel="日志、截图、PDF、压缩包等"
