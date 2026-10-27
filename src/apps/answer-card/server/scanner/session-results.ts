@@ -83,7 +83,7 @@ export function legacyIdentityProblems(
       stray
         ? `第 1 页没有读到学号，第 ${stray.layoutPage} 页却读到学号 ${stray.studentId}。` +
           "学号只印在第 1 页，页序可能已经错位（缺页、乱序或多张进纸）。请人工归组后重试。"
-        : "第 1 页没有读到学号。请核对该份答题卡后人工指定学号再重试。",
+        : "第 1 页没有读到学号。不会沿用前一份答题卡的学号，请核对该份答题卡后人工指定学号再重试。",
     );
     return problems;
   }
@@ -142,7 +142,7 @@ export function legacySessionBlockReason(opts: {
   }
   if (untrusted.length > 0) {
     return (
-      `第 ${untrusted.join("、")} 份答题卡的第 1 页学号不可信。为避免页序错位导致成绩串人，本批暂不入库。` +
+      `第 ${untrusted.join("、")} 份答题卡的第 1 页学号不可信。为避免页序错位导致成绩串人，本批成绩暂不入库。` +
       "请为这些卡人工指定学号，或整理原卷后重新扫描。"
     );
   }
