@@ -14,7 +14,7 @@
  *   6. 附件 multipart 上传、下载权限、15 / 16 个上限与删除清理
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
@@ -347,12 +347,25 @@ async function main(): Promise<void> {
   const fifteenReport = (await call("GET", "?limit=1", adminToken)).json?.data?.[0];
   ok(fifteenReport?.attachments?.length === 15, "15 个附件全部入库");
 
+  const tempDir = path.join(feedbackRoot, "_tmp");
+  mkdirSync(tempDir, { recursive: true });
+  const orphanPath = path.join(tempDir, "orphan.bin");
+  writeFileSync(orphanPath, Buffer.alloc(700 * 1024));
+  const orphanForm = new FormData();
+  orphanForm.set("title", "孤儿临时文件");
+  orphanForm.set("content", "正文");
+  orphanForm.append("files", new Blob([new Uint8Array(400 * 1024)]), "c.bin");
+  const orphanRes = await upload(orphanForm, adminToken);
+  ok(orphanRes.status === 413 && orphanRes.json?.code === "FEEDBACK_STORAGE_QUOTA_EXCEEDED",
+    "孤儿临时文件也计入聚合容量");
+  rmSync(orphanPath, { force: true });
+  ok(readdirSync(tempDir).length === 0, "孤儿临时文件清理后不留痕迹");
+
   const sixteen = new FormData();
   sixteen.set("title", "16 个附件");
   sixteen.set("content", "正文");
   for (let i = 0; i < 16; i += 1) sixteen.append("files", new Blob([`f${i}`]), `f${i}.txt`);
   ok((await upload(sixteen, adminToken)).status === 400, "超过 15 个附件被拒绝");
-  const tempDir = path.join(feedbackRoot, "_tmp");
   ok(!existsSync(tempDir) || readdirSync(tempDir).length === 0, "被拒绝的上传没有遗留临时文件");
 
   const concurrentA = new FormData();

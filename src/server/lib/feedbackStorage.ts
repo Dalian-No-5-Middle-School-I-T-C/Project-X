@@ -59,7 +59,7 @@ export interface FeedbackStorageReservation {
   release(): void;
 }
 
-async function directoryBytes(dir: string, skipDir: string): Promise<number> {
+async function directoryBytes(dir: string, skipDir?: string): Promise<number> {
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -67,12 +67,12 @@ async function directoryBytes(dir: string, skipDir: string): Promise<number> {
     if (err?.code === "ENOENT") return 0; // 目录还不存在（尚未上传过附件）
     throw new FeedbackStorageUnavailableError();
   }
-  const skip = path.resolve(skipDir);
+  const skip = skipDir ? path.resolve(skipDir) : null;
   let total = 0;
   for (const entry of entries) {
     if (entry.isSymbolicLink()) continue;
     const full = path.join(dir, entry.name);
-    if (path.resolve(full) === skip) continue;
+    if (skip && path.resolve(full) === skip) continue;
     if (entry.isDirectory()) {
       total += await directoryBytes(full, skipDir);
     } else if (entry.isFile()) {
@@ -97,7 +97,8 @@ export function reserveFeedbackStorage(
   bytes: number
 ): Promise<FeedbackStorageReservation> {
   const run = quotaQueue.then(async () => {
-    const used = await directoryBytes(feedbackRoot, tmpDir);
+    // 预检把 _tmp 也算进去：进程重启后残留的孤儿临时文件不能绕过聚合上限。
+    const used = await directoryBytes(feedbackRoot);
     if (used + reservedBytes + bytes > MAX_FEEDBACK_STORAGE_BYTES) {
       throw new FeedbackStorageQuotaError();
     }
@@ -129,6 +130,7 @@ export function settleFeedbackStorage<T>(
   }
   const run = quotaQueue.then(async () => {
     reservation?.release();
+    // 结算时排除 _tmp：本请求和并发请求的临时件已由预留覆盖，不能再按实际字节加一遍。
     const used = await directoryBytes(feedbackRoot, tmpDir);
     if (used + reservedBytes + incomingBytes > MAX_FEEDBACK_STORAGE_BYTES) {
       throw new FeedbackStorageQuotaError();

@@ -55,6 +55,9 @@ const feedbackRoot = path.join(dataRoot, "feedback");
 const feedbackTmpDir = path.join(feedbackRoot, "_tmp");
 const feedbackRootPrefix = `${path.resolve(feedbackRoot)}${path.sep}`;
 
+// 进程启动时清掉上次中断留下的临时上传件：此刻还没有本进程的上传，删全量是安全的。
+void purgeStaleTmpUploads(feedbackTmpDir, 0).catch(() => {});
+
 type FeedbackRequest = Express.Request & { feedbackReservation?: FeedbackStorageReservation };
 
 type FeedbackRow = {
