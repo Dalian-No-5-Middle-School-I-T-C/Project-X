@@ -502,6 +502,26 @@ async function main(): Promise<void> {
       { blockId: "B2", questionNumber: 22, score: 15 }
     ]));
   }
+  // 原卷预览按本场考试的回执圈定页面，不能只凭 card_id + student_id。
+  db.prepare(
+    `INSERT INTO scanner_submissions (exam_id, session_id, group_id, student_number, state, pages_json)
+     VALUES (?, ?, '0', '9001', 'saved', ?)`
+  ).run(examScan, scanSession, JSON.stringify([{ recordId: "rec-p1" }, { recordId: "rec-p2" }]));
+
+  // 同一张卡、同一名学生、另一场考试也扫过：预览必须只返回各自考试的回执页面。
+  const examScanB = makeExam("扫描范围考B", { classId: classA, subject: "数学", createdBy: adminId, published: true, card: scanCardId });
+  const scanSessionB = "perm-scan-session-b";
+  db.prepare("INSERT INTO twain_scan_sessions (id, card_id, name, status, identity_mode, page_count) VALUES (?, ?, '范围验收B', 'completed', 'strict', 1)")
+    .run(scanSessionB, scanCardId);
+  db.prepare(
+    `INSERT INTO twain_scan_records (id, session_id, card_id, student_id, image_path, page_num, side, ocr_status, identity_json)
+     VALUES ('rec-p3', ?, ?, '9001', ?, 1, 'front', 'uploaded', '{}')`
+  ).run(scanSessionB, scanCardId, path.join(tmpDir, "rec-p3.png"));
+  writeFileSync(path.join(tmpDir, "rec-p3.png"), "fake-image-for-preview-b");
+  db.prepare(
+    `INSERT INTO scanner_submissions (exam_id, session_id, group_id, student_number, state, pages_json)
+     VALUES (?, ?, '0', '9001', 'saved', ?)`
+  ).run(examScanB, scanSessionB, JSON.stringify([{ recordId: "rec-p3" }]));
 
   // CR3：只带 cardId / sessionId 的列表与进度端点，此前完全绕开考试范围。
   const foreignSessions = await get(`/api/scanner/sessions/${scanCardId}`, tokenB);
@@ -522,6 +542,17 @@ async function main(): Promise<void> {
   const ownPreviewPages = (ownPreview.body as { pages?: Array<{ recordId?: string; imageUrl?: string }> }).pages ?? [];
   ok(ownPreviewPages.length === 2 && ownPreviewPages.every(page => page.imageUrl?.startsWith("/api/scanner/scan-image/")),
     `评分表预览读取扫描端原卷（实际 ${JSON.stringify(ownPreviewPages).slice(0, 120)}）`);
+  ok(!ownPreviewPages.some(page => page.recordId === "rec-p3"),
+    "同卡另一场考试的扫描页不能混进本场预览");
+  const previewB = await get(`/api/scanner/exam/${examScanB}/student/${sids["9001"]}/scans`, tokenA);
+  const previewBPages = (previewB.body as { pages?: Array<{ recordId?: string }> }).pages ?? [];
+  ok(previewB.status === 200 && previewBPages.length === 1 && previewBPages[0]?.recordId === "rec-p3",
+    `另一场考试只返回自己回执里的原卷（实际 ${JSON.stringify(previewBPages).slice(0, 120)}）`);
+  // 清掉第二场考试，避免影响后面“卡只被归档考试引用”等范围断言。
+  db.prepare("DELETE FROM scanner_submissions WHERE exam_id = ?").run(examScanB);
+  db.prepare("DELETE FROM twain_scan_records WHERE id = 'rec-p3'").run();
+  db.prepare("DELETE FROM twain_scan_sessions WHERE id = ?").run(scanSessionB);
+  db.prepare("DELETE FROM exams WHERE id = ?").run(examScanB);
 
   // 评审 B1：`/api/cards/:cardId/grading/preview/:fileName` 与扫描端的 grading-image
   // 读的是同一个物理目录（`recognition/uploads/<cardId>/`），CR3 的收口却只挂在扫描端那一侧。
@@ -719,6 +750,31 @@ async function main(): Promise<void> {
   console.log("\n== R06 删除答题卡不得改写/点名范围外考试（破坏性步骤，放在最后） ==");
   const referencedCount = (db.prepare("SELECT COUNT(*) AS n FROM exams WHERE card_id = ?").get(cardId) as { n: number }).n;
   ok(referencedCount >= 2, `夹具自校验：本卡被多场考试引用（实际 ${referencedCount}）`);
+  const preflightOwn = await json(`/api/cards/${cardId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${tokenA}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ preflight: true })
+  });
+  ok(
+    preflightOwn.status === 200
+      && preflightOwn.body?.preflight === true
+      && Number(preflightOwn.body?.referencedExamCount) === referencedCount
+      && (preflightOwn.body?.referencedExamNames ?? []).length > 0,
+    `预检返回本卡被引用的考试数量与可管理名称（实际 ${preflightOwn.status} ${JSON.stringify(preflightOwn.body).slice(0, 140)}）`
+  );
+  ok((db.prepare("SELECT COUNT(*) AS n FROM exams WHERE card_id = ?").get(cardId) as { n: number }).n === referencedCount,
+    "只读预检不删除卡、也不解绑考试");
+  const preflightForeign = await json(`/api/cards/${cardId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${tokenB}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ preflight: true })
+  });
+  ok(
+    preflightForeign.status === 200
+      && (preflightForeign.body?.referencedExamNames ?? []).length === 0
+      && Number(preflightForeign.body?.outOfScopeExamCount) === referencedCount,
+    `无归属关系的教师预检只得到范围外数量，拿不到考试名单（实际 ${JSON.stringify(preflightForeign.body).slice(0, 140)}）`
+  );
   const blockedNames = await json(`/api/cards/${cardId}`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${tokenB}`, "Content-Type": "application/json" },

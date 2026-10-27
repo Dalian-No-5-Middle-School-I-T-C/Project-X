@@ -2068,8 +2068,21 @@ export async function createApp(): Promise<express.Express> {
       const visibleNames = (referenced as Array<{ id: number; name: string }>)
         .filter((e) => manageable.includes(Number(e.id)))
         .map((e) => e.name);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      // 批量删除入口先做只读预检：把「哪些考试会被解绑」一次摆给老师确认，
+      // 不再把 unlinkExams 当预检参数直接删卡。
+      if (requestFlag(body.preflight)) {
+        res.json({
+          ok: true,
+          preflight: true,
+          referencedExamCount: referenced.length,
+          referencedExamNames: visibleNames,
+          manageableExamCount: manageable.length,
+          outOfScopeExamCount: referenced.length - manageable.length
+        });
+        return;
+      }
       if (referenced.length > 0) {
-        const body = (req.body ?? {}) as Record<string, unknown>;
         const unlinkExams = requestFlag(body.unlinkExams);
         const deleteReferencedExams = requestFlag(body.deleteReferencedExams);
         if (!unlinkExams && !deleteReferencedExams) {

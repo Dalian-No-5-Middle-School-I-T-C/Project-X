@@ -349,33 +349,77 @@ export function ExamManagePage() {
     setSelectedExamIds(next);
   }
 
-  /** 删除勾选考试所用的答题卡：考试本身与成绩保留，只把答题卡解绑后删除。 */
+  /** 删除勾选考试所用的答题卡：先只读预检引用，确认后再解绑删除。 */
   async function deleteSelectedCards() {
     if (deletingSelectedCards) return;
     const selected = exams.filter((exam) => selectedExamIds.has(exam.id));
     const uniqueCards = new Map<string, string>();
     for (const exam of selected) {
-      if (exam.card_id) uniqueCards.set(exam.card_id, exam.card_id);
+      if (exam.card_id && !uniqueCards.has(exam.card_id)) {
+        uniqueCards.set(exam.card_id, cards.find((item) => item.id === exam.card_id)?.title || exam.card_id);
+      }
     }
     if (uniqueCards.size === 0) {
       setStatus("选中的考试没有关联答题卡");
       return;
     }
-    if (!window.confirm(
-      `将删除这 ${uniqueCards.size} 张答题卡，并解除它们与考试的关联。考试本身和已有成绩会保留。\n\n此操作不可恢复，确定继续吗？`,
-    )) return;
+
     setDeletingSelectedCards(true);
     try {
-      for (const cardId of uniqueCards.keys()) {
-        const ok = await deleteCard(cardId, { unlinkExams: true });
+      // 关键：不能拿 unlinkExams:true 当预检。先逐张做只读预检，把共享卡会牵连的考试
+      // 与范围外引用都摆到确认框里，再决定是否真正删除。
+      const preflights: Array<{
+        cardId: string;
+        title: string;
+        referencedExamCount: number;
+        referencedExamNames: string[];
+        outOfScopeExamCount: number;
+      }> = [];
+      for (const [cardId, title] of uniqueCards) {
+        const result = await fetchJson<{
+          referencedExamCount?: number;
+          referencedExamNames?: string[];
+          outOfScopeExamCount?: number;
+        }>(`/api/cards/${encodeURIComponent(cardId)}`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ preflight: true }),
+        });
+        preflights.push({
+          cardId,
+          title,
+          referencedExamCount: Number(result.referencedExamCount ?? 0),
+          referencedExamNames: Array.isArray(result.referencedExamNames) ? result.referencedExamNames : [],
+          outOfScopeExamCount: Number(result.outOfScopeExamCount ?? 0),
+        });
+      }
+      const blocked = preflights.filter((item) => item.outOfScopeExamCount > 0);
+      if (blocked.length > 0) {
+        setStatus(`有 ${blocked.length} 张答题卡关联了范围外的考试，请先由对应教师处理`);
+        return;
+      }
+      const referenced = preflights.filter((item) => item.referencedExamCount > 0);
+      const referencedNames = [...new Set(referenced.flatMap((item) => item.referencedExamNames))];
+      const totalReferences = referenced.reduce((sum, item) => sum + item.referencedExamCount, 0);
+      const message = referenced.length > 0
+        ? `将删除这 ${uniqueCards.size} 张答题卡。其中 ${referenced.length} 张仍被 ${totalReferences} 场考试引用${referencedNames.length ? `（${referencedNames.join("、")}）` : ""}；删除后会解除这些考试与答题卡的关联，考试本身和成绩保留。未勾选的考试如共用同一张卡也会一并解除关联。\n\n此操作不可恢复，确定继续吗？`
+        : `将删除这 ${uniqueCards.size} 张未关联考试的答题卡。此操作不可恢复，确定继续吗？`;
+      if (!window.confirm(message)) return;
+
+      for (const item of preflights) {
+        const ok = item.referencedExamCount > 0
+          ? await deleteCard(item.cardId, { unlinkExams: true })
+          : await deleteCard(item.cardId);
         if (!ok) {
-          setStatus(`删除答题卡 ${cardId} 未完成，请先处理引用冲突`);
+          setStatus(`删除答题卡「${item.title}」未完成，请先处理引用冲突`);
           return;
         }
       }
       setSelectedExamIds(new Set());
       setStatus(`已删除 ${uniqueCards.size} 张答题卡`);
       await loadExams();
+    } catch (error) {
+      setStatus(`预检查询失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setDeletingSelectedCards(false);
     }

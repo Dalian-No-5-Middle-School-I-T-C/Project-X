@@ -497,20 +497,44 @@ export function createScannerRouter(twainEnabled = true): Router {
       const pages: Array<{ recordId: string; pageNum: number; side: string; fileName?: string; imageUrl: string }> = [];
 
       if (studentNumber) {
-        const twainRecords = await db.all(`
-          SELECT id, image_path, page_num, side
-          FROM twain_scan_records
-          WHERE card_id = ? AND student_id = ? AND image_path IS NOT NULL
-          ORDER BY page_num, CASE side WHEN 'front' THEN 0 ELSE 1 END
-        `, cardId, studentNumber) as Array<{ id: string; image_path: string; page_num: number; side: string }>;
-        for (const rec of twainRecords) {
-          if (!rec.image_path || String(rec.image_path).startsWith("pending:") || !fsExists(rec.image_path)) continue;
-          pages.push({
-            recordId: String(rec.id),
-            pageNum: Number(rec.page_num) || pages.length + 1,
-            side: rec.side === "back" ? "back" : "front",
-            imageUrl: `/api/scanner/scan-image/${encodeURIComponent(String(rec.id))}`,
-          });
+        // 同一张卡可能被多场考试复用，同一学生也可能两场都扫过；只凭 card_id + student_id
+        // 会把别的考试/未绑定会话的原卷带进来。用本场考试的有效回执圈定页面集合，
+        // 回执状态保留 held/conflict/correction 等，预览以成绩归属为准，而不是以卡号为准。
+        const receipts = await db.all(
+          "SELECT pages_json FROM scanner_submissions WHERE exam_id = ? AND student_number = ? AND state NOT IN ('superseded', 'discarded')",
+          examId, studentNumber
+        ) as Array<{ pages_json: string }>;
+        const recordIds = new Set<string>();
+        for (const receipt of receipts) {
+          try {
+            const pages = JSON.parse(receipt.pages_json) as unknown;
+            if (!Array.isArray(pages)) continue;
+            for (const page of pages) {
+              const recordId = page && typeof page === "object" ? (page as { recordId?: unknown }).recordId : null;
+              if (typeof recordId === "string" && recordId) recordIds.add(recordId);
+            }
+          } catch {
+            /* 损坏的回执不阻断其它回执；对应页面会在下面按图片存在性再过滤 */
+          }
+        }
+        if (recordIds.size > 0) {
+          const ids = [...recordIds];
+          const placeholders = ids.map(() => "?").join(",");
+          const twainRecords = await db.all(`
+            SELECT id, image_path, page_num, side
+            FROM twain_scan_records
+            WHERE card_id = ? AND student_id = ? AND id IN (${placeholders})
+            ORDER BY page_num, CASE side WHEN 'front' THEN 0 ELSE 1 END
+          `, cardId, studentNumber, ...ids) as Array<{ id: string; image_path: string; page_num: number; side: string }>;
+          for (const rec of twainRecords) {
+            if (!rec.image_path || String(rec.image_path).startsWith("pending:") || !fsExists(rec.image_path)) continue;
+            pages.push({
+              recordId: String(rec.id),
+              pageNum: Number(rec.page_num) || pages.length + 1,
+              side: rec.side === "back" ? "back" : "front",
+              imageUrl: `/api/scanner/scan-image/${encodeURIComponent(String(rec.id))}`,
+            });
+          }
         }
       }
 

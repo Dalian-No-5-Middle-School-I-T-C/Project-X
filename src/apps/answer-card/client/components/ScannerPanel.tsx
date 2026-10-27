@@ -163,6 +163,9 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
   const [diagCopied, setDiagCopied] = useState(false);
   /** 继续扫描自动开扫前，先等答题卡默认纸型/单双面读回来，避免用默认 A4/单面开第一批。 */
   const [cardSettingsReady, setCardSettingsReady] = useState(false);
+  /** 自动续扫还要等数据源枚举结束：否则枚举晚到会把正在扫描的界面切回 ready，或覆盖上次选定的设备。 */
+  const [sourcesReady, setSourcesReady] = useState(false);
+  const detectAttemptRef = useRef(0);
   const autoStartedRef = useRef(false);
 
   // v2.5.1: 扫描存储模式共享 hook（与导入阅卷卡片共用同一记忆）
@@ -207,13 +210,13 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
 
   // 从后处理页点「继续扫描」：面板挂载并读到答题卡设置后自动开下一批。
   useEffect(() => {
-    if (!autoStartScan || !cardSettingsReady || autoStartedRef.current) return;
+    if (!autoStartScan || !cardSettingsReady || !sourcesReady || autoStartedRef.current) return;
     autoStartedRef.current = true;
     onAutoStartConsumed?.();
     void startScan();
     // startScan 是组件内函数声明；只允许在进入时消费一次自动开扫标记。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoStartScan, cardSettingsReady]);
+  }, [autoStartScan, cardSettingsReady, sourcesReady]);
 
   // Detect sources on mount
   useEffect(() => {
@@ -226,15 +229,19 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
   }, []);
 
   async function detectSources() {
+    const attempt = ++detectAttemptRef.current;
+    const scanAtStart = scanAttemptRef.current;
+    setSourcesReady(false);
     // 重新检测前丢弃上次枚举的列表；否则本次失败后仍会显示旧下拉框，
-    // 老师无法使用留空或手填数据源的兜底入口。
-    if (sources.length > 0) setSelectedSource("");
+    // 老师无法使用留空或手填数据源的兜底入口。已记忆的数据源先留着，成功后再判断是否仍有效。
     setSources([]);
     setState("detecting");
     setSourcesDiag(null);
     try {
       const res = await authFetch("/api/scanner/sources");
       const data = (await res.json()) as ScannerSourcesResult;
+      // 扫描已在本轮检测期间启动：晚到的检测结果不能把 scanning 改回 ready。
+      if (attempt !== detectAttemptRef.current || scanAttemptRef.current !== scanAtStart) return;
       // 先判 HTTP 状态：服务端异常时 body 可能没有 status 字段，
       // 旧代码直接读 data.status 会走到通用兜底文案，丢掉真正的错误
       if (!res.ok) {
@@ -248,7 +255,12 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
         const kodak = data.sources.find(
           (s) => s.name.toLowerCase().includes("kodak") || s.name.toLowerCase().includes("i3000")
         );
-        setSelectedSource(kodak?.name || data.sources[0].name);
+        setSelectedSource((previous) => {
+          const remembered = previous.trim();
+          return remembered && data.sources.some((source) => source.name === remembered)
+            ? remembered
+            : kodak?.name || data.sources[0].name;
+        });
         setState("ready");
       } else {
         setSourcesDiag(data);
@@ -256,8 +268,11 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
         setState("error");
       }
     } catch (err) {
+      if (attempt !== detectAttemptRef.current || scanAttemptRef.current !== scanAtStart) return;
       setErrorMessage(err instanceof Error ? err.message : "检测扫描仪失败");
       setState("error");
+    } finally {
+      if (attempt === detectAttemptRef.current) setSourcesReady(true);
     }
   }
 
