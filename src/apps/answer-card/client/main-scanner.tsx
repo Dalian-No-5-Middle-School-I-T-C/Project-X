@@ -9,32 +9,57 @@ import { TooltipProvider } from "./components/ui/v2";
 // 唯一样式入口（与 main.tsx 一致，层序由 app.css 内部保证）
 import "./theme/app.css";
 
-// 黑匣子诊断：全局未捕获错误兜底（main-scanner 此前无 ErrorBoundary，白屏无提示）
+// 黑匣子诊断：全局未捕获错误兜底（main-scanner 此前无 ErrorBoundary，白屏无提示）。
+// 现场反馈白屏/闪退时最怕整页被覆盖：这里只挂一个可关闭的诊断卡，页面还能继续用。
+function showRendererProblem(title: string, detail: string): void {
+  const overlayId = "__px_scanner_problem_overlay";
+  const existing = document.getElementById(overlayId);
+  if (existing) return;
+  const card = document.createElement("div");
+  card.id = overlayId;
+  card.setAttribute("role", "alert");
+  card.style.cssText = "position:fixed;left:16px;bottom:16px;z-index:99999;max-width:440px;background:#fff;color:#111;border:1px solid #d9a441;border-left:4px solid #d9a441;border-radius:8px;padding:12px 14px;box-shadow:0 8px 24px rgba(0,0,0,.16);font:13px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif;";
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  heading.style.cssText = "display:block;font-size:14px;margin-bottom:4px;";
+  const note = document.createElement("p");
+  note.textContent = "界面操作可能受影响。扫描端会保留已自动保存的订正草稿；如无法继续，请重新加载。";
+  note.style.cssText = "margin:0 0 8px;color:#555;";
+  const actions = document.createElement("div");
+  actions.style.cssText = "display:flex;gap:8px;align-items:center;";
+  const reload = document.createElement("button");
+  reload.type = "button";
+  reload.textContent = "重新加载";
+  reload.style.cssText = "cursor:pointer;border:1px solid #b3261e;background:#b3261e;color:#fff;border-radius:6px;padding:4px 12px;font:inherit;";
+  reload.onclick = () => window.location.reload();
+  const close = document.createElement("button");
+  close.type = "button";
+  close.textContent = "关闭";
+  close.style.cssText = "cursor:pointer;border:1px solid #ccc;background:#fff;color:#333;border-radius:6px;padding:4px 10px;font:inherit;";
+  close.onclick = () => card.remove();
+  const details = document.createElement("details");
+  details.style.cssText = "margin-top:8px;color:#666;";
+  const summary = document.createElement("summary");
+  summary.textContent = "技术信息";
+  summary.style.cssText = "cursor:pointer;";
+  const pre = document.createElement("pre");
+  pre.textContent = detail;
+  pre.style.cssText = "margin:6px 0 0;white-space:pre-wrap;word-break:break-all;font:11px/1.45 ui-monospace,Consolas,monospace;max-height:180px;overflow:auto;";
+  details.append(summary, pre);
+  actions.append(reload, close);
+  card.append(heading, note, actions, details);
+  document.body.appendChild(card);
+}
+
 window.addEventListener("error", (event) => {
   const msg = event.error instanceof Error ? event.error.stack || event.error.message : String(event.message || event.error || "unknown error");
   console.error("[ScannerRenderer] window.error:", msg);
-  const overlayId = "__px_scanner_error_overlay";
-  if (!document.getElementById(overlayId)) {
-    const el = document.createElement("div");
-    el.id = overlayId;
-    el.setAttribute("role", "alert");
-    el.style.cssText = "position:fixed;inset:12px;z-index:99999;background:#fff;color:#111;border:2px solid #d32f2f;border-radius:8px;padding:16px;overflow:auto;font:12px/1.5 monospace;white-space:pre-wrap;word-break:break-all;";
-    el.textContent = `扫描端渲染异常（已捕获）：\n${msg}\n\n请截图此信息并回传，日志位于 %APPDATA%\\answer-card-designer\\logs\\main.log`;
-    document.body.appendChild(el);
-  }
+  showRendererProblem("界面遇到异常", msg);
 });
 window.addEventListener("unhandledrejection", (event) => {
   const reason = event.reason instanceof Error ? event.reason.stack || event.reason.message : String(event.reason || "unknown rejection");
   console.error("[ScannerRenderer] unhandledrejection:", reason);
-  const overlayId = "__px_scanner_rejection_overlay";
-  if (!document.getElementById(overlayId)) {
-    const el = document.createElement("div");
-    el.id = overlayId;
-    el.setAttribute("role", "alert");
-    el.style.cssText = "position:fixed;inset:12px;z-index:99999;background:#fff;color:#111;border:2px solid #d32f2f;border-radius:8px;padding:16px;overflow:auto;font:12px/1.5 monospace;white-space:pre-wrap;word-break:break-all;";
-    el.textContent = `扫描端异步异常（已捕获）：\n${reason}\n\n请截图此信息并回传，日志位于 %APPDATA%\\answer-card-designer\\logs\\main.log`;
-    document.body.appendChild(el);
-  }
+  showRendererProblem("界面遇到异步异常", reason);
 });
 
 try {

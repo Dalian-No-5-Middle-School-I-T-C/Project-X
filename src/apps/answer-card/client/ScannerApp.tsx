@@ -16,6 +16,10 @@ import { notify, Spinner } from "./components/ui/v2";
 import { DEFAULT_SKIN, SKIN_CHOSEN_KEY } from "./components/SkinSwitcher";
 import { skinPatchDecision } from "./lib/skinPatchGuard";
 import { useSkinPreferenceWriter } from "./lib/skinSync";
+import {
+  clearActivePostprocess, clearPostprocessView, readActivePostprocess, readPostprocessSessions,
+  writeActivePostprocess, writePostprocessSessions,
+} from "./lib/postprocessResume";
 
 // ── ScannerApp：三屏容器 ──
 // page="select" → CardSelectPage（答题卡选择，含单科/大考双Tab）
@@ -95,6 +99,31 @@ function ScannerAppInner() {
     );
   }, [skin, user?.id, user?.themeSkin, writeSkinPreference, patchUserLocal, refreshUser]);
 
+  // 闪退/白屏后回到应用：上次停在这张卡的扫描后处理，就恢复会话列表并直接打开，
+  // 否则草稿还在本机却没有入口。只在刚登录且尚未选卡时触发。
+  useEffect(() => {
+    if (!user || selectedCardId) return;
+    const active = readActivePostprocess();
+    if (!active) return;
+    const sessions = readPostprocessSessions(active.cardId);
+    if (!sessions.length) {
+      clearActivePostprocess();
+      return;
+    }
+    setSelectedCardId(active.cardId);
+    setSelectedCardTitle(active.cardTitle);
+    setPostSessions(sessions);
+    setPage("postprocess");
+  }, [user?.id, selectedCardId]);
+
+  // 会话列表随卡片落到本机：崩溃重载后仍能回到同一批卷。
+  useEffect(() => {
+    if (!selectedCardId) return;
+    writePostprocessSessions(selectedCardId, postSessions);
+    if (postSessions.length) writeActivePostprocess(selectedCardId, selectedCardTitle);
+    else clearActivePostprocess();
+  }, [selectedCardId, selectedCardTitle, postSessions]);
+
   if (loading) {
     return (
       <div className="flex h-[100dvh] w-full flex-col items-center justify-center gap-3 bg-background">
@@ -126,7 +155,7 @@ function ScannerAppInner() {
         cardId={selectedCardId}
         cardTitle={selectedCardTitle}
         sessions={postSessions}
-        onBack={() => setPage("workspace")}
+        onBack={() => { clearActivePostprocess(); clearPostprocessView(selectedCardId); setPage("workspace"); }}
       />
     );
   }
@@ -137,11 +166,19 @@ function ScannerAppInner() {
         cardId={selectedCardId}
         cardTitle={selectedCardTitle}
         cardVersionNote={cardVersionNote}
-        onBack={() => setPage("select")}
+        onBack={() => {
+          clearActivePostprocess();
+          setSelectedCardId("");
+          setSelectedCardTitle("");
+          setPostSessions([]);
+          setPage("select");
+        }}
         onScansComplete={(sid, pageCount) => {
           setPostSessions(prev => [...prev.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }]);
           setPage("postprocess");
         }}
+        postprocessBatchCount={postSessions.length}
+        onOpenPostprocess={() => setPage("postprocess")}
         skin={skin}
         onSkinChange={setSkin}
       />
@@ -176,8 +213,10 @@ function ScannerAppInner() {
               setCardVersionNote(`本机缓存版本 ${version}（未连上服务器，${updatedAt}）`);
               setSelectedCardId(cardId);
               setSelectedCardTitle(card?.title || cardId);
-              setPostSessions([]);
-              setPage("workspace");
+              const restored = readPostprocessSessions(cardId);
+              const active = readActivePostprocess();
+              setPostSessions(restored);
+              setPage(active?.cardId === cardId ? "postprocess" : "workspace");
               return;
             }
             // 远端新建的卡不在本机库：直扫/阅卷只读本机服务，先进本机库（幂等 upsert）
@@ -187,8 +226,10 @@ function ScannerAppInner() {
             setCardVersionNote("");
             setSelectedCardId(cardId);
             setSelectedCardTitle(card?.title || cardId);
-            setPostSessions([]);
-            setPage("workspace");
+            const restored = readPostprocessSessions(cardId);
+            const active = readActivePostprocess();
+            setPostSessions(restored);
+            setPage(active?.cardId === cardId ? "postprocess" : "workspace");
           } catch (e: unknown) {
             const err = e as { status?: number; message?: string };
             if (err?.status === 404) {

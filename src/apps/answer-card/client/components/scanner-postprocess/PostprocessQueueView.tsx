@@ -15,6 +15,7 @@ import { uniqueScanConflictCards, type ScanConflictCard } from "../../../../../s
 import { correctionCells, mergeRecognitions, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../../shared/scanCorrection";
 import { gradeCombinedRecognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
 import type { SubjectiveQuestionNumber } from "../../../../../shared/types";
+import { clearCorrectionDraft, draftMatchesDocument, readCorrectionDraft, writeCorrectionDraft } from "../../lib/correctionDraft";
 
 export interface ScanMeta { recordId: string; createdAt: string; scanQuality: number | null; }
 
@@ -208,6 +209,41 @@ function useCorrectionBundle(channel: PostprocessChannel, url: string | null, wi
   return { document, images, error, busy };
 }
 
+/** 只取当前页原图：考号面板只需要学号页，没必要把整卷大图都解码进内存。 */
+function useSinglePageImage(channel: PostprocessChannel, document: CorrectionDocument | null, sourceId: string | null) {
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const urlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (urlRef.current) { URL.revokeObjectURL(urlRef.current); urlRef.current = null; }
+    setImageUrl(null);
+    if (!document || !sourceId) return;
+    const page = document.pages.find(item => item.sourceId === sourceId);
+    if (!page) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const response = await channel.request(page.imageUrl);
+        if (!response.ok) throw new Error("答题卡图片加载失败");
+        const blob = URL.createObjectURL(await response.blob());
+        if (!alive) { URL.revokeObjectURL(blob); return; }
+        urlRef.current = blob;
+        setImageUrl(blob);
+      } catch {
+        /* 图片失败时仍可用表格改分，不阻塞整页 */
+      }
+    })();
+    return () => { alive = false; };
+  }, [channel, document, sourceId]);
+
+  useEffect(() => () => {
+    if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+    urlRef.current = null;
+  }, []);
+
+  return imageUrl ? { [sourceId ?? ""]: imageUrl } : {};
+}
+
 function PanelShell({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
   return (
     <Card className="flex min-h-0 flex-col">
@@ -234,7 +270,7 @@ interface StudentIdPanelProps {
  *  确认提交的就是屏幕上看到的那个号。 */
 function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBack }: StudentIdPanelProps) {
   const url = channel.correctionUrl(sessionId, groupId);
-  const { document, images, error, busy } = useCorrectionBundle(channel, url, true);
+  const { document, error, busy } = useCorrectionBundle(channel, url, false);
   const [edits, setEdits] = useState<CorrectionEdit[]>([]);
   /** 老师手输但还没落到格上的原文；null = 没有手输，显示格选结果 */
   const [typed, setTyped] = useState<string | null>(null);
@@ -244,9 +280,11 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
   const [rosterKnown, setRosterKnown] = useState(false);
   const [saving, setSaving] = useState(false);
   const [rotation, setRotation] = useState<ImageRotation>(0);
+  const [draftRestored, setDraftRestored] = useState(false);
   const cropRef = useRef<HTMLDivElement>(null);
   const digitPageIndex = useMemo(() => (document ? document.pages.findIndex(page => correctionCells(page.layout).some(cell => cell.type === "student_digit")) : -1), [document]);
   const digitPage = document && digitPageIndex >= 0 ? document.pages[digitPageIndex] : null;
+  const images = useSinglePageImage(channel, document, digitPage?.sourceId ?? null);
   const digitCells = useMemo(() => (document ? document.pages.flatMap(page => correctionCells(page.layout)).filter(cell => cell.type === "student_digit") : []), [document]);
   const cellOwner = useMemo(() => {
     const map = new Map<string, string>();
@@ -271,9 +309,33 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
 
   useEffect(() => {
     if (!document) return;
-    setEdits(document.pages.map(page => ({ sourceId: page.sourceId, revision: page.revision, selected: [...page.selected], touched: [] })));
-    setTyped(null);
-  }, [document]);
+    const baseEdits = document.pages.map(page => ({ sourceId: page.sourceId, revision: page.revision, selected: [...page.selected], touched: [] }));
+    const draft = readCorrectionDraft(document.card.id, sessionId, groupId);
+    if (draft && draftMatchesDocument(draft, document)) {
+      setEdits(draft.edits);
+      setTyped(draft.typed ?? null);
+      setDraftRestored(true);
+    } else {
+      setEdits(baseEdits);
+      setTyped(null);
+      setDraftRestored(false);
+    }
+  }, [document, sessionId, groupId]);
+
+  // 考号修改同样即时落本机草稿：位数没选完时 typed 是唯一真值，必须一起存。
+  useEffect(() => {
+    if (!document || edits.length !== document.pages.length) return;
+    const dirty = typed !== null || edits.some((current, index) => {
+      const origin = document.pages[index];
+      return [...origin.selected].sort().join() !== [...current.selected].sort().join() || !!current.touched?.length;
+    });
+    if (!dirty) {
+      clearCorrectionDraft(document.card.id, sessionId, groupId);
+      setDraftRestored(false);
+      return;
+    }
+    writeCorrectionDraft(document.card.id, sessionId, groupId, document, edits, typed);
+  }, [document, edits, typed, sessionId, groupId]);
 
   useEffect(() => {
     const node = cropRef.current?.querySelector('polygon[data-cell-type="student_digit"]');
@@ -358,6 +420,8 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
       const response = await channel.request(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pages: edits }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.message || "保存考号失败");
+      clearCorrectionDraft(document.card.id, sessionId, groupId);
+      setDraftRestored(false);
       notify.success(`考号已改为 ${digitsFromCells}`);
       await onResolved(sessionId, groupId);
     } catch (err) {
@@ -413,6 +477,7 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
               确认考号 · 重新匹配学生
             </Button>
           </div>
+          {draftRestored && <p className="m-0 text-xs text-info-fg">已恢复上次未保存的考号修改。</p>}
           <p className="m-0 text-xs text-muted-foreground">
             {complete ? "也可以直接在左图点 digit 格改某一位；单选列内互斥，与上面的输入同源。"
               : `卡面每列都要恰好选中一个数字（共 ${digitColumns.length} 位），当前格选不完整，不能提交。`}

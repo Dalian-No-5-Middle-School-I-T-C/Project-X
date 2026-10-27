@@ -18,6 +18,7 @@ import { PostprocessResultsView } from "./scanner-postprocess/PostprocessResults
 import { PostprocessCorrectionView } from "./scanner-postprocess/PostprocessCorrectionView";
 import { PostprocessQueueView, type ScanMeta } from "./scanner-postprocess/PostprocessQueueView";
 import { getScannerMode, isRemoteServerConfigured } from "../lib/scannerMode";
+import { readPostprocessView, writePostprocessView } from "../lib/postprocessResume";
 
 type View = "results" | "correction" | "queue";
 
@@ -42,12 +43,15 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   const [loading, setLoading] = useState(true);
   const [savingAll, setSavingAll] = useState(false);
   const [error, setError] = useState("");
+  const [resumedFromCrash, setResumedFromCrash] = useState(false);
   /** 本页见过的异常组（sid/gid）：失败卷与冲突副本还没建过回执，订正后允许补传一次。
    *  识别成功的卷（含存疑卷）已在 reload 的首传里排队，不再建第二份回执。 */
   const abnormalKey = `projectx-postprocess-abnormal/${cardId}`;
   const abnormalSeen = useRef<Set<string>>(readIdSet(abnormalKey));
   /** 完成名单持久化；未完成上传由 manager 恢复原远端会话。 */
   const queuedByPage = useRef<Set<string>>(readQueuedGroups(cardId));
+  /** 崩溃重载后只恢复一次上次停留的组，避免用户返回结果页又被弹回去。 */
+  const resumeAppliedRef = useRef(false);
 
   // 通道唯一为本地（spec §5 通道裁定）：远端语义只经 queueGroupUpload 补传承担
   const channel: PostprocessChannel = useMemo(() => localChannel(), []);
@@ -131,6 +135,25 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
     ));
   }, [batches, sessions, sessionLayouts, card]);
   const queue = useMemo(() => buildPostprocessQueue(groups), [groups]);
+
+  // 闪退重载后回到上次停留的卷/视图；组已不存在时静默忽略，仍停在结果页。
+  useEffect(() => {
+    if (resumeAppliedRef.current || groups.length === 0) return;
+    resumeAppliedRef.current = true;
+    const saved = readPostprocessView(cardId);
+    if (!saved) return;
+    const group = groups.find(entry => entry.sessionId === saved.sessionId && entry.groupId === saved.groupId);
+    if (!group) return;
+    setActive(group);
+    setView(saved.view);
+    setResumedFromCrash(true);
+  }, [groups, cardId]);
+
+  // 记录当前停留位置：只在打开具体卷时写，正常返回结果页不会把旧组写回去。
+  useEffect(() => {
+    if (!active) return;
+    writePostprocessView(cardId, { view, sessionId: active.sessionId, groupId: active.groupId });
+  }, [cardId, view, active]);
   const issueGroups = useMemo(() => new Set(queue.map(item => `${item.sessionId}/${item.groupId}`)).size, [queue]);
   const uploaded = useMemo(() => Object.values(batches).flatMap(b => b.results).filter(r => r.saved).length, [batches]);
 
@@ -305,6 +328,12 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
           ]}
         />
       </header>
+      {resumedFromCrash && (
+        <div role="status" className="flex items-center gap-2 border-b border-info-border bg-info-soft px-5 py-2 text-sm text-info-fg">
+          已恢复上次停留的卷；未保存的订正会从本机草稿恢复。保存后草稿会自动清除。
+          <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setResumedFromCrash(false)}>知道了</Button>
+        </div>
+      )}
       {sessionWarnings.length > 0 && (
         <div role="status" className="flex flex-col gap-2 border-b border-warning-border bg-warning-soft px-5 py-3 text-sm text-foreground">
           {sessionWarnings.map(warning => (

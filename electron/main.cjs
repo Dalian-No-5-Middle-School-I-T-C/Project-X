@@ -11,6 +11,7 @@ const {
   installChromiumBrotliDecodeBlock,
   installChromiumBrotliHeaderBlock,
   installChromiumBrotliNetworkPause,
+  isChromiumBrotliDecodeReady,
   registerChromiumBrotliProtection,
   trackChromiumWebContents,
 } = require("./node-runtime-security.cjs");
@@ -39,6 +40,9 @@ if (!gotSingleInstanceLock) {
 
 let server;
 let mainWindow;
+/** 渲染进程崩溃后的自动恢复：5 分钟内最多两次，避免坏数据导致反复重载。 */
+let rendererCrashHistory = [];
+let pendingRecoveryNotice = false;
 
 /**
  * 本壳自己加载的那个来源（本机服务端 `http://127.0.0.1:<port>`，或运维配置的远端 URL）。
@@ -316,9 +320,36 @@ function installDevicePermissionPolicy() {
   });
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 首次安装后第一次启动时，Chromium 的调试通道偶尔还没就绪，Brotli 限制装不上。
+ * 以前这里直接抛错 →「启动失败」弹窗 → 退出；老师再双击一次就好了。
+ * 现在先原地重试几次，仍失败才走 fail-closed，避免把一次瞬时失败变成首次启动失败。
+ */
+async function installChromiumBrotliWithRetry(webContents, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await installChromiumBrotliDecodeBlock(webContents, appendLog, {
+        onFatal: (error) => reportChromiumBrotliWindowFailure(webContents, error),
+      });
+      if (attempt > 1) appendLog("INFO", `[Electron] Brotli 解码拦截第 ${attempt} 次重试成功`);
+      return;
+    } catch (error) {
+      lastError = error;
+      const detail = error instanceof Error ? error.message : String(error);
+      appendLog("WARN", `[Electron] Brotli 解码拦截第 ${attempt}/${attempts} 次未装好: ${detail}`);
+      if (attempt < attempts) await sleep(400 * attempt);
+    }
+  }
+  throw lastError;
+}
+
 async function createWindow() {
   const baseUrl = await resolveStartUrl();
-
   mainWindow = new BrowserWindow({
     width: 1360,
     height: 900,
@@ -389,7 +420,60 @@ async function createWindow() {
     appendLog(lvl, `[Renderer][console] ${message} (${sourceId}:${line})`);
   });
   mainWindow.webContents.on("render-process-gone", (_event, details) => {
-    appendLog("ERROR", `[Renderer] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`);
+    let memory = "n/a";
+    try {
+      memory = app.getAppMetrics().map((metric) => {
+        const mb = Math.round(((metric.memory && metric.memory.workingSetSize) || 0) / 1024);
+        return `${metric.type}:${metric.pid}:${mb}MB`;
+      }).join(", ");
+    } catch { /* 取不到内存信息时仍要记录崩溃原因 */ }
+    appendLog("ERROR", `[Renderer] render-process-gone reason=${details.reason} exitCode=${details.exitCode} memory=${memory}`);
+    if (details.reason === "clean-exit") return;
+    const now = Date.now();
+    rendererCrashHistory = rendererCrashHistory.filter((at) => now - at < 5 * 60 * 1000);
+    rendererCrashHistory.push(now);
+    if (rendererCrashHistory.length > 2) {
+      appendLog("ERROR", "[Renderer] 5 分钟内连续崩溃，停止自动恢复");
+      void dialog.showMessageBox({
+        type: "error",
+        title: "扫描端界面反复异常",
+        message: "界面在短时间内多次异常退出，已停止自动恢复。",
+        detail: "请重启扫描端。未保存的订正已作为本机草稿保留；如果仍然出现，请提供日志 main.log。",
+        buttons: ["知道了"],
+      }).catch(() => {});
+      return;
+    }
+    appendLog("WARN", "[Renderer] 800ms 后自动重新加载界面，未保存的订正草稿会保留");
+    pendingRecoveryNotice = true;
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.reloadIgnoringCache();
+      }
+    }, 800);
+  });
+  mainWindow.webContents.on("did-finish-load", () => {
+    appendLog("INFO", "[Renderer] did-finish-load");
+    if (!pendingRecoveryNotice) return;
+    pendingRecoveryNotice = false;
+    void mainWindow.webContents.executeJavaScript(`(() => {
+      const id = "__px_renderer_recovered_notice";
+      if (document.getElementById(id)) return;
+      const box = document.createElement("div");
+      box.id = id;
+      box.setAttribute("role", "status");
+      box.style.cssText = "position:fixed;left:16px;bottom:16px;z-index:99999;max-width:440px;background:#fff;color:#111;border:1px solid #9bbf9b;border-left:4px solid #4c8a4c;border-radius:8px;padding:10px 14px;box-shadow:0 8px 24px rgba(0,0,0,.16);font:13px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif;";
+      const text = document.createElement("span");
+      text.textContent = "扫描端界面已自动恢复。未保存的订正已作为本机草稿保留，重新打开原卷后会恢复。";
+      const close = document.createElement("button");
+      close.type = "button";
+      close.textContent = "知道了";
+      close.style.cssText = "margin-left:10px;cursor:pointer;border:1px solid #ccc;background:#fff;border-radius:6px;padding:2px 8px;font:inherit;";
+      close.onclick = () => box.remove();
+      box.append(text, close);
+      document.body.appendChild(box);
+    })()`).catch((error) => {
+      appendLog("WARN", `[Renderer] 恢复提示注入失败: ${error instanceof Error ? error.message : String(error)}`);
+    });
   });
   mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
     appendLog("ERROR", `[Renderer] did-fail-load code=${errorCode} desc=${errorDescription} url=${validatedURL}`);
@@ -398,8 +482,27 @@ async function createWindow() {
     const msg = error instanceof Error ? error.stack || error.message : String(error);
     appendLog("ERROR", `[Renderer] preload-error path=${preloadPath} error=${msg}`);
   });
+  let unresponsiveDialogOpen = false;
   mainWindow.webContents.on("unresponsive", () => {
     appendLog("ERROR", "[Renderer] unresponsive");
+    if (unresponsiveDialogOpen) return;
+    unresponsiveDialogOpen = true;
+    void dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      title: "扫描端界面暂时无响应",
+      message: "界面处理时间较长。",
+      detail: "可以继续等待，或重新加载界面。未保存的订正已作为本机草稿保留。",
+      buttons: ["继续等待", "重新加载界面"],
+      defaultId: 0,
+      cancelId: 0,
+    }).then(({ response }) => {
+      unresponsiveDialogOpen = false;
+      if (response !== 1) return;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        pendingRecoveryNotice = true;
+        mainWindow.webContents.reloadIgnoringCache();
+      }
+    }).catch(() => { unresponsiveDialogOpen = false; });
   });
   mainWindow.webContents.on("responsive", () => {
     appendLog("INFO", "[Renderer] responsive (recovered)");
@@ -408,9 +511,7 @@ async function createWindow() {
   // 远端壳在加载前先关掉解码；本地壳加载 127.0.0.1，页面在第一次远端请求前
   // 经本机回环调用 /api/app/brotli-gate，主进程装好限制后再让它发出请求。
   if (chromiumBrotliProtectionEnabled()) {
-    await installChromiumBrotliDecodeBlock(mainWindow.webContents, appendLog, {
-      onFatal: failClosedChromiumBrotli,
-    });
+    await installChromiumBrotliWithRetry(mainWindow.webContents);
   }
   appendLog("INFO", `[Electron] loadURL ${baseUrl}`);
   await mainWindow.loadURL(baseUrl);
@@ -420,32 +521,63 @@ async function createWindow() {
 configureAppIdentity();
 
 let chromiumBrotliClosed = false;
-function failClosedChromiumBrotli(error) {
+let brotliRecoveryInFlight = false;
+let brotliRecoveryAttempts = 0;
+async function failClosedChromiumBrotli(error) {
   if (chromiumBrotliClosed) return;
-  chromiumBrotliClosed = true;
   const detail = error instanceof Error ? error.message : String(error);
   appendLog("ERROR", `[Electron] Brotli 解码拦截失效: ${detail}`);
-  dialog.showErrorBox("扫描端已停止加载", detail);
+  const contents = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
+  // 现场首次启动/长时间运行后偶发一次通道断开；先原地重装两次，避免直接把扫描端退出。
+  if (contents && !contents.isDestroyed() && brotliRecoveryAttempts < 2) {
+    if (brotliRecoveryInFlight) return;
+    brotliRecoveryInFlight = true;
+    brotliRecoveryAttempts += 1;
+    appendLog("WARN", `[Electron] 尝试恢复 Brotli 解码拦截（第 ${brotliRecoveryAttempts} 次）`);
+    try {
+      await sleep(800);
+      await installChromiumBrotliWithRetry(contents, 2);
+      appendLog("INFO", "[Electron] Brotli 解码拦截已恢复，继续运行");
+      brotliRecoveryInFlight = false;
+      return;
+    } catch (retryError) {
+      const retryDetail = retryError instanceof Error ? retryError.message : String(retryError);
+      appendLog("ERROR", `[Electron] Brotli 解码拦截恢复失败: ${retryDetail}`);
+      brotliRecoveryInFlight = false;
+    }
+  }
+  chromiumBrotliClosed = true;
+  dialog.showErrorBox(
+    "扫描端无法继续加载",
+    "安全组件未能初始化，扫描端将退出。\n\n请重新启动扫描端；如果仍然出现，请联系维护人员并提供日志 main.log。",
+  );
   app.quit();
 }
 
-// 装不上时窗口会被停掉远端请求（可重试），只写日志的话现场只会看到「服务器不可达」。给一次可见提示。
+// 装不上时窗口会被停掉远端请求（可重试），只写日志的话现场只会看到「服务器不可达」。
+// 首次安装后的第一次启动偶尔会瞬时失败，先等自动重装几秒；装好了就不打扰老师。
 let chromiumBrotliNoticeShown = false;
-function showChromiumBrotliNotice(message, detail) {
-  if (chromiumBrotliNoticeShown) return;
-  chromiumBrotliNoticeShown = true;
-  try {
-    void dialog.showMessageBox({
-      type: "warning",
-      title: "扫描端暂时无法连接服务器",
-      message,
-      detail,
-      buttons: ["知道了"],
-    }).catch(() => {});
-  } catch (error) {
-    const failure = error instanceof Error ? error.message : String(error);
-    appendLog("ERROR", `[Electron] 显示 Brotli 拦截提示失败: ${failure}`);
-  }
+let chromiumBrotliNoticeTimer = null;
+function showChromiumBrotliNotice(message, detail, webContents) {
+  if (chromiumBrotliNoticeShown || chromiumBrotliNoticeTimer) return;
+  chromiumBrotliNoticeTimer = setTimeout(() => {
+    chromiumBrotliNoticeTimer = null;
+    if (webContents && !webContents.isDestroyed() && isChromiumBrotliDecodeReady(webContents)) return;
+    chromiumBrotliNoticeShown = true;
+    try {
+      void dialog.showMessageBox({
+        type: "warning",
+        title: "扫描端暂时无法连接服务器",
+        message,
+        detail,
+        buttons: ["知道了"],
+      }).catch(() => {});
+    } catch (error) {
+      const failure = error instanceof Error ? error.message : String(error);
+      appendLog("ERROR", `[Electron] 显示连接提示失败: ${failure}`);
+    }
+  }, 6000);
+  chromiumBrotliNoticeTimer.unref?.();
 }
 
 function reportChromiumBrotliWindowFailure(webContents, error) {
@@ -457,14 +589,16 @@ function reportChromiumBrotliWindowFailure(webContents, error) {
   appendLog("ERROR", `[Electron] 这个窗口的 Brotli 解码拦截失效，主窗口继续运行: ${detail}`);
   if (!webContents || (mainWindow && webContents === mainWindow.webContents)) {
     showChromiumBrotliNotice(
-      "远端页面暂时不能访问：扫描端没能关闭浏览器的 Brotli 解码。已取消这些请求，稍后会自动重试。",
-      "如果一直出现，请关闭开发者工具后重启扫描端；本机离线功能不受影响。",
+      "网络连接组件暂时未能初始化，已暂停远程请求。",
+      "稍后会自动重试。如果一直出现，请重启扫描端；本机离线功能不受影响。",
+      webContents,
     );
     return;
   }
   showChromiumBrotliNotice(
-    "一个预览窗口因为同样的安全限制装不上已关闭，扫描主窗口继续运行。",
-    "需要时请重新打开预览；如果反复出现，请关闭开发者工具后重启扫描端。",
+    "预览窗口未能打开，已关闭。扫描主窗口继续运行。",
+    "需要时请重新打开预览；如果反复出现，请重启扫描端。",
+    null,
   );
   try {
     const owner = BrowserWindow.fromWebContents(webContents);
@@ -503,9 +637,7 @@ async function armChromiumBrotliGateForMainWindow() {
     throw new Error("扫描端主窗口尚未就绪");
   }
   const contents = mainWindow.webContents;
-  await installChromiumBrotliDecodeBlock(contents, appendLog, {
-    onFatal: (error) => reportChromiumBrotliWindowFailure(contents, error),
-  });
+  await installChromiumBrotliWithRetry(contents);
   registerWindowProtection();
 }
 globalThis.__projectxArmChromiumBrotliGate = armChromiumBrotliGateForMainWindow;
@@ -533,7 +665,10 @@ app.whenReady().then(async () => {
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     appendLog("ERROR", `[Electron] createWindow failed: ${error instanceof Error ? error.stack || msg : msg}`);
-    dialog.showErrorBox("启动失败", msg);
+    dialog.showErrorBox(
+      "扫描端启动失败",
+      "启动时遇到问题，扫描端将退出。\n\n请重新启动；如果仍然出现，请联系维护人员并提供日志 main.log。",
+    );
     app.quit();
   }
 

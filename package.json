@@ -134,6 +134,7 @@
     "verify:scanner-scan-timeout": "tsx scripts/verify-scanner-scan-timeout.ts",
     "verify:scanner-partial-failure": "tsx scripts/scanner-partial-failure-smoke.ts",
     "verify:scanner-panel-session": "tsx scripts/scanner-panel-session-smoke.ts",
+    "verify:scanner-recovery": "tsx scripts/verify-scanner-recovery.ts",
     "verify:scanner-review-regressions": "tsx scripts/scanner-review-regressions.ts",
     "verify:scanner-review-fixes": "tsx scripts/scanner-discard-regression.ts && tsx scripts/scanner-version-regression.ts && tsx scripts/scanner-publish-regression.ts && tsx scripts/scanner-dsm-regression.ts",
     "native:build:correction:linux-x64": "bash scripts/build-recognizer-linux.sh",

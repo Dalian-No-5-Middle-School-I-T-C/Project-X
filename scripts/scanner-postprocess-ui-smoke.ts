@@ -441,6 +441,7 @@ try {
 
   // ── 续扫第二批：groupId 跨会话重号，删除与选择都必须按会话隔离 ──
   await act(async () => { root.unmount(); });
+  localStorage.removeItem(`projectx-postprocess-view/v1/${encodeURIComponent(card.id)}`);
   allClean = false;
   secondGroupResolved = false;
   const host2 = document.createElement("div");
@@ -481,6 +482,7 @@ try {
 
   // ── 重卡定性：队列项是被作废的那份时，补传必须跟着「保留下来的那份」走 ──
   await act(async () => { root2.unmount(); });
+  localStorage.removeItem(`projectx-postprocess-view/v1/${encodeURIComponent(card.id)}`);
   const host3 = document.createElement("div");
   document.body.appendChild(host3);
   root3 = createRoot(host3);
@@ -512,6 +514,7 @@ try {
 
   // ── 远端卡 404：本机卡也没有时，页面仍能返回，而不是停在没有按钮的失败态 ──
   await act(async () => { root3.unmount(); });
+  localStorage.removeItem(`projectx-postprocess-view/v1/${encodeURIComponent(card.id)}`);
   hideCard = true;
   const host4 = document.createElement("div");
   document.body.appendChild(host4);
@@ -529,6 +532,7 @@ try {
 
   // A valid score-cell combination still needs explicit teacher confirmation when recognition says review.
   await act(async () => { root4!.unmount(); });
+  localStorage.removeItem(`projectx-postprocess-view/v1/${encodeURIComponent(card.id)}`);
   const reviewCard = createDefaultCard("subjective-review");
   reviewCard.bodyBlocks = [{id:"review-block",type:"subjective",title:"待确认",questions:[
     {id:"review-question",number:2,score:30,style:"manual_score_grid",kind:"plain_box",minHeightMm:30},
