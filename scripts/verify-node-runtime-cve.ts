@@ -245,9 +245,11 @@ check(
   "上传队列与连接测试同样先等编码限制，不绕开握手",
 );
 check(nodeRuntimeCveMessage("24.22.0", "guard") === cjs.nodeRuntimeCveMessage("24.22.0", "guard"), "Electron 提示文案两边一致");
-const decodeAt = mainCjs.indexOf("await installChromiumBrotliDecodeBlock(mainWindow.webContents");
+const decodeAt = mainCjs.indexOf("await installChromiumBrotliWithRetry(mainWindow.webContents");
+const helperAt = mainCjs.indexOf("await installChromiumBrotliDecodeBlock(webContents");
 const loadAt = mainCjs.indexOf("await mainWindow.loadURL(baseUrl)");
-check(decodeAt > 0 && loadAt > decodeAt, "loadURL 之前先限制 Chromium 接受的编码");
+check(decodeAt > 0 && helperAt > 0 && loadAt > decodeAt,
+  "loadURL 之前先限制 Chromium 接受的编码（重试包装最终仍调用 installChromiumBrotliDecodeBlock）");
 const readyBody = mainCjs.slice(mainCjs.indexOf("app.whenReady().then(async () => {"));
 const permissionAt = readyBody.indexOf("installDevicePermissionPolicy();");
 const headerAt = readyBody.indexOf("installChromiumBrotliHeaderBlock(session.defaultSession");
