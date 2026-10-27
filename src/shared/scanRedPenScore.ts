@@ -94,7 +94,7 @@ export function resolveScanColorMode(
 /** 自动改用彩色时给操作员的提示（未升级时为 null）。 */
 export function colorModeUpgradeNotice(from: ScanColorMode | string | undefined): string {
   const label = COLOR_MODE_LABELS[asScanColorMode(from)];
-  return `本答题卡含红笔分数格，已自动改为彩色扫描。${label}模式下红笔会与印刷线混在一起，分数会被读成 0。`;
+  return `本答题卡含红笔分数格，已自动从「${label}」改为「彩色」扫描。${label}模式下红笔会与印刷线混在一起，分数会一律读成 0。`;
 }
 
 /**
@@ -115,13 +115,13 @@ export function redPenMissNotice(input: {
   if (!input.needsRedPen || input.pageCount <= 0 || input.pagesWithRedMark > 0) return null;
   const counted = `本次 ${input.pageCount} 张含分数格的页面中，红笔分数均未采纳`;
   if ((input.pagesWithRejectedRed ?? 0) > 0) {
-    return `${counted}；其中 ${input.pagesWithRejectedRed} 张读到了红笔但笔迹不完整（如斜线未贯穿整格或有其他红迹）。请对照原卷确认画线方式，无法判断的在异常卷手工改分。`;
+    return `${counted}；其中 ${input.pagesWithRejectedRed} 张读到了红笔只是未采信（如斜线未贯穿整格或有其他红迹）。请对照原卷确认画线方式，无法判断的在异常卷手工改分。`;
   }
   if (input.colorMode === "color") {
-    return `${counted}。已使用彩色扫描，请确认使用红笔且斜线贯穿整格；未打分的卷子按 0 分处理，可在异常卷手工改分。`;
+    return `${counted}。已用彩色扫描，请确认使用红笔且斜线贯穿整格；未打分的卷子按 0 分处理，可在异常卷手工改分。`;
   }
   // 这条走不到当代新扫描的批次：含分数格的卡在创建会话时就被 scanner-service 强制成彩色，
   // 落库的 color_mode 也是升级后的值。能进来的只有 #330 之前的历史会话，以及
   // 「先扫完、后来才在卡面加分数格」这类扫描时确实按灰度出图的批次。
-  return `${counted}，且扫描模式为「${COLOR_MODE_LABELS[input.colorMode === "bw" ? "bw" : "gray"]}」：红笔会被拍成灰线，分数按 0 计。请改用彩色重扫，或在异常卷手工改分。`;
+  return `${counted}，且扫描模式为「${COLOR_MODE_LABELS[input.colorMode === "bw" ? "bw" : "gray"]}」：红笔会被拍成灰线，分数按 0 计。请改用彩色模式重扫，或在异常卷手工改分。`;
 }
