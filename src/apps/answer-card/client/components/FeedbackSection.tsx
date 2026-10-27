@@ -154,7 +154,7 @@ export function FeedbackSection() {
   const [filter, setFilter] = useState<FeedbackFilter>("all");
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [formOpen, setFormOpen] = useState(false);
@@ -172,7 +172,7 @@ export function FeedbackSection() {
   const loadSeq = useRef(0);
   const filterRef = useRef(filter);
 
-  const load = useCallback(async (reset = true, offset = 0) => {
+  const load = useCallback(async (reset = true, cursor?: number) => {
     // 筛选快速切换时只让最新一次请求提交结果；重载时读取当前筛选，避免 PATCH/DELETE
     // 在筛选已变化后还按旧筛选发起请求。
     const seq = ++loadSeq.current;
@@ -180,7 +180,7 @@ export function FeedbackSection() {
     if (reset) {
       setLoading(true);
       setLoadingMore(false);
-      setHasMore(false);
+      setNextCursor(null);
       setReports([]);
     } else {
       setLoadingMore(true);
@@ -189,17 +189,17 @@ export function FeedbackSection() {
     try {
       const params = new URLSearchParams();
       if (activeFilter !== "all") params.set("status", activeFilter);
-      params.set("offset", String(offset));
+      if (cursor !== undefined) params.set("cursor", String(cursor));
       const res = await fetchJson<{
         ok: boolean;
         data: FeedbackReport[];
         counts: { total: number; open: number };
-        hasMore: boolean;
+        nextCursor: number | null;
       }>(`/api/feedback?${params.toString()}`);
       if (seq !== loadSeq.current) return;
       setReports((prev) => (reset ? res.data : [...prev, ...res.data]));
       setCounts(res.counts ?? { total: 0, open: 0 });
-      setHasMore(Boolean(res.hasMore));
+      setNextCursor(typeof res.nextCursor === "number" ? res.nextCursor : null);
     } catch (err: any) {
       if (seq !== loadSeq.current) return;
       if (reset) setReports([]);
@@ -505,13 +505,13 @@ export function FeedbackSection() {
         </div>
       )}
 
-      {!loading && hasMore && (
+      {!loading && nextCursor !== null && (
         <div className="flex justify-center">
           <Button
             variant="outline"
             size="sm"
             loading={loadingMore}
-            onClick={() => void load(false, reports.length)}
+            onClick={() => void load(false, nextCursor)}
           >
             加载更多
           </Button>

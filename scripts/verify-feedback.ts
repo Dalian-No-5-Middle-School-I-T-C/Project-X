@@ -260,12 +260,20 @@ async function main(): Promise<void> {
   ok(stillThere?.category === "suggestion", "建议类型按提交值保存");
 
   await call("POST", "", adminToken, { title: "分页测试", content: "正文" });
-  const firstPage = await call("GET", "?limit=1&offset=0", adminToken);
-  ok(firstPage.json?.data?.length === 1 && firstPage.json?.hasMore === true, "limit/offset 第一页带 hasMore");
-  const secondPage = await call("GET", "?limit=1&offset=1", adminToken);
-  ok(secondPage.json?.data?.length === 1 && secondPage.json?.hasMore === false, "第二页可取到剩余反馈");
-  const clamped = await call("GET", "?limit=999&offset=-5", adminToken);
-  ok(clamped.json?.data?.length === 2 && clamped.json?.hasMore === false, "limit 上限与负 offset 被收敛");
+  const firstPage = await call("GET", "?limit=1", adminToken);
+  ok(firstPage.json?.data?.length === 1 && firstPage.json?.hasMore === true && Number(firstPage.json?.nextCursor) > 0,
+    "游标第一页返回 nextCursor");
+  const cursor = Number(firstPage.json?.nextCursor);
+
+  await call("POST", "", adminToken, { title: "分页新增", content: "正文" });
+  const secondPage = await call("GET", `?limit=1&cursor=${cursor}`, adminToken);
+  ok(secondPage.json?.data?.length === 1 && secondPage.json?.hasMore === false && secondPage.json?.nextCursor === null,
+    "游标第二页取到剩余反馈");
+  ok(secondPage.json?.data?.[0]?.title !== "分页新增", "分页期间新增不会挤掉后续页");
+  const all = await call("GET", "?limit=999", adminToken);
+  ok(all.json?.data?.length === 3 && new Set(all.json?.data?.map((row: { id: number }) => row.id)).size === 3,
+    "limit 上限收敛且无重复");
+  ok((await call("GET", "?cursor=abc", adminToken)).status === 400, "非法游标被拒绝");
 
   // 直接插入一条教师提交的记录，再删账号：正文与账号快照应保留，user_id 置空。
   const now = databaseTimestamp();
