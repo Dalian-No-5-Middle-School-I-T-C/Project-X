@@ -121,6 +121,7 @@ export function ExamManagePage() {
     examGroups,
     loadExams,
     loadExamGroups,
+    deleteCard,
     setExamDeleteTarget,
     setGroupDeleteTarget,
     setAssignedFormulaExamId,
@@ -141,6 +142,8 @@ export function ExamManagePage() {
   const [examView, setExamView] = useState<ExamView>("list");
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => todayDateString());
   const [creating, setCreating] = useState(false);
+  /** 批量删除选中考试关联的答题卡：逐张调用统一删除入口，遇到引用冲突就停下并交给全局确认框。 */
+  const [deletingSelectedCards, setDeletingSelectedCards] = useState(false);
   const [newExamMode, setNewExamMode] = useState<ExamMode>("formal");
   // 评审 P1-2：创建考试必须确定应考范围（年级或班级至少其一）
   const [newExamGradeId, setNewExamGradeId] = useState<string>(CARD_PLACEHOLDER);
@@ -344,6 +347,38 @@ export function ExamManagePage() {
     const next = new Set(selectedExamIds);
     if (next.has(examId)) next.delete(examId); else next.add(examId);
     setSelectedExamIds(next);
+  }
+
+  /** 删除勾选考试所用的答题卡：考试本身与成绩保留，只把答题卡解绑后删除。 */
+  async function deleteSelectedCards() {
+    if (deletingSelectedCards) return;
+    const selected = exams.filter((exam) => selectedExamIds.has(exam.id));
+    const uniqueCards = new Map<string, string>();
+    for (const exam of selected) {
+      if (exam.card_id) uniqueCards.set(exam.card_id, exam.card_id);
+    }
+    if (uniqueCards.size === 0) {
+      setStatus("选中的考试没有关联答题卡");
+      return;
+    }
+    if (!window.confirm(
+      `将删除这 ${uniqueCards.size} 张答题卡，并解除它们与考试的关联。考试本身和已有成绩会保留。\n\n此操作不可恢复，确定继续吗？`,
+    )) return;
+    setDeletingSelectedCards(true);
+    try {
+      for (const cardId of uniqueCards.keys()) {
+        const ok = await deleteCard(cardId, { unlinkExams: true });
+        if (!ok) {
+          setStatus(`删除答题卡 ${cardId} 未完成，请先处理引用冲突`);
+          return;
+        }
+      }
+      setSelectedExamIds(new Set());
+      setStatus(`已删除 ${uniqueCards.size} 张答题卡`);
+      await loadExams();
+    } finally {
+      setDeletingSelectedCards(false);
+    }
   }
 
   /** 日历日期切换：清空勾选，避免此前日期的隐藏选中误入批量删除 */
@@ -685,6 +720,18 @@ export function ExamManagePage() {
                 })}
               >
                 删除选中 ({selectedExamIds.size})
+              </Button>
+            )}
+            {examManageMode === "single" && selectedExamIds.size > 0 && (
+              <Button
+                variant="ghost"
+                icon={<Trash2 />}
+                className="text-destructive-fg"
+                loading={deletingSelectedCards}
+                disabled={deletingSelectedCards}
+                onClick={() => void deleteSelectedCards()}
+              >
+                删除选中答题卡
               </Button>
             )}
             <span className="text-sm text-muted-foreground">

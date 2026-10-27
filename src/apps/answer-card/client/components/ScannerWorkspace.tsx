@@ -59,6 +59,11 @@ interface Props {
   cardVersionNote?: string;
   /** v2.7.2：本批扫描完成时上抛给 ScannerApp，自动进入扫描后处理页 */
   onScansComplete?: (sessionId: string, pageCount: number) => void;
+  /** 继续扫描前先归档当前会话：部分中断的批次离开面板后仍能在后处理页找到。 */
+  onBatchArchived?: (sessionId: string, pageCount: number) => void;
+  /** 从后处理页点「继续扫描」进入时自动开扫。 */
+  autoStartScan?: boolean;
+  onAutoStartConsumed?: () => void;
 }
 
 const directoryInputProps = {
@@ -70,7 +75,7 @@ function isImageFile(file: File): boolean {
   return file.type.startsWith("image/") || /\.(png|jpe?g|bmp|webp|tiff?)$/i.test(file.name);
 }
 
-export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange, cardVersionNote, onScansComplete }: Props) {
+export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange, cardVersionNote, onScansComplete, onBatchArchived, autoStartScan, onAutoStartConsumed }: Props) {
   const [cfgOpen, setCfgOpen] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [status, setStatus] = useState("");
@@ -102,6 +107,13 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
   // v2.5.1: 导入阅卷的图片去向档位（与直扫面板共用同一记忆，hook 内置跨实例同步）
   // v2.5.6: 提升为工作台级常驻选择器（见侧栏「图片去向」卡），直扫与导入共用同一份状态
   const [imageMode, setImageMode] = useScannerMode();
+
+  // 右上角上传进度卡避开 340px 侧栏，别盖住「图片去向 / 开始扫描 / 导入阅卷」。
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--px-scanner-upload-right", "356px");
+    return () => { root.style.removeProperty("--px-scanner-upload-right"); };
+  }, []);
 
   function addGradingFiles(files: FileList | null) {
     if (!files) return;
@@ -229,6 +241,9 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
             {scanning ? (
               <ScannerPanel
                 cardId={cardId}
+                autoStartScan={autoStartScan}
+                onAutoStartConsumed={onAutoStartConsumed}
+                onBatchArchived={onBatchArchived}
                 onScansComplete={(sid, pageCount) => {
                   // v2.5.1: 保持面板挂在 done 视图；v2.7.2: 同时上抛给 ScannerApp 自动跳后处理页
                   setStatus(`扫描完成：${pageCount} 张`);

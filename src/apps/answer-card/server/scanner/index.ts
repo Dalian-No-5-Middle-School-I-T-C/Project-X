@@ -490,41 +490,56 @@ export function createScannerRouter(twainEnabled = true): Router {
 
       const cardId = exam.card_id;
       const user = await db.get("SELECT student_number FROM users WHERE id = ?", studentId) as { student_number: string | null } | undefined;
+      // TWAIN/扫描端上传的页面以学号（而非 users.id）落在 twain_scan_records.student_id，
+      // 成绩分析里的「预览」必须两套来源都认：旧导入批次在 scan_records，扫描端在 twain_scan_records。
+      const studentNumber = user?.student_number ? String(user.student_number) : "";
+      const { existsSync: fsExists } = await import("node:fs");
+      const pages: Array<{ recordId: string; pageNum: number; side: string; fileName?: string; imageUrl: string }> = [];
 
-      // Query scan_records for this student in this exam
-      const records = await db.all(`
-        SELECT sr.id, sr.file_path, sr.file_name
-        FROM scan_records sr
-        JOIN scan_batches sb ON sr.batch_id = sb.id
-        WHERE sb.exam_id = ? AND sr.student_id = ?
-        ORDER BY sr.id
-      `, examId, studentId) as Array<{ id: number; file_path: string; file_name: string }>;
-
-      if (records.length === 0) {
-        res.json({ studentId, studentNumber: user?.student_number || "", pages: [] });
-        return;
+      if (studentNumber) {
+        const twainRecords = await db.all(`
+          SELECT id, image_path, page_num, side
+          FROM twain_scan_records
+          WHERE card_id = ? AND student_id = ? AND image_path IS NOT NULL
+          ORDER BY page_num, CASE side WHEN 'front' THEN 0 ELSE 1 END
+        `, cardId, studentNumber) as Array<{ id: string; image_path: string; page_num: number; side: string }>;
+        for (const rec of twainRecords) {
+          if (!rec.image_path || String(rec.image_path).startsWith("pending:") || !fsExists(rec.image_path)) continue;
+          pages.push({
+            recordId: String(rec.id),
+            pageNum: Number(rec.page_num) || pages.length + 1,
+            side: rec.side === "back" ? "back" : "front",
+            imageUrl: `/api/scanner/scan-image/${encodeURIComponent(String(rec.id))}`,
+          });
+        }
       }
 
-      // Try to resolve actual files
-      const pages: Array<{ recordId: string; pageNum: number; side: string; fileName: string }> = [];
-      const { existsSync: fsExists } = await import("node:fs");
+      // 旧数据兜底：只有扫描端没有这一卷的页面时才读旧的导入批次，避免同一份卷出现两遍。
+      if (pages.length === 0) {
+        const records = await db.all(`
+          SELECT sr.id, sr.file_path, sr.file_name
+          FROM scan_records sr
+          JOIN scan_batches sb ON sr.batch_id = sb.id
+          WHERE sb.exam_id = ? AND sr.student_id = ?
+          ORDER BY sr.id
+        `, examId, studentId) as Array<{ id: number; file_path: string; file_name: string }>;
 
-      for (const rec of records) {
-        // Check if file_path is an actual file (new data stores multer path)
-        if (rec.file_path && fsExists(rec.file_path)) {
+        for (const rec of records) {
+          if (!rec.file_path || !fsExists(rec.file_path)) continue;
           const fileName = path.basename(rec.file_path);
           pages.push({
             recordId: String(rec.id),
             pageNum: pages.length + 1,
             side: "front",
-            fileName
+            fileName,
+            imageUrl: `/api/scanner/grading-image/${encodeURIComponent(cardId)}/${encodeURIComponent(fileName)}`,
           });
         }
       }
 
       res.json({
         studentId,
-        studentNumber: user?.student_number || "",
+        studentNumber,
         cardId,
         pages
       });
