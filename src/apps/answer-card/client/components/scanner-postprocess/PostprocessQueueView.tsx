@@ -563,7 +563,7 @@ function MissingPagePanel({ item, channel, layoutPageCount, onResolved, onDelete
       setConfirmDelete(false);
     } catch (err) {
       const blocked = (err as { blocked?: string[] }).blocked;
-      if (blocked?.length) { setConfirmDelete(false); notify.warning(`第 ${blocked.join("、")} 组已入库，请到扫描结果里确认后再删除。`); return; }
+      if (blocked?.length) { setConfirmDelete(false); notify.warning(`第 ${blocked.join("、")} 组已有成绩记录或待处理，请到扫描结果里核对后再删除。`); return; }
       notify.error(err instanceof Error ? err.message : "删除失败");
     } finally {
       setBusy(false);
