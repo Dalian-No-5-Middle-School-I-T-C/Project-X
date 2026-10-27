@@ -6,13 +6,18 @@ import {
   ChevronDown,
   ChevronUp,
   ClipboardCopy,
+  Download,
   MessageSquareWarning,
+  Paperclip,
   RotateCcw,
   Trash2,
+  X,
 } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { ROLE_LABELS } from "../auth/types";
 import { cn } from "../lib/utils";
+import { downloadBlob } from "../util/download";
+import { MAX_FEEDBACK_ATTACHMENTS, MAX_FEEDBACK_ATTACHMENT_BYTES } from "../../../../shared/feedbackLimits";
 import {
   Badge,
   Button,
@@ -26,11 +31,19 @@ import {
   SelectTrigger,
   SelectValue,
   Textarea,
+  UploadZone,
 } from "./ui/v2";
 
 type FeedbackCategory = "problem" | "suggestion" | "other";
 type FeedbackStatus = "open" | "resolved";
 type FeedbackFilter = "all" | FeedbackStatus;
+
+type FeedbackAttachment = {
+  id: number;
+  filename: string;
+  mime: string | null;
+  sizeBytes: number;
+};
 
 type FeedbackReport = {
   id: number;
@@ -46,6 +59,7 @@ type FeedbackReport = {
   createdAt: string;
   resolvedAt: string | null;
   resolvedByName: string | null;
+  attachments: FeedbackAttachment[];
 };
 
 const CATEGORY_LABELS: Record<FeedbackCategory, string> = {
@@ -57,6 +71,12 @@ const CATEGORY_LABELS: Record<FeedbackCategory, string> = {
 const MAX_TITLE = 100;
 const MAX_CONTENT = 5000;
 const MAX_CONTACT = 100;
+
+function formatFileSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
 
 /** 提交时自动附带的环境信息。不收集任何成绩、学生或凭据数据。 */
 function collectContext(): Record<string, unknown> {
@@ -129,6 +149,9 @@ function formatAsMarkdown(report: FeedbackReport): string {
   if (report.context) {
     lines.push("", "<details><summary>环境信息</summary>", "", "```json", JSON.stringify(report.context, null, 2), "```", "</details>");
   }
+  if (report.attachments.length > 0) {
+    lines.push("", `- 附件：${report.attachments.map((file) => `${file.filename}（${formatFileSize(file.sizeBytes)}）`).join("、")}`);
+  }
   return lines.join("\n");
 }
 
@@ -162,6 +185,7 @@ export function FeedbackSection() {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [contact, setContact] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [formMsg, setFormMsg] = useState<{ tone: "success" | "error"; text: string } | null>(null);
 
@@ -226,6 +250,16 @@ export function FeedbackSection() {
     setTitle("");
     setContent("");
     setContact("");
+    setAttachments([]);
+  };
+
+  const addAttachments = (files: File[]) => {
+    setFormMsg(null);
+    if (attachments.length + files.length > MAX_FEEDBACK_ATTACHMENTS) {
+      setFormMsg({ tone: "error", text: `最多附加 ${MAX_FEEDBACK_ATTACHMENTS} 个文件` });
+      return;
+    }
+    setAttachments((prev) => [...prev, ...files]);
   };
 
   async function submitFeedback(event: FormEvent) {
@@ -243,15 +277,16 @@ export function FeedbackSection() {
     setSubmitting(true);
     setFormMsg(null);
     try {
+      const form = new FormData();
+      form.set("category", category);
+      form.set("title", trimmedTitle);
+      form.set("content", trimmedContent);
+      if (contact.trim()) form.set("contact", contact.trim());
+      form.set("context", JSON.stringify(collectContext()));
+      for (const file of attachments) form.append("files", file, file.name);
       await fetchJson<{ ok: boolean; data: { id: number } }>("/api/feedback", {
         method: "POST",
-        body: JSON.stringify({
-          category,
-          title: trimmedTitle,
-          content: trimmedContent,
-          contact: contact.trim() || undefined,
-          context: collectContext(),
-        }),
+        body: form,
       });
       resetForm();
       setFormMsg({ tone: "success", text: "已提交。反馈保存在本系统数据库，管理员可在下方查看和处理。" });
@@ -306,6 +341,20 @@ export function FeedbackSection() {
     setTimeout(() => setCopiedId((current) => (current === report.id ? null : current)), 2000);
   }
 
+  async function downloadAttachment(reportId: number, attachment: FeedbackAttachment) {
+    setLoadError(null);
+    try {
+      await downloadBlob(
+        `/api/feedback/${reportId}/attachments/${attachment.id}`,
+        attachment.filename
+      );
+    } catch (err: any) {
+      setLoadError(err?.message || "附件下载失败");
+    }
+  }
+
+  const totalAttachmentBytes = attachments.reduce((sum, file) => sum + file.size, 0);
+
   return (
     <div className="flex flex-col gap-3 border-t border-border-subtle pt-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -325,8 +374,8 @@ export function FeedbackSection() {
         </Button>
       </div>
       <p className="text-xs text-muted-foreground">
-        扫卡室或教室遇到问题时在这里提交，会自动带上版本、页面与系统信息；反馈保存在本系统数据库，不依赖 GitHub。
-        管理员可在下方查看、标记处理，需要转发时一键复制成 Markdown。
+        扫卡室或教室遇到问题时在这里提交，会自动带上版本、页面与系统信息；可附带最多 {MAX_FEEDBACK_ATTACHMENTS} 个文件（单个小于 {MAX_FEEDBACK_ATTACHMENT_BYTES / 1024 / 1024} MB）。
+        反馈保存在本系统数据库，不依赖 GitHub。管理员可在下方查看、标记处理，需要转发时一键复制成 Markdown。
       </p>
 
       {formOpen && (
@@ -371,9 +420,53 @@ export function FeedbackSection() {
               placeholder={"操作步骤：\n1. \n2. \n\n实际现象：\n\n期望结果："}
             />
           </Field>
+          <Field
+            label="附件（可选）"
+            hint={`最多 ${MAX_FEEDBACK_ATTACHMENTS} 个，单个小于 ${MAX_FEEDBACK_ATTACHMENT_BYTES / 1024 / 1024} MB${attachments.length > 0 ? ` · 已选 ${attachments.length} 个，共 ${formatFileSize(totalAttachmentBytes)}` : ""}`}
+          >
+            <UploadZone
+              accept=""
+              multiple
+              maxSize={MAX_FEEDBACK_ATTACHMENT_BYTES}
+              onFiles={addAttachments}
+              label="点击或拖拽添加附件"
+              sublabel="日志、截图、PDF、压缩包等"
+              size="sm"
+              disabled={submitting}
+            />
+          </Field>
+          {attachments.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              {attachments.map((file, index) => (
+                <div
+                  key={`${file.name}-${file.size}-${index}`}
+                  className="flex items-center justify-between gap-2 rounded-md border border-border-subtle bg-card px-3 py-2"
+                >
+                  <span className="flex min-w-0 items-center gap-2 text-xs text-foreground">
+                    <Paperclip size={14} className="shrink-0 text-muted-foreground" />
+                    <span className="truncate">{file.name}</span>
+                  </span>
+                  <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                    {formatFileSize(file.size)}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`移除 ${file.name}`}
+                      onClick={() => setAttachments((prev) => prev.filter((_, i) => i !== index))}
+                    >
+                      <X size={14} />
+                    </Button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="text-xs text-muted-foreground">
-              自动附带：当前页面、浏览器与操作系统、屏幕信息、版本号、服务端运行环境
+              {attachments.length > 0
+                ? "附件较大时上传需要一些时间，请勿关闭页面。"
+                : "自动附带：当前页面、浏览器与操作系统、屏幕信息、版本号、服务端运行环境"}
             </span>
             <Button type="submit" variant="primary" size="sm" loading={submitting}>
               {submitting ? "提交中..." : "提交反馈"}
@@ -431,6 +524,15 @@ export function FeedbackSection() {
                       <span>{report.displayName || report.username || "未知用户"}{roleLabel ? `（${roleLabel}）` : ""}</span>
                       <span aria-hidden>·</span>
                       <span className="tabular-nums">{formatTime(report.createdAt)}</span>
+                      {report.attachments.length > 0 && (
+                        <>
+                          <span aria-hidden>·</span>
+                          <span className="inline-flex items-center gap-1">
+                            <Paperclip size={12} />
+                            {report.attachments.length} 个附件
+                          </span>
+                        </>
+                      )}
                       {report.status === "resolved" && report.resolvedAt && (
                         <>
                           <span aria-hidden>·</span>
@@ -489,6 +591,28 @@ export function FeedbackSection() {
                     <p className="text-xs text-muted-foreground">
                       联系方式：{report.contact || "未填写"}
                     </p>
+                    {report.attachments.length > 0 && (
+                      <div className="flex flex-col gap-1.5">
+                        <div className="text-xs font-medium text-muted-foreground">附件（{report.attachments.length}）</div>
+                        {report.attachments.map((attachment) => (
+                          <button
+                            key={attachment.id}
+                            type="button"
+                            onClick={() => void downloadAttachment(report.id, attachment)}
+                            className="flex items-center justify-between gap-2 rounded-md border border-border-subtle bg-card px-3 py-2 text-left text-xs text-foreground transition-colors hover:bg-secondary"
+                          >
+                            <span className="flex min-w-0 items-center gap-2">
+                              <Paperclip size={14} className="shrink-0 text-muted-foreground" />
+                              <span className="truncate">{attachment.filename}</span>
+                            </span>
+                            <span className="flex shrink-0 items-center gap-2 text-muted-foreground">
+                              {formatFileSize(attachment.sizeBytes)}
+                              <Download size={14} />
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     {report.context && (
                       <details className="rounded-md border border-border-subtle bg-card px-3 py-2">
                         <summary className="cursor-pointer text-xs text-muted-foreground">环境信息</summary>

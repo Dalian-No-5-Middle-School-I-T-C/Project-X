@@ -866,3 +866,15 @@ CREATE TABLE IF NOT EXISTS feedback_reports (
     updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback_reports(status, created_at);
+
+-- v67: 反馈附件元数据（#357）。文件本体在 data/answer-card/feedback/<uuid>/，随数据目录备份。
+CREATE TABLE IF NOT EXISTS feedback_attachments (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    feedback_id  INTEGER NOT NULL REFERENCES feedback_reports(id) ON DELETE CASCADE,
+    filename     TEXT NOT NULL,
+    stored_path  TEXT NOT NULL,
+    mime         TEXT,
+    size_bytes   INTEGER NOT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_attachments_feedback ON feedback_attachments(feedback_id);

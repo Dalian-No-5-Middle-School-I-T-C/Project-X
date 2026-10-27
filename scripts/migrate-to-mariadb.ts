@@ -112,8 +112,9 @@ const MIGRATION_ORDER: Array<{ table: string; primaryKey: string; optionalInSour
   { table: "users", primaryKey: "id" },
   { table: "teacher_permissions", primaryKey: "id" },
   { table: "wechat_subscription_bindings", primaryKey: "id" },
-  // v66：旧 SQLite 源库可能没有这张表，有则一并迁移
+  // v66：旧 SQLite 源库可能没有这两张表，有则一并迁移
   { table: "feedback_reports", primaryKey: "id", optionalInSource: true },
+  { table: "feedback_attachments", primaryKey: "id", optionalInSource: true },
 
   // 班级层
   { table: "classes", primaryKey: "id" },
@@ -278,17 +279,23 @@ function looseEqual(a: unknown, b: unknown): boolean {
 
 /** SQLite 的时间列是 UTC（ISO 或 CURRENT_TIMESTAMP），MariaDB DATETIME 存服务器本地时间。
  *  反馈表由 API 写入带 Z 的 ISO 串，直接复制会被 strict MariaDB 拒绝或把 UTC 当本地时间。 */
+const TIME_COLUMNS: Record<string, string[]> = {
+  feedback_reports: ["created_at", "updated_at", "resolved_at"],
+  feedback_attachments: ["created_at"],
+};
+
 function normalizeSqliteRow(table: string, row: Record<string, unknown>): Record<string, unknown> {
-  if (table !== "feedback_reports") return row;
+  const timeColumns = TIME_COLUMNS[table];
+  if (!timeColumns) return row;
   const out = { ...row };
-  for (const col of ["created_at", "updated_at", "resolved_at"]) {
+  for (const col of timeColumns) {
     const value = out[col];
     if (typeof value !== "string" || !value) continue;
     const iso = value.includes("T") ? value : value.replace(" ", "T");
     const withZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(iso) ? iso : `${iso}Z`;
     const date = new Date(withZone);
     if (!Number.isNaN(date.getTime())) {
-      // feedback_reports 的时间列是 DATETIME（秒精度），去掉 databaseTimestamp 带出的 .000
+      // feedback 表的时间列是 DATETIME（秒精度），去掉 databaseTimestamp 带出的 .000
       out[col] = databaseTimestamp(date, "mariadb").replace(/\.\d+$/, "");
     }
   }

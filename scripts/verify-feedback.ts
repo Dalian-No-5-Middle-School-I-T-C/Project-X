@@ -6,14 +6,15 @@
  *   npm run verify:feedback:mariadb     # 专用空 MariaDB（PROJECTX_MARIADB_DATABASE）
  *
  * 覆盖：
- *   1. v66 迁移建表、旧库补表与重复执行
+ *   1. v66 / v67 迁移建表、旧库补表与重复执行
  *   2. 提交 / 列表 / 状态流转 / 删除的权限边界
  *   3. 标题、正文、联系方式长度与控制字符
  *   4. 客户端环境信息白名单与服务端环境信息合并
  *   5. 标记处理后 resolved_at / resolved_by 的写入与撤销
+ *   6. 附件 multipart 上传、下载权限、15 / 16 个上限与删除清理
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
@@ -50,6 +51,7 @@ if (!maria) {
 const tmpDir = mkdtempSync(path.join(tmpdir(), "feedback-verify-"));
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "feedback.db");
 process.env.PROJECTX_TOKEN_DIR = path.join(tmpDir, "tokens");
+process.env.ANSWER_CARD_DATA_DIR = path.join(tmpDir, "answer-card");
 // config.yml 按 process.cwd() 解析；必须在导入数据库模块前隔离，
 // 否则本机 remote 配置会让回归连上业务库并可能轮换管理员口令。
 process.chdir(tmpDir);
@@ -118,7 +120,7 @@ async function main(): Promise<void> {
   assert.ok(teacherLogin.success && teacherLogin.token, "教师登录失败");
   const teacherToken = teacherLogin.token!;
 
-  section("1. v66 迁移与时区");
+  section("1. v66 / v67 迁移与时区");
   const columns = maria
     ? (await db.all<{ COLUMN_NAME: string }>(
         "SELECT COLUMN_NAME FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'feedback_reports'"
@@ -129,6 +131,16 @@ async function main(): Promise<void> {
   }
   const version = await db.get<{ version: number }>("SELECT version FROM schema_migrations WHERE version = 66");
   ok(Number(version?.version) === 66, "迁移版本 66 已登记");
+  const attachmentColumns = maria
+    ? (await db.all<{ COLUMN_NAME: string }>(
+        "SELECT COLUMN_NAME FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'feedback_attachments'"
+      )).map((row) => row.COLUMN_NAME)
+    : (await db.all<{ name: string }>("PRAGMA table_info(feedback_attachments)")).map((row) => row.name);
+  for (const column of ["feedback_id", "filename", "stored_path", "mime", "size_bytes"]) {
+    ok(attachmentColumns.includes(column), `feedback_attachments 含列 ${column}`);
+  }
+  const attachmentVersion = await db.get<{ version: number }>("SELECT version FROM schema_migrations WHERE version = 67");
+  ok(Number(attachmentVersion?.version) === 67, "迁移版本 67 已登记");
   const mariaTime = withTimezone("2026-10-27 03:00:00", "mariadb");
   ok(Boolean(mariaTime && /[+-]\d{2}:\d{2}$/.test(mariaTime)), "MariaDB 本地时间补上服务器时区偏移");
   ok(Boolean(mariaTime && new Date(mariaTime).getTime() === new Date("2026-10-27T03:00:00").getTime()),
@@ -137,7 +149,8 @@ async function main(): Promise<void> {
   ok(withTimezone("2026-10-27T03:00:00.000Z", "sqlite") === "2026-10-27T03:00:00.000Z", "已有 Z 的值保持不变");
 
   // 旧库升级：删表并撤销版本记录后重新执行迁移，表应被补回且重复执行幂等。
-  await db.run("DELETE FROM schema_migrations WHERE version = 66");
+  await db.run("DELETE FROM schema_migrations WHERE version IN (66, 67)");
+  await db.run("DROP TABLE feedback_attachments");
   await db.run("DROP TABLE feedback_reports");
   if (maria) {
     await initMariadbSchema();
@@ -149,12 +162,14 @@ async function main(): Promise<void> {
   }
   if (maria) {
     const restored = await db.get<{ c: number }>(
-      "SELECT COUNT(*) AS c FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'feedback_reports'"
+      "SELECT COUNT(*) AS c FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('feedback_reports', 'feedback_attachments')"
     );
-    ok(Number(restored?.c) === 1, "MariaDB 旧库补表后可重复初始化");
+    ok(Number(restored?.c) === 2, "MariaDB 旧库补表后可重复初始化");
   } else {
-    const table = getDatabase().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'feedback_reports'").get();
-    ok(Boolean(table), "SQLite 旧库补表成功且重复执行幂等");
+    const tables = getDatabase().prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('feedback_reports', 'feedback_attachments')"
+    ).all() as Array<{ name: string }>;
+    ok(tables.length === 2, "SQLite 旧库补表成功且重复执行幂等");
   }
 
   section("2. 认证与权限");
@@ -173,6 +188,17 @@ async function main(): Promise<void> {
         ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    let json: any = null;
+    try { json = await response.json(); } catch { /* empty */ }
+    return { status: response.status, json };
+  }
+
+  async function upload(form: FormData, token?: string) {
+    const response = await fetch(base, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
     });
     let json: any = null;
     try { json = await response.json(); } catch { /* empty */ }
@@ -274,6 +300,58 @@ async function main(): Promise<void> {
   ok(all.json?.data?.length === 3 && new Set(all.json?.data?.map((row: { id: number }) => row.id)).size === 3,
     "limit 上限收敛且无重复");
   ok((await call("GET", "?cursor=abc", adminToken)).status === 400, "非法游标被拒绝");
+
+  section("6. 附件上传、下载与删除清理");
+  const attachmentForm = new FormData();
+  attachmentForm.set("title", "附件测试");
+  attachmentForm.set("content", "带附件正文");
+  attachmentForm.set("category", "problem");
+  attachmentForm.set("context", JSON.stringify({ page: "/global-settings" }));
+  attachmentForm.append("files", new Blob(["hello"], { type: "text/plain" }), "说明.txt");
+  attachmentForm.append("files", new Blob(["world"], { type: "application/octet-stream" }), "log.bin");
+  const attached = await upload(attachmentForm, adminToken);
+  ok(attached.status === 201, "管理员可带附件提交");
+  const attachReportId = Number(attached.json?.data?.id);
+
+  const attachReport = (await call("GET", "?limit=1", adminToken)).json?.data?.[0];
+  ok(attachReport?.id === attachReportId && attachReport?.attachments?.length === 2, "列表返回附件元数据");
+  const firstAttachment = attachReport?.attachments?.[0];
+  ok(firstAttachment?.filename === "说明.txt" && Number(firstAttachment?.sizeBytes) === 5, "附件文件名与大小正确");
+
+  const download = await fetch(`${base}/${attachReportId}/attachments/${firstAttachment?.id}`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  ok(download.status === 200 && (await download.text()) === "hello", "管理员可下载附件");
+  ok((await fetch(`${base}/${attachReportId}/attachments/${firstAttachment?.id}`, {
+    headers: { Authorization: `Bearer ${teacherToken}` },
+  })).status === 403, "教师不能下载附件");
+  ok((await fetch(`${base}/${attachReportId}/attachments/${firstAttachment?.id}`)).status === 401, "未登录不能下载附件");
+
+  ok((await call("DELETE", `/${attachReportId}`, adminToken)).status === 200, "删除带附件的反馈");
+  ok((await fetch(`${base}/${attachReportId}/attachments/${firstAttachment?.id}`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  })).status === 404, "删除后附件不可下载");
+  const feedbackRoot = path.join(process.env.ANSWER_CARD_DATA_DIR!, "feedback");
+  const leftDirs = existsSync(feedbackRoot)
+    ? readdirSync(feedbackRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() && entry.name !== "_tmp")
+    : [];
+  ok(leftDirs.length === 0, "删除反馈后附件目录已清理");
+
+  const fifteen = new FormData();
+  fifteen.set("title", "15 个附件");
+  fifteen.set("content", "正文");
+  for (let i = 0; i < 15; i += 1) fifteen.append("files", new Blob([`f${i}`]), `f${i}.txt`);
+  ok((await upload(fifteen, adminToken)).status === 201, "最多 15 个附件可提交");
+  const fifteenReport = (await call("GET", "?limit=1", adminToken)).json?.data?.[0];
+  ok(fifteenReport?.attachments?.length === 15, "15 个附件全部入库");
+
+  const sixteen = new FormData();
+  sixteen.set("title", "16 个附件");
+  sixteen.set("content", "正文");
+  for (let i = 0; i < 16; i += 1) sixteen.append("files", new Blob([`f${i}`]), `f${i}.txt`);
+  ok((await upload(sixteen, adminToken)).status === 400, "超过 15 个附件被拒绝");
+  const tempDir = path.join(feedbackRoot, "_tmp");
+  ok(!existsSync(tempDir) || readdirSync(tempDir).length === 0, "被拒绝的上传没有遗留临时文件");
 
   // 直接插入一条教师提交的记录，再删账号：正文与账号快照应保留，user_id 置空。
   const now = databaseTimestamp();

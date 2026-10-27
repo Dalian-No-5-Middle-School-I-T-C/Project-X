@@ -50,6 +50,7 @@ try {
     const feedbackCreated = databaseTimestamp(new Date("2026-10-27T23:30:00Z"), "sqlite");
     const feedbackUpdated = databaseTimestamp(new Date("2026-10-28T02:00:00Z"), "sqlite");
     const feedbackResolved = databaseTimestamp(new Date("2026-10-28T02:00:00Z"), "sqlite");
+    const feedbackAttachmentCreated = databaseTimestamp(new Date("2026-10-27T23:45:00Z"), "sqlite");
     source.exec(`
       INSERT INTO grades(id,name) VALUES (1,'迁移年级');
       INSERT INTO classes(id,grade_id,name) VALUES (1,1,'迁移班级');
@@ -65,6 +66,9 @@ try {
         VALUES (1,1,'migration-student','迁移学生','student','problem','迁移反馈','反馈正文','contact@example.com',
           '{"client":{"page":"/global-settings"},"server":{"platform":"test"}}','resolved',
           '${feedbackCreated}','${feedbackUpdated}','${feedbackResolved}',2);
+      INSERT INTO feedback_attachments
+        (id,feedback_id,filename,stored_path,mime,size_bytes,created_at)
+        VALUES (1,1,'说明.txt','feedback/test/0.txt','text/plain',5,'${feedbackAttachmentCreated}');
       DROP TABLE scan_correction_pages;
       DELETE FROM schema_migrations WHERE version IN (62,64);
       DROP TABLE exam_class_memberships;
@@ -97,6 +101,18 @@ try {
   assert.equal(feedback[0].updated_at, updated);
   assert.equal(feedback[0].resolved_at, updated);
   console.log("PASS: feedback rows keep submitter, resolver, context JSON and normalized timestamps");
+  const [attachments] = await conn.query<any[]>(
+    "SELECT filename, stored_path, mime, size_bytes, created_at FROM feedback_attachments WHERE id = 1"
+  );
+  assert.equal(attachments[0].filename, "说明.txt");
+  assert.equal(attachments[0].stored_path, "feedback/test/0.txt");
+  assert.equal(attachments[0].mime, "text/plain");
+  assert.equal(Number(attachments[0].size_bytes), 5);
+  assert.equal(
+    attachments[0].created_at,
+    databaseTimestamp(new Date("2026-10-27T23:45:00Z"), "mariadb").replace(/\.\d+$/, "")
+  );
+  console.log("PASS: feedback attachments migrate with metadata and normalized timestamp");
   const [oldSnapshots] = await conn.query<any[]>("SELECT COUNT(*) AS n FROM exam_class_memberships");
   assert.equal(Number(oldSnapshots[0].n), 0, "Migration must not invent historical classes");
   migrate(["--verify-only", "--sample=2"]);

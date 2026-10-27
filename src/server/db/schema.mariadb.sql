@@ -1001,3 +1001,16 @@ CREATE TABLE IF NOT EXISTS feedback_reports (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
     FOREIGN KEY (resolved_by) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- v67: 反馈附件元数据（#357）。文件本体在 data/answer-card/feedback/<uuid>/，随数据目录备份。
+CREATE TABLE IF NOT EXISTS feedback_attachments (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    feedback_id  INT NOT NULL,
+    filename     VARCHAR(255) NOT NULL,
+    stored_path  VARCHAR(500) NOT NULL,
+    mime         VARCHAR(150),
+    size_bytes   BIGINT NOT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_feedback_attachments_feedback (feedback_id),
+    FOREIGN KEY (feedback_id) REFERENCES feedback_reports(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

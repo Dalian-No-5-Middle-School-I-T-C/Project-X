@@ -1377,6 +1377,19 @@ MIGRATIONS.push({ version: 66, name: "feedback-reports", up(db) {
   ); CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback_reports(status, created_at);`);
 } });
 
+// v67: 反馈附件元数据（#357）。文件本体在 data/answer-card/feedback/<uuid>/，随数据目录备份。
+MIGRATIONS.push({ version: 67, name: "feedback-attachments", up(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS feedback_attachments (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    feedback_id  INTEGER NOT NULL REFERENCES feedback_reports(id) ON DELETE CASCADE,
+    filename     TEXT NOT NULL,
+    stored_path  TEXT NOT NULL,
+    mime         TEXT,
+    size_bytes   INTEGER NOT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+  ); CREATE INDEX IF NOT EXISTS idx_feedback_attachments_feedback ON feedback_attachments(feedback_id);`);
+} });
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

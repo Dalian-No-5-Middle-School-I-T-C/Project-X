@@ -1186,6 +1186,21 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
   ] });
 
+  // v67: 反馈附件元数据（#357），与 SQLite v67 对齐。
+  mariadbMigrations.push({ version: 67, name: "feedback-attachments", sqls: [
+    `CREATE TABLE IF NOT EXISTS feedback_attachments (
+      id           INT AUTO_INCREMENT PRIMARY KEY,
+      feedback_id  INT NOT NULL,
+      filename     VARCHAR(255) NOT NULL,
+      stored_path  VARCHAR(500) NOT NULL,
+      mime         VARCHAR(150),
+      size_bytes   BIGINT NOT NULL,
+      created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_feedback_attachments_feedback (feedback_id),
+      FOREIGN KEY (feedback_id) REFERENCES feedback_reports(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ] });
+
   // 语文模板使用 13.1/17.1 这类小题号；INT 在 strict mode 会拒绝写入，
   // 非 strict 又会把 13.1/13.2 截成同一个 13。统一改成 DOUBLE，保留数值排序。
   mariadbMigrations.push({ version: 65, name: "question-number-decimals", sqls: [
