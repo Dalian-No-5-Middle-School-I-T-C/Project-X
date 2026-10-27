@@ -692,3 +692,25 @@ CREATE TABLE IF NOT EXISTS entity_lifecycle_events (
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- v66: 问题反馈（#357）。反馈落本系统数据库，不依赖 GitHub。
+CREATE TABLE IF NOT EXISTS feedback_reports (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    user_id      INT NULL,
+    username     VARCHAR(100) NOT NULL DEFAULT '',
+    display_name VARCHAR(100) NOT NULL DEFAULT '',
+    role_name    VARCHAR(32) NOT NULL DEFAULT '',
+    category     VARCHAR(20) NOT NULL DEFAULT 'problem',
+    title        VARCHAR(200) NOT NULL,
+    content      TEXT NOT NULL,
+    contact      VARCHAR(200),
+    context_json LONGTEXT,
+    status       VARCHAR(16) NOT NULL DEFAULT 'open',
+    resolved_at  DATETIME,
+    resolved_by  INT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_feedback_status (status, created_at),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (resolved_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

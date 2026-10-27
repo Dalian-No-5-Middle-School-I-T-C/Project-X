@@ -1162,6 +1162,30 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE scan_correction_pages ADD COLUMN recovery_fingerprint VARCHAR(64)",
   ] });
 
+  // v66: 问题反馈（#357），与 SQLite v66 对齐。
+  mariadbMigrations.push({ version: 66, name: "feedback-reports", sqls: [
+    `CREATE TABLE IF NOT EXISTS feedback_reports (
+      id           INT AUTO_INCREMENT PRIMARY KEY,
+      user_id      INT NULL,
+      username     VARCHAR(100) NOT NULL DEFAULT '',
+      display_name VARCHAR(100) NOT NULL DEFAULT '',
+      role_name    VARCHAR(32) NOT NULL DEFAULT '',
+      category     VARCHAR(20) NOT NULL DEFAULT 'problem',
+      title        VARCHAR(200) NOT NULL,
+      content      TEXT NOT NULL,
+      contact      VARCHAR(200),
+      context_json LONGTEXT,
+      status       VARCHAR(16) NOT NULL DEFAULT 'open',
+      resolved_at  DATETIME,
+      resolved_by  INT NULL,
+      created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_feedback_status (status, created_at),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (resolved_by) REFERENCES users(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ] });
+
   // 语文模板使用 13.1/17.1 这类小题号；INT 在 strict mode 会拒绝写入，
   // 非 strict 又会把 13.1/13.2 截成同一个 13。统一改成 DOUBLE，保留数值排序。
   mariadbMigrations.push({ version: 65, name: "question-number-decimals", sqls: [

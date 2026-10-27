@@ -1355,6 +1355,28 @@ MIGRATIONS.push({ version: 64, name: "scan-correction-provenance", up(db) {
 // 这里只记录版本，保持两端迁移号对齐。
 MIGRATIONS.push({ version: 65, name: "question-number-decimals", up() {} });
 
+// v66: 问题反馈（#357）。管理员在全局设置提交，落本地库供查看/处理/转发，
+// 不依赖 GitHub（扫卡室网络访问 GitHub 很慢）。
+MIGRATIONS.push({ version: 66, name: "feedback-reports", up(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS feedback_reports (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    username     TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
+    role_name    TEXT NOT NULL DEFAULT '',
+    category     TEXT NOT NULL DEFAULT 'problem',
+    title        TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    contact      TEXT,
+    context_json TEXT,
+    status       TEXT NOT NULL DEFAULT 'open',
+    resolved_at  DATETIME,
+    resolved_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+  ); CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback_reports(status, created_at);`);
+} });
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

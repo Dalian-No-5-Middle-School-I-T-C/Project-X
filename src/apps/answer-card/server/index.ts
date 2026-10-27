@@ -101,6 +101,7 @@ import reviewAnnotationsRoutes from "../../../server/routes/review-annotations";
 import blockGradingConfigRoutes from "../../../server/routes/block-grading-config";
 import reviewPoolRoutes from "../../../server/routes/review-pool";
 import systemSettingsRoutes from "../../../server/routes/system-settings";
+import feedbackRoutes from "../../../server/routes/feedback";
 import { startLlmClientSidecar, shutdownLlmClient } from "./llm-launcher";
 import dashboardRoutes from "../../../server/routes/dashboard";
 import weeklyAuditRoutes from "../../../server/routes/weekly-audit";
@@ -1325,6 +1326,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/block-grading-config", analysisGate, blockGradingConfigRoutes);
   app.use("/api/review-pool", analysisGate, reviewPoolRoutes);
   app.use("/api/system-settings", systemSettingsRoutes);
+  app.use("/api/feedback", feedbackRoutes);
   app.use("/api/dashboard", dashboardRoutes);
   app.use("/api/weekly-audit", weeklyAuditRoutes);
   app.use(paperRoutes());

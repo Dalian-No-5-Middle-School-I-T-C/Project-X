@@ -3,6 +3,7 @@ import { AlertTriangle, Bell, CheckCircle2, FlaskConical, RefreshCw, Terminal, T
 import { fetchJson } from "../auth/api";
 import { cn } from "../lib/utils";
 import { tokens } from "../theme";
+import { FeedbackSection } from "./FeedbackSection";
 import {
   Badge,
   Button,
@@ -499,6 +500,8 @@ export function GlobalSettingsPage({ onBack }: Props) {
         {purgeMsg && <Banner tone={purgeTone}>{purgeMsg}</Banner>}
       </div>
       )}
+
+      <FeedbackSection />
 
       {/* v1.9.6+: 开发者工具（演示数据导入/清除）。即时执行，不参与底部保存。 */}
       <div className="flex flex-col gap-3 border-t border-border-subtle pt-5">
