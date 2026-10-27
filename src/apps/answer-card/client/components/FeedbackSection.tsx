@@ -179,6 +179,7 @@ export function FeedbackSection() {
     const activeFilter = filterRef.current;
     if (reset) {
       setLoading(true);
+      setLoadingMore(false);
       setHasMore(false);
       setReports([]);
     } else {
@@ -205,8 +206,12 @@ export function FeedbackSection() {
       setLoadError(err?.message || "反馈列表加载失败");
     } finally {
       if (seq === loadSeq.current) {
-        if (reset) setLoading(false);
-        else setLoadingMore(false);
+        if (reset) {
+          setLoading(false);
+          setLoadingMore(false);
+        } else {
+          setLoadingMore(false);
+        }
       }
     }
   }, []);

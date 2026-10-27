@@ -8,6 +8,7 @@ import Database from "better-sqlite3";
 import mysql from "mysql2/promise";
 import { runMigrations } from "../src/server/db/migrations";
 import { getMysqlDb, initMariadbSchema, resetAdapter } from "../src/server/db/mysql";
+import { databaseTimestamp } from "../src/server/db/timestamp";
 
 assert.equal(process.env.PROJECTX_MARIADB_HOST, "127.0.0.1");
 assert.equal(process.env.PROJECTX_MARIADB_DATABASE, "projectx_migration_test");
@@ -45,6 +46,10 @@ try {
   try {
     source.exec(readFileSync("src/server/db/schema.sql", "utf8"));
     runMigrations(source);
+    // 反馈时间用 SQLite 路由真实写入的 ISO（带 Z），覆盖跨时区/跨日归一化。
+    const feedbackCreated = databaseTimestamp(new Date("2026-10-27T23:30:00Z"), "sqlite");
+    const feedbackUpdated = databaseTimestamp(new Date("2026-10-28T02:00:00Z"), "sqlite");
+    const feedbackResolved = databaseTimestamp(new Date("2026-10-28T02:00:00Z"), "sqlite");
     source.exec(`
       INSERT INTO grades(id,name) VALUES (1,'迁移年级');
       INSERT INTO classes(id,grade_id,name) VALUES (1,1,'迁移班级');
@@ -59,7 +64,7 @@ try {
         (id,user_id,username,display_name,role_name,category,title,content,contact,context_json,status,created_at,updated_at,resolved_at,resolved_by)
         VALUES (1,1,'migration-student','迁移学生','student','problem','迁移反馈','反馈正文','contact@example.com',
           '{"client":{"page":"/global-settings"},"server":{"platform":"test"}}','resolved',
-          '2026-10-27 01:00:00','2026-10-27 02:00:00','2026-10-27 02:00:00',2);
+          '${feedbackCreated}','${feedbackUpdated}','${feedbackResolved}',2);
       DROP TABLE scan_correction_pages;
       DELETE FROM schema_migrations WHERE version IN (62,64);
       DROP TABLE exam_class_memberships;
@@ -77,7 +82,7 @@ try {
   const [scores] = await conn.query<any[]>("SELECT total_score FROM student_scores WHERE exam_id = 1 AND student_id = 1");
   assert.equal(Number(scores[0].total_score), 80);
   const [feedback] = await conn.query<any[]>(
-    "SELECT user_id, resolved_by, title, content, contact, context_json, status FROM feedback_reports WHERE id = 1"
+    "SELECT user_id, resolved_by, title, content, contact, context_json, status, created_at, updated_at, resolved_at FROM feedback_reports WHERE id = 1"
   );
   assert.equal(Number(feedback[0].user_id), 1);
   assert.equal(Number(feedback[0].resolved_by), 2);
@@ -86,7 +91,12 @@ try {
   assert.equal(feedback[0].contact, "contact@example.com");
   assert.equal(feedback[0].context_json, '{"client":{"page":"/global-settings"},"server":{"platform":"test"}}');
   assert.equal(feedback[0].status, "resolved");
-  console.log("PASS: feedback rows keep submitter, resolver and context JSON");
+  const created = databaseTimestamp(new Date("2026-10-27T23:30:00Z"), "mariadb").replace(/\.\d+$/, "");
+  const updated = databaseTimestamp(new Date("2026-10-28T02:00:00Z"), "mariadb").replace(/\.\d+$/, "");
+  assert.equal(feedback[0].created_at, created);
+  assert.equal(feedback[0].updated_at, updated);
+  assert.equal(feedback[0].resolved_at, updated);
+  console.log("PASS: feedback rows keep submitter, resolver, context JSON and normalized timestamps");
   const [oldSnapshots] = await conn.query<any[]>("SELECT COUNT(*) AS n FROM exam_class_memberships");
   assert.equal(Number(oldSnapshots[0].n), 0, "Migration must not invent historical classes");
   migrate(["--verify-only", "--sample=2"]);

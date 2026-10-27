@@ -26,6 +26,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { runMariadbMigrations } from "../src/server/db/mysql";
+import { databaseTimestamp } from "../src/server/db/timestamp";
 
 // ── 配置 ────────────────────────────────────────────
 
@@ -275,6 +276,25 @@ function looseEqual(a: unknown, b: unknown): boolean {
   return false;
 }
 
+/** SQLite 的时间列是 UTC（ISO 或 CURRENT_TIMESTAMP），MariaDB DATETIME 存服务器本地时间。
+ *  反馈表由 API 写入带 Z 的 ISO 串，直接复制会被 strict MariaDB 拒绝或把 UTC 当本地时间。 */
+function normalizeSqliteRow(table: string, row: Record<string, unknown>): Record<string, unknown> {
+  if (table !== "feedback_reports") return row;
+  const out = { ...row };
+  for (const col of ["created_at", "updated_at", "resolved_at"]) {
+    const value = out[col];
+    if (typeof value !== "string" || !value) continue;
+    const iso = value.includes("T") ? value : value.replace(" ", "T");
+    const withZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(iso) ? iso : `${iso}Z`;
+    const date = new Date(withZone);
+    if (!Number.isNaN(date.getTime())) {
+      // feedback_reports 的时间列是 DATETIME（秒精度），去掉 databaseTimestamp 带出的 .000
+      out[col] = databaseTimestamp(date, "mariadb").replace(/\.\d+$/, "");
+    }
+  }
+  return out;
+}
+
 /** 抽样逐字段比对（取 SQLite 前 N 行，按主键回查 MariaDB）。 */
 async function sampleVerify(
   sqlite: Database.Database,
@@ -287,7 +307,8 @@ async function sampleVerify(
   const pkCols = primaryKey.split(",").map(s => s.trim()).filter(Boolean);
   const mismatches: string[] = [];
   let checked = 0;
-  for (const row of rows) {
+  for (const rawRow of rows) {
+    const row = normalizeSqliteRow(table, rawRow);
     const conds = pkCols.map(c => `\`${c}\` = ?`).join(" AND ");
     const vals = pkCols.map(c => row[c]) as any[];
     const [mRows] = await conn.execute(`SELECT * FROM \`${table}\` WHERE ${conds}`, vals) as [Array<Record<string, unknown>>, any];
@@ -447,7 +468,8 @@ async function main() {
         const rows = sqlite.prepare(`SELECT * FROM ${table} LIMIT ? OFFSET ?`).all(BATCH_SIZE, offset) as any[];
         if (rows.length === 0) break;
 
-        for (const row of rows) {
+        for (const rawRow of rows) {
+          const row = normalizeSqliteRow(table, rawRow as Record<string, unknown>);
           // schema_migrations 表做版本号映射,对齐 PR133 导致的 SQLite/MariaDB 版本号不一致
           if (table === "schema_migrations") {
             const ver = row.version as number;

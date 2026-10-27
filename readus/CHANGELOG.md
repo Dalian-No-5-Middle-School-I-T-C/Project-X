@@ -2,9 +2,9 @@
 
 ## 2026-10-27：#357 主站管理员端问题反馈页
 
-- `全局设置` 新增「问题反馈」区（仅管理员）：类型 / 标题 / 正文 / 可选联系方式，自动附带版本、页面、浏览器与系统信息；反馈落 `feedback_reports`（SQLite / MariaDB v66），可标记处理、删除、一键复制 Markdown，不依赖 GitHub，也不在服务器保存 token。
+- `全局设置` 新增「问题反馈」区（仅管理员）：类型 / 标题 / 正文 / 可选联系方式，自动附带版本、页面、浏览器与系统信息；反馈落 `feedback_reports`（SQLite / MariaDB v66，迁移时 UTC 时间归一化到目标库本地），可标记处理、删除、分页加载、一键复制 Markdown，不依赖 GitHub，也不在服务器保存 token。
 - 所有 `/api/feedback` 端点要求 `system:manage`；标题 ≤100、正文 ≤5000、联系方式 ≤100 字，超限返回 400；清理控制字符；环境信息只收白名单扁平标量（≤30 键、≤8KB）。
-- 验证：`verify:feedback`（52/0，含 config.yml remote 隔离回归）与 MariaDB 回归；`verify:auth` 154/0、`verify:security-critical` 533/0、`verify:core-logic` 118/0；typecheck、Web / 服务端构建、管理员端浏览器实测通过。本机无 MariaDB，方言路径由 CI 覆盖。
+- 验证：`verify:feedback`（61/0，含 config.yml remote 隔离回归）与 MariaDB 回归；`verify:auth` 154/0、`verify:security-critical` 533/0、`verify:core-logic` 118/0；typecheck、Web / 服务端构建、管理员端浏览器实测通过。本机无 MariaDB，方言路径由 CI 覆盖。
 
 ## 2026-10-26：扫描端防护恢复与 Service Worker 注册拦截
 
