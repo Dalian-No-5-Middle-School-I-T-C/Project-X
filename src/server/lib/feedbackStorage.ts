@@ -55,6 +55,8 @@ export class FeedbackStorageUnavailableError extends Error {
 }
 
 export interface FeedbackStorageReservation {
+  /** 本次预留的字节数；chunked 上传用它作为流式上限。 */
+  readonly bytes: number;
   /** 幂等释放；上传失败/响应关闭后由路由调用。 */
   release(): void;
 }
@@ -132,6 +134,33 @@ export function reserveFeedbackStorage(
     reservedBytes += bytes;
     let released = false;
     return {
+      bytes,
+      release() {
+        if (released) return;
+        released = true;
+        reservedBytes = Math.max(0, reservedBytes - bytes);
+      },
+    } satisfies FeedbackStorageReservation;
+  });
+  quotaQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+/** chunked / 无 Content-Length 上传：按当前剩余容量预留，最多到单请求上限。 */
+export function reserveRemainingFeedbackStorage(
+  feedbackRoot: string,
+  tmpDir: string,
+  maxBytes: number
+): Promise<FeedbackStorageReservation> {
+  const run = quotaQueue.then(async () => {
+    const used = await admissionUsage(feedbackRoot, tmpDir);
+    const free = MAX_FEEDBACK_STORAGE_BYTES - used - reservedBytes;
+    if (free <= 0) throw new FeedbackStorageQuotaError();
+    const bytes = Math.min(free, maxBytes);
+    reservedBytes += bytes;
+    let released = false;
+    return {
+      bytes,
       release() {
         if (released) return;
         released = true;

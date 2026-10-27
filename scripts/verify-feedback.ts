@@ -210,8 +210,8 @@ async function main(): Promise<void> {
   }
 
   /** 无 Content-Length 的 chunked multipart（模拟流式客户端）。 */
-  function chunkedUpload(token: string, boundary: string, body: Buffer): Promise<{ status: number; json: any }> {
-    return new Promise((resolve, reject) => {
+  function chunkedUpload(token: string, boundary: string, body: Buffer): Promise<{ status: number; json: any; error?: string }> {
+    return new Promise((resolve) => {
       const url = new URL(base);
       const request = http.request({
         hostname: url.hostname,
@@ -232,7 +232,9 @@ async function main(): Promise<void> {
           resolve({ status: response.statusCode ?? 0, json });
         });
       });
-      request.on("error", reject);
+      request.on("error", (error: NodeJS.ErrnoException) => {
+        resolve({ status: 0, json: null, error: error.code ?? "ERROR" });
+      });
       request.write(body);
       request.end();
     });
@@ -433,6 +435,38 @@ async function main(): Promise<void> {
   ].join(""), "utf8");
   const chunked = await chunkedUpload(adminToken, boundary, chunkedBody);
   ok(chunked.status === 201, "无 Content-Length 的附件上传不被容量预检误拒");
+
+  const bigBoundary = `----fbbig${Date.now()}`;
+  const bigHead = Buffer.from([
+    `--${bigBoundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n超大 chunked\r\n`,
+    `--${bigBoundary}\r\nContent-Disposition: form-data; name="content"\r\n\r\n正文\r\n`,
+    `--${bigBoundary}\r\nContent-Disposition: form-data; name="files"; filename="big.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+  ].join(""), "utf8");
+  const bigTail = Buffer.from(`\r\n--${bigBoundary}--\r\n`, "utf8");
+  const bigChunked = await chunkedUpload(
+    adminToken,
+    bigBoundary,
+    Buffer.concat([bigHead, Buffer.alloc(400 * 1024), bigTail])
+  );
+  ok(
+    bigChunked.status === 413
+      ? bigChunked.json?.code === "FEEDBACK_STORAGE_QUOTA_EXCEEDED"
+      : bigChunked.error === "ECONNRESET",
+    "chunked 超过剩余容量在流式阶段被拒绝"
+  );
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  ok(!existsSync(tempDir) || readdirSync(tempDir).length === 0, "chunked 拒绝后没有遗留临时文件");
+
+  const fieldsForm = new FormData();
+  fieldsForm.set("title", "字段过多");
+  fieldsForm.set("content", "正文");
+  for (let i = 0; i < 10; i += 1) fieldsForm.set(`extra${i}`, "x");
+  ok((await upload(fieldsForm, adminToken)).status === 400, "multipart 字段数量超限被拒绝");
+  const bigFieldForm = new FormData();
+  bigFieldForm.set("title", "字段过大");
+  bigFieldForm.set("content", "正文");
+  bigFieldForm.set("context", "x".repeat(70 * 1024));
+  ok((await upload(bigFieldForm, adminToken)).status === 400, "multipart 单字段超限被拒绝");
 
   section("7. 教师端提交与自己的反馈");
   const teacherForm = new FormData();

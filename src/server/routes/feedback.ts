@@ -27,6 +27,7 @@ import {
   FeedbackStorageQuotaError,
   FeedbackStorageUnavailableError,
   reserveFeedbackStorage,
+  reserveRemainingFeedbackStorage,
   settleFeedbackStorage,
   type FeedbackStorageReservation,
 } from "../lib/feedbackStorage";
@@ -293,7 +294,13 @@ const upload = multer({
     },
     filename: (_req, _file, cb) => cb(null, `fb_${randomUUID()}`),
   }),
-  limits: { fileSize: MAX_FEEDBACK_ATTACHMENT_BYTES, files: MAX_FEEDBACK_ATTACHMENTS },
+  limits: {
+    fileSize: MAX_FEEDBACK_ATTACHMENT_BYTES,
+    files: MAX_FEEDBACK_ATTACHMENTS,
+    fields: 10,
+    parts: MAX_FEEDBACK_ATTACHMENTS + 10,
+    fieldSize: 64 * 1024,
+  },
 });
 
 const attachmentBudget = requestUploadBudget({
@@ -327,9 +334,43 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
           }
           throw err;
         }
+      } else {
+        try {
+          reservation = await reserveRemainingFeedbackStorage(
+            feedbackRoot,
+            feedbackTmpDir,
+            MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES
+          );
+        } catch (err) {
+          if (err instanceof FeedbackStorageQuotaError) {
+            res.status(413).json({ ok: false, code: err.code, error: err.message });
+            return;
+          }
+          throw err;
+        }
       }
       (req as FeedbackRequest).feedbackReservation = reservation ?? undefined;
       if (reservation) res.once("close", () => reservation!.release());
+
+      if (!hasDeclaredLength && reservation) {
+        // 无 Content-Length 时按预留的剩余容量流式拒绝：超过就立刻回 413，不把整个 1.5 GiB 先写进 _tmp。
+        let guardRejected = false;
+        let received = 0;
+        const reserved = reservation.bytes;
+        req.on("data", (chunk: Buffer) => {
+          if (guardRejected) return;
+          received += chunk.length;
+          if (received <= reserved) return;
+          guardRejected = true;
+          if (isUploadAlreadyRejected(req, res)) return;
+          res.status(413).json({
+            ok: false,
+            code: "FEEDBACK_STORAGE_QUOTA_EXCEEDED",
+            error: `反馈附件剩余容量不足，本次请求最多还能接收 ${Math.round(reserved / 1024 / 1024)} MiB`,
+          });
+          res.once("finish", () => req.destroy());
+        });
+      }
 
       attachmentBudget(req, res, () => {
         upload.array("files", MAX_FEEDBACK_ATTACHMENTS)(req, res, async (error) => {
@@ -353,6 +394,10 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
                 ok: false,
                 error: `最多附加 ${MAX_FEEDBACK_ATTACHMENTS} 个文件`,
               });
+              return;
+            }
+            if (["LIMIT_FIELD_COUNT", "LIMIT_FIELD_VALUE", "LIMIT_FIELD_KEY", "LIMIT_PART_COUNT"].includes(error.code)) {
+              res.status(400).json({ ok: false, error: "表单字段过多或过大" });
               return;
             }
             res.status(400).json({ ok: false, error: `上传失败：${error.code}` });
