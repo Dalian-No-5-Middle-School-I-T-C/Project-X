@@ -112,6 +112,7 @@ export function queueGroupUpload(meta: UploadMeta, sessionId: string, result: Sc
     cardId: meta.cardId,
     name: `扫描_${result.studentId}`,
     localSessionId: sessionId,
+    examId: meta.examId,
     dpi: meta.dpi,
     paperSize: meta.paperSize,
     cardVersion: meta.cardVersion,

@@ -43,7 +43,7 @@ import { z } from "zod";
 import { assertScanImageDimensions, ScanImageBudgetError } from "../lib/scanImageBudget";
 import { CardRepository } from "../repositories/CardRepository";
 import { ExamRepository } from "../repositories/ExamRepository";
-import { ensureExamParticipants, listMissingParticipants } from "../services/examParticipants";
+import { ensureExamParticipants, listMissingParticipants, searchExamParticipantRoster } from "../services/examParticipants";
 import { recomputeExamRankings } from "../services/rankingUpdate";
 import { processScannerSession, enqueueScannerSubmission, writeScannerSession, invalidateScanRecognition, invalidateScanRecognitionInTransaction, savedReceiptOwnerOfPage, discardScannerGroup } from "../services/scannerSubmissions";
 import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
@@ -541,6 +541,36 @@ router.get("/records/:recordId/image", dualAuth, async (req, res, next) => {
     res.sendFile(imagePath);
   } catch (error) { next(error); }
 });
+// GET /sessions/:sessionId/participant-search — 扫描端凭据在应考快照内按姓名/考号联想（#362）
+router.get("/sessions/:sessionId/participant-search", dualAuth, async (req, res, next) => {
+  try {
+    const q = (req.query.q as string ?? "").trim();
+    if (!q) {
+      res.json({ ok: true, students: [] });
+      return;
+    }
+    const sessionId = String(req.params.sessionId);
+    const db = getMysqlDb();
+    const session = await db.get<{ card_id: string }>(
+      "SELECT card_id FROM twain_scan_sessions WHERE id = ?",
+      sessionId,
+    );
+    if (!session) {
+      res.status(404).json({ message: "扫描会话不存在" });
+      return;
+    }
+    const { exam } = await resolveScannerExam(session.card_id, sessionId);
+    if (!exam) {
+      res.status(409).json({ message: "无法确定扫描会话的考试归属" });
+      return;
+    }
+    const students = await searchExamParticipantRoster(db, exam.id, q);
+    res.json({ ok: true, students });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get("/sessions/:sessionId/results", dualAuth, async (req, res, next) => {
   try {
     const session = await getMysqlDb().get<{ card_id: string }>("SELECT card_id FROM twain_scan_sessions WHERE id = ?", req.params.sessionId);

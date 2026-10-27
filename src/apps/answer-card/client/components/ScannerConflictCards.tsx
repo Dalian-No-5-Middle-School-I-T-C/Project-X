@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { uniqueScanConflictCards, type ScanConflictCard } from "../../../../shared/scanPages";
 import { authFetch } from "../auth/api";
 import { Button, Input } from "./ui/v2";
-import { ParticipantLookupField } from "./ParticipantLookupField";
+import { ParticipantLookupField, type ParticipantSearchScope } from "./ParticipantLookupField";
 import { ScanPreviewModal, type ScanPage } from "./ScanPreviewModal";
 
 export function ScannerConflictCards({ cards, remote = false, examId = null, request = authFetch, saveSession, onChanged }: {
@@ -19,6 +19,11 @@ export function ScannerConflictCards({ cards, remote = false, examId = null, req
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [preview, setPreview] = useState<ScanPage[]>([]);
+  const lookupScope: ParticipantSearchScope | null = remote && cards[0]?.sessionId
+    ? { type: "uploadSession", sessionId: cards[0].sessionId }
+    : examId != null
+      ? { type: "exam", examId }
+      : null;
   useEffect(() => () => { for (const page of preview) URL.revokeObjectURL(page.imageUrl); }, [preview]);
   async function view(card: ScanConflictCard) {
     setBusy(true); setMessage("");
@@ -82,7 +87,7 @@ export function ScannerConflictCards({ cards, remote = false, examId = null, req
           <>
             <div className="flex min-w-[12rem] flex-1 flex-col gap-1.5">
               <ParticipantLookupField
-                examId={examId}
+                scope={lookupScope}
                 request={request}
                 disabled={busy}
                 onPick={number => setIds(old => ({ ...old, [key]: number }))}

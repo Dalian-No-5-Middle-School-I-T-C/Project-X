@@ -7,15 +7,26 @@ export type ParticipantLookupStudent = {
   student_number: string | null;
 };
 
+/** 花名册联想作用域：教师浏览器走考试 API；远端上传走扫描端会话 API（仅 X-Api-Key）。 */
+export type ParticipantSearchScope =
+  | { type: "exam"; examId: number }
+  | { type: "uploadSession"; sessionId: string };
+
+function participantSearchUrl(scope: ParticipantSearchScope, keyword: string): string {
+  const q = encodeURIComponent(keyword);
+  if (scope.type === "exam") return `/api/exams/${scope.examId}/participant-search?q=${q}`;
+  return `/api/scanner/upload/sessions/${encodeURIComponent(scope.sessionId)}/participant-search?q=${q}`;
+}
+
 /** 应考名单联想：按姓名或考号搜索，选中后回填学号。 */
 export function ParticipantLookupField({
-  examId,
+  scope,
   request,
   onPick,
   disabled,
   className,
 }: {
-  examId: number | null;
+  scope: ParticipantSearchScope | null;
   request: (url: string, init?: RequestInit) => Promise<Response>;
   onPick: (studentNumber: string) => void;
   disabled?: boolean;
@@ -23,23 +34,28 @@ export function ParticipantLookupField({
 }) {
   const [lookup, setLookup] = useState("");
   const [roster, setRoster] = useState<ParticipantLookupStudent[]>([]);
+  const scopeKey = scope
+    ? (scope.type === "exam" ? `exam:${scope.examId}` : `upload:${scope.sessionId}`)
+    : null;
 
   useEffect(() => {
     const keyword = lookup.trim();
-    if (examId === null || keyword.length < 2) {
+    if (!scope || !scopeKey || keyword.length < 2) {
       setRoster([]);
       return;
     }
     let alive = true;
     const timer = setTimeout(() => {
       void (async () => {
+        setRoster([]);
         try {
-          const response = await request(`/api/exams/${examId}/participant-search?q=${encodeURIComponent(keyword)}`);
+          const response = await request(participantSearchUrl(scope, keyword));
           const data = await response.json();
           if (!alive) return;
           if (response.ok) setRoster((data.students ?? []) as ParticipantLookupStudent[]);
+          else setRoster([]);
         } catch {
-          /* 名单查不到不影响手输考号 */
+          if (alive) setRoster([]);
         }
       })();
     }, 300);
@@ -47,9 +63,9 @@ export function ParticipantLookupField({
       alive = false;
       clearTimeout(timer);
     };
-  }, [lookup, examId, request]);
+  }, [lookup, scope, scopeKey, request]);
 
-  if (examId === null) return null;
+  if (!scope) return null;
 
   return (
     <div className={className ?? "flex min-w-0 flex-col gap-1.5"}>

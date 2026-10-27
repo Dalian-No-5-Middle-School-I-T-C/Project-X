@@ -370,7 +370,7 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
           </div>
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-3">
-          <ParticipantLookupField examId={examId} request={channel.request} disabled={saving} onPick={useRosterNumber} />
+          <ParticipantLookupField scope={examId !== null ? { type: "exam", examId } : null} request={channel.request} disabled={saving} onPick={useRosterNumber} />
           <label className="flex flex-col gap-1.5 text-sm">
             <span className="text-muted-foreground">考号（卡面共 {digitColumns.length} 位）</span>
             <Input value={value} onChange={e => onDigitInput(e.target.value)} inputMode="numeric" placeholder="按卡面位数输入数字" aria-label="考号" />
