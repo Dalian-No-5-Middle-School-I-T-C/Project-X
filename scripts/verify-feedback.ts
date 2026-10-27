@@ -14,7 +14,7 @@
  *   6. 附件 multipart 上传、下载权限、15 / 16 个上限与删除清理
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -381,6 +381,9 @@ async function main(): Promise<void> {
   mkdirSync(tempDir, { recursive: true });
   const orphanPath = path.join(tempDir, "orphan.bin");
   writeFileSync(orphanPath, Buffer.alloc(700 * 1024));
+  // 准入只把超过 10 分钟的临时件当孤儿；把测试文件时间拨老，模拟进程中断后的残留。
+  const oldTime = new Date(Date.now() - 11 * 60_000);
+  utimesSync(orphanPath, oldTime, oldTime);
   const orphanForm = new FormData();
   orphanForm.set("title", "孤儿临时文件");
   orphanForm.set("content", "正文");

@@ -87,6 +87,34 @@ async function directoryBytes(dir: string, skipDir?: string): Promise<number> {
   return total;
 }
 
+const ORPHAN_TMP_GRACE_MS = 10 * 60_000;
+
+/** 准入核算：永久占盘 + 超过宽限期的孤儿临时件 + 其他请求的预留。
+ *  活跃上传的 _tmp 由各自的预留覆盖，不能再按实际字节算一遍；宽限期大于请求超时。 */
+async function admissionUsage(feedbackRoot: string, tmpDir: string): Promise<number> {
+  let total = await directoryBytes(feedbackRoot, tmpDir);
+  let entries;
+  try {
+    entries = await readdir(tmpDir, { withFileTypes: true });
+  } catch (err: any) {
+    if (err?.code === "ENOENT") return total;
+    throw new FeedbackStorageUnavailableError();
+  }
+  const now = Date.now();
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const full = path.join(tmpDir, entry.name);
+    try {
+      const info = await stat(full);
+      if (now - info.mtimeMs >= ORPHAN_TMP_GRACE_MS) total += info.size;
+    } catch (err: any) {
+      if (err?.code === "ENOENT") continue;
+      throw new FeedbackStorageUnavailableError();
+    }
+  }
+  return total;
+}
+
 let reservedBytes = 0;
 let quotaQueue: Promise<void> = Promise.resolve();
 
@@ -97,8 +125,7 @@ export function reserveFeedbackStorage(
   bytes: number
 ): Promise<FeedbackStorageReservation> {
   const run = quotaQueue.then(async () => {
-    // 预检把 _tmp 也算进去：进程重启后残留的孤儿临时文件不能绕过聚合上限。
-    const used = await directoryBytes(feedbackRoot);
+    const used = await admissionUsage(feedbackRoot, tmpDir);
     if (used + reservedBytes + bytes > MAX_FEEDBACK_STORAGE_BYTES) {
       throw new FeedbackStorageQuotaError();
     }
