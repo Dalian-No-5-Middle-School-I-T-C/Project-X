@@ -19,7 +19,8 @@
  *    与判分 preview / progress SSE；
  *  - `/api/answer-block-crops/:id/image`（cropGate）：学生「我的作答」与网阅切块图；
  *  - `/api/scanner/:sessionId`（createScannerRouter）：进度 SSE、扫描页图、判分图；
- *  - `/api/exams/:id/answer-key/pages/:index/image`、`/api/scores/me/exams/:id/paper`（含 pages 变体）。
+ *  - `/api/exams/:id/answer-key/pages/:index/image`、`/api/scores/me/exams/:id/paper`
+ *    （含 pages 变体与 v64 的 answer-file 变体）。
  *
  * 刻意不收录：CSV/JSON 数据导出（`export-csv`、`export-wrong`、`students.csv` 名册）——它们在前端一律走
  * `downloadBlob` 配 `authFetch`，凭据在请求头里，浏览器不会自己发这个 URL，没有放进白名单的必要；
@@ -48,6 +49,8 @@ const PATTERNS: RegExp[] = [
   // 学生端我的原卷 / 作答页
   /^\/api\/scores\/me\/exams\/\d+\/paper$/,
   /^\/api\/scores\/me\/exams\/\d+\/paper\/pages\/\d+\/image$/,
+  // v64: 学生端答案原文件（图片 / PDF / DOCX，按 answer_key_mode='file' 下发）
+  /^\/api\/scores\/me\/exams\/\d+\/paper\/answer-file\/\d+$/,
 ];
 
 /**

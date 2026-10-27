@@ -20,6 +20,8 @@ export interface ExamRecord {
   score_published?: number;
   /** v54: 0=不向学生展示原卷 1=成绩公布后可查看原卷与逐题答案解析 */
   show_original_paper?: number;
+  /** v64: 正确答案展示模式 text=逐题文字答案 file=答案原文件直发（缺列的旧库按 text） */
+  answer_key_mode?: string;
   assigned_formula: string | null;
   retention_policy_id: number | null;
   exam_mode?: string;

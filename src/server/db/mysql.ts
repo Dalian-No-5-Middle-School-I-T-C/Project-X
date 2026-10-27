@@ -1158,6 +1158,13 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE twain_scan_sessions ADD COLUMN warnings_json TEXT",
   ] });
 
+  // v64: 「本次正确答案」展示模式（与 SQLite v64 对齐）。
+  // text=学生看逐题文字答案（v54 行为），file=学生看教师上传的答案原文件。
+  // 默认 'text'：已有库升级后行为不变，由教师在答案配置面板显式切换。
+  mariadbMigrations.push({ version: 64, name: "exam-answer-key-mode", sqls: [
+    "ALTER TABLE exams ADD COLUMN answer_key_mode VARCHAR(16) NOT NULL DEFAULT 'text'",
+  ] });
+
   for (const m of mariadbMigrations) {
     if (applied.has(m.version)) continue;
     for (const sql of m.sqls) {

@@ -10,9 +10,11 @@
  *   C. 逐题文字答案全量保存与按页归集（含稀疏原卷页码）；答案页上传/删除/累计上限（OCR 显式关闭）。
  *   D. OCR 文本解析器（区间式/单题式/全角数字/混合行）—— 纯函数断言。
  *   E. 删除考试后清理答案页文件目录。
+ *   F. v64 答案原文件直发：exams.answer_key_mode 二选一、直发模式单独开门但原卷图片仍受
+ *      「显示原卷」控制、答案文件按 DB 登记页码下发（图片内联 / DOCX 附件）、切回 text 不销毁数据。
  *
  * 不覆盖：tesseract.js 真实识别（需要 WASM 与数秒耗时，接口以 ?ocr=0 调用）、
- *         MariaDB 方言（见 scripts/verify-mariadb.ts 的 v54 断言）。
+ *         MariaDB 方言（见 scripts/verify-mariadb.ts 的 v54/v64 断言）。
  *
  * 运行：npm run verify:exam-paper
  */
@@ -477,6 +479,100 @@ async function main() {
   ok(mixed.map((m) => m.questionNumber).join(",") === "1,2,3,11,12,13", "同一行多题 + 区间混排");
   ok(parseAnswerKeyText("1-5 BACD\n完全无关的一段说明文字").length === 0, "区间长度与选项数不匹配时不猜答案");
   ok(parseAnswerKeyText("").length === 0, "空文本 → 空草稿");
+
+  // ── F. 答案原文件直发模式（v64）────────────────────────
+  section("F. 答案原文件直发（需求：可不 OCR，直接把上传件发给学生）");
+  const modeExamId = insertExam("答案直发考试", 1);
+  sqlite.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?, ?, 88, 0, 88)").run(modeExamId, s1);
+  sqlite.prepare("INSERT INTO exam_participants (exam_id, student_id, source) VALUES (?, ?, 'roster')").run(modeExamId, s1);
+  const modePaper = (token = stuToken) => studentPaper(token, modeExamId);
+  const patchMode = (body: unknown) =>
+    jsonFetch(base, `/api/exams/${modeExamId}`, { method: "PATCH", body: JSON.stringify(body) }, adminToken);
+  const putModeAnswers = (body: unknown) =>
+    jsonFetch(base, `/api/exams/${modeExamId}/answer-key`, { method: "PUT", body: JSON.stringify(body) }, adminToken);
+  const uploadModePage = async (blob: Blob, name: string) => {
+    const form = new FormData();
+    form.append("files", blob, name);
+    const r = await fetch(`${base}/api/exams/${modeExamId}/answer-key/pages?ocr=0`, {
+      method: "POST", headers: { Authorization: `Bearer ${adminToken}` }, body: form,
+    });
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  };
+  const modeColumn = async (): Promise<string> =>
+    String((await getMysqlDb().get("SELECT answer_key_mode FROM exams WHERE id = ?", modeExamId) as { answer_key_mode: string }).answer_key_mode);
+  const modeShowColumn = async (): Promise<number> =>
+    Number((await getMysqlDb().get("SELECT show_original_paper FROM exams WHERE id = ?", modeExamId) as { show_original_paper: number }).show_original_paper);
+
+  ok((await modeColumn()) === "text" && (await modeShowColumn()) === 0, "新建考试默认 answer_key_mode='text'（v54 行为不变）");
+  ok((await patchMode({ answerKeyMode: "pdf" })).status === 400, "非法模式 → 400");
+  ok((await modeColumn()) === "text", "非法模式被拒后不落库");
+  await putModeAnswers({ answers: [{ questionNumber: 1, answerText: "B" }, { questionNumber: 2, answerText: "大于 90" }] });
+  const pageImage = await uploadModePage(new Blob([await jpegBuffer()], { type: "image/jpeg" }), "答案扫描页.jpg");
+  const pageDocx = await uploadModePage(
+    new Blob([Buffer.from("PK\x03\x04 fake docx fixture")], {
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }),
+    "答案.docx",
+  );
+  ok(pageImage.status === 200 && pageDocx.status === 200, "答案页上传（图片 + DOCX，?ocr=0 全程不识别）");
+
+  await patchMode({ answerKeyMode: "file" });
+  await getMysqlDb().run("UPDATE exams SET score_published = 0 WHERE id = ?", modeExamId);
+  ok((await modePaper()).status === 404, "直发模式但成绩未公布 → 404（模式不绕公布门）");
+  await getMysqlDb().run("UPDATE exams SET score_published = 1 WHERE id = ?", modeExamId);
+  ok((await modeColumn()) === "file" && (await modeShowColumn()) === 0, "切模式不改「显示原卷」开关（两道闸互不越权）");
+  const flagsFile = await paperFlags(stuToken, modeExamId);
+  ok(flagsFile.listed === 1 && flagsFile.detail === 1, "已公布 + 直发模式（原卷开关仍关）→ 列表与详情入口标记都为 1");
+
+  const fileView = await modePaper();
+  const fileRows = (fileView.body?.answerFiles ?? []) as Array<{ pageIndex: number; filename: string; mimeType: string; isImage: boolean; fileUrl: string }>;
+  ok(fileView.status === 200 && fileView.body?.answerKeyMode === "file", "/paper 回显 answerKeyMode='file'");
+  ok((fileView.body?.answerFiles ?? []).length === 2 && fileRows[0]?.fileUrl === `/api/scores/me/exams/${modeExamId}/paper/answer-file/1`,
+    "answerFiles 按页码给出受控 fileUrl（不含文件名）");
+  ok(fileRows[0]?.isImage === true && fileRows[0]?.mimeType === "image/jpeg", "图片答案页标记为可内联（isImage + mime）");
+  ok(fileRows[1]?.isImage === false && String(fileRows[1]?.mimeType).includes("wordprocessingml"), "DOCX 答案页标记为非图片并带真实 mime");
+  ok((fileView.body?.answers ?? []).length === 0
+    && ((fileView.body?.pages ?? []) as Array<{ answers: unknown[] }>).every((p) => (p.answers ?? []).length === 0),
+    "直发模式不下发逐题文字答案（二选一，不是叠加）");
+  ok(fileView.body?.hasOriginalPaper === false && (fileView.body?.pages ?? []).length === 0 && (fileView.body?.showOriginalPaper ?? 0) === 0,
+    "「显示原卷」关闭时原卷页与 hasOriginalPaper 仍收着（直发不顺带泄露试卷）");
+
+  const fileImageRes = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/answer-file/1`, { headers: { Authorization: `Bearer ${stuToken}` } });
+  ok(fileImageRes.status === 200 && (fileImageRes.headers.get("content-type") ?? "").includes("image/jpeg"), "学生可取到答案图片字节");
+  const fileDocxRes = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/answer-file/2`, { headers: { Authorization: `Bearer ${stuToken}` } });
+  ok(fileDocxRes.status === 200 && String(fileDocxRes.headers.get("content-disposition") ?? "").includes("attachment"),
+    "DOCX 以附件下发（浏览器/小程序都渲染不了内联 docx）");
+  const fileNoExam = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/answer-file/9`, { headers: { Authorization: `Bearer ${stuToken}` } });
+  ok(fileNoExam.status === 404, "未登记的页码 → 404（只认 DB，不按扩展名猜文件）");
+  const fileBadPage = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/answer-file/..%2F..%2F1`, { headers: { Authorization: `Bearer ${stuToken}` } });
+  ok(fileBadPage.status === 400 || fileBadPage.status === 404, "路径穿越式页码 → 400/404");
+  const noScoreStudent = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/answer-file/1`, { headers: { Authorization: `Bearer ${otherToken}` } });
+  ok(noScoreStudent.status === 404, "无该场成绩的学生取答案文件 → 404（同一套门）");
+  const paperImageWhileHidden = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/pages/1/image`, { headers: { Authorization: `Bearer ${stuToken}` } });
+  ok(paperImageWhileHidden.status === 404, "直发模式独开时原卷图片路由也被挡住（答题卡确有 original.jpg）");
+
+  await patchMode({ showOriginalPaper: true });
+  const bothView = await modePaper();
+  ok(bothView.status === 200 && bothView.body?.hasOriginalPaper === true
+    && (bothView.body?.answerFiles ?? []).length === 2 && ((bothView.body?.pages ?? [])[0]?.answers ?? []).length === 0,
+    "「显示原卷」与直发模式同时开启 → 原卷页可见且仍不下发文字答案");
+  const paperImageNow = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/pages/1/image`, { headers: { Authorization: `Bearer ${stuToken}` } });
+  ok(paperImageNow.status === 200, "开关开启后原卷图片恢复可取");
+
+  const cfgView = await jsonFetch(base, `/api/exams/${modeExamId}/answer-key`, {}, adminToken);
+  ok(cfgView.status === 200 && cfgView.body?.answerKeyMode === "file", "教师面板 GET 回显 answerKeyMode");
+
+  await patchMode({ answerKeyMode: "text" });
+  const backToText = await modePaper();
+  ok((backToText.body?.answers ?? []).length === 2 && (backToText.body?.answerFiles ?? []).length === 0,
+    "切回 text → 文字答案回来、文件不再下发（切换不销毁任何一侧数据）");
+  const fileAfterSwitch = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/answer-file/1`, { headers: { Authorization: `Bearer ${stuToken}` } });
+  ok(fileAfterSwitch.status === 404, "切回 text 后答案文件路由关闭 → 404");
+  const flagsText = await paperFlags(stuToken, modeExamId);
+  ok(flagsText.listed === 1 && flagsText.detail === 1, "text 模式 + 显示原卷开启 → 入口标记仍为 1");
+  await patchMode({ showOriginalPaper: false });
+  const flagsClosed = await paperFlags(stuToken, modeExamId);
+  ok(flagsClosed.listed === 0 && flagsClosed.detail === 0, "两闸都关 → 入口标记归 0");
 
   // ── E. 删除考试时的文件清理 ──────────────────────────
   section("E. 删除考试清理答案页文件");

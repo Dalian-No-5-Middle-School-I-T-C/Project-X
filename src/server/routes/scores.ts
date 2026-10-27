@@ -1,5 +1,6 @@
 import express from "express";
 import type { Request, Response } from "express";
+import path from "node:path";
 import { getMysqlDb } from "../db";
 import { ScoreRepository } from "../repositories/ScoreRepository";
 import { UserRepository } from "../repositories/UserRepository";
@@ -19,10 +20,18 @@ import type { SubjectWeaknessItem, StudentTrendPoint } from "../../shared/types"
 import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropService";
 import {
   groupAnswersByPage,
+  listAnswerKeyPages,
   listExamAnswerKeys,
   listExamPaperPages,
+  loadAnswerKeyPageFilename,
+  resolveAnswerKeyPageFile,
   resolvePaperPageFile,
 } from "../services/ExamPaperViewService";
+import {
+  ANSWER_KEY_MODE_FILE,
+  normalizeAnswerKeyMode,
+  type AnswerKeyMode,
+} from "../../shared/answerKeyMode";
 
 /**
  * 成绩查询 API
@@ -417,16 +426,34 @@ router.post("/me/ai-analysis", async (req: Request, res: Response) => {
   });
 });
 
-// ── v54: 学生「查看原卷 / 查看答案解析」 ────────────────────
+// ── v54: 学生「查看原卷 / 查看答案解析」（v64 追加答案原文件直发） ──
 
 type StudentPaperAccess =
-  | { ok: true; exam: { id: number; card_id: string | null; name: string | null; subject: string | null } }
+  | {
+      ok: true;
+      exam: {
+        id: number;
+        card_id: string | null;
+        name: string | null;
+        subject: string | null;
+        /** 「显示原卷」开关：只控制原卷页图片是否下发 */
+        showOriginalPaper: boolean;
+        /** 正确答案展示模式：text=逐题文字 / file=答案原文件 */
+        answerKeyMode: AnswerKeyMode;
+      };
+    }
   | { ok: false; status: number; message: string };
 
 /**
- * 学生查看原卷的四重硬门（后端强制，前端隐藏按钮不等于授权）：
- * 考试未被软删除 → 本人有成绩 → 成绩已公布 → 教师开启「显示原卷」。
- * 未开放原卷统一回 404：避免通过状态码区分「没成绩/没公布/没开放」泄露他人信息。
+ * 学生查看原卷/答案的硬门（后端强制，前端隐藏按钮不等于授权）：
+ * 考试未被软删除 → 本人有成绩 → 成绩已公布 → 「显示原卷」与「答案原文件直发」至少开一项。
+ *
+ * v64 为什么把它并列：选择「答案原文件直发」本身就是教师把答案交给学生的动作，
+ * 而这类考试常常没有单独上传原卷图片；若仍要求「显示原卷」才会开门，老师按字面
+ * 配置后学生根本看不到入口（公布闸门与面板文案相反是本项目反复踩过的坑）。
+ * 原卷页图片依旧只受「显示原卷」控制，直发模式不会顺带把试卷图泄露出去。
+ *
+ * 未开放一律回 404：避免通过状态码区分「没成绩/没公布/没开放」泄露他人信息。
  */
 async function assertStudentPaperVisible(examId: number, studentId: number): Promise<StudentPaperAccess> {
   if (!Number.isInteger(examId) || examId <= 0) {
@@ -441,20 +468,38 @@ async function assertStudentPaperVisible(examId: number, studentId: number): Pro
   if (!(await scoreRepo.isExamScorePublished(examId))) {
     return { ok: false, status: 404, message: "该场考试的成绩尚未公布" };
   }
-  const exam = await getMysqlDb().get<{ id: number; card_id: string | null; name: string | null; subject: string | null; show_original_paper: number | null }>(
-    "SELECT id, card_id, name, subject, show_original_paper FROM exams WHERE id = ?",
+  const exam = await getMysqlDb().get<{
+    id: number; card_id: string | null; name: string | null; subject: string | null;
+    show_original_paper: number | null; answer_key_mode: string | null;
+  }>(
+    "SELECT id, card_id, name, subject, show_original_paper, answer_key_mode FROM exams WHERE id = ?",
     examId
   );
   if (!exam) {
     return { ok: false, status: 404, message: "未找到你在该场考试的成绩" };
   }
-  if (exam.show_original_paper !== 1) {
-    return { ok: false, status: 404, message: "本场考试未开放原卷查看" };
+  const showOriginalPaper = exam.show_original_paper === 1;
+  const answerKeyMode = normalizeAnswerKeyMode(exam.answer_key_mode);
+  if (!showOriginalPaper && answerKeyMode !== ANSWER_KEY_MODE_FILE) {
+    return { ok: false, status: 404, message: "本场考试未开放原卷与答案查看" };
   }
-  return { ok: true, exam: { id: exam.id, card_id: exam.card_id, name: exam.name, subject: exam.subject } };
+  return {
+    ok: true,
+    exam: {
+      id: exam.id, card_id: exam.card_id, name: exam.name, subject: exam.subject,
+      showOriginalPaper, answerKeyMode,
+    },
+  };
 }
 
-/** GET /api/scores/me/exams/:examId/paper — 原卷页 + 逐题正确答案（文字）+ 本人作答图块 */
+/**
+ * GET /api/scores/me/exams/:examId/paper — 原卷页 + 正确答案 + 本人作答图块
+ *
+ * 正确答案二选一（exams.answer_key_mode）：
+ *  - 'text'：只下发逐题文字（answers / pages[].answers），answerFiles 为空；
+ *  - 'file'：只下发教师上传的答案原文件（answerFiles），文字答案整体不再下发。
+ * 由后端决定下发哪一份，客户端只按 answerKeyMode 排版，不再自行推断该看哪一侧。
+ */
 router.get("/me/exams/:examId/paper", async (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
   const access = await assertStudentPaperVisible(examId, req.user!.id);
@@ -464,9 +509,12 @@ router.get("/me/exams/:examId/paper", async (req: Request, res: Response) => {
   }
 
   const db = getMysqlDb();
-  const [paperPages, answers, answerBlocks] = await Promise.all([
-    listExamPaperPages(access.exam.card_id, db),
-    listExamAnswerKeys(examId, db),
+  const directFiles = access.exam.answerKeyMode === ANSWER_KEY_MODE_FILE;
+  const [paperPages, answers, answerFiles, answerBlocks] = await Promise.all([
+    // 原卷页是答题卡级资产，只受「显示原卷」控制，与答案模式无关
+    access.exam.showOriginalPaper ? listExamPaperPages(access.exam.card_id, db) : Promise.resolve([]),
+    directFiles ? Promise.resolve([]) : listExamAnswerKeys(examId, db),
+    directFiles ? listAnswerKeyPages(examId, db) : Promise.resolve([]),
     listAnswerBlockCropsForStudent(examId, req.user!.id, db),
   ]);
   const grouped = groupAnswersByPage(answers, paperPages.map((page) => page.pageIndex));
@@ -475,8 +523,10 @@ router.get("/me/exams/:examId/paper", async (req: Request, res: Response) => {
     examId,
     examName: access.exam.name,
     subject: access.exam.subject,
-    // 从未上传过原卷图片时为空数组，客户端据此显示「原卷未上传」
+    answerKeyMode: access.exam.answerKeyMode,
+    // 从未上传过原卷图片（或教师未开放原卷）时为空数组，客户端据此显示「原卷未上传」
     hasOriginalPaper: paperPages.length > 0,
+    showOriginalPaper: access.exam.showOriginalPaper ? 1 : 0,
     pages: paperPages.map((page) => ({
       pageIndex: page.pageIndex,
       filename: page.filename,
@@ -485,8 +535,16 @@ router.get("/me/exams/:examId/paper", async (req: Request, res: Response) => {
       imageUrl: `/api/scores/me/exams/${examId}/paper/pages/${page.pageIndex}/image`,
       answers: grouped.get(page.pageIndex) ?? [],
     })),
-    // 全量逐题答案（题号升序）：供「只看答案」列表视图使用
+    // 全量逐题答案（题号升序）：供「只看答案」列表视图使用；直发模式下恒为空
     answers,
+    // 答案原文件（图片 / PDF / DOCX）：学生看到的是教师上传的那份文件本身
+    answerFiles: answerFiles.map((page) => ({
+      pageIndex: page.pageIndex,
+      filename: page.filename,
+      mimeType: page.mimeType,
+      isImage: page.isImage,
+      fileUrl: `/api/scores/me/exams/${examId}/paper/answer-file/${page.pageIndex}`,
+    })),
     // 学生自己的作答图块：产品口径为「先看卷、再看作答」，故排在原卷之后
     answerBlocks,
   });
@@ -505,6 +563,12 @@ router.get("/me/exams/:examId/paper/pages/:pageIndex/image", async (req: Request
     res.status(400).json({ message: "无效的页码" });
     return;
   }
+  // v64：直发模式可以单独开门（不必开「显示原卷」），因此这里必须再确认一次原卷确实被放开，
+  // 否则只想要「答案文件」的考试会把试卷图片一并被取走。
+  if (!access.exam.showOriginalPaper) {
+    res.status(404).json({ message: "本场考试未开放原卷查看" });
+    return;
+  }
   // 只允许该考试原卷分页表里的页码：URL 不含文件名，无法构造路径穿越
   const pages = await listExamPaperPages(access.exam.card_id);
   const page = pages.find((item) => item.pageIndex === pageIndex);
@@ -518,6 +582,49 @@ router.get("/me/exams/:examId/paper/pages/:pageIndex/image", async (req: Request
     return;
   }
   res.contentType(resolved.mimeType);
+  res.setHeader("Cache-Control", "private, max-age=300");
+  res.sendFile(resolved.filePath);
+});
+
+/**
+ * GET /api/scores/me/exams/:examId/paper/answer-file/:pageIndex — 答案原文件字节（v64）
+ *
+ * 只在 exams.answer_key_mode='file' 时提供，门与原卷完全同一套（公布 + 入口 + 本人有成绩）。
+ * 页码只走 DB 登记的记录解析文件名，URL 不含文件名，无法构造路径穿越；
+ * 教师端 /api/exams/:id/answer-key/pages/:n/image 依旧是 requireExamAccess，学生打不通。
+ */
+router.get("/me/exams/:examId/paper/answer-file/:pageIndex", async (req: Request, res: Response) => {
+  const examId = Number(req.params.examId);
+  const pageIndex = Number(req.params.pageIndex);
+  const access = await assertStudentPaperVisible(examId, req.user!.id);
+  if (!access.ok) {
+    res.status(access.status).json({ message: access.message });
+    return;
+  }
+  if (access.exam.answerKeyMode !== ANSWER_KEY_MODE_FILE) {
+    res.status(404).json({ message: "本场考试未开放答案文件查看" });
+    return;
+  }
+  if (!Number.isInteger(pageIndex) || pageIndex < 1) {
+    res.status(400).json({ message: "无效的页码" });
+    return;
+  }
+  const filename = await loadAnswerKeyPageFilename(examId, pageIndex);
+  if (!filename) {
+    res.status(404).json({ message: "答案文件不存在" });
+    return;
+  }
+  const resolved = resolveAnswerKeyPageFile(examId, pageIndex, filename);
+  if (!resolved) {
+    res.status(404).json({ message: "答案文件不存在" });
+    return;
+  }
+  res.contentType(resolved.mimeType);
+  // DOCX 浏览器与小程序都无法内联渲染，显式 attachment 让客户端走「下载后打开」；
+  // 文件名是服务端生成的 answerkey[-N].docx，不含用户输入，仍需去掉引号防头注入。
+  if (path.extname(resolved.filename).toLowerCase() === ".docx") {
+    res.setHeader("Content-Disposition", `attachment; filename="${resolved.filename.replace(/["\r\n]/g, "")}"`);
+  }
   res.setHeader("Cache-Control", "private, max-age=300");
   res.sendFile(resolved.filePath);
 });

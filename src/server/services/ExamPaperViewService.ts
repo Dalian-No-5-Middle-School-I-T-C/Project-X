@@ -1,13 +1,16 @@
 /**
  * v54: 考试级「原卷 + 逐题正确答案」读取服务
+ * v64: 追加答案原文件的直发读取（exams.answer_key_mode='file' 时学生看上传的文件本身）
  *
  * 教师端配置接口与学生端查看接口共用这里的文件/数据解析，避免两处各写一遍
- * 目录探测与扩展名兜底逻辑。三条硬约束：
+ * 目录探测与扩展名兜底逻辑。四条硬约束：
  * 1. 原卷图片是「答题卡级」资产（original_paper_pages 以 card_id 为键），
  *    考试通过 exams.card_id 关联，因此读取需要先拿到考试绑定的答题卡。
  * 2. 只返回磁盘上真实存在的页：DB 有记录但文件被清理时按「未上传」处理，
  *    避免把 404 图片链接交给客户端。
  * 3. 答案文字按教师保存的原样输出，本服务不做任何对错判断或选项归一化。
+ * 4. 答案原文件页（exam_answer_key_pages）默认只给教师核对；是否下发给学生由调用方
+ *    按 exams.answer_key_mode 决定，本服务只提供解析能力，不含可见性判断。
  */
 import { existsSync, unlinkSync } from "node:fs";
 import path from "node:path";
@@ -149,6 +152,25 @@ export type AnswerKeyPageRow = {
 
 export function answerKeyBaseName(pageIndex: number): string {
   return pageIndex === 1 ? "answerkey" : `answerkey-${pageIndex}`;
+}
+
+/**
+ * 取某页在 DB 登记的磁盘文件名。
+ * 只有走过上传流程的页才会有行记录，因此「无行 = 该页不存在」：
+ * 以此为准可以同时挡掉两类问题——按页码猜测文件（早期失败上传遗留的孤儿文件）
+ * 被当作已上传页读取或预览（PR 审查 P2）。
+ * 教师核对与学生直发下载共用本函数，避免两处各写一遍「只认 DB」的口径。
+ */
+export async function loadAnswerKeyPageFilename(
+  examId: number,
+  pageIndex: number,
+  db: DbAdapter = getMysqlDb()
+): Promise<string | null> {
+  const row = await db.get<{ filename: string | null }>(
+    "SELECT filename FROM exam_answer_key_pages WHERE exam_id = ? AND page_index = ?",
+    examId, pageIndex
+  );
+  return row?.filename ?? null;
 }
 
 /**
