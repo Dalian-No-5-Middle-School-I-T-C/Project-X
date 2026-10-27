@@ -282,7 +282,7 @@ try {
   // 远端模式下这一卷已经随批次进入上传队列：从工作台改分必须当场说明改动不会回到服务器
   //（重复上传同一份卷子会被服务端当成第二份原卷，反而撤掉已保存的成绩）。
   await click("整卡改分"); await settle();
-  const cell = document.querySelector("svg polygon") as SVGElement | null;
+  const cell = document.querySelector("svg polygon[data-cell-id]") as SVGElement | null;
   assert(cell, "改分弹层渲染出可点选的填涂格");
   await act(async () => { cell.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
   await settle();
