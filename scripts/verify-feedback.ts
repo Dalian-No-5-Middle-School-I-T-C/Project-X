@@ -79,7 +79,9 @@ const { authService } = await import("../src/server/services/AuthService");
 const { UserRepository } = await import("../src/server/repositories/UserRepository");
 const { ROLE_IDS, loadRolePermissions } = await import("../src/server/auth/permissions");
 const { databaseTimestamp } = await import("../src/server/db/timestamp");
-const feedbackRouter = (await import("../src/server/routes/feedback")).default;
+const feedbackModule = await import("../src/server/routes/feedback");
+const feedbackRouter = feedbackModule.default;
+const { withTimezone } = feedbackModule;
 const express = (await import("express")).default;
 
 async function main(): Promise<void> {
@@ -116,7 +118,7 @@ async function main(): Promise<void> {
   assert.ok(teacherLogin.success && teacherLogin.token, "教师登录失败");
   const teacherToken = teacherLogin.token!;
 
-  section("1. v66 迁移");
+  section("1. v66 迁移与时区");
   const columns = maria
     ? (await db.all<{ COLUMN_NAME: string }>(
         "SELECT COLUMN_NAME FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'feedback_reports'"
@@ -127,6 +129,12 @@ async function main(): Promise<void> {
   }
   const version = await db.get<{ version: number }>("SELECT version FROM schema_migrations WHERE version = 66");
   ok(Number(version?.version) === 66, "迁移版本 66 已登记");
+  const mariaTime = withTimezone("2026-10-27 03:00:00", "mariadb");
+  ok(Boolean(mariaTime && /[+-]\d{2}:\d{2}$/.test(mariaTime)), "MariaDB 本地时间补上服务器时区偏移");
+  ok(Boolean(mariaTime && new Date(mariaTime).getTime() === new Date("2026-10-27T03:00:00").getTime()),
+    "补偏移后仍表示同一服务器时刻");
+  ok(withTimezone("2026-10-27 03:00:00", "sqlite") === "2026-10-27T03:00:00Z", "SQLite 无时区值按 UTC 解释");
+  ok(withTimezone("2026-10-27T03:00:00.000Z", "sqlite") === "2026-10-27T03:00:00.000Z", "已有 Z 的值保持不变");
 
   // 旧库升级：删表并撤销版本记录后重新执行迁移，表应被补回且重复执行幂等。
   await db.run("DELETE FROM schema_migrations WHERE version = 66");
@@ -209,6 +217,7 @@ async function main(): Promise<void> {
   ok(report?.contact === "scan-room@example.com", "联系方式首尾空白被清理");
   ok(report?.category === "problem", "未传类型时默认 problem");
   ok(report?.status === "open", "新反馈状态为 open");
+  ok(/(?:Z|[+-]\d{2}:\d{2})$/.test(report?.createdAt ?? ""), "创建时间带时区返回");
   ok(report?.username === "admin" && report?.displayName === adminRow!.name, "提交人账号与姓名快照正确");
   ok(report?.context?.client?.long?.length === 500, "客户端超长字段被截断到 500");
   ok(report?.context?.client?.["bad-key"] === undefined, "非法键名被丢弃");
@@ -232,6 +241,7 @@ async function main(): Promise<void> {
   const resolvedReport = resolvedList.json?.data?.[0];
   ok(resolvedReport?.status === "resolved", "状态已变为 resolved");
   ok(Boolean(resolvedReport?.resolvedAt), "resolved_at 已写入");
+  ok(/(?:Z|[+-]\d{2}:\d{2})$/.test(resolvedReport?.resolvedAt ?? ""), "处理时间带时区返回");
   ok(resolvedReport?.resolvedByName === adminRow!.name, "resolved_by 指向处理人");
   ok(resolvedList.json?.counts?.open === 0, "计数中待处理归零");
 

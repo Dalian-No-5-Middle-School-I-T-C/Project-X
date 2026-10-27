@@ -37,7 +37,6 @@ type FeedbackRow = {
   role_name: string;
   context_json: string | null;
   created_at: string;
-  updated_at: string;
   resolved_at: string | null;
   resolver_name: string | null;
 };
@@ -81,7 +80,22 @@ function buildContextJson(client: Record<string, unknown> | null, dialect: strin
   return json;
 }
 
-function toReport(row: FeedbackRow) {
+/** SQLite 写 ISO（带 Z），MariaDB 的 DATETIME 是不带时区的服务器本地时间；
+ *  返回给浏览器前补上时区，避免前端把服务器墙钟当成浏览器本地时间。 */
+export function withTimezone(value: string | null, dialect: "sqlite" | "mariadb"): string | null {
+  if (!value) return null;
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)) return value;
+  const iso = value.replace(" ", "T");
+  if (dialect === "sqlite") return `${iso}Z`;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return value;
+  const offset = -date.getTimezoneOffset();
+  const sign = offset >= 0 ? "+" : "-";
+  const abs = Math.abs(offset);
+  return `${iso}${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
+}
+
+function toReport(row: FeedbackRow, dialect: "sqlite" | "mariadb") {
   let context: unknown = null;
   if (row.context_json) {
     try { context = JSON.parse(row.context_json); } catch { context = null; }
@@ -97,16 +111,15 @@ function toReport(row: FeedbackRow) {
     displayName: row.display_name,
     roleName: row.role_name,
     context,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    resolvedAt: row.resolved_at,
+    createdAt: withTimezone(row.created_at, dialect),
+    resolvedAt: withTimezone(row.resolved_at, dialect),
     resolvedByName: row.resolver_name,
   };
 }
 
 const SELECT_COLUMNS = `f.id, f.category, f.title, f.content, f.contact, f.status,
   f.username, f.display_name, f.role_name, f.context_json,
-  f.created_at, f.updated_at, f.resolved_at, u.name AS resolver_name`;
+  f.created_at, f.resolved_at, u.name AS resolver_name`;
 
 // GET /api/feedback?status=open|resolved|all — 列出反馈（默认全部，待处理排前）
 router.get("/", async (req, res) => {
@@ -129,7 +142,7 @@ router.get("/", async (req, res) => {
     );
     res.json({
       ok: true,
-      data: rows.map(toReport),
+      data: rows.map((row) => toReport(row, db.dialect)),
       counts: { total: Number(counts?.total ?? 0), open: Number(counts?.open ?? 0) },
     });
   } catch (err: any) {

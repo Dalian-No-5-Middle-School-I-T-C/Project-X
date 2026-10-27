@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -167,8 +167,11 @@ export function FeedbackSection() {
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [pendingDelete, setPendingDelete] = useState<FeedbackReport | null>(null);
+  const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
+    // 筛选快速切换时只让最新一次请求提交结果，避免旧响应覆盖新状态。
+    const seq = ++loadSeq.current;
     setLoading(true);
     setLoadError(null);
     try {
@@ -176,13 +179,15 @@ export function FeedbackSection() {
       const res = await fetchJson<{ ok: boolean; data: FeedbackReport[]; counts: { total: number; open: number } }>(
         `/api/feedback${query}`
       );
+      if (seq !== loadSeq.current) return;
       setReports(Array.isArray(res.data) ? res.data : []);
       setCounts(res.counts ?? { total: 0, open: 0 });
     } catch (err: any) {
+      if (seq !== loadSeq.current) return;
       setReports([]);
       setLoadError(err?.message || "反馈列表加载失败");
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [filter]);
 
