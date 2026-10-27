@@ -49,6 +49,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
   const [knowledgePoints, setKnowledgePoints] = useState<KnowledgePointItem[]>([]);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const loadPages = useCallback(async () => {
     try {
@@ -69,6 +70,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
       setExtraNotes("");
       setUploadError(null);
       setAnalyzeError(null);
+      setSaveError(null);
       setKnowledgePoints([]);
       void loadPages();
     }
@@ -171,16 +173,21 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
 
   const handleSave = async () => {
     if (saving) return;
+    const range = questionRange === "all" ? "全部" : customRange.trim();
+    if (!range) { setSaveError("请填写自定义题目范围"); return; }
     setSaving(true);
+    setSaveError(null);
     try {
-      const range = questionRange === "all" ? "全部" : customRange.trim();
-
       // Save question range + notes
-      await authFetch(`/api/cards/${cardId}/paper/info`, {
+      const infoRes = await authFetch(`/api/cards/${cardId}/paper/info`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ questionRange: range, extraNotes: extraNotes.trim() }),
       });
+      if (!infoRes.ok) {
+        const err = await infoRes.json().catch(() => ({} as { error?: string; message?: string }));
+        throw new Error(err.error || err.message || "保存原卷信息失败");
+      }
 
       // Save knowledge points
       if (knowledgePoints.length > 0) {
@@ -191,16 +198,20 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
           }))
         );
 
-        await authFetch(`/api/cards/${cardId}/knowledge-points`, {
+        const kpRes = await authFetch(`/api/cards/${cardId}/knowledge-points`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ points: flatPoints }),
         });
+        if (!kpRes.ok) {
+          const err = await kpRes.json().catch(() => ({} as { error?: string; message?: string }));
+          throw new Error(err.error || err.message || "保存知识点失败");
+        }
       }
 
       onClose();
-    } catch {
-      // ignore
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "保存失败");
     } finally {
       setSaving(false);
     }
@@ -349,6 +360,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
 
         {/* 底部按钮 */}
         <DialogFooter>
+          {saveError && <p className="m-0 mr-auto text-xs text-destructive-fg">{saveError}</p>}
           <Button variant="outline" onClick={onClose}>关闭</Button>
           <Button
             variant="primary"

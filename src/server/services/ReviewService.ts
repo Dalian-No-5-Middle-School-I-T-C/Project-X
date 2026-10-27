@@ -310,18 +310,29 @@ export async function submitReviewCropScores(params: {
     card.bodyBlocks.find((b) => b.type === blockType);
   let maxBlockScore = 0;
   const maxScoreByQuestion = new Map<number, number>();
+  // 满分记 0 的小题（填空块把块总分记在首个空上，其余小空不带分）不是可评分对象：
+  // 识别切块的题号清单会列出块内全部小空，网阅面板也照样提交，
+  // 若按「不在答题卡题目范围内」拒绝，整块卷子就再也交不出去了（#351 模板改动后必然发生）。
+  const zeroMaxQuestions = new Set<number>();
   if (targetBlock) {
     if (targetBlock.type === "objective") {
       for (const def of objectiveQuestionDefinitions(targetBlock)) {
-        maxScoreByQuestion.set(def.questionNumber, Number(def.score ?? 0));
+        const max = Number(def.score ?? 0);
+        if (max > 0) maxScoreByQuestion.set(def.questionNumber, max);
+        else zeroMaxQuestions.add(def.questionNumber);
       }
     } else if (targetBlock.type === "subjective") {
       for (const question of targetBlock.questions ?? []) {
         const qNum = typeof question.number === "number" ? question.number : parseInt(String(question.number), 10);
-        if (Number.isFinite(qNum)) maxScoreByQuestion.set(qNum, Number(question.score ?? 0));
-      }    }
+        if (!Number.isFinite(qNum)) continue;
+        const max = Number(question.score ?? 0);
+        if (max > 0) maxScoreByQuestion.set(qNum, max);
+        else zeroMaxQuestions.add(qNum);
+      }
+    }
   }
   maxBlockScore = Array.from(maxScoreByQuestion.values()).reduce((a, b) => a + b, 0);
+  const scores = params.scores.filter(item => !zeroMaxQuestions.has(Number(item.questionNumber)));
 
   // 兜底：卡内题块缺失（演示数据 / 答题卡被编辑后旧切块未重建）时，
   // 以落库的逐题满分作为权威满分，避免整块卷子因「题号不在范围」而无法提交。
@@ -351,7 +362,7 @@ export async function submitReviewCropScores(params: {
 
   // 入参校验：逐条检查 scores 的结构和数值合法性
   const seenQuestions = new Set<number>();
-  for (const item of params.scores) {
+  for (const item of scores) {
     const qNum = Number(item.questionNumber);
     if (!Number.isFinite(qNum) || qNum <= 0) {
       throw new ReviewValidationError(`无效的题号: ${item.questionNumber}`);
@@ -411,24 +422,24 @@ export async function submitReviewCropScores(params: {
           // 题号集合校验：题块总分代表整个题块，提交项必须恰好覆盖本题块的权威小题，
           // 且每题只允许出现一次（否则 totalScore 虚高且 scoreBreakdown 内部不一致）。
           const authoritativeNums = Array.from(maxScoreByQuestion.keys());
-          const coverage = validateBlockTotalCoverage(authoritativeNums, params.scores);
+          const coverage = validateBlockTotalCoverage(authoritativeNums, scores);
           if (!coverage.ok) throw new Error(coverage.error);
           const split = splitBlockTotal(
             Math.round(total * 100) / 100,
-            params.scores,
+            scores,
             maxScoreByQuestion,
             maxBlockScore,
             step,
             distribution
           );
-          return params.scores.map((item) => {
+          return scores.map((item) => {
             const qNum = item.questionNumber;
             const max = maxScoreByQuestion.get(qNum) ?? 0;
             const score = Math.max(0, Math.min(max, split.get(qNum) ?? 0));
             return { questionNumber: qNum, scoreType: String(item.scoreType), score, maxScore: max };
           });
         })()
-      : params.scores.map((item) => {
+      : scores.map((item) => {
           const authoritative = maxScoreByQuestion.get(item.questionNumber);
           // #186 严格校验：逐题模式若显式携带 maxScore，必须与权威逐题满分一致
           if (item.maxScore != null && authoritative != null && Math.abs(item.maxScore - authoritative) > 1e-6) {

@@ -22,13 +22,13 @@ const manager = createScannerUploadManager({ remoteFetch: request, isOnline: () 
     const image = (init!.body as FormData).get("file") as Blob;
     const encoded = Buffer.from(await image.arrayBuffer()).toString("base64");
     const kind = Object.keys(fixture.images).find(name => fixture.images[name] === encoded);
-    const numbers: Record<string, string> = { original: "91001", different: "91001", normal: "91002", replacement: "91004", unknown: "91999", after: "91006", discard: "91002" };
+    const numbers: Record<string, string> = { original: "91001", different: "91001", normal: "91002", replacement: "91004", unknown: "91999", after: "91006", discard: "91002", "duplicate-a": "91008", "duplicate-b": "91008", unrelated: "91009" };
     const failed = kind === "blank" || kind === "unreadable";
     return Response.json({ status: failed ? "failed" : "ok", message: kind === "blank" ? "Student ID recognition failed." : failed ? "Image markers unavailable." : undefined,
       identity: { status: "verified", code: "QR_VERIFIED", cardId: fixture.cardId, pageNumber: 1 },
       studentId: kind && numbers[kind] ? { status: "ok", value: numbers[kind] } : { status: "missing" },
       quality: { matchCount: kind === "unreadable" ? 0 : 4, missingRoles: [] },
-      questions: [{ questionNumber: 1, selectedOptions: ["A"], confidence: 1 }], subjectiveQuestions: [] });
+      questions: [{ questionNumber: 1, selectedOptions: ["A"], confidence: kind === "normal" ? 0.05 : 1 }], subjectiveQuestions: [] });
   },
 });
 async function terminal(id: string): Promise<UploadJobSnapshot> {
@@ -40,14 +40,14 @@ async function terminal(id: string): Promise<UploadJobSnapshot> {
   }
   throw new Error(`Upload queue stalled: ${id}`);
 }
-function enqueue(kind: string) {
+function enqueue(kind: string, kinds = [kind]) {
   return manager.startUpload({ kind: "import", cardId: fixture.cardId, cardVersion: fixture.version, name: kind,
-    pages: [{ groupId: "0", layoutPage: 1, pageNum: 1, side: "front", getBlob: async () => new Blob([Buffer.from(fixture.images[kind], "base64")], { type: "image/png" }) }] });
+    pages: kinds.map((name, index) => ({ groupId: String(index), layoutPage: 1, pageNum: index + 1, side: "front", getBlob: async () => new Blob([Buffer.from(fixture.images[name], "base64")], { type: "image/png" }) })) });
 }
 async function state() {
   return await (await request("/test/state")).json() as {
     scores: Array<{ student_number: string; total_score: number }>;
-    receipts: Array<{ session_id: string; group_id: string; student_number: string; state: string }>;
+    receipts: Array<{ session_id: string; group_id: string; student_number: string; state: string; result_json?: string | null }>;
   };
 }
 function cards(id: string) {
@@ -55,6 +55,17 @@ function cards(id: string) {
   return uniqueScanConflictCards([...(job.reviewCards ?? []), ...(job.failures?.flatMap(f => f.conflicts ?? []) ?? [])]);
 }
 try {
+  // 上传契约必须保留主观题的失败原因字串：丢了它，服务端就把「没画斜线」继续当存疑（#352）。
+  const { recognitionSchema } = await import("../src/server/routes/scanner-upload");
+  const parsedRecognition = recognitionSchema.parse({
+    identity: { status: "verified", code: "QR_VERIFIED", cardId: fixture.cardId, pageNumber: 1 },
+    status: "ok", studentId: { status: "ok", value: "91001" },
+    questions: [{ questionNumber: 1, selectedOptions: [], confidence: 0 }],
+    subjectiveQuestions: [{ questionId: "q1", questionNumber: 7, score: 0, maxScore: 10, status: "invalid",
+      confidence: 0, message: "no_valid_subjective_score", validCells: [], invalidCells: [] }],
+  });
+  assert.equal(parsedRecognition.subjectiveQuestions[0].message, "no_valid_subjective_score", "上传契约必须留下 message 字段");
+
   const original = enqueue("original");
   assert.equal((await terminal(original)).status, "done");
   const originalSession = (await state()).receipts.find(r => r.state === "saved")!.session_id;
@@ -69,7 +80,10 @@ try {
   const unknown = enqueue("unknown");
   const normal = enqueue("normal");
   for (const id of [duplicate, blank, unreadable, unknown]) assert.equal((await terminal(id)).status, "error");
-  assert.equal((await terminal(normal)).status, "done", "normal upload following all abnormal cards completes");
+  assert.equal((await terminal(normal)).status, "done", "存疑卷也要上传并入库，复核由服务器标记");
+  const normalReceipt = (await state()).receipts.find(r => r.student_number === "91002" && r.state === "saved");
+  assert(normalReceipt, "存疑卷也要留下已保存回执");
+  assert.equal((JSON.parse(normalReceipt.result_json!) as { needsReviewCount: number }).needsReviewCount, 1, "复核计数随结果保留");
   assert.deepEqual((await state()).scores.map(s => s.student_number), ["91002"]);
   assert.equal((await terminal(original)).status, "error", "withdrawn grade is not displayed as saved");
 
@@ -82,17 +96,18 @@ try {
   assert.equal((await terminal(unreadable)).status, "error", "unreadable original remains available without blocking its rescan");
 
   const unknownCard = manager.getState().jobs.find(j => j.id === unknown)!.reviewCards![0];
-  assert((await manager.requestJob(unknown, `/api/scanner/upload/sessions/${unknownCard.sessionId}/correct`,
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupId: unknownCard.groupId, studentId: "91007" }) })).ok);
-  assert((await manager.saveSession(unknown, unknownCard.sessionId)).ok);
+  const unknownFix = await manager.requestJob(unknown, `/api/scanner/upload/sessions/${unknownCard.sessionId}/correct`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupId: unknownCard.groupId, studentId: "91007" }) });
+  assert(unknownFix.ok);
+  assert((await manager.saveSession(unknown, unknownCard.sessionId, unknownCard.groupId)).ok);
   await manager.refreshResults(unknown);
   assert.equal((await terminal(unknown)).status, "done", "roster error recovers through remote correction and save");
 
   const newCard = cards(duplicate).find(c => c.sessionId !== originalSession)!;
   assert((await manager.requestJob(duplicate, `/api/scanner/upload/sessions/${newCard.sessionId}/correct`,
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupId: newCard.groupId, studentId: "91005" }) })).ok);
-  assert((await manager.saveSession(duplicate, originalSession)).ok);
-  assert((await manager.saveSession(duplicate, newCard.sessionId)).ok);
+  assert((await manager.saveSession(duplicate, originalSession, "0")).ok);
+  assert((await manager.saveSession(duplicate, newCard.sessionId, newCard.groupId)).ok);
   await manager.refreshResults(duplicate);
   assert.equal((await terminal(original)).status, "done", "original grade restored after duplicate correction");
 
@@ -107,5 +122,39 @@ try {
   assert.equal((await terminal(discard)).status, "done", "discarded paper finishes without recreating a conflict");
   assert.equal((await terminal(enqueue("after"))).status, "done", "next scan batch uploads after all manual recovery");
   assert.equal((await state()).scores.length, 7);
-  console.log(`PASS scanner upload flow: ${process.platform} client -> ${fixture.dialect}, ${calls.length} real HTTP requests; exact reupload / duplicate / blank ID / unreadable / roster / correction / discard / next batch`);
+  // A normal completion retry must not approve either never-saved duplicate.
+  const pending = enqueue("unreviewed duplicates", ["duplicate-a", "duplicate-b", "unrelated"]);
+  const pendingJob = await terminal(pending);
+  assert.equal(pendingJob.status, "error");
+  const pendingSession = pendingJob.remoteSessionId!;
+  const pendingPath = `/api/scanner/upload/sessions/${pendingSession}`;
+  assert.equal((await state()).scores.find(s => s.student_number === "91009")?.total_score, 5, "unrelated normal paper saves alongside duplicates");
+  assert((await manager.requestJob(pending, `${pendingPath}/correct`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupId: "0", studentId: "91010" }),
+  })).ok);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const retry = await manager.saveSession(pending, pendingSession);
+    assert.equal(retry.status, 409, "automatic completion retries must require explicit duplicate approval");
+    const retryState = await state();
+    assert.deepEqual(retryState.receipts.filter(r => r.session_id === pendingSession && r.state !== "superseded").map(r => [r.group_id, r.state]).sort(),
+      [["0", "correction"], ["1", "correction"], ["2", "saved"]]);
+    assert(!retryState.scores.some(s => ["91008", "91010"].includes(s.student_number)), "unreviewed originals have no formal grades");
+    assert.equal(retryState.scores.find(s => s.student_number === "91009")?.total_score, 5);
+    const retryBody = await retry.json();
+    assert.deepEqual(retryBody.reviewCards.filter((card: { sessionId: string }) => card.sessionId === pendingSession).map((card: { groupId: string }) => card.groupId).sort(), ["0", "1"], "both originals remain in the exception queue");
+  }
+  assert.equal((await manager.requestJob(pending, `${pendingPath}/complete`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupId: 0 }),
+  })).status, 400, "invalid selection must not fall back to an automatic save");
+  assert.equal((await manager.saveSession(pending, pendingSession, "99")).status, 404);
+  assert((await manager.saveSession(pending, pendingSession, "0")).ok, "teacher explicitly saves the corrected original");
+  assert.equal((await state()).scores.find(s => s.student_number === "91010")?.total_score, 5);
+  assert.equal((await manager.saveSession(pending, pendingSession)).status, 409, "a later automatic retry still cannot approve the remaining original");
+  const remaining = await state();
+  assert(!remaining.scores.some(s => s.student_number === "91008"));
+  assert.equal(remaining.receipts.find(r => r.session_id === pendingSession && r.group_id === "1")?.state, "correction");
+  assert((await manager.saveSession(pending, pendingSession, "1")).ok, "teacher can explicitly save the remaining original");
+  assert((await manager.saveSession(pending, pendingSession)).ok, "replay after both approvals is idempotent");
+  assert.equal((await state()).scores.length, 10);
+  console.log(`PASS scanner upload flow: ${process.platform} client -> ${fixture.dialect}, ${calls.length} real HTTP requests; exact reupload / duplicate / blank ID / unreadable / roster / correction / discard / automatic retry isolation / explicit per-card save / next batch`);
 } finally { await local?.close(); }

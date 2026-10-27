@@ -37,14 +37,18 @@ async function main(): Promise<void> {
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'warnings_json'"),
       "含分数格告警必须能落到会话行");
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_records LIKE 'identity_json'"));
+    assert.ok(await db.get("SHOW COLUMNS FROM scan_correction_pages LIKE 'recovery_fingerprint'"));
     // Upgrade an existing v61 database without relying on fresh-schema CREATEs.
     await db.exec("DROP TABLE scan_correction_pages");
-    await db.run("DELETE FROM schema_migrations WHERE version = 62");
+    // Dropping the table also removes the column added by v64; replay both migrations.
+    await db.run("DELETE FROM schema_migrations WHERE version IN (62,64)");
     assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version=49"));
     const migrationConnection = await (await import("mysql2/promise")).createConnection(getMariadbConfig());
     try { await runMariadbMigrations(migrationConnection); } finally { await migrationConnection.end(); }
     assert.ok(await db.get("SHOW COLUMNS FROM scan_correction_pages LIKE 'recognition_json'"));
     assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version=62"));
+    assert.ok(await db.get("SHOW COLUMNS FROM scan_correction_pages LIKE 'recovery_fingerprint'"));
+    assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version=64"));
     // Simulate a pre-QR installation and exercise the incremental migration too.
     await db.exec("ALTER TABLE twain_scan_sessions DROP COLUMN identity_mode");
     await db.exec("ALTER TABLE twain_scan_sessions DROP COLUMN warnings_json");
@@ -52,26 +56,63 @@ async function main(): Promise<void> {
     await db.exec("ALTER TABLE exams DROP COLUMN answer_key_mode");
     await db.run("DELETE FROM schema_migrations WHERE version = 51");
     await db.run("DELETE FROM schema_migrations WHERE version = 63");
-    await db.run("DELETE FROM schema_migrations WHERE version = 64");
+    // answer_key_mode 由 v66 补列（本支最初记作 64，合 main 后顺延），删的是自己那一号。
+    await db.run("DELETE FROM schema_migrations WHERE version = 66");
     await initMariadbSchema();
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'identity_mode'"));
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'warnings_json'"),
       "已有库升级必须补上告警列，不能只靠新装建表");
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_records LIKE 'identity_json'"));
     assert.ok(await db.get("SHOW COLUMNS FROM exams LIKE 'answer_key_mode'"),
-      "已有库升级必须补上答案展示模式列（v64），不能只靠新装建表");
+      "已有库升级必须补上答案展示模式列（v66），不能只靠新装建表");
     const migrations = await db.all<{ version: number; name: string }>(
       "SELECT version, name FROM schema_migrations ORDER BY version",
     );
     assert.ok(migrations.some((row) => row.version === 49), "Scanner receipts migration must be applied");
     assert.ok(migrations.some((row) => row.version === 53), "WeChat grade-release subscription migration must be applied");
     assert.ok(migrations.some((row) => row.version === 54), "Exam original-paper + answer-key migration must be applied");
-    assert.ok(migrations.some((row) => row.version === 64), "Answer-key display mode migration must be applied");
+    assert.ok(migrations.some((row) => row.version === 66), "Answer-key display mode migration must be applied");
     assert.ok(await db.get("SHOW COLUMNS FROM scanner_submissions LIKE 'exam_id'"));
     assert.ok(await db.get("SHOW COLUMNS FROM answer_block_crops LIKE 'claimed_by'"));
     await initMariadbSchema();
     assert.deepEqual(await db.all("SELECT version, name FROM schema_migrations ORDER BY version"), migrations);
     console.log("PASS: fresh schema, migrations, repeated initialization");
+
+    // ===== v65：语文/数学模板的 13.1 这类小题号必须能落 MariaDB =====
+    {
+      const { CardRepository } = await import("../src/server/repositories/CardRepository");
+      const { createDefaultCard } = await import("../src/shared/defaultCard");
+      const { applySubjectTemplate } = await import("../src/shared/cardTemplates");
+      const decimalCard = applySubjectTemplate(createDefaultCard("MARIA_DECIMAL_CI", "yuwen"), {});
+      const decimalRepo = new CardRepository();
+      await decimalRepo.createCard(decimalCard);
+      await decimalRepo.updateCard(decimalCard);
+      const decimalNumbers = await db.all<{ number: number }>(
+        `SELECT q.number FROM subjective_questions q
+         JOIN subjective_blocks b ON b.id = q.block_id
+         WHERE b.card_id = ? ORDER BY q.number`, decimalCard.id);
+      assert.ok(decimalNumbers.some((row) => Number(row.number) === 13.1),
+        "MariaDB 必须能保存 13.1 这类小题号（INT 会拒绝或截断）");
+      const decimalUser = await db.run(
+        "INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES ('maria_decimal','disabled','小题号测试',3,'MARIA-DEC-1')");
+      const decimalExam = await db.run("INSERT INTO exams (name,card_id,status) VALUES ('小题号测试',?,'grading')", decimalCard.id);
+      await db.run("INSERT INTO question_scores (exam_id,student_id,question_number,score,max_score,score_type) VALUES (?,?,?,?,?,'subjective')",
+        decimalExam.lastInsertRowid, decimalUser.lastInsertRowid, 13.1, 4, 4);
+      await db.run("INSERT INTO knowledge_points (card_id,question_number,point_text) VALUES (?,?,?)",
+        decimalCard.id, 13.1, "小数题号知识点");
+      await db.run("INSERT INTO answer_overrides (exam_id,card_id,question_number,score_type,override_type) VALUES (?,?,?, 'subjective','score')",
+        decimalExam.lastInsertRowid, decimalCard.id, 13.1);
+      const decimalScore = await db.get<{ question_number: number }>(
+        "SELECT question_number FROM question_scores WHERE exam_id = ?", decimalExam.lastInsertRowid);
+      assert.equal(Number(decimalScore!.question_number), 13.1, "question_scores 也必须保留小数题号");
+      await db.run("DELETE FROM question_scores WHERE exam_id=?", decimalExam.lastInsertRowid);
+      await db.run("DELETE FROM answer_overrides WHERE exam_id=?", decimalExam.lastInsertRowid);
+      await db.run("DELETE FROM knowledge_points WHERE card_id=?", decimalCard.id);
+      await db.run("DELETE FROM exams WHERE id=?", decimalExam.lastInsertRowid);
+      await db.run("DELETE FROM users WHERE id=?", decimalUser.lastInsertRowid);
+      await db.run("DELETE FROM answer_cards WHERE id=?", decimalCard.id);
+      console.log("PASS: decimal sub-question numbers persist on MariaDB");
+    }
 
     // ===== R01 管理员引导口令（MariaDB 分支：buildInsertIgnore 新库路径 + 引导文件事实源）=====
     const adminFile = getBootstrapAdminPath();
@@ -168,7 +209,7 @@ async function main(): Promise<void> {
     // v54 原卷/答案：exams.show_original_paper 列 + 考试级答案表的复合主键与 UPSERT
     assert.ok(await db.get("SHOW COLUMNS FROM exams LIKE 'show_original_paper'"),
       "exams.show_original_paper 必须存在");
-    // v64 答案展示模式：默认必须是 text，否则老库升级后学生答案会凭空从文字变成一堆文件
+    // v66 答案展示模式：默认必须是 text，否则老库升级后学生答案会凭空从文字变成一堆文件
     const akModeColumn = await db.get<{ column_name: string; column_default: string | null }>(
       "SELECT COLUMN_NAME AS column_name, COLUMN_DEFAULT AS column_default FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'exams' AND COLUMN_NAME = 'answer_key_mode'",
     );

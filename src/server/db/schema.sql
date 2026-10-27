@@ -226,7 +226,7 @@ CREATE TABLE IF NOT EXISTS subjective_blocks (
 CREATE TABLE IF NOT EXISTS subjective_questions (
     id               TEXT PRIMARY KEY,
     block_id         TEXT NOT NULL REFERENCES subjective_blocks(id) ON DELETE CASCADE,
-    number           INTEGER NOT NULL,
+    number           REAL NOT NULL,
     score            REAL NOT NULL,
     style            TEXT NOT NULL,              -- manual_score_grid / plain_box
     kind             TEXT NOT NULL,              -- plain_box / lined_answer / blank
@@ -274,7 +274,7 @@ CREATE TABLE IF NOT EXISTS card_assets (
 CREATE TABLE IF NOT EXISTS knowledge_points (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     card_id         TEXT NOT NULL REFERENCES answer_cards(id) ON DELETE CASCADE,
-    question_number INTEGER NOT NULL,
+    question_number REAL NOT NULL,
     point_text      TEXT NOT NULL,
     category        TEXT,
     sort_order      INTEGER DEFAULT 0,
@@ -318,7 +318,7 @@ CREATE TABLE IF NOT EXISTS exams (
     review_enabled INTEGER DEFAULT 0,            -- v1.9.0: 0=未开启网阅 1=已开启
     exam_mode      TEXT NOT NULL DEFAULT 'formal', -- v34: quiz=晨测(全量权限) formal=大考(精细权限，默认)
     show_original_paper INTEGER DEFAULT 0,         -- v54: 0=不向学生展示原卷 1=成绩发布后可查看原卷与答案解析
-    answer_key_mode     TEXT NOT NULL DEFAULT 'text', -- v64: text=学生看逐题文字答案 file=学生看教师上传的答案原文件
+    answer_key_mode     TEXT NOT NULL DEFAULT 'text', -- v66: text=学生看逐题文字答案 file=学生看教师上传的答案原文件
     created_by    INTEGER REFERENCES users(id),
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -566,7 +566,7 @@ CREATE TABLE IF NOT EXISTS question_scores (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     exam_id         INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
     student_id      INTEGER NOT NULL REFERENCES users(id),
-    question_number INTEGER,
+    question_number REAL,
     question_id     TEXT,
     block_id        TEXT,
     score           REAL,
@@ -844,5 +844,5 @@ CREATE TABLE IF NOT EXISTS exam_answer_key_pages (
 CREATE TABLE IF NOT EXISTS scan_correction_pages (
  source_type VARCHAR(32) NOT NULL, source_id VARCHAR(128) NOT NULL, card_version VARCHAR(24) NOT NULL,
  layout_json TEXT NOT NULL, recognition_json TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
- modified_by INTEGER, modified_at VARCHAR(32), PRIMARY KEY (source_type, source_id)
+ modified_by INTEGER, modified_at VARCHAR(32), recovery_fingerprint VARCHAR(64), PRIMARY KEY (source_type, source_id)
 );

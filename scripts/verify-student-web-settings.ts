@@ -5,6 +5,7 @@
  * 使用隔离 SQLite，不碰现有业务库。
  */
 import assert from "node:assert/strict";
+import { backgroundWriteSession, createBackgroundOpacityQueue } from "../src/apps/answer-card/client/lib/backgroundOpacityWrites";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -20,6 +21,8 @@ const homeTokenSha = existsSync(homeTokenPath)
   ? createHash("sha256").update(readFileSync(homeTokenPath)).digest("hex")
   : null;
 process.env.PROJECTX_ENABLE_SCANNER = "false";
+// #335：把生效上限收到 1 MiB，才能用一份刚过线的请求断言 413 文案，不必造 5 MiB 的夹具。
+process.env.PROJECTX_BACKGROUND_UPLOAD_MIB = "1";
 for (const key of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
   "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST"
@@ -40,7 +43,210 @@ type SettingsRow = {
   show_tab_bar: number;
 };
 
+/** 在途的旧透明度 PATCH 必须先结束，DELETE 归零排在它后面，不能被晚到的旧值盖掉。 */
+async function assertLateOpacityPatchCannotFinishAfterDelete(): Promise<void> {
+  const queue = createBackgroundOpacityQueue();
+  const events: string[] = [];
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const stale = queue.enqueue(async () => {
+    events.push("patch-start");
+    await gate;
+    events.push("patch-end");
+  });
+  const removed = queue.enqueue(async () => { events.push("delete"); });
+  await Promise.resolve();
+  assert.deepEqual(events, ["patch-start"], "删除要等已经发出的透明度请求，不能和它并行");
+  release();
+  await stale;
+  await removed;
+  assert.deepEqual(events, ["patch-start", "patch-end", "delete"], "归零必须是最后一次写入");
+
+  const recovered = createBackgroundOpacityQueue();
+  const afterFailure: string[] = [];
+  await recovered.enqueue(async () => { throw new Error("stale patch failed"); }).catch(() => {});
+  await recovered.enqueue(async () => { afterFailure.push("delete"); });
+  assert.deepEqual(afterFailure, ["delete"], "前一条透明度请求失败也不能卡住移除");
+
+  const uploadQueue = createBackgroundOpacityQueue();
+  const uploadEvents: string[] = [];
+  let releaseUpload: () => void = () => {};
+  const uploadGate = new Promise<void>((resolve) => { releaseUpload = resolve; });
+  const upload = uploadQueue.enqueue(async () => {
+    uploadEvents.push("upload-start");
+    await uploadGate;
+    uploadEvents.push("upload-end");
+  });
+  const removeAfterUpload = uploadQueue.enqueue(async () => { uploadEvents.push("delete"); });
+  await Promise.resolve();
+  assert.deepEqual(uploadEvents, ["upload-start"], "移除要等正在进行的上传结束，不能与 rename 交错");
+  releaseUpload();
+  await upload;
+  await removeAfterUpload;
+  assert.deepEqual(uploadEvents, ["upload-start", "upload-end", "delete"], "上传与删除串行，删除是最后一次写入");
+}
+
+/** 会话级队列：页面重新挂载后，DELETE 仍排在旧实例的在途 PATCH 后面；身份切换丢弃未执行任务。 */
+async function assertSessionQueueSurvivesRemount(): Promise<void> {
+  const firstMount = backgroundWriteSession("user:91001");
+  const events: string[] = [];
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const patch = firstMount.enqueue(async () => {
+    events.push("patch-start");
+    await gate;
+    events.push("patch-end");
+  });
+  await Promise.resolve();
+  const secondMount = backgroundWriteSession("user:91001");
+  const remove = secondMount.enqueue(async () => { events.push("delete"); });
+  await Promise.resolve();
+  assert.deepEqual(events, ["patch-start"], "重新进入页面后的删除仍要等待旧页面的在途 PATCH");
+  release();
+  assert.equal(await patch, true);
+  assert.equal(await remove, true);
+  assert.deepEqual(events, ["patch-start", "patch-end", "delete"], "跨挂载实例的归零仍是最后一次写入");
+
+  const userA = backgroundWriteSession("user:91002");
+  const switched: string[] = [];
+  let releaseStale: () => void = () => {};
+  const staleGate = new Promise<void>((resolve) => { releaseStale = resolve; });
+  const inflight = userA.enqueue(async () => {
+    switched.push("inflight-start");
+    await staleGate;
+    switched.push("inflight-end");
+  });
+  const queued = userA.enqueue(async () => { switched.push("queued"); });
+  await Promise.resolve();
+  backgroundWriteSession("user:91003");
+  releaseStale();
+  assert.equal(await inflight, true);
+  assert.equal(await queued, false, "身份切换后旧队列里的未执行任务必须丢弃");
+  assert.deepEqual(switched, ["inflight-start", "inflight-end"]);
+}
+
+/** 初始关闭 → 滑块打开浮层 → 移除：浮层必须关掉，未发出的旧 PATCH 不能排在删除后面。 */
+async function assertRemoveClearsOverlayAndDropsPendingOpacity(): Promise<void> {
+  const { JSDOM } = await import("jsdom");
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", { url: "https://web.test" });
+  const previous = new Map<string, PropertyDescriptor | undefined>();
+  const install = (name: string, value: unknown) => {
+    previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+  };
+  for (const name of ["window", "document", "navigator", "localStorage", "sessionStorage", "HTMLElement", "HTMLInputElement", "HTMLButtonElement", "HTMLFormElement", "HTMLSelectElement", "HTMLTextAreaElement", "DocumentFragment", "Element", "Node", "NodeFilter", "Event", "CustomEvent", "MutationObserver", "getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"]) {
+    install(name, name === "window" ? dom.window : (dom.window as unknown as Record<string, unknown>)[name]);
+  }
+  install("IS_REACT_ACT_ENVIRONMENT", true);
+  install("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  install("requestAnimationFrame", (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0) as unknown as number);
+  install("cancelAnimationFrame", (id: number) => clearTimeout(id));
+  const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
+  const nativeSetTimeout = setTimeout;
+  const nativeClearTimeout = clearTimeout;
+  install("setTimeout", ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+    const id = nativeSetTimeout(handler, timeout, ...args);
+    pendingTimers.add(id);
+    return id;
+  }) as typeof setTimeout);
+  install("clearTimeout", ((id: ReturnType<typeof setTimeout>) => {
+    pendingTimers.delete(id);
+    nativeClearTimeout(id);
+  }) as typeof clearTimeout);
+  const writes: string[] = [];
+  install("fetch", async (input: unknown, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+    if (url.includes("/api/auth/me")) {
+      return json({
+        id: 2, username: "teacher", name: "教师", role_id: 2, role_name: "teacher",
+        permissions: [], teacher_role: "subject_teacher", subject: "数学", password_change_required: false,
+      });
+    }
+    if (url.includes("/api/users/me/settings") && method === "PATCH") {
+      writes.push(`patch:${String(init?.body ?? "")}`);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return json({ ok: true });
+    }
+    if (url.includes("/api/users/me/background") && method === "DELETE") {
+      writes.push("delete");
+      return json({ ok: true, removed: true, opacityReset: true });
+    }
+    if (url.includes("/api/users/me/settings")) return json({ scoreDisplayMode: "zscore", reviewConfidenceThreshold: 0.12, backgroundOpacity: 0, showTabBar: 1, backgroundUploadLimit: "5 MiB" });
+    if (url.includes("/api/ai/providers")) return json([]);
+    return json({});
+  });
+  const { createElement, useEffect, useState } = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { act } = await import("react");
+  const { AuthProvider } = await import("../src/apps/answer-card/client/auth/AuthContext");
+  const { WorkspaceProvider } = await import("../src/apps/answer-card/client/WorkspaceContext");
+  const { AccountSettingsPage } = await import("../src/apps/answer-card/client/pages/AccountSettingsPage");
+
+  function Harness() {
+    const [showBg, setShowBg] = useState(0);
+    useEffect(() => {
+      if (showBg > 0) {
+        document.documentElement.style.setProperty("--bg-opacity", String(showBg));
+        document.body.classList.add("has-bg-image");
+      } else {
+        document.documentElement.style.setProperty("--bg-opacity", "0");
+        document.body.classList.remove("has-bg-image");
+      }
+    }, [showBg]);
+    const value = new Proxy({ theme: "light", setTheme() {}, skin: "paper-edge", setSkin() {}, showBg, setShowBg }, {
+      get(target, prop) {
+        if (prop in target) return (target as Record<string | symbol, unknown>)[prop];
+        return () => {};
+      },
+    });
+    return createElement(WorkspaceProvider, { value: value as never }, createElement(AccountSettingsPage));
+  }
+
+  const host = document.getElementById("root")!;
+  const root = createRoot(host);
+  try {
+    await act(async () => { root.render(createElement(AuthProvider, null, createElement(Harness))); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    const slider = () => document.querySelector('input[type="range"]') as HTMLInputElement | null;
+    assert.ok(slider(), "教师客户端设置里有背景透明度滑块");
+    assert.equal(document.body.classList.contains("has-bg-image"), false, "进入页面时浮层是关的");
+    const proto = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+    await act(async () => {
+      proto?.set?.call(slider(), "0.2");
+      slider()!.dispatchEvent(new window.Event("input", { bubbles: true }));
+      slider()!.dispatchEvent(new window.Event("change", { bubbles: true }));
+    });
+    assert.equal(document.body.classList.contains("has-bg-image"), true, "滑块打开透明度后浮层开启");
+    assert.equal(document.documentElement.style.getPropertyValue("--bg-opacity"), "0.2");
+    const click = async (label: string) => {
+      const button = [...document.querySelectorAll("button")].find((el) => el.textContent?.replace(/\s+/g, "") === label);
+      assert.ok(button, `找不到按钮 ${label}`);
+      await act(async () => { button!.click(); });
+    };
+    await click("移除背景图");
+    await click("移除");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 80)); });
+    assert.equal(document.body.classList.contains("has-bg-image"), false, "从关闭态打开后再移除，浮层必须关掉");
+    assert.equal(document.documentElement.style.getPropertyValue("--bg-opacity"), "0");
+    assert.deepEqual(writes, ["delete"], "400ms 内移除要取消还没发出的透明度 PATCH，删除是唯一写入");
+  } finally {
+    for (const id of pendingTimers) nativeClearTimeout(id);
+    pendingTimers.clear();
+    await act(async () => { root.unmount(); });
+    dom.window.close();
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+  }
+}
+
 async function main(): Promise<void> {
+  await assertSessionQueueSurvivesRemount();
+  await assertLateOpacityPatchCannotFinishAfterDelete();
+  await assertRemoveClearsOverlayAndDropsPendingOpacity();
   const { initializeDatabase, closeDatabase, getDatabase, ensureDefaultAdmin } = await import("../src/server/db/index");
   const { createApp } = await import("../src/apps/answer-card/server/index");
   const { UserRepository } = await import("../src/server/repositories/UserRepository");
@@ -205,9 +411,102 @@ async function main(): Promise<void> {
     assert.equal(teacherBackground.headers.get("vary"), "Cookie, Authorization");
     assert.ok((await teacherBackground.arrayBuffer()).byteLength > 0);
 
+    const teacherSettingsLimit = await fetch(`${base}/api/users/me/settings`, { headers: teacherAuth });
+    const teacherLimitBody = await teacherSettingsLimit.json() as { backgroundUploadLimit?: string };
+    assert.equal(teacherLimitBody.backgroundUploadLimit, "1 MiB", "设置接口应返回当前生效的背景图上限");
+
+    const oversize = Buffer.alloc(1024 * 1024 + 64, 7);
+    const overForm = new FormData();
+    overForm.append("file", new Blob([oversize], { type: "image/png" }), "big.png");
+    const tooBig = await fetch(`${base}/api/users/me/background`, {
+      method: "POST",
+      headers: teacherAuth,
+      body: overForm
+    });
+    const tooBigBody = await tooBig.json() as { code?: string; message?: string };
+    assert.equal(tooBig.status, 413, "超过 PROJECTX_BACKGROUND_UPLOAD_MIB 必须 413");
+    assert.equal(tooBigBody.code, "UPLOAD_ERROR");
+    assert.equal(tooBigBody.message, "上传文件超过大小限制（≤1 MiB）", "413 文案要带上当前生效上限");
+    assert.deepEqual(
+      readdirSync(backgroundsDir).filter((name) => name.startsWith("upload_")),
+      [],
+      "超限请求不能在 backgrounds 目录留下临时文件"
+    );
+    assert.ok(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), "超限不得覆盖已经上传成功的背景");
+
     const studentBackgroundAgain = await fetch(`${base}/api/app/background`, { headers: studentAuth });
     assert.equal(studentBackgroundAgain.status, 404, "教师上传成功后，学生背景接口仍必须 404");
     assert.equal(studentBackgroundAgain.headers.get("cache-control"), "private, no-store");
+
+    const teacherDeniedPurge = await fetch(`${base}/api/admin/backgrounds/purge-students`, {
+      method: "POST",
+      headers: teacherAuth
+    });
+    assert.equal(teacherDeniedPurge.status, 403, "教师不能清退学生历史背景");
+    const studentDeniedPurge = await fetch(`${base}/api/admin/backgrounds/purge-students`, {
+      method: "POST",
+      headers: studentAuth
+    });
+    assert.equal(studentDeniedPurge.status, 403, "学生不能清退历史背景");
+
+    const studentDelete = await fetch(`${base}/api/users/me/background`, { method: "DELETE", headers: studentAuth });
+    assert.equal(studentDelete.status, 200, "学生可以删除自己的历史背景文件");
+    const studentDeleteBody = await studentDelete.json() as { removed?: boolean; opacityReset?: boolean };
+    assert.equal(studentDeleteBody.removed, true);
+    assert.equal(studentDeleteBody.opacityReset, true);
+    assert.equal(existsSync(path.join(backgroundsDir, `${student.id}.jpg`)), false, "学生历史背景文件应被删掉");
+    assert.equal(readRow(student.id).background_opacity, 0, "学生历史透明度应归零");
+    assert.equal(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), true, "学生删除不得动教师文件");
+
+    const teacherDelete = await fetch(`${base}/api/users/me/background`, { method: "DELETE", headers: teacherAuth });
+    assert.equal(teacherDelete.status, 200, "教师可以移除自己的背景图");
+    assert.equal(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), false);
+    assert.equal(readRow(teacher.id).background_opacity, 0, "移除背景图时透明度归零");
+    const teacherAfterDelete = await fetch(`${base}/api/app/background`, { headers: teacherAuth });
+    assert.equal(teacherAfterDelete.status, 200, "删掉自定义图后教师回到随包默认背景");
+    const defaultBg = readFileSync(path.resolve("resources/background.jpg"));
+    const served = Buffer.from(await teacherAfterDelete.arrayBuffer());
+    assert.equal(createHash("sha256").update(served).digest("hex"), createHash("sha256").update(defaultBg).digest("hex"));
+
+    writeFileSync(path.join(backgroundsDir, `${student.id}.jpg`), PNG);
+    writeFileSync(path.join(backgroundsDir, `${teacher.id}.jpg`), PNG);
+    writeFileSync(path.join(backgroundsDir, "keep-me.png"), PNG);
+    writeFileSync(path.join(backgroundsDir, "999999.jpg"), PNG);
+    db.prepare("UPDATE users SET background_opacity = 0.4 WHERE id = ?").run(student.id);
+    db.prepare("UPDATE users SET background_opacity = 0.2 WHERE id = ?").run(teacher.id);
+    const adminLogin = await fetch(`${base}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier: "admin", password: ADMIN_PASSWORD })
+    });
+    assert.equal(adminLogin.status, 200, "管理员重新登录失败");
+    const adminToken = ((await adminLogin.json()) as { token?: string }).token;
+    assert.ok(adminToken, "管理员登录未返回 token");
+    const adminSettings = await fetch(`${base}/api/system-settings`, { headers: { Authorization: `Bearer ${adminToken}` } });
+    assert.equal(adminSettings.status, 200, "管理员应能读取全局设置");
+    assert.equal(((await adminSettings.json()) as { authenticated?: boolean }).authenticated, true, "已登录管理员才渲染背景清退入口");
+    const purged = await fetch(`${base}/api/admin/backgrounds/purge-students`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(purged.status, 200, "管理员可以清退学生历史背景");
+    const purgedBody = await purged.json() as { removedFiles?: number; opacityReset?: number };
+    assert.equal(purgedBody.removedFiles, 1, "清退只删学生文件");
+    assert.equal(purgedBody.opacityReset, 1, "清退只把学生透明度归零");
+    assert.equal(existsSync(path.join(backgroundsDir, `${student.id}.jpg`)), false);
+    assert.equal(readRow(student.id).background_opacity, 0);
+    assert.equal(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), true, "清退不得删除教师背景");
+    assert.equal(readRow(teacher.id).background_opacity, 0.2, "清退不得改教师透明度");
+    assert.equal(existsSync(path.join(backgroundsDir, "keep-me.png")), true, "清退不得删除非 <学生id>.jpg 的文件");
+    assert.equal(existsSync(path.join(backgroundsDir, "999999.jpg")), true, "清退不得删除没有对应用户的文件");
+    const purgedAgain = await fetch(`${base}/api/admin/backgrounds/purge-students`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    const purgedAgainBody = await purgedAgain.json() as { removedFiles?: number; opacityReset?: number };
+    assert.equal(purgedAgain.status, 200);
+    assert.equal(purgedAgainBody.removedFiles, 0, "重复清退不再删文件");
+    assert.equal(purgedAgainBody.opacityReset, 0, "重复清退不再改透明度");
 
     const { setAuthEnforced } = await import("../src/apps/answer-card/server/middleware");
     process.env.PROJECTX_AUTH_ENFORCE = "0";
@@ -228,6 +527,14 @@ async function main(): Promise<void> {
     assert.equal(names.includes("undefined.jpg"), false, "匿名上传不能落成 undefined.jpg");
     assert.deepEqual(names.filter((name) => name.startsWith("upload_")), [], "匿名上传被拒后不能留下临时文件");
     assert.equal(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), true, "匿名上传不得覆盖教师背景");
+    const anonDelete = await fetch(`${base}/api/users/me/background`, { method: "DELETE" });
+    assert.equal(anonDelete.status, 401, "免登录模式下没有用户 id 时不能删除背景图");
+    const anonPurge = await fetch(`${base}/api/admin/backgrounds/purge-students`, { method: "POST" });
+    assert.equal(anonPurge.status, 401, "免登录模式下匿名请求不能清退学生背景");
+    const anonSettings = await fetch(`${base}/api/system-settings`);
+    assert.equal(anonSettings.status, 200, "免登录模式仍可读取全局设置");
+    assert.equal(((await anonSettings.json()) as { authenticated?: boolean }).authenticated, false, "免登录模式不渲染背景清退入口");
+    assert.equal(existsSync(path.join(backgroundsDir, `${teacher.id}.jpg`)), true, "匿名删除不得带走教师背景");
 
     await new Promise((resolve) => setImmediate(resolve));
     const isolatedTokenPath = path.join(process.env.PROJECTX_TOKEN_DIR!, "tokens.json");
@@ -237,7 +544,7 @@ async function main(): Promise<void> {
       : null;
     assert.equal(homeTokenShaAfter, homeTokenSha, "本脚本不得改写运行账户的 ~/.projectx/tokens.json");
 
-    console.log("verify:student-web-settings 通过（学生无背景图、不能改阅卷/评分、不能上传；教师能力保留；缓存按 Cookie 隔离；匿名不能写设置）");
+    console.log("verify:student-web-settings 通过（学生无背景图、不能改阅卷/评分、不能上传；上限 413 带生效值；本人可删、管理员可清退学生历史背景且不动教师文件；匿名不能写或删）");
   } finally {
     if (server) {
       server.closeAllConnections?.();

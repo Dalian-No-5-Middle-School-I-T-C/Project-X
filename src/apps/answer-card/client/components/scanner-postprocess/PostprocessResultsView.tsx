@@ -44,6 +44,7 @@ export function PostprocessResultsView({ groups, channel, onDelete, onOpen, onSa
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [blockedNotice, setBlockedNotice] = useState<string[] | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -77,6 +78,7 @@ export function PostprocessResultsView({ groups, channel, onDelete, onOpen, onSa
 
   async function runDelete(force: boolean) {
     setDeleting(true);
+    setDeleteError(null);
     try {
       await onDelete(selectedTargets(), force);
       stopSelecting();
@@ -85,7 +87,12 @@ export function PostprocessResultsView({ groups, channel, onDelete, onOpen, onSa
     } catch (error) {
       const err = error as { blocked?: string[] };
       if (err?.blocked?.length) { setBlockedNotice(err.blocked); return; }
-      throw error;
+      // 删除失败必须留在当前视图显示；直接抛给 void onConfirm 会触发扫描端全局
+      // unhandledrejection 遮罩，整页不可用。确认框的开关是 confirmOpen || blockedNotice，
+      // 不清掉上一次的 blockedNotice 就会让框继续挡在错误前面。
+      setConfirmOpen(false);
+      setBlockedNotice(null);
+      setDeleteError(error instanceof Error ? error.message : "删除失败");
     } finally {
       setDeleting(false);
     }
@@ -221,6 +228,7 @@ export function PostprocessResultsView({ groups, channel, onDelete, onOpen, onSa
         <div className="flex items-center gap-3 border-t border-border-subtle bg-card px-4 py-2">
           <b className="text-sm tabular-nums">已选 {selected.size} 张</b>
           <span className="text-xs text-muted-foreground">删除 = 移除本机扫描记录与识别结果，不影响已上传的服务器成绩</span>
+          {deleteError && <span className="text-xs text-destructive-fg" role="alert">{deleteError}</span>}
           <div className="ml-auto flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={stopSelecting}>取消</Button>
             <Button variant="destructive" size="sm" icon={<Trash2 />} disabled={!selected.size} onClick={() => setConfirmOpen(true)}>

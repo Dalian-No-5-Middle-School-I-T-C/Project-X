@@ -1158,10 +1158,23 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE twain_scan_sessions ADD COLUMN warnings_json TEXT",
   ] });
 
-  // v64: 「本次正确答案」展示模式（与 SQLite v64 对齐）。
+  mariadbMigrations.push({ version: 64, name: "scan-correction-provenance", sqls: [
+    "ALTER TABLE scan_correction_pages ADD COLUMN recovery_fingerprint VARCHAR(64)",
+  ] });
+
+  // 语文模板使用 13.1/17.1 这类小题号；INT 在 strict mode 会拒绝写入，
+  // 非 strict 又会把 13.1/13.2 截成同一个 13。统一改成 DOUBLE，保留数值排序。
+  mariadbMigrations.push({ version: 65, name: "question-number-decimals", sqls: [
+    "ALTER TABLE subjective_questions MODIFY number DOUBLE NOT NULL",
+    "ALTER TABLE knowledge_points MODIFY question_number DOUBLE NOT NULL",
+    "ALTER TABLE question_scores MODIFY question_number DOUBLE",
+    "ALTER TABLE answer_overrides MODIFY question_number DOUBLE",
+  ] });
+
+  // v66: 「本次正确答案」展示模式（与 SQLite v66 对齐；本支最初占 64，合 main 后顺延）。
   // text=学生看逐题文字答案（v54 行为），file=学生看教师上传的答案原文件。
   // 默认 'text'：已有库升级后行为不变，由教师在答案配置面板显式切换。
-  mariadbMigrations.push({ version: 64, name: "exam-answer-key-mode", sqls: [
+  mariadbMigrations.push({ version: 66, name: "exam-answer-key-mode", sqls: [
     "ALTER TABLE exams ADD COLUMN answer_key_mode VARCHAR(16) NOT NULL DEFAULT 'text'",
   ] });
 

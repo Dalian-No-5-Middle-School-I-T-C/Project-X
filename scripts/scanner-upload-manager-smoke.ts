@@ -99,6 +99,201 @@ async function main() {
 
     bodies.length = 0;
     assert((await waitTerminal(mgr, mgr.startUpload(baseInput(1)))).status === "done", "带指纹的上传正常完成");
+
+    {
+      // 整卡改分要按「任务是否还在途」禁用：逐页上传时每页现读本机订正，
+      // 在途保存会让服务器收到半旧半新的一份识别快照。
+      const scanJob = mgr.startUpload({
+        kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "扫描_82048",
+        localSessionId: "scan-smoke-1", identityMode: "strict",
+        pages: [{ pageNum: 1, side: "front", groupId: "0", getBlob: async () => blob() }],
+      });
+      assert(mgr.groupUploadBlock("card_1", "0", "scan-smoke-1") !== null, "任务未终态时视为正在上传");
+      assert(mgr.groupUploadBlock("card_1", "9", "scan-smoke-1") === null, "别的组不被误判为在途");
+      const scanResult = await waitTerminal(mgr, scanJob);
+      assert(scanResult.status === "done" || scanResult.status === "error", `扫描任务应进入终态，实际 ${scanResult.status}`);
+      // 完成即解锁；失败但已建远端会话的续传场景由下面一段专门覆盖。
+      if (scanResult.status === "done") assert(mgr.groupUploadBlock("card_1", "0", "scan-smoke-1") === null, "完整上传后不再阻止改分");
+    }
+
+    {
+      // 失败但已建远端会话的任务仍会「重试失败页」，此时改分依旧会撕裂快照（评审 P1）。
+      // 关闭进度卡只摘掉内存任务，恢复记录还在：重新入队会接回同一个远端会话，
+      // 所以锁必须跟着记录走，并给出明确的「放弃续传」出口（评审 P1 复核）。
+      const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+      const values = new Map<string, string>([["projectx_server_url", "https://torn.test"]]);
+      Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => { values.set(key, value); },
+        removeItem: (key: string) => { values.delete(key); },
+        key: (index: number) => [...values.keys()][index] ?? null,
+        get length() { return values.size; },
+      } });
+      try {
+        const { isGroupQueued, readScanUploadRecovery } = await import("../src/apps/answer-card/client/lib/scannerUploadLedger");
+        const torn = createScannerUploadManager(deps({
+          localFetch: async (_url, init) => {
+            const file = (init!.body as FormData).get("file") as Blob;
+            const size = file.size;
+            return jsonRes({ status: "ok", studentId: { status: "ok", value: "82048" }, questions: [], subjectiveQuestions: [], widthPx: size, heightPx: size });
+          },
+          remoteFetch: async url => {
+            if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "torn-session", uploadTokens: ["t1", "t2"] });
+            return jsonRes({ ok: true });
+          },
+        }));
+        const tornId = torn.startUpload({
+          kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "扫描_82048",
+          localSessionId: "scan-torn", identityMode: "strict",
+          pages: [
+            { pageNum: 1, side: "front", groupId: "0", getBlob: async () => blob() },
+            { pageNum: 2, side: "front", groupId: "0", getBlob: async () => { throw new Error("读取第 2 页失败"); } },
+          ],
+        });
+        const tornResult = await waitTerminal(torn, tornId);
+        assert(tornResult.status === "error", `坏页任务应 error，实际 ${tornResult.status}/${tornResult.message}`);
+        const liveTorn = torn.getState().jobs.find(job => job.id === tornId)!;
+        assert(liveTorn.status === "error" && Boolean(liveTorn.remoteSessionId), "失败任务应已建立远端会话，可继续重试失败页");
+        assert(torn.groupUploadBlock("card_1", "0", "scan-torn") !== null, "可续传的失败任务仍锁住整卡改分");
+        assert(torn.groupUploadBlock("card_1", "0", "scan-torn") === "partial-pages", "这一卷的锁应能被「放弃续传」解开");
+        assert(readScanUploadRecovery("card_1", "scan-torn", "0")?.completed === false, "半成品进度要写入恢复记录供重启后续传");
+        assert(torn.dismissJob(tornId), "教师可以关闭这张进度卡");
+        assert(torn.groupUploadBlock("card_1", "0", "scan-torn") !== null, "关闭进度卡后恢复记录仍锁住整卡改分");
+        assert(torn.groupUploadBlock("card_1", "0", "scan-torn") === "partial-pages", "关闭进度卡后这一卷仍可放弃续传");
+        const reloaded = createScannerUploadManager(deps());
+        assert(reloaded.groupUploadBlock("card_1", "0", "scan-torn") !== null, "重启后仍按未完成的恢复记录锁住改分");
+        assert(reloaded.localGroupDeleteBlock("card_1", "0", "scan-torn") !== null, "半成品仍要保住本机原图");
+        const abandoned = reloaded.abandonGroupUpload("card_1", "0", "scan-torn");
+        assert(abandoned.ok === true && reloaded.groupUploadBlock("card_1", "0", "scan-torn") === null,
+          "放弃续传后整卡改分恢复可用");
+        assert(readScanUploadRecovery("card_1", "scan-torn", "0") === null, "放弃续传要删掉恢复记录");
+        assert(reloaded.localGroupDeleteBlock("card_1", "0", "scan-torn") === null, "放弃后本机原图不再为续传保留");
+
+        // 还没关卡就直接放弃：整条失败任务要从队列里摘掉，页面资源随之释放。
+        const holder = createScannerUploadManager(deps({
+          localFetch: async (_url, init) => {
+            const file = (init!.body as FormData).get("file") as Blob;
+            return jsonRes({ status: "ok", studentId: { status: "ok", value: "82048" }, questions: [], subjectiveQuestions: [], widthPx: file.size, heightPx: file.size });
+          },
+          remoteFetch: async url => {
+            if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "held-session", uploadTokens: ["t1", "t2"] });
+            return jsonRes({ ok: true });
+          },
+        }));
+        const heldId = holder.startUpload({
+          kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "扫描_82048",
+          localSessionId: "scan-held", identityMode: "strict",
+          pages: [
+            { pageNum: 1, side: "front", groupId: "0", getBlob: async () => blob() },
+            { pageNum: 2, side: "front", groupId: "0", getBlob: async () => { throw new Error("读取第 2 页失败"); } },
+          ],
+        });
+        assert((await waitTerminal(holder, heldId)).status === "error", "未关闭的坏页任务停在 error");
+        assert(holder.groupUploadBlock("card_1", "0", "scan-held") !== null, "未关闭的半成品任务同样锁住改分");
+        assert(holder.abandonGroupUpload("card_1", "0", "scan-held").ok === true, "放弃续传不要求先关闭进度卡");
+        assert(holder.getState().jobs.some(job => job.id === heldId) === false, "放弃后这条任务从队列里摘掉");
+        assert(holder.groupUploadBlock("card_1", "0", "scan-held") === null, "放弃后改分恢复可用");
+        assert(readScanUploadRecovery("card_1", "scan-held", "0") === null, "放弃要删掉这一组的恢复记录");
+
+        // 页面全都传完、只差提交被业务拒绝（重复学号那类）：这一卷仍锁改分，但不能放弃，
+        // 否则下一次的 reload 会把同一份原卷当成新会话再传一遍（评审 P2）。
+        let completeFails = true;
+        const pending = createScannerUploadManager(deps({
+          remoteFetch: async url => {
+            if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "completion-pending", uploadTokens: ["t1"] });
+            if (url.endsWith(COMPLETE)) return completeFails ? jsonRes({ message: "重复学号：所有相关答题卡需订正后重新保存", failures: [] }, 409) : jsonRes({ ok: true });
+            return jsonRes({ ok: true });
+          },
+        }));
+        const pendingId = pending.startUpload({
+          kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "扫描_82048",
+          localSessionId: "scan-pending", identityMode: "strict",
+          pages: [{ pageNum: 1, side: "front", groupId: "0", getBlob: async () => blob() }],
+        });
+        assert((await waitTerminal(pending, pendingId)).status === "error", "提交被拒时任务停在 error");
+        assert(readScanUploadRecovery("card_1", "scan-pending", "0")?.pages.every(page => page.done) === true, "只差提交时逐页进度都是完成态");
+        assert(pending.groupUploadBlock("card_1", "0", "scan-pending") === "completion-pending", "只差提交的卷仍锁改分但不算可续传");
+        const refusedPending = pending.abandonGroupUpload("card_1", "0", "scan-pending");
+        assert(refusedPending.ok === false && refusedPending.message.includes("只差提交"), "只差提交的任务不能放弃后再传一份原卷");
+        assert(pending.groupUploadBlock("card_1", "0", "scan-pending") === "completion-pending", "放弃被拒后这一卷继续锁着");
+        completeFails = false;
+        pending.retryFailed(pendingId);
+        assert((await waitTerminal(pending, pendingId)).status === "done", "补一次提交就能完成");
+        assert(pending.groupUploadBlock("card_1", "0", "scan-pending") === null, "提交完成后不再阻止改分");
+
+        // 损坏的恢复记录：读不出逐页进度，也读不出这份卷是否已经入库，所以既不能改分也不能放弃——
+        // 放弃会把同一份原卷当新会话再传一遍，把已保存的成绩撤掉（评审 P2）。唯一出口是核对后显式清除。
+        const corruptKey = `projectx-scanner-upload-recovery/${JSON.stringify(["card_1", "scan-corrupt", "0"])}`;
+        values.set(corruptKey, `{"remoteSessionId":"corrupt-session","completed":false`);
+        const corruptMgr = createScannerUploadManager(deps());
+        assert(corruptMgr.groupUploadBlock("card_1", "0", "scan-corrupt") === "recovery-damaged", "损坏记录单独成一种锁");
+        // 坏记录不能把后处理页 reload / 入队判断打断：那些路径用的是不抛异常的完成标记。
+        assert(isGroupQueued("card_1", "scan-corrupt", "0") === false, "损坏记录不能抛异常打断入队判断");
+        assert(corruptMgr.localGroupDeleteBlock("card_1", "0", "scan-corrupt")?.includes("损坏") === true,
+          "删除本机原图时要把损坏记录当拦下的理由，而不是抛异常");
+        const corruptAbandon = corruptMgr.abandonGroupUpload("card_1", "0", "scan-corrupt");
+        assert(corruptAbandon.ok === false && corruptAbandon.message.includes("损坏"), "损坏记录不能被放弃");
+        assert(corruptMgr.groupUploadBlock("card_1", "0", "scan-corrupt") === "recovery-damaged", "放弃被拒后仍然锁着");
+        assert(corruptMgr.discardDamagedRecovery("card_1", "0", "scan-held").ok === false, "没有损坏记录时不能走清除入口");
+        assert(corruptMgr.damagedRecoverySessionId("card_1", "0", "scan-corrupt") === "corrupt-session",
+          "记录尾部截断时仍要读出原远端会话号，教师才知道去核对哪一份");
+        values.set(corruptKey, `{"remoteSessionId":"corrupt-ses`);
+        assert(corruptMgr.damagedRecoverySessionId("card_1", "0", "scan-corrupt") === null, "连会话号都读不出来时如实返回 null");
+        const discarded = corruptMgr.discardDamagedRecovery("card_1", "0", "scan-corrupt");
+        assert(discarded.ok === true && discarded.remoteSessionId === null, "核对后清除要如实报告没能认出会话号");
+        assert(corruptMgr.groupUploadBlock("card_1", "0", "scan-corrupt") === null, "清除后这一组恢复可改分");
+        assert(readScanUploadRecovery("card_1", "scan-corrupt", "0") === null, "清除要真的删掉损坏记录");
+
+        // 一条任务里混着别组的页时不能整条摘掉，否则那组的半成品锁会被连带解开。
+        const mixed = createScannerUploadManager(deps({
+          remoteFetch: async url => {
+            if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "mixed-session", uploadTokens: ["t1", "t2"] });
+            return jsonRes({ ok: true });
+          },
+        }));
+        const mixedId = mixed.startUpload({
+          kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "扫描_混组",
+          localSessionId: "scan-mixed", identityMode: "strict",
+          pages: [
+            { pageNum: 1, side: "front", groupId: "0", getBlob: async () => blob() },
+            { pageNum: 2, side: "front", groupId: "1", getBlob: async () => { throw new Error("读取第 2 页失败"); } },
+          ],
+        });
+        assert((await waitTerminal(mixed, mixedId)).status === "error", "混组任务应停在 error");
+        assert(mixed.groupUploadBlock("card_1", "1", "scan-mixed") !== null, "混组任务的另一组同样锁住改分");
+        const refused = mixed.abandonGroupUpload("card_1", "0", "scan-mixed");
+        assert(refused.ok === false && refused.message.includes("其他试卷"), "跨组任务不得整条放弃");
+        assert(mixed.groupUploadBlock("card_1", "0", "scan-mixed") !== null, "放弃被拒后这一组仍然锁着");
+
+        // 正在传输的任务不能被「放弃续传」顶掉：页面资源还握在任务里。
+        let releaseGate!: () => void;
+        const gate = new Promise<void>(resolve => { releaseGate = resolve; });
+        const live = createScannerUploadManager(deps({
+          remoteFetch: async url => {
+            if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "gate-session", uploadTokens: ["t1"] });
+            if (url.endsWith(PAGES)) { await gate; return jsonRes({ ok: true }); }
+            return jsonRes({ ok: true });
+          },
+        }));
+        const gateId = live.startUpload({
+          kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "扫描_82048",
+          localSessionId: "scan-gate", identityMode: "strict",
+          pages: [{ pageNum: 1, side: "front", groupId: "0", getBlob: async () => blob() }],
+        });
+        const gateDeadline = Date.now() + 3_000;
+        while (live.getState().jobs.find(job => job.id === gateId)?.status !== "uploading") {
+          if (Date.now() > gateDeadline) throw new Error("等待上传中超时");
+          await sleepReal(5);
+        }
+        const busy = live.abandonGroupUpload("card_1", "0", "scan-gate");
+        assert(busy.ok === false && busy.message.includes("正在上传"), "在途任务不能放弃续传");
+        releaseGate();
+        assert((await waitTerminal(live, gateId)).status === "done", "放行后任务正常完成");
+      } finally {
+        if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+        else Reflect.deleteProperty(globalThis, "localStorage");
+      }
+    }
     const sessionBody = JSON.parse(bodies.find((b) => b.url.endsWith(SESSIONS))!.body);
     const completeBody = JSON.parse(bodies.find((b) => b.url.endsWith(COMPLETE))!.body);
     assert(sessionBody.cardVersion === TEST_CARD_VERSION && sessionBody.cardId === "card_1",

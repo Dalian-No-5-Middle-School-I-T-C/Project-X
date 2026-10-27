@@ -12,7 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [22]
+        # CVE-2026-111497：22.x 从 22.23.4 起修复。不要改回浮动的 22。
+        node-version: ["22.23.4"]
 
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +41,9 @@ jobs:
       - name: Core logic verify suite
         run: npm run verify:core-logic
 
+      - name: Card block order persistence regression
+        run: npm run verify:card-block-order
+
       - name: Ladder student identity regression
         run: npx tsx scripts/verify-ladder-students.ts
 
@@ -49,6 +53,10 @@ jobs:
       # 学生端满分口径与 examTime 归一化（PR #305 自带脚本，此前只在本地跑过）
       - name: Student score full-score / examTime regression
         run: npm run verify:student-score-display
+
+      # issue #345：进步/退步按得分率（百分点）判定，不再受各卷满分大小带偏
+      - name: Progress judgement by score rate regression
+        run: npm run verify:progress-score-rate
 
       # Issue #322：学生网页端不能改阅卷/评分设置，也不能看到或上传背景图
       - name: Student web settings and background regression
@@ -91,7 +99,7 @@ jobs:
       - name: Linux x86_64 red pen score cells
         run: npm run verify:recognizer-red-pen
       - name: Full-card correction and legacy recognition drafts (SQLite)
-        run: npm run verify:scan-correction && npm run verify:scan-correction-security && npm run verify:scanner-pending && npm run verify:scanner-retry-concurrency && npm run verify:ladder-options-soft-delete
+        run: npm run verify:scan-correction && npm run verify:scanner-local-correction && npm run verify:scan-correction-security && npm run verify:scanner-pending && npm run verify:scanner-retry-concurrency && npm run verify:ladder-options-soft-delete
       # v57 空置 + 「阅卷中已公布」考试不被强制结考，并检查两套方言迁移版本号不撞号
       - name: Grading-published exam and migration numbering
         run: npm run verify:grading-published-exam
@@ -125,6 +133,8 @@ jobs:
         run: npm run verify:scanner-panel-session
       - name: Scanner postprocess page pure logic, delete guard and mounted views
         run: npm run verify:scanner-postprocess-all
+      - name: Card image rotation mounted component regression
+        run: npm run verify:card-rotation-ui
       - name: Scanner partial transfer failure persistence
         run: npm run verify:scanner-partial-failure
 
@@ -140,6 +150,10 @@ jobs:
         run: npm run verify:scanner-duplex-correction
       - name: Scanner correction preserves valid grades
         run: npm run verify:scanner-correction-safety
+      - name: Legacy correction provenance and roster admission
+        run: npm run verify:scanner-legacy-correction
+      - name: Scanner correction source and selected-save boundaries
+        run: npm run verify:scanner-correction-boundaries
       - name: Scanner review fixes
         run: npm run verify:scanner-review-fixes
       - name: Scanner batch timeout
@@ -158,6 +172,10 @@ jobs:
       # 纯静态断言 + bash -n 语法检查，直接 require 生成器，不需要 dist/。
       - name: Ubuntu server package systemd hardening (R37)
         run: npm run verify:systemd-hardening
+
+      # CVE-2026-111497：版本下限、未修复运行时退出 78、Electron 路径关闭 Brotli 解码。
+      - name: Node.js CVE-2026-111497 runtime gate
+        run: npm run verify:node-runtime-cve
 
       # 发布产物完整性清单（R42）：exe/msi 没有代码签名（无证书，且证书不得入库），
       # 处置是每次打包都生成 SHA256SUMS.txt + BUILD-INTEGRITY.txt，并把签名状态如实写出来。
@@ -213,7 +231,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.23.4
           cache: npm
       - name: Install dependencies
         run: npm install --ignore-scripts
@@ -257,6 +275,8 @@ jobs:
           CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_partial_ci CHARACTER SET utf8mb4;
           CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_correction_ci CHARACTER SET utf8mb4;
           CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_warning_ci CHARACTER SET utf8mb4;
+          CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_legacy_ci CHARACTER SET utf8mb4;
+          CREATE DATABASE IF NOT EXISTS projectx_scanner_batch_boundaries_ci CHARACTER SET utf8mb4;
           CREATE DATABASE IF NOT EXISTS projectx_scanner_postprocess_ci CHARACTER SET utf8mb4;
           GRANT ALL PRIVILEGES ON projectx_scanner_postprocess_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_ci.* TO 'projectx_ci'@'%';
@@ -268,6 +288,8 @@ jobs:
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_partial_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_correction_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_warning_ci.* TO 'projectx_ci'@'%';
+          GRANT ALL PRIVILEGES ON projectx_scanner_batch_legacy_ci.* TO 'projectx_ci'@'%';
+          GRANT ALL PRIVILEGES ON projectx_scanner_batch_boundaries_ci.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_exam_classes_test.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_migration_test.* TO 'projectx_ci'@'%';
           GRANT ALL PRIVILEGES ON projectx_scanner_batch_card_correction_ci.* TO 'projectx_ci'@'%';
@@ -320,6 +342,16 @@ jobs:
           SCANNER_BATCH_MARIADB: "1"
           PROJECTX_MARIADB_DATABASE: projectx_scanner_batch_pending_ci
         run: npm run verify:scanner-pending
+      - name: Legacy correction provenance and upgrade (MariaDB)
+        env:
+          SCANNER_BATCH_MARIADB: "1"
+          PROJECTX_MARIADB_DATABASE: projectx_scanner_batch_legacy_ci
+        run: npm run verify:scanner-legacy-correction
+      - name: Scanner correction source and selected-save boundaries (MariaDB)
+        env:
+          SCANNER_BATCH_MARIADB: "1"
+          PROJECTX_MARIADB_DATABASE: projectx_scanner_batch_boundaries_ci
+        run: npm run verify:scanner-correction-boundaries
       - name: Scanner OCR retry and human correction concurrency (MariaDB)
         env:
           SCANNER_BATCH_MARIADB: "1"
@@ -413,7 +445,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.23.4
           cache: npm
 
       - name: Install dependencies
@@ -430,3 +462,36 @@ jobs:
 
       - name: Build (scanner)
         run: npm run build:scanner:full
+
+  electron-chromium-brotli:
+    name: Electron Chromium Brotli gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.4"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Install Linux platform binaries (npm bug #4828)
+        run: npm install --no-save --ignore-scripts @rollup/rollup-linux-x64-gnu @esbuild/linux-x64
+
+      # 其余 CI 用 --ignore-scripts，没有 Electron 二进制，Chromium 实机检查会被跳过。
+      - name: Download Electron
+        run: node node_modules/electron/install.js
+
+      - name: Install Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgtk-3-0 libnss3 libgbm1 libxss1 libxtst6
+          sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2
+
+      - name: Chromium Brotli decode gate
+        env:
+          # 这条作业必须真的跑实机检查；缺 Electron 二进制时要红，不能静默跳过。
+          PROJECTX_REQUIRE_ELECTRON_PROBE: "1"
+        run: xvfb-run -a npm run verify:node-runtime-cve

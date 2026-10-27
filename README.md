@@ -356,7 +356,7 @@ node scripts/hash-release-artifacts.cjs --check --root <产物目录>
 #### 环境要求
 
 - Windows 操作系统
-- Node.js 24+（开发）/ Node.js 22（Electron 打包）
+- Node.js 须满足 `>=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1`（开发、CI 与打包机同一范围）。25.x 已停更，没有 CVE-2026-111497 的补丁，服务端会拒绝启动。已核对的扫描端 Electron 39.8.10（Chromium 142.0.7444.265）在壳直接加载远端页面，或本地壳向非本机地址发请求时，只接受 gzip 与 deflate
 - Visual Studio 2022（编译 C++ 原生模块需要）
 - OpenCV 4.13+（识别引擎编译需要）
 
@@ -764,10 +764,10 @@ Project-X/
 | `GET` | `/api/analysis/exams/:id/score-table` | 成绩表格数据（年排/班排/名次变化/偏差值/Z值/百分位） |
 | `GET` | `/api/analysis/exams/:id/previous` | 上次同科考试对比（均分/及格率变化） |
 | `GET` | `/api/scores/me/semester-comparison` | 学生本学期 vs 上学期成绩对比 |
-| `GET` | `/api/scores/me/exams/:examId/paper` | 学生「原卷与答案解析」：返回 `answerKeyMode`（`text` / `file`）、`showOriginalPaper`、`pages[]`（原卷页 + 该页逐题文字）、`answers[]`、`answerFiles[]`（每项带 `fileUrl`）、`answerBlocks[]`。**闸门在后端**：未公布 / 未开放原卷且非直发模式 → 404；`text` 模式不下发 `answerFiles`，`file` 模式不下发任何逐题文字，客户端只按 `answerKeyMode` 排版 |  ← v2.7.1 + v64 |
+| `GET` | `/api/scores/me/exams/:examId/paper` | 学生「原卷与答案解析」：返回 `answerKeyMode`（`text` / `file`）、`showOriginalPaper`、`pages[]`（原卷页 + 该页逐题文字）、`answers[]`、`answerFiles[]`（每项带 `fileUrl`）、`answerBlocks[]`。**闸门在后端**：未公布 / 未开放原卷且非直发模式 → 404；`text` 模式不下发 `answerFiles`，`file` 模式不下发任何逐题文字，客户端只按 `answerKeyMode` 排版 |  ← v2.7.1 + v66 |
 | `GET` | `/api/scores/me/exams/:examId/paper/pages/:pageIndex/image` | 某张原卷页原图（仅 `show_original_paper=1` 时可取，否则 404） |  ← v54 |
-| `GET` | `/api/scores/me/exams/:examId/paper/answer-file/:pageIndex` | 教师上传的答案原文件本体（图片 / PDF / DOCX），文件名取库中登记值、`Content-Disposition` 对 DOCX 用 `attachment`；仅 `answer_key_mode='file'` 时开放。R30 媒体白名单已收录该路径 |  ← v64 |
-| `PATCH` | `/api/exams/:examId` | 新增可改列 `answerKeyMode`（`text` / `file`，其余值 400）。切换模式**不动任何数据**：`exam_answer_keys`（文字）与 `exam_answer_key_pages`（原文件）都原样保留，随时可切回 |  ← v64 |
+| `GET` | `/api/scores/me/exams/:examId/paper/answer-file/:pageIndex` | 教师上传的答案原文件本体（图片 / PDF / DOCX），文件名取库中登记值、`Content-Disposition` 对 DOCX 用 `attachment`；仅 `answer_key_mode='file'` 时开放。R30 媒体白名单已收录该路径 |  ← v66 |
+| `PATCH` | `/api/exams/:examId` | 新增可改列 `answerKeyMode`（`text` / `file`，其余值 400）。切换模式**不动任何数据**：`exam_answer_keys`（文字）与 `exam_answer_key_pages`（原文件）都原样保留，随时可切回 |  ← v66 |
 | `GET/PUT/DELETE` | `/api/export/templates/:slot` | 导出模板 CRUD |
 | `POST` | `/api/export/exams/:id/scores` | 按列配置导出 Excel |
 | `GET` | `/api/export/columns` | 导出列元数据 |
@@ -1035,6 +1035,19 @@ Project-X/
 > `express.json({ limit: "8mb" })` 约束，而 base64 会把体积放大到约 4/3，所以真正的外层上限是请求体大小
 > （实测：单张 6 MiB 插图即由 body-parser 返回 413，与配额判定分属两层）。现场要导入更大的图集，
 > 应该改前端形态（分批导入或改走 multipart 上传），而不是把这里调大。
+
+> **个人背景图上传体积**（issue #335，单一来源 `src/shared/backgroundUploadLimits.ts`）
+>
+> `POST /api/users/me/background` 的体积闸门与答题卡资源同一套约定：默认值、`PROJECTX_*`、安全天花板。
+> 5 MiB 够手机照片；老师从扫描件裁出的整页图可以放宽，但不能靠一个拼错的数字把保护关掉。
+> 非法值（非数字、小于 1）回落默认并打印 `[background-upload-limits]`；超过天花板则夹紧。解析不抛错。
+> 超限返回 **413** `UPLOAD_ERROR`，文案带上当前生效上限，例如「上传文件超过大小限制（≤5 MiB）」。
+>
+> | 环境变量 | 默认 | 天花板 | 含义 |
+> |----------|------|--------|------|
+> | `PROJECTX_BACKGROUND_UPLOAD_MIB` | 5 | 32 | 单个背景图上传体积 |
+>
+> 生效档位打在启动日志的 `[background-upload-limits] …` 一行。学生账号仍不能上传（见 #322）；这一档只调节教师和管理员的上传体积。
 
 > **URL 凭据换成单次媒体票据**（安全 R30，单一来源 `src/shared/mediaTicketLimits.ts`）
 >

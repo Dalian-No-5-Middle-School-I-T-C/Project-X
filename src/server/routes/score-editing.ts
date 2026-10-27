@@ -1,4 +1,5 @@
-import { studentCorrection, saveStudentCorrection } from "../services/scanCorrection";
+import { studentCorrection, saveStudentCorrection, recognizeStudentCorrection } from "../services/scanCorrection";
+import { correctionCallerLimiter, correctionSessionLimiter, guardCorrectionRequest } from "../middleware/scanCorrectionRequests";
 import { databaseTimestamp } from "../db/timestamp";
 /**
  * 成绩修改 API
@@ -278,6 +279,16 @@ router.get(
 });
 
 // Whole-card corrections are independent from review submission/assignment routes.
+router.post("/:examId/student/:studentId/correction/recognize",
+  requireExamAccess, requirePermissionCompat(PERMISSIONS.GRADE_WRITE), requireWholeExamGradingAccess,
+  correctionCallerLimiter, correctionSessionLimiter, guardCorrectionRequest(async (req,res) => {
+    try {
+      const exam = await getMysqlDb().get<{card_id:string}>("SELECT card_id FROM exams WHERE id=?",Number(req.params.examId));
+      const card = exam && await new CardRepository().findById(exam.card_id);
+      if (!card) { res.status(404).json({message:"答题卡不存在"}); return; }
+      res.json(await recognizeStudentCorrection(card,Number(req.params.examId),Number(req.params.studentId),req.body));
+    } catch (error) { res.status(409).json({message:error instanceof Error ? error.message : "重新识别失败"}); }
+  }));
 router.route("/:examId/student/:studentId/correction")
   .all(requireExamAccess, requirePermissionCompat(PERMISSIONS.GRADE_WRITE), requireWholeExamGradingAccess)
   .get(async (req, res) => {

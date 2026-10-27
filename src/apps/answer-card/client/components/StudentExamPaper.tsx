@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, Download, ExternalLink, FileText, Images, RefreshCw } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
 import { retryMediaTicketImage } from "../lib/mediaTicketRetry";
+import { RotatedCardImage, RotationButtons, type ImageRotation } from "./RotatedCardImage";
 import type { AnswerBlockCrop } from "../../../../shared/types";
 import {
   ANSWER_KEY_MODE_FILE,
@@ -31,7 +32,7 @@ import {
  *
  * 口径与小程序一致：
  *  · 可见性由后端判定（成绩已公布 + 显示原卷或答案直发），前端不再自行推断；
- *  · v64：答案按 exams.answer_key_mode 二选一渲染 —— 'text' 看逐题文字表，
+ *  · v66：答案按 exams.answer_key_mode 二选一渲染 —— 'text' 看逐题文字表，
  *    'file' 看老师上传的答案文件本身（图片内联，PDF/DOCX 由浏览器打开或下载）；
  *  · 只渲染下发内容，不判对错、不比对本人作答；
  *  · 先看卷（原卷页 + 每页下方按题号的答案），再看本人作答。
@@ -77,9 +78,13 @@ interface Props {
 }
 
 /** 原卷页图片：加载失败时不留破图，也不谎报成功 */
-function PaperImage({ src, alt }: { src: string; alt: string }) {
+function PaperImage({ src, alt, rotation }: { src: string; alt: string; rotation: ImageRotation }) {
+  const [resolvedSrc, setResolvedSrc] = useState(src);
   const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [src]);
+  useEffect(() => {
+    setResolvedSrc(src);
+    setFailed(false);
+  }, [src]);
   if (failed) {
     return (
       <div className="flex h-40 items-center justify-center rounded-md border border-border-subtle bg-secondary text-sm text-muted-foreground">
@@ -88,16 +93,17 @@ function PaperImage({ src, alt }: { src: string; alt: string }) {
     );
   }
   return (
-    <img
-      src={src}
+    <RotatedCardImage
+      src={resolvedSrc}
       alt={alt}
+      rotation={rotation}
       loading="lazy"
       onError={(event) => {
-        // 票据被服务端淘汰时先静默重签一次；仍然失败才落到「加载失败」占位
-        if (retryMediaTicketImage(event.currentTarget)) return;
+        // 票据被服务端淘汰时先静默重签一次；新地址写回状态，旋转后的 SVG 也用它
+        if (retryMediaTicketImage(event.currentTarget, setResolvedSrc)) return;
         setFailed(true);
       }}
-      className="w-full rounded-md border border-border-subtle bg-card object-contain"
+      className="rounded-md border border-border-subtle bg-card"
     />
   );
 }
@@ -127,8 +133,10 @@ function AnswerTable({ answers }: { answers: PaperAnswer[] }) {
  * 直发模式的一页答案文件：图片直接内联渲染，PDF/DOCX 交给浏览器打开或下载。
  * 不做预览器 —— 后端对 DOCX 发的是 attachment，PDF 在新标签页里由浏览器原生渲染，
  * 两条路都比在页面里嵌 iframe 少一层 CSP / 跨源凭据的不确定性。
+ * rotation 与整卷共用：老师直发的多为扫描件，横竖放歪的可能性和原卷一样，
+ * 右上角的旋转按钮不该只对原卷生效。
  */
-function AnswerFileCard({ file }: { file: AnswerFile }) {
+function AnswerFileCard({ file, rotation }: { file: AnswerFile; rotation: ImageRotation }) {
   const url = mediaUrl(file.fileUrl);
   return (
     <Card>
@@ -140,7 +148,7 @@ function AnswerFileCard({ file }: { file: AnswerFile }) {
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         {file.isImage ? (
-          <PaperImage src={url} alt={`答案第 ${file.pageIndex} 页`} />
+          <PaperImage src={url} alt={`答案第 ${file.pageIndex} 页`} rotation={rotation} />
         ) : (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border-subtle bg-secondary px-3 py-2.5">
             <span className="min-w-0 truncate text-sm text-foreground">
@@ -166,6 +174,7 @@ export function StudentExamPaper({ examId, examName, onBack }: Props) {
   const [data, setData] = useState<PaperPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [rotation, setRotation] = useState<ImageRotation>(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -188,7 +197,7 @@ export function StudentExamPaper({ examId, examName, onBack }: Props) {
   // 下发哪一套数据由后端 answerKeyMode 决定，前端只按它排版；字段缺失（旧后端响应）退回文字模式
   const fileMode = normalizeAnswerKeyMode(data?.answerKeyMode) === ANSWER_KEY_MODE_FILE;
   const answerFiles = data?.answerFiles ?? [];
-  // v64 之前没有 showOriginalPaper 字段，当时能看到这一页就意味着原卷是开的，故缺省按「开」处理
+  // v66 之前没有 showOriginalPaper 字段，当时能看到这一页就意味着原卷是开的，故缺省按「开」处理
   const paperOpen = data ? data.showOriginalPaper !== 0 : false;
 
   return (
@@ -199,6 +208,7 @@ export function StudentExamPaper({ examId, examName, onBack }: Props) {
         </Button>
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground">{examName || data?.examName || ""}</span>
+          <RotationButtons size="icon-sm" variant="ghost" rotation={rotation} onChange={setRotation} />
           <Button variant="ghost" size="sm" onClick={() => void load()} disabled={loading} className="gap-1.5">
             <RefreshCw size={16} />刷新
           </Button>
@@ -234,7 +244,7 @@ export function StudentExamPaper({ examId, examName, onBack }: Props) {
                   </CardContent>
                 </Card>
               ) : (
-                answerFiles.map((file) => <AnswerFileCard key={file.pageIndex} file={file} />)
+                answerFiles.map((file) => <AnswerFileCard key={file.pageIndex} file={file} rotation={rotation} />)
               )}
             </div>
           ) : (
@@ -287,7 +297,7 @@ export function StudentExamPaper({ examId, examName, onBack }: Props) {
                     </CardHeader>
                     <CardContent className="flex flex-col gap-3">
                       {page.isImage ? (
-                        <PaperImage src={mediaUrl(page.imageUrl)} alt={`原卷第 ${page.pageIndex} 页`} />
+                        <PaperImage src={mediaUrl(page.imageUrl)} alt={`原卷第 ${page.pageIndex} 页`} rotation={rotation} />
                       ) : (
                         <p className="m-0 rounded-md border border-border-subtle bg-secondary px-3 py-2 text-sm text-muted-foreground">
                           该页为 {page.mimeType || "非图片"} 文件，浏览器内可直接点击图片链接查看。
@@ -322,7 +332,7 @@ export function StudentExamPaper({ examId, examName, onBack }: Props) {
                       </div>
                     </CardHeader>
                     <CardContent>
-                      <PaperImage src={mediaUrl(block.imageUrl)} alt={block.blockTitle || "我的作答"} />
+                      <PaperImage src={mediaUrl(block.imageUrl)} alt={block.blockTitle || "我的作答"} rotation={rotation} />
                     </CardContent>
                   </Card>
                 ))}

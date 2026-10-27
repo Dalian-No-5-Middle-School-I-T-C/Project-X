@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Printer, X } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { formatScore } from "../util/format";
+import { examPairInTrend, scoreRateChange } from "../../../../shared/scoreProgress";
 import type { StudentTrendPoint } from "../../../../shared/types";
 
 interface WeakRow { point_text: string; question_numbers: string; rate: number }
@@ -44,9 +45,14 @@ export function StudentReportPrint({
       .catch(() => setWeak([]));
   }, [examId, studentId]);
 
-  const current = trend && trend.length > 0 ? trend[trend.length - 1] : null;
-  const previous = trend && trend.length > 1 ? trend[trend.length - 2] : null;
+  // 报告单必须描述「所选的那一场」：打印历史考试时若固定取趋势数组的最后两项，
+  // 表头和总分是所选场，排名/得分率/较上次却描述更晚的考试（评审 P2）。
+  const pair = trend ? examPairInTrend(trend, examId) : null;
+  const current = pair?.current ?? null;
+  const previous = pair?.previous ?? null;
   const scoreChange = current && previous ? Math.round((current.totalScore - previous.totalScore) * 10) / 10 : null;
+  // issue #345：两场考试满分不同则绝对分不可比，进退步按得分率变化（百分点）
+  const scoreRateDelta = scoreRateChange(current?.scoreRate, previous?.scoreRate);
   const rankChange = current && previous && previous.rank > 0 ? previous.rank - current.rank : null;
   const previousName = previous?.examName ?? null;
 
@@ -55,7 +61,7 @@ export function StudentReportPrint({
   const bodyProps = {
     examName, studentName, studentNumber,
     totalScore, objectiveScore, subjectiveScore,
-    current, previousName, scoreChange, rankChange, weakRows,
+    current, previousName, scoreChange, scoreRateDelta, rankChange, weakRows,
   };
 
   return (
@@ -105,15 +111,17 @@ export function StudentReportPrint({
   );
 }
 
-function ReportBody({
+export function ReportBody({
   examName, studentName, studentNumber, totalScore, objectiveScore, subjectiveScore,
-  current, previousName, scoreChange, rankChange, weakRows,
+  current, previousName, scoreChange, scoreRateDelta, rankChange, weakRows,
 }: {
   examName: string; studentName: string; studentNumber: string;
   totalScore: number; objectiveScore: number; subjectiveScore: number;
   current: StudentTrendPoint | null;
   previousName: string | null;
   scoreChange: number | null;
+  /** 得分率变化（百分点）；两次考试任一缺满分时为 null，不判定进退步 */
+  scoreRateDelta: number | null;
   rankChange: number | null;
   weakRows: WeakRow[];
 }) {
@@ -148,11 +156,18 @@ function ReportBody({
       </div>
 
       {/* 相对上次 */}
-      {(scoreChange != null || rankChange != null) && (
+      {(scoreRateDelta != null || scoreChange != null || rankChange != null) && (
         <div className="mt-5 rounded border border-[#ccc] p-3 text-sm">
           <p className="m-0 font-semibold">较上次考试{previousName ? `（${previousName}）` : ""}</p>
           <p className="m-0 mt-1 text-[#333]">
-            总分{scoreChange == null ? "—" : scoreChange >= 0 ? `↑ ${scoreChange}` : `↓ ${Math.abs(scoreChange)}`} 分；
+            得分率{scoreRateDelta == null
+              ? "—（缺少满分依据，不做进退步判定）"
+              : scoreRateDelta > 0
+                ? `↑ +${scoreRateDelta} pp`
+                : scoreRateDelta < 0
+                  ? `↓ ${scoreRateDelta} pp`
+                  : "持平"}；
+            总分{scoreChange == null ? "—" : scoreChange > 0 ? `↑ ${scoreChange}` : scoreChange < 0 ? `↓ ${Math.abs(scoreChange)}` : "持平"} 分；
             名次{rankChange == null ? "—" : rankChange > 0 ? `↑ ${rankChange}` : rankChange < 0 ? `↓ ${Math.abs(rankChange)}` : "持平"}
           </p>
         </div>

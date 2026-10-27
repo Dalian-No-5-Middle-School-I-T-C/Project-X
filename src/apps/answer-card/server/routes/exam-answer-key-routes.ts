@@ -8,7 +8,7 @@
  *   每次的正确答案不同，因此不能塞进卡片级 objective_answer_keys。
  * - 本路由只服务教师侧：文字答案存 exam_answer_keys，上传的答案原文件存
  *   exam_answer_key_pages + 磁盘，两者的学生可见性由 exams.answer_key_mode 二选一决定，
- *   实际下发在学生端 `/api/scores/me/exams/:examId/paper*` 完成（v64）。
+ *   实际下发在学生端 `/api/scores/me/exams/:examId/paper*` 完成（v66）。
  * - 接口不判对错，也不与 question_scores 交互。
  * - OCR 结果是草稿，必须由教师显式 PUT 保存后才可能对学生可见。
  */
@@ -69,7 +69,7 @@ type ExamRow = {
   name?: string;
   show_original_paper: number | null;
   score_published: number | null;
-  /** v64: text=逐题文字答案 file=答案原文件直发（旧库缺列时按 text） */
+  /** v66: text=逐题文字答案 file=答案原文件直发（旧库缺列时按 text） */
   answer_key_mode?: string | null;
 };
 

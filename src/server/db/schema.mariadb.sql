@@ -239,7 +239,7 @@ CREATE TABLE IF NOT EXISTS subjective_blocks (
 CREATE TABLE IF NOT EXISTS subjective_questions (
     id               VARCHAR(36) PRIMARY KEY,
     block_id         VARCHAR(36) NOT NULL,
-    number           INT NOT NULL,
+    number           DOUBLE NOT NULL,
     score            DOUBLE NOT NULL,
     style            VARCHAR(30) NOT NULL,
     kind             VARCHAR(30) NOT NULL,
@@ -288,7 +288,7 @@ CREATE TABLE IF NOT EXISTS card_assets (
 CREATE TABLE IF NOT EXISTS knowledge_points (
     id              INT AUTO_INCREMENT PRIMARY KEY,
     card_id         VARCHAR(20) NOT NULL,
-    question_number INT NOT NULL,
+    question_number DOUBLE NOT NULL,
     point_text      TEXT NOT NULL,
     category        VARCHAR(100),
     sort_order      INT DEFAULT 0,
@@ -329,7 +329,7 @@ CREATE TABLE IF NOT EXISTS exams (
     review_enabled TINYINT DEFAULT 0,       -- v1.9.0: 网阅开关
     exam_mode      VARCHAR(20) NOT NULL DEFAULT 'formal',  -- v34: quiz=晨测 formal=大考(默认)
     show_original_paper TINYINT DEFAULT 0,  -- v54: 0=不向学生展示原卷 1=成绩发布后可查看原卷与答案解析
-    answer_key_mode     VARCHAR(16) NOT NULL DEFAULT 'text',  -- v64: text=逐题文字答案 file=答案原文件直发
+    answer_key_mode     VARCHAR(16) NOT NULL DEFAULT 'text',  -- v66: text=逐题文字答案 file=答案原文件直发
     created_by    INT,
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -589,7 +589,7 @@ CREATE TABLE IF NOT EXISTS question_scores (
     id              INT AUTO_INCREMENT PRIMARY KEY,
     exam_id         INT NOT NULL,
     student_id      INT NOT NULL,
-    question_number INT,
+    question_number DOUBLE,
     question_id     VARCHAR(36),
     block_id        VARCHAR(36),
     score           DOUBLE,
@@ -609,7 +609,7 @@ CREATE TABLE IF NOT EXISTS answer_overrides (
     id              INT AUTO_INCREMENT PRIMARY KEY,
     exam_id         INT NOT NULL,
     card_id         VARCHAR(20) NOT NULL,
-    question_number INT,
+    question_number DOUBLE,
     question_id     VARCHAR(36),
     block_id        VARCHAR(36),
     score_type      VARCHAR(20) NOT NULL,
@@ -977,5 +977,5 @@ CREATE TABLE IF NOT EXISTS exam_answer_key_pages (
 CREATE TABLE IF NOT EXISTS scan_correction_pages (
  source_type VARCHAR(32) NOT NULL, source_id VARCHAR(128) NOT NULL, card_version VARCHAR(24) NOT NULL,
  layout_json LONGTEXT NOT NULL, recognition_json LONGTEXT NOT NULL, revision BIGINT NOT NULL DEFAULT 0,
- modified_by INTEGER, modified_at VARCHAR(32), PRIMARY KEY (source_type, source_id)
+ modified_by INTEGER, modified_at VARCHAR(32), recovery_fingerprint VARCHAR(64), PRIMARY KEY (source_type, source_id)
 );

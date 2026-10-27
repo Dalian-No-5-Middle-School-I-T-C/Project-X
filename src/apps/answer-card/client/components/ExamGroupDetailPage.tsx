@@ -125,8 +125,9 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
   }, [groupId, fullOnly, classId, trackFilter]);
 
   useEffect(() => {
-    if (subTab === "question-analysis" && !questionAnalysis) loadQuestionAnalysis();
-    if (subTab === "class-compare" && !classComparison) loadClassComparison();
+    // 这两个接口都按 track 取数，切换文理后必须重新请求；不能因为已有旧结果就跳过。
+    if (subTab === "question-analysis") void loadQuestionAnalysis();
+    if (subTab === "class-compare") void loadClassComparison();
   }, [subTab, trackFilter, groupId]);
 
   async function loadOverview() {
@@ -157,6 +158,7 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
   const ccReqSeq = useRef(0);
   async function loadQuestionAnalysis() {
     const seq = ++qaReqSeq.current;
+    setQuestionAnalysis(null);
     try {
       const data = await fetchJson<GroupQuestionAnalysisResponse>(`/api/exam-groups/${groupId}/question-analysis?track=${trackFilter}`);
       if (seq === qaReqSeq.current) setQuestionAnalysis(data);
@@ -166,6 +168,7 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
   }
   async function loadClassComparison() {
     const seq = ++ccReqSeq.current;
+    setClassComparison(null);
     try {
       const data = await fetchJson<GroupClassComparisonResponse>(`/api/exam-groups/${groupId}/class-comparison?track=${trackFilter}`);
       if (seq === ccReqSeq.current) setClassComparison(data);

@@ -3,12 +3,12 @@
 // 协议沿用服务端既有三步接口：POST sessions → POST pages(逐页 multipart) → POST complete。
 // 韧性：单页自动重试 2 次（退避 1s/3s，同 token 服务端幂等覆盖）；断线/api_disabled 转 paused，
 // 网络恢复自动续传；存在彻底失败页时不发 complete（服务端会话保持可续传态）。
-import { authFetch, getStoredApiKey, remoteScannerFetch } from "../auth/api";
+import { authFetch, ensureScannerRemoteGate, getStoredApiKey, remoteScannerFetch } from "../auth/api";
 import { SERVER_URL_KEY, readServerUrl } from "./scannerMode";
 import { assertCredentialTransportAllowed } from "./remoteCredentialTransport";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
 import { applyScanStudentId, uniqueScanConflictCards } from "../../../../shared/scanPages";
-import { forgetScanUploadRecovery, readScanUploadRecovery, rememberQueuedGroup, writeScanUploadRecovery } from "./scannerUploadLedger";
+import { damagedScanUploadRecoverySessionId, forgetScanUploadRecovery, scanUploadRecoveryState, readScanUploadRecovery, rememberQueuedGroup, writeScanUploadRecovery } from "./scannerUploadLedger";
 import type { ScanBatchFailure, ScanConflictCard, ScanBatchResponse } from "../../../../shared/scanPages";
 import type { CombinedGradingRow } from "../../../../shared/types";
 
@@ -22,6 +22,24 @@ export type UploadJobStatus =
   | "done"         // 全部完成
   | "error"        // 会话创建失败 / 存在彻底失败页
   | "cancelled";   // 用户取消（队列中或暂停中）
+
+/** 任务还没交出终态：这一卷的识别结果正在被逐页读走，此时改分会让服务器收到半旧半新的快照。 */
+export function isUploadingStatus(status: UploadJobStatus): boolean {
+  return status === "queued" || status === "creating" || status === "uploading"
+    || status === "completing" || status === "paused";
+}
+
+/**
+ * 是否还要锁住整卡改分。除了「在途」，失败任务只要已经建了远端会话也算：
+ * 「重试失败页」只补传失败的页，成功过的页不会重传，此时改分同样会留下半旧半新的快照。
+ * 取消与从未建会话的失败没有远端半成品，不挡改分。
+ */
+export function isUploadLocking(status: UploadJobStatus, remoteSessionId?: string | null): boolean {
+  return isUploadingStatus(status) || (status === "error" && Boolean(remoteSessionId));
+}
+
+/** 改分锁的来源，决定界面文案与能不能「放弃续传」。 */
+export type GroupUploadBlock = "in-flight" | "partial-pages" | "completion-pending" | "recovery-damaged" | null;
 
 export interface UploadPageInput {
   pageNum: number;
@@ -245,7 +263,8 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       }
       if (j.apiKey && !headers.has("X-Api-Key")) headers.set("X-Api-Key", j.apiKey);
       const resolved = /^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `${j.remoteBase}${url.startsWith("/") ? url : `/${url}`}`;
-      return fetch(resolved, { ...init, headers });
+      // 与 remoteScannerFetch 同一口径：先装好编码限制，再创建远端请求。
+      return ensureScannerRemoteGate().then(() => fetch(resolved, { ...init, headers }));
     };
   }
 
@@ -753,6 +772,84 @@ if (j.cancelled) throw cancelledError(j);
       && job.pages.some(page => page.input.groupId === groupId));
   }
 
+  /** 改分锁定看的是「同一份原卷的同一条组」，所以卡号缺失时按通配匹配内存任务。 */
+  function lockableGroupJobs(cardId: string | null | undefined, groupId: string, localSessionId: string): JobRecord[] {
+    return jobs.filter(job => job.kind === "scan" && job.localSessionId === localSessionId
+      && job.pages.some(page => page.input.groupId === groupId)
+      && (!cardId || job.cardId === cardId));
+  }
+
+  /**
+   * 这一卷被上传挡住整卡改分的原因：
+   * - `in-flight`：还在传输，等它结束或在进度卡里取消；
+   * - `partial-pages`：有些页已经传出去、还有页失败可续传——可以「放弃续传」后改分；
+   * - `completion-pending`：页都传完了只差提交（重复学号这类业务拒绝）——只能重试保存，
+   *   放弃会留下已经建好的回执，下一次reload还会把同一份卷当新会话再传一遍（评审 P2）；
+   * - `recovery-damaged`：本机恢复记录损坏，读不出远端会话与逐页进度。可能是「只差提交」，
+   *   也可能是 complete 成功但响应丢了——放弃会把同一份原卷当新会话再传一遍并撤掉已有成绩，
+   *   所以这里既不给放弃也不能改分，只能先核对服务器上的原会话再清除记录（评审 P2）。
+   * 内存任务被 `dismissJob()` 摘掉后，未完成的恢复记录给出同样的判断。
+   */
+  function groupUploadBlock(cardId: string | null | undefined, groupId: string, localSessionId?: string): GroupUploadBlock {
+    if (!localSessionId) return null;
+    const groupJobs = lockableGroupJobs(cardId, groupId, localSessionId);
+    if (groupJobs.some(job => isUploadingStatus(job.status))) return "in-flight";
+    const failed = groupJobs.find(job => job.status === "error" && job.remoteSessionId);
+    if (failed) return failed.pages.some(page => !page.done) ? "partial-pages" : "completion-pending";
+    const state = scanUploadRecoveryState(cardId, localSessionId, groupId);
+    if (state === "damaged") return "recovery-damaged";
+    if (state === "partial-pages") return "partial-pages";
+    return state === "completion-pending" ? "completion-pending" : null;
+  }
+
+  /**
+   * 放弃这一卷的半成品续传：删掉恢复记录并摘掉该组的失败任务，改分随即解锁。
+   * 远端那份会话永远等不到 complete，因此不会写入成绩；这一卷之后按新会话整卷重传。
+   */
+  function abandonGroupUpload(cardId: string, groupId: string, localSessionId: string): { ok: true } | { ok: false; message: string } {
+    const block = groupUploadBlock(cardId, groupId, localSessionId);
+    if (block === "in-flight") return { ok: false, message: "这一卷正在上传，请等它传完或在进度卡里取消任务" };
+    if (block === "completion-pending") {
+      return { ok: false, message: "这一卷的页面都已上传，只差提交（重复学号这类冲突由服务器拒的）；请点「重试保存」或先处理冲突卷，放弃会再传出一份原卷" };
+    }
+    if (block === "recovery-damaged") {
+      return { ok: false, message: "本机恢复记录已损坏，无法确认服务器上这份卷是否已经入库；请先核对原上传会话，再用「已核对服务器，清除损坏记录」" };
+    }
+    const groupJobs = lockableGroupJobs(cardId, groupId, localSessionId);
+    const foreign = groupJobs.filter(job => job.pages.some(page => page.input.groupId !== groupId));
+    if (foreign.length > 0) return { ok: false, message: "这一条任务里还有其他试卷，请在进度卡里逐条重试或取消" };
+    for (const job of groupJobs) {
+      for (const page of job.pages) releasePage(page);
+      const index = jobs.indexOf(job);
+      if (index >= 0) jobs.splice(index, 1);
+    }
+    forgetScanUploadRecovery(cardId, localSessionId, groupId);
+    notify();
+    return { ok: true };
+  }
+
+  /** 损坏记录里还能认出来的远端会话号（供界面告诉教师去核对哪一份），认不出就返回 null。 */
+  function damagedRecoverySessionId(cardId: string, groupId: string, localSessionId: string): string | null {
+    return groupUploadBlock(cardId, groupId, localSessionId) === "recovery-damaged"
+      ? damagedScanUploadRecoverySessionId(cardId, localSessionId, groupId)
+      : null;
+  }
+
+  /**
+   * 教师已按提示到服务器核对过原会话（那一卷没有已保存的成绩）后，清掉损坏的恢复记录。
+   * 这是唯一能解开 `recovery-damaged` 的入口：它删掉的可能是「已入库」的唯一线索，
+   * 所以只在该状态下开放，且由调用方在核对后显式确认。
+   */
+  function discardDamagedRecovery(cardId: string, groupId: string, localSessionId: string): { ok: true; remoteSessionId: string | null } | { ok: false; message: string } {
+    if (groupUploadBlock(cardId, groupId, localSessionId) !== "recovery-damaged") {
+      return { ok: false, message: "这一卷没有损坏的恢复记录，不需要清除" };
+    }
+    const remoteSessionId = damagedScanUploadRecoverySessionId(cardId, localSessionId, groupId);
+    forgetScanUploadRecovery(cardId, localSessionId, groupId);
+    notify();
+    return { ok: true, remoteSessionId };
+  }
+
   /** 这份扫描原卷是否已经占住上传资格。导入任务没有本机会话号，不能拿来挡新扫描；缺会话号也不当通配。 */
   function hasGroupUpload(cardId: string, groupId: string, localSessionId?: string): boolean {
     if (!localSessionId) return false;
@@ -772,7 +869,10 @@ if (j.cancelled) throw cancelledError(j);
     const inFlight = scanGroupJobs(cardId, groupId, localSessionId).some(job => job.status === "creating"
       || job.status === "uploading" || job.status === "completing" || job.status === "paused");
     if (inFlight) return "这份卷正在上传，请等上传结束再删除本机原图";
-    const recovery = readScanUploadRecovery(cardId, localSessionId, groupId);
+    let recovery: ReturnType<typeof readScanUploadRecovery>;
+    try { recovery = readScanUploadRecovery(cardId, localSessionId, groupId); }
+    // 损坏的记录既不能当「没传过」，也不该让删除入口直接抛异常：把读取错误原样当成拦下的理由。
+    catch (error) { return error instanceof Error ? error.message : "上传恢复记录损坏，请保留本机原卷并核对服务器会话"; }
     return recovery && !recovery.completed ? "这份卷尚未上传完成，请恢复上传后再删除本机原图" : null;
   }
 
@@ -991,7 +1091,7 @@ if (j.cancelled) throw cancelledError(j);
       retryFailed(id);
     },
     refreshResults,
-    saveSession: async (id: string, sessionId: string) => {
+    saveSession: async (id: string, sessionId: string, groupId?: string) => {
       const source = jobs.find(j => j.id === id);
       const owner = source && jobs.find(j => j.remoteSessionId === sessionId && j.remoteBase === source.remoteBase
         && j.apiKey === source.apiKey && j.cardId === source.cardId);
@@ -1000,7 +1100,7 @@ if (j.cancelled) throw cancelledError(j);
       for (const job of jobs) if (job.remoteBase === source.remoteBase && job.cardId === source.cardId) job.resultRevision = (job.resultRevision ?? 0) + 1;
       return jobFetch(owner ?? source)(`/api/scanner/upload/sessions/${encodeURIComponent(sessionId)}/complete`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(version ? { cardVersion: version } : {}), signal: timeoutSignal(pageTimeoutMs),
+        body: JSON.stringify({ ...(version ? { cardVersion: version } : {}), ...(groupId !== undefined ? { groupId } : {}) }), signal: timeoutSignal(pageTimeoutMs),
       });
     },
     requestJob: (id: string, url: string, init?: RequestInit) => {
@@ -1013,6 +1113,10 @@ if (j.cancelled) throw cancelledError(j);
     },
     startUpload,
     hasGroupUpload,
+    groupUploadBlock,
+    abandonGroupUpload,
+    damagedRecoverySessionId,
+    discardDamagedRecovery,
     localGroupDeleteBlock,
     releaseGroupForLocalDelete,
     retryFailed,

@@ -51,6 +51,7 @@ const cardAssetEnvVarsClearedHere = [
   "PROJECTX_CARD_ASSET_MAX_MIB", "PROJECTX_CARD_ASSET_MAX_COUNT",
   "PROJECTX_CARD_ASSET_TOTAL_MIB", "PROJECTX_CARD_ASSET_UPLOAD_MIB"
 ];
+const backgroundUploadEnvVarsClearedHere = ["PROJECTX_BACKGROUND_UPLOAD_MIB"];
 const mediaTicketEnvVarsClearedHere = [
   "PROJECTX_MEDIA_TICKET_TTL_SEC", "PROJECTX_MEDIA_TICKET_MAX_PER_USER", "PROJECTX_MEDIA_TICKET_MAX_TOTAL"
 ];
@@ -66,6 +67,7 @@ for (const key of [
   ...aiQuotaEnvVarsClearedHere,
   ...wechatEnvVarsClearedHere,
   ...cardAssetEnvVarsClearedHere,
+  ...backgroundUploadEnvVarsClearedHere,
   ...mediaTicketEnvVarsClearedHere
 ]) delete process.env[key];
 
@@ -2823,6 +2825,52 @@ async function main(): Promise<void> {
         "超天花板的覆盖值被夹紧（512MiB / 2000 条 / 512MiB）");
       check(describeCardAssetLimits().includes("单图 ≤6MiB") && describeCardAssetLimits().includes("上传 ≤12MiB"),
         `启动摘要可读：${describeCardAssetLimits()}`);
+
+      const {
+        BACKGROUND_UPLOAD_ENV_VARS, DEFAULT_BACKGROUND_UPLOAD_BYTES, resolveBackgroundUploadLimit,
+        describeBackgroundUploadLimit, MAX_BACKGROUND_UPLOAD_BYTES, backgroundUploadTooLargeMessage,
+        formatBackgroundUploadMib
+      } = await import("../src/shared/backgroundUploadLimits");
+      check(BACKGROUND_UPLOAD_ENV_VARS.slice().sort().join() === backgroundUploadEnvVarsClearedHere.slice().sort().join()
+        && BACKGROUND_UPLOAD_ENV_VARS.every((name) => !(name in process.env)),
+        "脚本清理的 PROJECTX_BACKGROUND_UPLOAD_MIB 与限制表逐一对应，宿主机变量不会渗入默认档位断言");
+      check(MAX_BACKGROUND_UPLOAD_BYTES === DEFAULT_BACKGROUND_UPLOAD_BYTES
+        && MAX_BACKGROUND_UPLOAD_BYTES === 5 * MIB
+        && resolveBackgroundUploadLimit({}).notices.length === 0,
+        "未配置时背景图上传按默认 5 MiB 生效");
+      check(resolveBackgroundUploadLimit({ PROJECTX_BACKGROUND_UPLOAD_MIB: "8" }).limits.maxUploadBytes === 8 * MIB
+        && resolveBackgroundUploadLimit({ PROJECTX_BACKGROUND_UPLOAD_MIB: "1.5" }).limits.maxUploadBytes === Math.round(1.5 * MIB),
+        "PROJECTX_BACKGROUND_UPLOAD_MIB 在天花板内可覆盖默认值");
+      check(resolveBackgroundUploadLimit({ PROJECTX_BACKGROUND_UPLOAD_MIB: "abc" }).limits.maxUploadBytes === DEFAULT_BACKGROUND_UPLOAD_BYTES
+        && resolveBackgroundUploadLimit({ PROJECTX_BACKGROUND_UPLOAD_MIB: "0" }).limits.maxUploadBytes === DEFAULT_BACKGROUND_UPLOAD_BYTES
+        && resolveBackgroundUploadLimit({ PROJECTX_BACKGROUND_UPLOAD_MIB: "-3" }).notices.length >= 1
+        && resolveBackgroundUploadLimit({ PROJECTX_BACKGROUND_UPLOAD_MIB: "  " }).notices.length === 0,
+        "背景图上限非法值（非数字 / 0 / 负数）回落默认值并留告警，空白视为未配置");
+      check(resolveBackgroundUploadLimit({ PROJECTX_BACKGROUND_UPLOAD_MIB: "999999" }).limits.maxUploadBytes === 32 * MIB,
+        "背景图上限超过天花板时夹紧到 32 MiB");
+      check(backgroundUploadTooLargeMessage(5 * MIB) === "上传文件超过大小限制（≤5 MiB）"
+        && backgroundUploadTooLargeMessage(Math.round(1.5 * MIB)) === "上传文件超过大小限制（≤1.5 MiB）"
+        && formatBackgroundUploadMib(32 * MIB) === "32 MiB",
+        "413 文案带上当前生效上限");
+      check(describeBackgroundUploadLimit().includes("上传 ≤5 MiB") && describeBackgroundUploadLimit().includes("天花板 32 MiB"),
+        `背景图上传启动摘要可读：${describeBackgroundUploadLimit()}`);
+      const readmeForBackground = readFileSync(path.resolve("README.md"), "utf8");
+      check(BACKGROUND_UPLOAD_ENV_VARS.every((name) => readmeForBackground.includes(name)),
+        "README 配置表登记 PROJECTX_BACKGROUND_UPLOAD_MIB");
+      const backgroundRouteSource = readFileSync(path.resolve("src/apps/answer-card/server/index.ts"), "utf8");
+      check(!/fileSize:\s*5\s*\*\s*1024\s*\*\s*1024/.test(backgroundRouteSource)
+        && /fileSize:\s*MAX_BACKGROUND_UPLOAD_BYTES/.test(backgroundRouteSource),
+        "背景图上传体积走 MAX_BACKGROUND_UPLOAD_BYTES，不再硬编码 5 MiB");
+      const { resolveUserBackgroundPath } = await import("../src/apps/answer-card/server/userBackgrounds");
+      const backgroundDir = path.join(tempDir, "background-path-check");
+      check(resolveUserBackgroundPath(backgroundDir, 12)?.endsWith(`${path.sep}12.jpg`) === true
+        && resolveUserBackgroundPath(backgroundDir, "12")?.endsWith(`${path.sep}12.jpg`) === true
+        && resolveUserBackgroundPath(backgroundDir, 0) === null
+        && resolveUserBackgroundPath(backgroundDir, -1) === null
+        && resolveUserBackgroundPath(backgroundDir, 1.5) === null
+        && resolveUserBackgroundPath(backgroundDir, "../etc/passwd") === null
+        && resolveUserBackgroundPath(backgroundDir, "12.jpg") === null,
+        "背景文件路径只接受正整数用户 id，拒绝目录穿越");
       check(resolveMediaTicketLimits({ PROJECTX_MEDIA_TICKET_TTL_SEC: "60" }).limits.ttlSeconds === 60
         && resolveMediaTicketLimits({ PROJECTX_MEDIA_TICKET_TTL_SEC: "99999" }).limits.ttlSeconds === 3600
         && resolveMediaTicketLimits({}).limits.ttlSeconds === DEFAULT_MEDIA_TICKET_LIMITS.ttlSeconds
@@ -3554,8 +3602,8 @@ async function main(): Promise<void> {
       check(p2RetrySource.indexOf("invalidateMediaTicket(failedUrl)") < p2RetrySource.indexOf("resignMediaTicketUrl(failedUrl)"),
         "P2-3：重签前先作废缓存里的旧票（顺序反了就会把刚签到的新票删掉）");
       check(/retryMediaTicketImage\(event\.currentTarget\)/.test(p2GradeSource)
-        && /if \(retryMediaTicketImage\(event\.currentTarget\)\) return;\s*\n\s*setFailed\(true\);/.test(p2PaperSource),
-        "P2-3：切块图与学生卷页面图都挂了 onError 重签（只修一处，另一处照样白屏）");
+        && /if \(retryMediaTicketImage\(event\.currentTarget, setResolvedSrc\)\) return;\s*\n\s*setFailed\(true\);/.test(p2PaperSource),
+        "P2-3：切块图与学生卷页面图都挂了 onError 重签，学生页把重签地址写回状态");
 
       // P2-1：卸载前的自动保存必须把服务端返回的新 revision 接住
       const p2FlushAt = /keepalive: true\s*\}\)\.then\(async \(response\) => \{/.test(p2AppSource);

@@ -14,6 +14,7 @@ const path = require("node:path");
 
 const rootDir = path.resolve(__dirname, "..");
 const packageJson = require(path.join(rootDir, "package.json"));
+const { NODE_RUNTIME_CVE_SHELL_CHECK } = require(path.join(rootDir, "electron", "node-runtime-security.cjs"));
 
 const runtimeDependencies = [
   "adm-zip",
@@ -97,7 +98,7 @@ function createRuntimePackageJson() {
       start: "PROJECTX_AUTH_ENFORCE=${PROJECTX_AUTH_ENFORCE:-1} PROJECTX_ENABLE_SCANNER=${PROJECTX_ENABLE_SCANNER:-0} PROJECTX_ENABLE_SCANNER_CLIENT_API=${PROJECTX_ENABLE_SCANNER_CLIENT_API:-1} PROJECTX_MARIADB_HOST=${PROJECTX_MARIADB_HOST:-} PROJECTX_MARIADB_PORT=${PROJECTX_MARIADB_PORT:-3306} PROJECTX_MARIADB_USER=${PROJECTX_MARIADB_USER:-} PROJECTX_MARIADB_PASSWORD=${PROJECTX_MARIADB_PASSWORD:-} PROJECTX_MARIADB_DATABASE=${PROJECTX_MARIADB_DATABASE:-projectx} PROJECTX_PDF_FONT_PATH=${PROJECTX_PDF_FONT_PATH:-/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc} PROJECTX_PDF_FONT_POSTSCRIPT_NAME=${PROJECTX_PDF_FONT_POSTSCRIPT_NAME:-NotoSansCJKsc-Regular} node dist/server/index.mjs"
     },
     engines: {
-      node: ">=22"
+      node: ">=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1"
     },
     dependencies
   };
@@ -157,12 +158,18 @@ This is the browser-accessible web server package. It includes dist/web for the 
 
 \`\`\`bash
 sudo apt update
-sudo apt install -y nodejs npm build-essential python3 make g++ fonts-noto-cjk
+sudo apt install -y build-essential python3 make g++ fonts-noto-cjk
 \`\`\`
 
-Node.js 22 LTS or newer is recommended. better-sqlite3 is installed on the Ubuntu host for the local ABI.
+Node.js must already fix CVE-2026-111497 (Brotli decoder out-of-bounds write):
 
-Ubuntu 24's default nodejs package is older than 22; install Node.js 22 or newer before running npm install.
+- 22.23.4 or any later 22.x
+- 24.22.1 or any later 24.x
+- 26.12.1 or newer
+
+Ubuntu 24's \`nodejs\` apt package is older than these and is not a supported runtime. The systemd unit executes \`/usr/bin/node\`, so that path has to be the patched binary before \`sudo bash systemd/install.sh\`. The installer checks it, and the server exits 78 on an older runtime. \`RestartPreventExitStatus=78\` keeps systemd from restart-looping that failure.
+
+better-sqlite3 is installed on the Ubuntu host for the local ABI.
 
 ## AI Service
 
@@ -390,6 +397,8 @@ Environment=PROJECTX_PDF_FONT_POSTSCRIPT_NAME=NotoSansCJKsc-Regular
 ExecStart=/usr/bin/node /opt/project-x-server/dist/server/index.mjs
 Restart=always
 RestartSec=5
+# 78 = 运行时未修复 CVE-2026-111497 时的主动退出。不要重启循环把旧 Node 反复拉起来。
+RestartPreventExitStatus=78
 
 # ── 沙箱 ──
 # ProtectSystem=full 而不是 strict：AI sidecar 的 .venv 就住在 /opt/project-x-server 下，
@@ -444,6 +453,18 @@ SRC_DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [ "$(id -u)" != "0" ]; then
   echo "[install] 需要 root 权限：sudo bash systemd/install.sh" >&2
+  exit 1
+fi
+
+# CVE-2026-111497：单元写死 /usr/bin/node。版本不够时服务进程会退出 78，
+# 这里先拒绝，避免装完才发现起不来。检查脚本与 electron/node-runtime-security.cjs 同源。
+NODE_BIN="/usr/bin/node"
+if [ ! -x "$NODE_BIN" ]; then
+  echo "[install] 未找到 $NODE_BIN。CVE-2026-111497 要求 Node.js 22.23.4、24.22.1 或 26.12.1 及以上，且单元执行的就是这个路径。" >&2
+  exit 1
+fi
+if ! env -u PROJECTX_NODE_VERSION_UNDER_TEST "$NODE_BIN" -e '${NODE_RUNTIME_CVE_SHELL_CHECK}'; then
+  echo "[install] $NODE_BIN ($("$NODE_BIN" -v 2>/dev/null || echo unknown)) 未修复 CVE-2026-111497。请安装 Node.js 22.23.4、24.22.1 或 26.12.1 及以上，并让 /usr/bin/node 指向它。" >&2
   exit 1
 fi
 

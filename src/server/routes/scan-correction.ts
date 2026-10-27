@@ -2,6 +2,7 @@ import { Router } from "express";
 import { getMysqlDb } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
 import { requirePermissionCompat, requireWholeExamGradingAccess } from "../../apps/answer-card/server/middleware";
+import { authorizeAmbiguousLocalSession } from "../../server/middleware/scanner-scope";
 import { PERMISSIONS } from "../auth/permissions";
 import { resolveScannerExam } from "../services/scannerExam";
 import { recognizeSessionCorrection, saveSessionCorrection, sessionCorrection } from "../services/scanCorrection";
@@ -18,6 +19,16 @@ export function scanCorrectionRouter(prefix: "session" | "sessions", remote: boo
       const session = await getMysqlDb().get<{card_id:string}>("SELECT card_id FROM twain_scan_sessions WHERE id=?",req.params.sessionId);
       if (!session) { res.status(404).json({message:"扫描会话不存在"}); return; }
       const resolved = await resolveScannerExam(session.card_id,String(req.params.sessionId));
+      // Scanner sync imports cards without creating local exams. The enclosing session
+      // scope already distinguishes these originals from ambiguous or deleted exams.
+      // 多场未归档考试、只剩归档考试等无法唯一确定归属的情况也一样：本地整卡改分
+      // 只改本机扫描记录，不应因为归属不唯一而整页不可用；正式成绩入库仍在后续流程校验。
+      if (!remote && (!resolved.exam || resolved.allExamIds.length === 0)) {
+        // 教师/管理员 + 归档绑定检查 + 每场候选考试的整卷授权 + GRADE_WRITE，
+        // 与订正文档里原图、结果读取用的是同一个 helper。
+        await authorizeAmbiguousLocalSession(req, res, next, resolved);
+        return;
+      }
       if (!resolved.exam && req.user) { res.status(409).json({message:"无法确定考试归属"}); return; }
       if (resolved.exam) req.params.examId = String(resolved.exam.id);
       requirePermissionCompat(PERMISSIONS.GRADE_WRITE)(req,res,() => { void requireWholeExamGradingAccess(req,res,next).catch(next); });

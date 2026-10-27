@@ -17,6 +17,11 @@ import { trackAnalysisCall } from "../services/aiTelemetry";
 // 安全（R11）：AI 计费与并发配额（判定与占位原子完成）
 import { AiQuotaError, reserveAiCall } from "../services/aiQuota";
 import type { SubjectWeaknessItem, StudentTrendPoint } from "../../shared/types";
+import {
+  judgeProgress,
+  scoreRateChange,
+  type ProgressDirection
+} from "../../shared/scoreProgress";
 import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropService";
 import {
   groupAnswersByPage,
@@ -48,6 +53,25 @@ const scoreRepo = new ScoreRepository();
 const userRepo = new UserRepository();
 
 router.use(authMiddleware);
+
+/**
+ * 学科进退步方向：取该学科最近两场考试，按**得分率变化（百分点）**判定（issue #345）。
+ *
+ * 旧口径用绝对分差 `> 3 分`，会被满分大小带偏——150 分卷涨 3 分只有 2%，
+ * 100 分卷涨 3 分是 3%，同一阈值在不同卷子上代表的变化量不同。
+ * 任一场解析不出满分即 `unknown`（不虚构分母，也不退回绝对分）。
+ *
+ * `/me/subject-comparison` 与 `/me/ai-analysis` 共用本函数，避免两处各写一套规则。
+ */
+function subjectTrendFromScoreRate(points: StudentTrendPoint[]): ProgressDirection {
+  const sorted = [...points].sort((a, b) => String(a.examTime).localeCompare(String(b.examTime)));
+  if (sorted.length < 2) return "stable";
+  const change = scoreRateChange(
+    sorted[sorted.length - 1].scoreRate,
+    sorted[sorted.length - 2].scoreRate
+  );
+  return judgeProgress(change);
+}
 
 type AccessibleError = { status: number; message: string };
 
@@ -123,15 +147,18 @@ async function assertStudentAccessible(
   return { status: 403, message: "权限不足" };
 }
 
-/** 解析学生的主班级 ID（用于 AI 分析上下文） */
+/** 解析学生的主班级 ID（用于 AI 分析上下文）
+ *  与成绩侧「当前班级」同一口径：在读优先 → 加入时间最新 → class_id 最大。
+ *  此前按 joined_at 取最早一条，调班后仍留在原班的学生会拿到旧班的班级均分。 */
 async function resolveStudentPrimaryClassId(studentId: number): Promise<number | null> {
   const db = getMysqlDb();
   const row = await db.get<{ class_id: number }>(
     `SELECT cs.class_id AS class_id
      FROM class_students cs
      JOIN classes c ON c.id = cs.class_id
+     JOIN grades g ON g.id = c.grade_id
      WHERE cs.student_id = ?
-     ORDER BY cs.joined_at ASC, c.sort_order ASC, cs.class_id ASC
+     ORDER BY (c.archived_at IS NULL AND g.archived_at IS NULL) DESC, cs.joined_at DESC, cs.class_id DESC
      LIMIT 1`,
     studentId
   );
@@ -230,15 +257,8 @@ router.get("/me/subject-comparison", async (req: Request, res: Response) => {
     const gapToClass = Math.round((avgScore - avgClassAvg) * 10) / 10;
     const bestScore = Math.max(...scores);
     const worstScore = Math.min(...scores);
-    // 趋势判断：最近两次考试
-    const sorted = [...points].sort((a, b) => String(a.examTime).localeCompare(String(b.examTime)));
-    let trend: "up" | "down" | "stable" = "stable";
-    if (sorted.length >= 2) {
-      const last = sorted[sorted.length - 1].totalScore;
-      const prev = sorted[sorted.length - 2].totalScore;
-      if (last - prev > 3) trend = "up";
-      else if (prev - last > 3) trend = "down";
-    }
+    // 趋势判断：最近两次考试的得分率变化（见 subjectTrendFromScoreRate）
+    const trend = subjectTrendFromScoreRate(points);
 
     subjects.push({ subject, examCount: points.length, avgScore, avgClassAvg, gapToClass, bestScore, worstScore, trend });
   }
@@ -360,14 +380,7 @@ router.post("/me/ai-analysis", async (req: Request, res: Response) => {
     const gap = Math.round((avg - classAvg) * 10) / 10;
     const best = Math.max(...scores);
     const worst = Math.min(...scores);
-    const sorted = [...points].sort((a, b) => String(a.examTime).localeCompare(String(b.examTime)));
-    let trend: "up" | "down" | "stable" = "stable";
-    if (sorted.length >= 2) {
-      const last = sorted[sorted.length - 1].totalScore;
-      const prev = sorted[sorted.length - 2].totalScore;
-      if (last - prev > 3) trend = "up";
-      else if (prev - last > 3) trend = "down";
-    }
+    const trend = subjectTrendFromScoreRate(points);
     return { subject, examCount: points.length, avgScore: avg, avgClassAvg: classAvg, gapToClass: gap, bestScore: best, worstScore: worst, trend };
   });
 
@@ -390,8 +403,13 @@ router.post("/me/ai-analysis", async (req: Request, res: Response) => {
     suggestions.push(`重点提升 ${weakSubjects[0].split("（")[0]}，可针对性做专项练习。`);
   }
   if (decliningSubjects.length > 0) {
-    weakPoints.push(`成绩下滑学科：${decliningSubjects.join("、")}。最近一次考试分数有所下降，需要关注。`);
+    weakPoints.push(`成绩下滑学科：${decliningSubjects.join("、")}。最近一次考试的得分率有所下降，需要关注。`);
     suggestions.push(`回顾 ${decliningSubjects.join("、")} 近期错题，分析失分原因。`);
+  }
+  // issue #345：满分解析不出来的学科不参与得分率比较，需要向学生说明结论不完整
+  const unjudgedSubjects = subjectSummaries.filter((s) => s.trend === "unknown").map((s) => s.subject);
+  if (unjudgedSubjects.length > 0) {
+    caveats.push(`${unjudgedSubjects.join("、")} 的考试缺少满分依据，未参与进步/退步判定。`);
   }
   if (strongSubjects.length > 0) {
     suggestions.push(`保持 ${strongSubjects.join("、")} 的优势，继续巩固练习。`);
@@ -426,7 +444,7 @@ router.post("/me/ai-analysis", async (req: Request, res: Response) => {
   });
 });
 
-// ── v54: 学生「查看原卷 / 查看答案解析」（v64 追加答案原文件直发） ──
+// ── v54: 学生「查看原卷 / 查看答案解析」（v66 追加答案原文件直发） ──
 
 type StudentPaperAccess =
   | {
@@ -448,7 +466,7 @@ type StudentPaperAccess =
  * 学生查看原卷/答案的硬门（后端强制，前端隐藏按钮不等于授权）：
  * 考试未被软删除 → 本人有成绩 → 成绩已公布 → 「显示原卷」与「答案原文件直发」至少开一项。
  *
- * v64 为什么把它并列：选择「答案原文件直发」本身就是教师把答案交给学生的动作，
+ * v66 为什么把它并列：选择「答案原文件直发」本身就是教师把答案交给学生的动作，
  * 而这类考试常常没有单独上传原卷图片；若仍要求「显示原卷」才会开门，老师按字面
  * 配置后学生根本看不到入口（公布闸门与面板文案相反是本项目反复踩过的坑）。
  * 原卷页图片依旧只受「显示原卷」控制，直发模式不会顺带把试卷图泄露出去。
@@ -563,7 +581,7 @@ router.get("/me/exams/:examId/paper/pages/:pageIndex/image", async (req: Request
     res.status(400).json({ message: "无效的页码" });
     return;
   }
-  // v64：直发模式可以单独开门（不必开「显示原卷」），因此这里必须再确认一次原卷确实被放开，
+  // v66：直发模式可以单独开门（不必开「显示原卷」），因此这里必须再确认一次原卷确实被放开，
   // 否则只想要「答案文件」的考试会把试卷图片一并被取走。
   if (!access.exam.showOriginalPaper) {
     res.status(404).json({ message: "本场考试未开放原卷查看" });
@@ -587,7 +605,7 @@ router.get("/me/exams/:examId/paper/pages/:pageIndex/image", async (req: Request
 });
 
 /**
- * GET /api/scores/me/exams/:examId/paper/answer-file/:pageIndex — 答案原文件字节（v64）
+ * GET /api/scores/me/exams/:examId/paper/answer-file/:pageIndex — 答案原文件字节（v66）
  *
  * 只在 exams.answer_key_mode='file' 时提供，门与原卷完全同一套（公布 + 入口 + 本人有成绩）。
  * 页码只走 DB 登记的记录解析文件名，URL 不含文件名，无法构造路径穿越；

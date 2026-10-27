@@ -1,6 +1,18 @@
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
-import type { StudentTrendPoint, StudentSemesterComparison, SemesterSummary } from "../../shared/types";
+import type {
+  SemesterSubjectComparison,
+  StudentSemesterComparison,
+  StudentTrendPoint,
+  SemesterSummary
+} from "../../shared/types";
+import {
+  hasResolvableFullScore,
+  judgeProgress,
+  meanScoreRate,
+  scoreRateChange,
+  scoreRateOf
+} from "../../shared/scoreProgress";
 import { AnalysisRepository } from "./AnalysisRepository";
 import { examClassPredicate, examDisplayClass } from "../services/examClassMemberships";
 
@@ -87,7 +99,7 @@ export class ScoreRepository {
           SELECT COUNT(*) FROM student_scores s3 WHERE s3.exam_id = ss.exam_id
         ) AS class_size,
         -- v54: 学生端「查看原卷」入口条件（已公布 + 教师开启显示原卷），与 /paper 接口同一道门。
-        -- v64: 「答案原文件直发」本身就等于把答案交给学生，同样算开门条件。这两处必须与
+        -- v66: 「答案原文件直发」本身就等于把答案交给学生，同样算开门条件。这两处必须与
         -- assertStudentPaperVisible 保持一致，否则列表露出的入口点进去会 404。
         CASE WHEN e.score_published = 1
               AND (e.show_original_paper = 1 OR e.answer_key_mode = 'file')
@@ -159,17 +171,29 @@ export class ScoreRepository {
         -- PR #256（v41）：未公布考试不进入成长曲线
         AND e.score_published = 1
       ORDER BY COALESCE(e.start_time, e.end_time, e.created_at) ASC
-    `, studentId) as Array<Omit<StudentTrendPoint, "percentile">>;
+    `, studentId) as Array<Omit<StudentTrendPoint, "percentile" | "fullScore" | "scoreRate">>;
 
-    return rows.map((r) => ({
-      ...r,
-      // 归一化 examTime：正常为字符串，个别驱动配置可能返 Date（见文件头 dateOnly 注释）
-      examTime: dateOnly(r.examTime),
-      percentile:
-        r.classSize > 1 && r.rank != null
-          ? Math.round(((r.classSize - r.rank) / (r.classSize - 1)) * 1000) / 10
-          : null as unknown as number
-    })) as StudentTrendPoint[];
+    // issue #345：趋势与学期对比要按得分率判定进退步，这里补齐满分，
+    // 口径与 getStudentScores 同源（getExamFullScoreMap）。解析不出来时记 null，
+    // 不能留 0——否则下游分不清「得 0 分」和「算不出得分率」。
+    const fullScoreMap = await this.analysisRepo.getExamFullScoreMap(
+      [...new Set(rows.map((r) => Number(r.examId)))]
+    );
+
+    return rows.map((r) => {
+      const fullScore = fullScoreMap.get(Number(r.examId)) ?? 0;
+      return {
+        ...r,
+        // 归一化 examTime：正常为字符串，个别驱动配置可能返 Date（见文件头 dateOnly 注释）
+        examTime: dateOnly(r.examTime),
+        fullScore: hasResolvableFullScore(fullScore) ? fullScore : null,
+        scoreRate: scoreRateOf(r.totalScore, fullScore),
+        percentile:
+          r.classSize > 1 && r.rank != null
+            ? Math.round(((r.classSize - r.rank) / (r.classSize - 1)) * 1000) / 10
+            : null as unknown as number
+      };
+    }) as StudentTrendPoint[];
   }
 
   private buildSemesterSummary(label: string, points: StudentTrendPoint[]): SemesterSummary {
@@ -188,6 +212,8 @@ export class ScoreRepository {
       endDate: dates[dates.length - 1] ?? "",
       examCount: points.length,
       avgScore: Math.round((scores.reduce((sum, score) => sum + score, 0) / scores.length) * 10) / 10,
+      // 得分率均值：任一场解析不出满分即整体不可判定（见 meanScoreRate 注释）
+      avgScoreRate: meanScoreRate(points.map((p) => p.scoreRate)),
       subjects: Array.from(bySubject.entries())
         .map(([subject, subjectPoints]) => {
           const subjectScores = subjectPoints.map((p) => p.totalScore);
@@ -199,6 +225,7 @@ export class ScoreRepository {
             subject,
             examCount: subjectPoints.length,
             avgScore,
+            avgScoreRate: meanScoreRate(subjectPoints.map((p) => p.scoreRate)),
             bestScore: Math.max(...subjectScores),
             avgClassGap
           };
@@ -214,8 +241,10 @@ export class ScoreRepository {
         current: null,
         previous: null,
         avgScoreChange: null,
+        avgScoreRateChange: null,
         improvedSubjects: [],
-        declinedSubjects: []
+        declinedSubjects: [],
+        subjectComparisons: []
       };
     }
 
@@ -241,20 +270,32 @@ export class ScoreRepository {
       ? this.buildSemesterSummary(previousEntry.label, previousEntry.points)
       : null;
 
+    // 绝对分差只作展示：满分不同的两场卷子之间 3 分不代表同等的变化量（issue #345）。
     const avgScoreChange = previous
       ? Math.round((current.avgScore - previous.avgScore) * 10) / 10
       : null;
+    const avgScoreRateChange = scoreRateChange(current.avgScoreRate, previous?.avgScoreRate);
 
+    // 进退步判定只看得分率变化（百分点）；缺满分即 direction=unknown，不贴标签。
+    const subjectComparisons: SemesterSubjectComparison[] = [];
     const improvedSubjects: string[] = [];
     const declinedSubjects: string[] = [];
     if (previous) {
-      const prevBySubject = new Map(previous.subjects.map((item) => [item.subject, item.avgScore]));
+      const prevBySubject = new Map(previous.subjects.map((item) => [item.subject, item]));
       for (const subject of current.subjects) {
-        const prevAvg = prevBySubject.get(subject.subject);
-        if (prevAvg == null) continue;
-        const delta = Math.round((subject.avgScore - prevAvg) * 10) / 10;
-        if (delta >= 3) improvedSubjects.push(subject.subject);
-        else if (delta <= -3) declinedSubjects.push(subject.subject);
+        const prevSubject = prevBySubject.get(subject.subject);
+        if (!prevSubject) continue;
+        const change = scoreRateChange(subject.avgScoreRate, prevSubject.avgScoreRate);
+        const direction = judgeProgress(change);
+        subjectComparisons.push({
+          subject: subject.subject,
+          currentScoreRate: subject.avgScoreRate,
+          previousScoreRate: prevSubject.avgScoreRate,
+          scoreRateChange: change,
+          direction
+        });
+        if (direction === "up") improvedSubjects.push(subject.subject);
+        else if (direction === "down") declinedSubjects.push(subject.subject);
       }
     }
 
@@ -262,8 +303,10 @@ export class ScoreRepository {
       current,
       previous,
       avgScoreChange,
+      avgScoreRateChange,
       improvedSubjects,
-      declinedSubjects
+      declinedSubjects,
+      subjectComparisons
     };
   }
 

@@ -55,7 +55,7 @@ const geometrySchema = z.object({
   imageWidth: z.number().int().positive().max(100000), imageHeight: z.number().int().positive().max(100000),
   imageToLayout: z.array(z.number().finite()).length(9), layoutToImage: z.array(z.number().finite()).length(9),
 });
-const recognitionSchema = z.object({
+export const recognitionSchema = z.object({
   geometry: geometrySchema.optional(),
   pageNumber: z.number().int().positive().optional(),
   identity: z.object({ status: z.enum(["verified", "unverified"]), code: z.string(), cardId: z.string().optional(), pageNumber: z.number().int().positive().optional() }),
@@ -69,6 +69,9 @@ const recognitionSchema = z.object({
     blockId: z.string().optional(), questionId: z.string(), questionNumber: z.union([z.number(), z.string()]),
     score: z.number().finite().nonnegative(), maxScore: z.number().finite().nonnegative(),
     status: z.string(), confidence: z.number().finite(),
+    // 判分要靠 `no_valid_subjective_score` 这道字串区分「没画斜线」与「画了但没采纳」，
+    // 这里丢字段就等于把空白大题一路退回存疑队列（issue #352）。
+    message: z.string().max(120).optional(),
     validCells: z.array(z.any()), invalidCells: z.array(z.any()),
   })).max(1000),
 });
@@ -611,6 +614,9 @@ router.post("/sessions/:sessionId/groups/:groupId/discard", dualAuth, async (req
 router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
+    const selected = z.string().regex(/^\d+$/).max(64).optional().safeParse(req.body?.groupId);
+    if (!selected.success) { res.status(400).json({ message: "groupId 必须是有效的答题卡组编号" }); return; }
+    const saveGroupId = selected.data;
     const db = await getMysqlDb();
 
     const session = await db.get<{ id: string; card_id: string; page_count: number; status: string; card_version: string | null; version_source: string }>(
@@ -656,31 +662,41 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     const uploadedCount = Number(uploaded?.cnt ?? 0);
     const totalCount = Number(total?.cnt ?? 0);
 
-    // v1.6.0: 检查完整性 — 未全部上传完成时阻止标记 completed
-    const complete = uploadedCount >= totalCount && totalCount > 0;
-    const status = complete ? "completed" : "incomplete";
+    const card = await new CardRepository().findById(session.card_id);
+    if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+    const records = (await listScanRecordsGroupedByStudent(String(sessionId))).flatMap(group => group.records);
+    const selectedGroup = saveGroupId === undefined ? undefined : groupSessionPages(card, records).groups.get(saveGroupId);
+    if (saveGroupId !== undefined && !selectedGroup) {
+      res.status(404).json({ message: "答题卡分组不存在" }); return;
+    }
+    const completionRecords = selectedGroup ? selectedGroup.map(page => page.record) : records;
+    const selectedUploaded = completionRecords.filter(record => ["uploaded", "completed"].includes(record.ocr_status)).length;
+
+    // A named save checks its own pages; automatic completion still checks the whole session.
+    const complete = completionRecords.length > 0 && selectedUploaded === completionRecords.length;
+    const status = uploadedCount >= totalCount && totalCount > 0 ? "completed" : "incomplete";
     let reviewCards: import("../../shared/scanPages").ScanConflictCard[] = [];
 
     if (complete) {
-      const fullSession = await db.get<{ card_id: string }>("SELECT card_id FROM twain_scan_sessions WHERE id = ?", sessionId);
-      const card = await new CardRepository().findById(fullSession!.card_id);
-      if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
-      const groups = await listScanRecordsGroupedByStudent(String(sessionId));
-      if (groups.some(group => group.records.some(record => !record.recognition || !record.student_id))) {
+      if (completionRecords.some(record => !record.recognition || !record.student_id)) {
         res.status(409).json({ message: "图片已保存，但缺少本机识别结果；请使用新版扫描端重试上传，成绩尚未入库" });
         return;
       }
-      // 不传 blockUnreviewed。上传管理器没有「先确认存疑题再提交」的步骤，
-      // 低置信度或未配答案的题仍按原协议入库，并在结果里带 needsReviewCount。
+      // 存疑题不拦入库（issue #352 口径）：低置信度或未配答案的题照常写正式成绩，
+      // 回执里带回 needsReviewCount，复核在异常卷队列与成绩修改侧继续。
       // 若这里改成 409，双面订正等既有完成流程会停在 error，成绩也写不进去。
-      // 后处理页自己在 needsReviewCount > 0 时不入队。
-      const batch = await processScannerSession(card, String(sessionId), "save");
+      const batch = await processScannerSession(card, String(sessionId), "save", saveGroupId);
       reviewCards = batch.reviewCards ?? [];
       if (batch.failures.length) {
         res.status(409).json({ ok: false, message: "部分答题卡未入库，请处理以下问题后重试", ...batch });
         return;
       }
-      const { exam: savedExam } = await resolveScannerExam(fullSession!.card_id, String(sessionId));
+      if (saveGroupId !== undefined && !batch.results.some(result => result.groupId === saveGroupId && result.saved)) {
+        res.status(409).json({ ...batch, ok: false, saved: false, code: "SCAN_CARD_NOT_SAVED",
+          message: "此卷尚未入库，请刷新并核对处理结果" });
+        return;
+      }
+      const { exam: savedExam } = await resolveScannerExam(session.card_id, String(sessionId));
       const linkedExams = savedExam?.status === "grading" ? [savedExam] : [];
       for (const exam of linkedExams) {
         await recomputeExamRankings(db, exam.id);
@@ -695,12 +711,15 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
       "UPDATE twain_scan_sessions SET status = ?, page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
       status, uploadedCount, sessionId
     );
-    if (complete) await db.run("UPDATE twain_scan_records SET ocr_status = 'completed' WHERE session_id = ?", sessionId);
+    if (complete) {
+      if (saveGroupId === undefined) await db.run("UPDATE twain_scan_records SET ocr_status = 'completed' WHERE session_id = ?", sessionId);
+      else for (const record of completionRecords) await db.run("UPDATE twain_scan_records SET ocr_status = 'completed' WHERE session_id = ? AND id = ?",sessionId,record.id);
+    }
 
     if (!complete) {
       res.status(400).json({
         ok: false,
-        message: `上传未完成：${uploadedCount}/${totalCount} 页已上传，请补传缺失页面后再提交`,
+        message: `上传未完成：${selectedUploaded}/${completionRecords.length} 页已上传，请补传缺失页面后再提交`,
         pagesUploaded: uploadedCount,
         pagesTotal: totalCount,
       });
@@ -709,7 +728,7 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
 
     res.json({
       ok: true,
-      message: `扫描完成：${uploadedCount}/${totalCount} 页已上传并完成服务端判分`,
+      message: saveGroupId === undefined ? `扫描完成：${uploadedCount}/${totalCount} 页已上传并完成服务端判分` : "所选答题卡已保存",
       reviewCards,
       pagesUploaded: uploadedCount,
       pagesTotal: totalCount,

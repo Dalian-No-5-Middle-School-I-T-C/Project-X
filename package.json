@@ -4,6 +4,9 @@
   "description": "Project-X answer card scanning desktop app; Web version deployed separately via dist/web/.",
   "author": "Project-X",
   "private": true,
+  "engines": {
+    "node": ">=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1"
+  },
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -40,6 +43,8 @@
     "server": "tsx src/apps/answer-card/server/index.ts",
     "verify:auth": "tsx scripts/verify-auth.ts",
     "verify:student-score-display": "tsx scripts/verify-student-score-fullscore-examtime.ts",
+    "verify:progress-score-rate": "tsx scripts/verify-progress-score-rate.ts",
+    "sync:score-progress": "tsx scripts/sync-score-progress-browser.ts",
     "verify:student-web-settings": "tsx scripts/verify-student-web-settings.ts",
     "verify:mariadb": "tsx scripts/verify-mariadb.ts",
     "verify:security-critical": "tsx scripts/verify-security-critical.ts",
@@ -49,9 +54,11 @@
     "verify:demo-credentials": "tsx scripts/verify-demo-credentials.ts",
     "verify:demo-credentials:mariadb": "tsx scripts/verify-demo-credentials.ts --mariadb",
     "verify:systemd-hardening": "tsx scripts/verify-systemd-hardening.ts",
+    "verify:node-runtime-cve": "tsx scripts/verify-node-runtime-cve.ts",
     "verify:release-integrity": "tsx scripts/verify-release-integrity.ts",
     "verify:card-export-revision": "tsx scripts/verify-card-export-revision.ts",
     "verify:card-export-revision:mariadb": "tsx scripts/verify-card-export-revision.ts --mariadb",
+    "verify:card-block-order": "tsx scripts/verify-card-block-order.ts",
     "verify:a3": "tsx scripts/verify-a3.ts",
     "verify:feedback-260923": "tsx scripts/feedback-260923-smoke.ts",
     "verify:round5-db-upsert": "tsx scripts/verify-round5-db-upsert.ts",
@@ -115,6 +122,9 @@
     "verify:scanner-upload-flow": "tsx scripts/scanner-upload-flow-smoke.ts",
     "verify:scanner-duplex-correction": "tsx scripts/scanner-duplex-correction-smoke.ts",
     "verify:scan-correction": "tsx scripts/scan-correction-smoke.ts",
+    "verify:scanner-local-correction": "tsx scripts/scanner-local-correction-smoke.ts",
+    "verify:scanner-legacy-correction": "tsx scripts/scanner-legacy-correction-smoke.ts",
+    "verify:scanner-correction-boundaries": "tsx scripts/scanner-correction-boundaries-smoke.ts",
     "verify:scanner-retry-concurrency": "tsx scripts/scanner-retry-concurrency-smoke.ts",
     "verify:ladder-options-soft-delete": "tsx scripts/ladder-options-soft-delete-smoke.ts",
     "verify:scan-correction-security": "tsx scripts/scan-correction-security-smoke.ts",
@@ -131,6 +141,7 @@
     "verify:scanner-postprocess": "tsx scripts/scanner-postprocess-smoke.ts",
     "verify:scanner-postprocess-ui": "tsx scripts/scanner-postprocess-ui-smoke.ts",
     "verify:scanner-postprocess-delete": "tsx scripts/scanner-postprocess-delete-smoke.ts",
+    "verify:card-rotation-ui": "tsx scripts/rotated-card-image-ui-smoke.ts",
     "verify:scanner-postprocess-all": "tsx scripts/scanner-postprocess-smoke.ts && tsx scripts/scanner-postprocess-delete-smoke.ts && tsx scripts/scanner-postprocess-ui-smoke.ts"
   },
   "browserslist": [

@@ -8,7 +8,7 @@ import {
   readInsecureTransportHosts,
   revokeInsecureTransportAllowance,
 } from "../lib/remoteCredentialTransport";
-import { getStoredApiKey, storeApiKey } from "../auth/api";
+import { ensureScannerRemoteGate, getStoredApiKey, storeApiKey } from "../auth/api";
 import { serverStatus } from "../lib/remoteServerStatus";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
 import {
@@ -105,6 +105,8 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
     }
     setServerUrl(base);
     try {
+      // 连接测试是登录页最早可能发出的远端请求；必须先等本机壳装好编码限制。
+      await ensureScannerRemoteGate();
       const url = `${base}/api/app/health`;
       const headers: Record<string, string> = {};
       const key = apiKey.trim();

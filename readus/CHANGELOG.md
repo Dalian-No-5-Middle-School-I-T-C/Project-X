@@ -1,17 +1,103 @@
 # Project-X CHANGELOG
 
-## 2026-10-27：「本次正确答案」新增「原文件直接下发」模式（迁移 v64）
+## 2026-10-27：「本次正确答案」新增「原文件直接下发」模式（迁移 v66）
 
 - **背景**：v54 起学生只有一条答案通道——教师上传的文件留在服务端做 OCR，学生永远只看 `exam_answer_keys` 的文字。OCR 识别失败时老师没有可用答案，想「把答案 PDF / 扫描图原样发给学生」做不到。本次把「发哪一份」变成考试级二选一。
-- **数据**：`exams.answer_key_mode`（SQLite `TEXT` / MariaDB `VARCHAR(16)`，`NOT NULL DEFAULT 'text'`），迁移 **v64 `exam-answer-key-mode`**。默认值即历史行为，**存量考试不回填**，老库升级后仍是 `text`。取值只在 `src/shared/answerKeyMode.ts` 一处归一：只认 `'file'`，脏值一律回落 `text`，读写两侧共用该判据。
+- **数据**：`exams.answer_key_mode`（SQLite `TEXT` / MariaDB `VARCHAR(16)`，`NOT NULL DEFAULT 'text'`），迁移 **v66 `exam-answer-key-mode`**。默认值即历史行为，**存量考试不回填**，老库升级后仍是 `text`。取值只在 `src/shared/answerKeyMode.ts` 一处归一：只认 `'file'`，脏值一律回落 `text`，读写两侧共用该判据。
+- **号位说明**：本支最初取 v64，`merge origin/main` 时 64（`scan-correction-provenance`）与 65（`question-number-decimals`）已在 main 上，故 SQLite 与 MariaDB 同时顺延为 v66，`scripts/verify-mariadb.ts` 的迁移号断言一并改到 66。两端号序仍然严格递增、无重复号。
 - **闸门仍全在后端**：`/api/scores/me/exams/:examId/paper` 的准入条件由「已公布 + 显示原卷」放宽为「已公布 +（显示原卷 **或** 模式为 `file`）」；原卷图片路由额外要求 `show_original_paper=1`，新答案文件路由额外要求 `answer_key_mode='file'`，不满足都是 404。列表 `paper_visible` / 详情 `paperVisible` 同步这条口径，只开直发、不开卷的考试也会有入口，且不会出现「点进去 404」。
 - **一份响应只装一种答案**：`text` 模式不下发 `answerFiles`；`file` 模式不下发 `answers` 与 `pages[].answers`。响应新增 `answerKeyMode` / `showOriginalPaper` / `answerFiles[]`（每项带 `fileUrl`），客户端只按模式排版、不自行推断。切换模式**不销毁另一侧数据**，文字答案与已上传文件都原样保留。
 - **新接口**：`GET /api/scores/me/exams/:examId/paper/answer-file/:pageIndex` —— 文件名一律取库中登记值（不接受请求里的名字），`Cache-Control: private, max-age=300`，DOCX 带 `Content-Disposition: attachment`；路径已加入 R30 媒体白名单（`mediaAllowlist.ts`），否则会绕过鉴权中间件或被日志脱敏误伤。
 - **教师端**：`ExamAnswerKeyPanel` 增加「答案展示方式」分段控件（即时 `PATCH`，失败回滚显示），直发模式下上传改带 `?ocr=0` 不再白跑识别、隐藏「重新识别」、未上传任何文件时给红字提醒；考试管理页对直发考试加「答案直发」标记（卡片与表格两种视图）。
-- **学生网页端**：`StudentExamPaper` 按模式渲染——图片内联，PDF / DOCX 给「打开 / 下载」两个动作（下载带 `download` 属性保留原文件名）；`text` 模式视图保持原样。
-- **验证**：`npm run verify:exam-paper` **104 项全绿**（本次新增一组 v64 断言：两种模式各自的下发内容、闸门组合、越界/未登记页码、DOCX 附件头、未公布 404、双闸关闭时入口标记归 0）；`tsc --noEmit` 与 `vite build --mode web` 通过；`npm run verify:mariadb` 在本机一次性空实例（MariaDB 12.3.2 @13306）跑通 v64 升级路径与入口 SQL 两种模式的 `paper_visible`（18 节全 PASS）。界面用 `scripts/answer-key-mode-ui-server.ts` 起真实 HTTP + 真实字节（jpg / pdf / docx）服务，在浏览器里过了教师面板三态与学生端三态。
-- **升级说明**：无新增环境变量、无新增配置项，列由两种方言的建表与 v64 迁移自动到位。**上线次序**：先发小程序新版本，再对具体考试打开直发——旧版本小程序不认识 `file`，会把直发考试显示成「老师尚未录入逐题答案」（详见 [原卷与逐题答案-使用说明](./原卷与逐题答案-使用说明.md) 第 4 节）。
+- **学生网页端**：`StudentExamPaper` 按模式渲染——图片内联，PDF / DOCX 给「打开 / 下载」两个动作（下载带 `download` 属性保留原文件名）；`text` 模式视图保持原样。合入 main 的「原卷旋转查看」后，右上角旋转同时作用于原卷页、**直发答案图片**与作答图块（扫描件歪放的可能性和原卷一样，不该只对原卷生效）。
+- **验证**：`npm run verify:exam-paper` **104 项全绿**（本次新增一组 v66 断言：两种模式各自的下发内容、闸门组合、越界/未登记页码、DOCX 附件头、未公布 404、双闸关闭时入口标记归 0）；`tsc --noEmit` 与 `vite build --mode web` 通过；`npm run verify:mariadb` 在本机一次性空实例（MariaDB 12.3.2 @13306）跑通 v66 升级路径与入口 SQL 两种模式的 `paper_visible`（18 节全 PASS）。界面用 `scripts/answer-key-mode-ui-server.ts` 起真实 HTTP + 真实字节（jpg / pdf / docx）服务，在浏览器里过了教师面板三态与学生端三态。
+- **升级说明**：无新增环境变量、无新增配置项，列由两种方言的建表与 v66 迁移自动到位。**上线次序**：先发小程序新版本，再对具体考试打开直发——旧版本小程序不认识 `file`，会把直发考试显示成「老师尚未录入逐题答案」（详见 [原卷与逐题答案-使用说明](./原卷与逐题答案-使用说明.md) 第 4 节）。
 - **已知限制**：小程序真机未验（`wx.openDocument` 对 PDF / DOCX 的实际表现、转存菜单）；tesseract.js 端到端识别仍未跑。
+
+## 2026-10-26：扫描端防护恢复与 Service Worker 注册拦截
+
+- 调试通道重连耗尽后，本机回环 API 继续可用；后续远端请求按退避重新安装编码限制，安装期间取消请求，成功后允许调用方重试。修正本地主窗口失败回调的窗口参数，提示和日志保留实际错误。
+- 移除无效的 `disable-features=ServiceWorker` 开关，在发送请求前拒绝带 `Service-Worker: script` 的注册及更新请求，并在默认会话首次加载页面前清理历史注册。
+- 实机回归提供有效 Service Worker 脚本：先验证无拦截时能够注册，再检查历史注册清理、缓存预热后的注册拒绝和服务端零新增脚本请求；超时直接判失败。HTTPS 测试域名直连本机夹具，避开开发机系统代理。
+- 新窗口取消首次导航后，在收尾事件退出后的下一轮执行 `about:blank` 预热；Electron 将旧导航收尾交给新加载而报 `ERR_FAILED` 时，等待空白文档实际就绪后才安装防护，超时则失败关闭。探针按完整 URL 分别等待普通与 `noopener` 窗口的结果。
+
+## 2026-10-25：CVE-2026-111497 运行时门槛与扫描端 Brotli 解码拦截
+
+- **服务端**：Node.js 低于 22.23.4、24.22.1、26.12.1，或属于已停更的 20 / 23 / 25 和预发布版本时，进程以退出码 78 结束，不监听端口。检查放在 `startServer()` 里，导入 `createApp` 本身不会退出。Ubuntu 安装脚本在 `/usr/bin/node` 未修复时拒绝安装，并清掉 `PROJECTX_NODE_VERSION_UNDER_TEST`，避免测试变量放行旧运行时。systemd 增加 `RestartPreventExitStatus=78`。
+- **扫描端 Node**：Electron 39.8.10 自带的 Node 22.22.1 仍未修复。同步解码和 `new BrotliDecompress()` / `.end(chunk)` 直接拒绝。`createBrotliDecompress` 不在调用当场抛错：这个版本的 undici 接不住同步异常，进程会退出；改成把字节挡在普通流里，等 `fetch` 接上读取器后再失败。gzip 保持可用。
+- **扫描端 Chromium**：已核对 Electron 39.8.10 的 Chromium 142.0.7444.265 仍会解码 Brotli。`PROJECTX_SERVER_MODE=remote` 时，每个非 DevTools 的 webContents（含同源 `window.open`）在首次网络请求前只接受 gzip 与 deflate。本地壳加载的是 `127.0.0.1`，页面里填写的远端地址由渲染进程直接请求；本地壳会在第一次远端请求创建前先经本机回环让主进程装好编码限制，装好前的远端请求一律取消，不再「按住后放行」——请求一创建，accepted encodings 就固定了，放行时再补 CDP 覆盖改不回来。调试通道一旦断开（例如打开开发者工具），立刻停掉当前加载、清掉已保护标记，并在请求发出前取消这个窗口的新请求；编码限制重新装上之后才继续导航。只有远端壳的主窗口在拦截失效时退出整个扫描端；预览、答案、PDF 这类辅助窗口只关闭自己。Service worker 在扫描端始终关闭。纯本机使用不挂调试通道。
+- **拦截装不上时自动重试**：编码限制装不上不再是终态。失败后按指数退避（5 秒起、封顶 60 秒）记一个可重试时间点，下一次远端请求会再装一次，装上即恢复放行；期间远端请求一律取消，页面自己的探活/上传重试会在装好后恢复，扫描端也会提示一次「扫描端暂时无法连接服务器」。首次安装与重连一样先关闭开发者工具（调试通道只允许一个使用者，开发者工具占着就装不上）。
+- **导航重放**：`did-start-navigation` 只记主框架的真实导航，子框架与 `pushState`/`replaceState` 这类同文档导航不再被当成顶层地址在恢复时重放。
+- **Accept-Encoding**：去掉 `br` 时按编码令牌判断，`br;q=1.0` 也会去掉。
+- **update.sh**：按候选逐个检查版本。`Program Files` 里的 Node 未修复时，继续看 Kimi 运行时和 PATH，不再在第一个能启动的旧版本上直接退出。候选路径含空格也能选中。IPv4 映射地址 `::ffff:127.0.0.1`（URL 主机名会变成 `::ffff:7f00:1`）仍算本机，不会为了它挂上调试通道。
+- **验证**：`verify:node-runtime-cve`。有 Electron 二进制时，用 `ELECTRON_RUN_AS_NODE=1` 再跑一遍 Node 闸门，并另跑 Chromium 实机对照：不挂拦截的窗口能解出 br，挂上之后顶层文档、同源新窗口（含 `noopener`）、iframe 和 Worker 都返回 `ERR_CONTENT_DECODING_FAILED`，且请求不再声明 `br`；另有一段「回环页面访问非本机地址」的闸门场景，第一发远端请求必须被取消、服务端不应收到，装好后重试才发出且不声明 br，恶意 br 响应也解不出原文。CI 的 Electron 作业设置 `PROJECTX_REQUIRE_ELECTRON_PROBE=1`，缺 Electron 二进制会直接失败而不是跳过；其余作业仍用 `--ignore-scripts`，不下载 Electron。`package.json` 的 `engines` 与两份锁文件同步更新。
+
+## 2026-10-22：#349 交错客观/主观题块顺序保存后丢失
+
+- **现象**：设计器里排成「一、二、三、四、五、六」（客观/主观交错），保存后重新打开、导出 PDF、`/layout` 和扫描识别都变成「先全部客观、再全部主观」。设计图与导出件不一致。
+- **根因**：`bodyBlocks` 是交错数组，但落库拆成 `objective_blocks` / `subjective_blocks`；两个插入方法都把 `sort_order` 硬编码为 0，`findById()` 又固定先读客观表再读主观表，跨类型顺序没有落点。
+- **修复**：保存时按 `bodyBlocks` 下标写整卡级 `sort_order`（跨两表连续唯一）；`findById()` 把两张表按 `sort_order` 合并。历史数据（`sort_order` 全 0 或按类型各自编号）继续按旧的分组顺序读取，重新保存后自动升级，不改变存量卡原有顺序。
+- **影响范围**：PDF 导出、`/api/cards/:id/layout`、扫描识别、整卡订正、设计器重新加载。存量卡若已被错误分组，需老师重新拖动一次题块并保存——旧数据无法推断原本的交错意图。
+- **验证**：新增 `verify:card-block-order`（临时 SQLite 隔离库）：交错块保存/读取往返、`buildLayout` 顺序、历史 0 序号兼容、历史卡重新保存升级；脚本在导入数据库模块前切到临时工作目录，并在首次写入前断言方言为 SQLite，避免本机 `config.yml` 的 remote 配置把回归写到真实库；`typecheck` 通过，CI 已接入。MariaDB 未在本机实跑（无客户端），读取路径为方言无关的 JS 合并，未新增列/迁移。
+
+## 2026-10-20：#347 调班后历次考试跟随现班 + 原卷旋转查看
+
+- **调班即回溯考试归属**：`reanchorStudentExamClasses` 在人工调班（迁移学生、加入班级、移出班级、导入新建班级关联）后，把该生全部考试的 `exam_class_memberships` 重写为调班后的班级，考号保持不变。此前 `captureExamClasses` 一旦为某场考试落过快照就永不改写，`preserveStudentExamHistory` 又把改动前的旧班级冻结进历史表，所以强基班调整、转班、留级跳级之后，历次考试与班级统计仍停在原班（issue #347 ①）。
+- **回溯的取值口径**：只取该生仍在读的班级；考试范围（班级或年级）与现班不再重合时（跨年级调班、原班专属考试）仍归到现班，不让历史成绩落进筛选盲区。学生已无在读班级时保持原样（包括只剩归档关联的情况），不把历史改成「未知班级」或旧归档班；反过来，归属为「未知班级」的历史考试在被分配班级后会一并补上。班级排名与分数本身不在回溯范围内重算，按现有口径随成绩变化重算。
+- **跟随归属的下游口径**：班级汇总、班级对比、梯队与年级梯子、成长曲线的班均分、成绩导出、按班筛选与钻取、重新判分后的归属全部按调班后的现班；实际参加名单（`exam_participants`）仍按考试记录存在与否判定，回溯班级不改名单人数。
+- **调班接口的权限**：`POST /api/classes/:id/students/:studentId/move` 从只允许 `class:manage` 改为复用现有范围判断——管理员与持 `class:manage` 者直通；教师侧只放行源班班主任（按班关系 `teacher_classes.is_head_teacher` 指定，或显式 `teacher_role=班主任` 的旧数据兼容）与学年主任。源班级与目标班级都必须落在 `getAccessibleClassIds` 的范围内，并且无论范围是否为全校都要过源班级的 `can_view_students` 开关。未配置细分角色的旧数据教师即使在读取侧被兼容成全校可见，也不获得调班权；前端隐藏按钮不作为授权依据。
+- **原卷旋转（issue #347 ③④）**：新增 `RotatedCardImage` / `RotationButtons`，扫描端「查看与订正异常卷」的改分画布、学号点选、整卡改分弹窗，以及网页端扫描原卷预览、答题卡放大查看和学生端「查看原卷」都可 90° 步进旋转。改分画布把图片与填涂格热区放进同一个 SVG 变换，旋转后点选坐标不变；旋转只影响显示，不写回图片、坐标或识别结果，弹窗关闭后复位。
+- **#347 ②「无法确定考试归属」**：报告人复核为本场重复送卡，不是归属缺陷，本次不改代码。
+- **PR #348 评审修复**：① 调班门不再把「范围不受限」当成「跳过其他权限检查」，学年主任也要过源班名单矩阵；班主任资格按源班关系判断，并补显式拒绝的 POST 回归；② `RotatedCardImage` 在图片加载成功时就记录尺寸——原先只在已请求旋转时才记录，导致「先看图再点旋转」的正常流程里同一个 `<img>` 不会再触发 load，旋转永远不生效；③ 90°/270° 时容器宽高比与 `viewBox` 同源互换（`rotationBox`），顺时针按钮与 SVG 正角度一致；④ 放大框 `contain` 模式给 SVG 旋转后的固有像素宽高，不再塌成替换元素默认小图；⑤ 媒体票据重签后的新地址写回组件状态，旋转后的 `<image>` 不再引用已淘汰的旧票据，且 SVG 分支的加载失败也会透传；⑥ 只剩归档关联时不再把历次考试改挂到旧归档班；⑦ 源班与目标班相同的重放请求在路由返回 400、仓储直接 no-op，不再触发历史归属回溯。
+- **文档**：`AGENTS.md` 的班级口径、`readus/整卡改分说明.md`、`readus/原卷与逐题答案-使用说明.md` 同步改写。
+- **验证**：`npm run typecheck`、`vite build --mode web`、`vite build --mode scanner` 通过；`verify:exam-class-memberships`（含回溯后的排名、对比、梯队、趋势、导出、筛选、重新判分与「只剩归档关联」断言）、`verify:class-archive`、`verify:permission-scope`（148/0，含调班显式拒绝与成功路径）、`verify:card-rotation-ui`、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-postprocess-all` 均 ALL PASS。
+- **已知限制**：以上验证只在 SQLite 上执行，本机没有 MariaDB 实例，MariaDB 方言分支未跑；调班入口目前只在「账号管理 → 班级管理」下（受 `user:manage` 门禁），教师虽已被接口允许，仍缺可见入口；真机扫描仪与浏览器端人工验收未做。
+
+## 2026-10-22：#340 评审收口——背景上传与移除串行、单机清退入口隐藏
+
+- **上传与移除不再交错**：`handleBgUpload` 与透明度 PATCH、移除 DELETE 进同一条队列；上传或移除进行中两个按钮与文件选择都禁用。避免 rename 晚于 DELETE 时「已移除」却仍有文件，或旧上传带走刚移除的图。
+- **队列跨页面挂载共享**：写入队列提升为登录身份级（`backgroundWriteSession`），离开账号设置再返回时，新的 DELETE 仍排在旧实例的在途 PATCH 后面；身份切换后旧队列里尚未执行的任务直接丢弃，不会用新账号凭据落库。卸载时仍清理未发送的防抖定时器。
+- **移除失败回填**：DELETE 失败时把本地透明度与浮层恢复到移除前，不再显示「已关闭」而服务端仍保留背景；删除文件改用 `rm(..., { force: true })`，双标签页并发删除不再因 ENOENT 返回 500。
+- **免登录单机模式隐藏清退入口**：`GET /api/system-settings` 返回 `authenticated`，全局设置页只在有登录身份时渲染「清除学生历史背景」；后端匿名 401 保留。`ACCOUNT-CONTROL.md` 登记该边界与「已注销账号残留文件不在清退范围」。
+- **验证**：`verify:student-web-settings` 新增管理员 `authenticated=true`、免登录 `authenticated=false`、跨挂载队列顺序与身份切换丢弃断言；`verify:auth`、`verify:security-critical`、`typecheck`、`build` 通过。未做真实浏览器与 iOS15 验收。
+
+## 2026-10-18：#336 学生历史背景的清退入口
+
+- 不在启动或迁移时删文件。学生已经看不到这些图，静默清盘会让人分不清教师的图有没有被一起带走。
+- `DELETE /api/users/me/background`：登录用户删除自己的 `backgrounds/<userId>.jpg`，并把 `background_opacity` 归零。学生可以调，账号设置页不显示按钮；教师和管理员在背景区有「移除背景图」。
+- `POST /api/admin/backgrounds/purge-students`（`system:manage`）：只删除当前学生角色的 `<id>.jpg`，只把这些账号的透明度归零。教师、管理员、临时文件和随包默认图都不动。全局设置页有确认对话框。
+
+## 2026-10-18：#335 背景图上传上限改为三档
+
+- `POST /api/users/me/background` 的体积闸门不再写死 5 MiB。`PROJECTX_BACKGROUND_UPLOAD_MIB` 默认 5、天花板 32；非法值回落默认并打印 `[background-upload-limits]`，超过天花板则夹紧。单一来源 `src/shared/backgroundUploadLimits.ts`。
+- 超限仍是 413 `UPLOAD_ERROR`，文案带上当前生效上限，例如「上传文件超过大小限制（≤5 MiB）」。这句只属于背景图上传，其它 multer 闸门的文案不变。
+- 账号设置接口多返回 `backgroundUploadLimit`，设置页在背景区注明「单张不超过 N MiB」。学生账号仍然不能上传。
+
+## 2026-10-22：PR #344 恢复凭据与单卷保存边界修复
+
+- 当前版本的未入库卷也校验既有恢复指纹；原图变化后重新显示核验入口，保存事务和确认入库拒绝失效凭据，普通保存不能重新盖章。上传完成入库也检查已有恢复指纹。
+- 点名「保存此卷」仍有存疑题、实际没有入库时返回 409 和逐题确认提示；同会话其他卷缺学号、缺识别或未上传完成时，完整的所选卷可独立保存，其他卷的页面状态保持原样。
+- 异常列表缓存正在执行的会话查询，同一刷新内并发处理多个回执时共用结果；下一次刷新重新读取。
+- 新增 `verify:scanner-correction-boundaries`，通过 HTTP 和数据库终态覆盖当前版本凭据失效、取锁前原图变化、重新核验恢复、存疑题拒绝与确认后保存、单卷隔离、幂等重试和缓存并发。接入 SQLite 与 MariaDB CI。
+- 本机 macOS / Node 24 / 隔离 SQLite：新增回归及 10 项既有专项通过，类型检查、Web、扫描端与服务端构建通过。MariaDB 验证由本提交 CI 执行。
+
+## 2026-10-21：PR #344 旧卷订正凭据与异常卷队列收口
+
+- **v64 之前保存的旧卷也要重新核验**：已入库旧卷的订正快照没有 `recovery_fingerprint` 时，不再当成普通扫描直接改正式成绩；打开成绩修改会返回「待核验」草稿，必须走签名补识别并保存后才能继续。`loadSessionCorrection` 与 `saveStudentCorrection` 共用同一判断，避免只在保存时才发现。
+- **异常卷列表不再被 validate 回执灌满**：只保留 `held/roster/conflict/correction` 与「曾经入库过」的 pending；同一会话的页面、会话、卡片与分组在一次刷新内缓存，避免逐行重复读整会话。仅点过「校验」、尚未保存的正常卷仍留在扫描端待保存，不进教师异常队列。
+- **单卷保存只回报本卷**：`saveGroupId` 指定时，`/complete` 与整卡订正返回的 results/failures 只包含该组；同会话其他组的名单或重复卷问题留给各自处理，不再把已成功保存的卷报成失败。
+- **建表事实源补齐**：`scanCorrectionSchema()` 的 SQLite / MariaDB 共用 DDL 增加 `recovery_fingerprint`，v64 迁移继续做幂等补列；新库、老库升级与重放迁移走同一份列定义。
+- **保留必要的一致性读取**：指纹包含保存后的 `revision`，因此写后加注仍要重新计算一次；没有复用写前哈希，避免把旧 revision 的指纹写回。
+- **验证**：`verify:scanner-legacy-correction`（含迁移前无指纹→签名重识别→恢复可信）、`verify:scanner-batch-results`（新增双组单卷保存隔离）、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-upload-flow`、`verify:scanner-pending`（本机在切图回滚清理断言处既有失败，已在干净 PR head 复现，与本次改动无关）与 `typecheck` 通过；MariaDB 方言未在本机运行。
+
+## 2026-10-20：#345/#346 进步/退步按得分率判定 + 独立分析页交付收口
+
+- **判定口径**：跨考试与跨学期的进步/退步一律按得分率变化（百分点）判定，阈值 ±3 pp，显著档 ±10 pp；缺满分时返回 null 并显示「—」，不虚构分母、不退回绝对分。服务端学生自助路径、React 页面、打印报告与独立分析页共用 `src/shared/scoreProgress.ts`。
+- **独立分析页单文件交付**：`Grade-Analysis-System-mobile.html` 不再通过 `<script src="src/shared/scoreProgress.global.js">` 引用仓库内路径，生成包直接内联进页面；`scripts/sync-score-progress-browser.ts` 负责生成并内联，`verify:progress-score-rate` 校验内联内容与源码一致。按文档只复制 HTML 的部署方式不会再因 404 整页不初始化。
+- **live 数据顺序**：`/api/exams` 与 `/api/scores/me` 都是最新在前，页面在 `fetchExams` / `fetchStudentScores` 统一整理为按考试时间升序；学生分析以该生实际有成绩的最近一场为锚点，缺考最新一场不再抛错或把方向算反。
+- **零变化展示**：打印报告单与学期对比的得分率、总分、名次零变化统一显示「持平」，不再出现「↑ +0 pp」。
+- **题块满分**：独立页题块判定只用题块自身满分，取不到即跳过并说明原因，不用整卷满分兜底。
+- **验证**：`verify:progress-score-rate` 77 项通过，其中新增执行页面真实内联脚本的 live 顺序、缺考回退断言，以及打印报告单零变化的结构断言；`typecheck`、`build` 通过。未运行浏览器端到端与 MariaDB 专项。
 
 ## 2026-10-19：#342 客观题「每题分值」同步逐题配置，卡面总分与导出弹窗同源
 
@@ -22,6 +108,37 @@
 - **验证**：`verify:core-logic` 第 14 节新增 5 条回归断言（复现路径、旧卡无逐题配置、逐题覆盖、浮点尾差），全绿；`typecheck` 与 `build:web` 通过。浏览器端点击流程未在本机实跑（dev 会连仓库配置的库），改动为纯函数接线。
 - **存量数据**：库里 `score_per_question` 已被写成 5 的卡不回填——无法判断历史意图。这类卡上线后需老师重新填一次每题分值，届时会正确同步到逐题与标题。
 
+## 2026-10-23：#352 扫描端整卡改分归属、存疑卷上传与空白题零分
+
+- **归属不唯一仍可整卡改分**：本地扫描会话的 `GET/PUT /api/scanner/session/:sessionId/groups/:groupId/correction` 不再因「多场候选考试」或「只剩归档考试」直接 409。会话作用域只对本地订正路径放行，订正路由再要求教师/管理员、`GRADE_WRITE`，并且**每一场候选考试都要过整卷阅卷授权**（与归属唯一时同一条门：只有单题块授权、或与某场考试无归属关系的教师仍被拒绝）。候选考试按「这场扫描真正可能属于谁」取：会话已经绑过在用考试就只认这些绑定，同卡被别的在用考试复用不再牵连授权；从未提交过才退回同卡全部在用考试。整套判定抽成 `scannerAuthorizationCandidates`（`scannerExam.ts`）+ `authorizeAmbiguousLocalSession`（`scanner-scope.ts`）一处实现，由**订正文档、文档里的原图（`/api/scanner/scan-image/:recordId`）与进订正前必读的结果演算**（本机 `POST /session/:id/validate`、远端 `GET /session/:id/results?previewOnly=1`）共用：此前只放行 `/correction`，教师拿到 200 的订正文档却在原图上吃 403（改分视图停在「完整答题卡图片加载失败」），或者后处理页连结果都加载不出来、根本点不进订正。`POST /results`（正式入库）不在放行范围内，归属不唯一仍然 409。正式成绩入库仍要求唯一考试归属，归属不唯一时只保存本机草稿。会话只要有**任意一条**回执绑定落在已被保留策略清理的考试上（含「一场已清理 + 一场仍在用」的混合绑定），同样按「考试不存在」拒绝（管理员除外）——整卡订正保存会连带改写这些保留回执里的成绩快照，只看「还有没有在用考试」会把已清理考试的保留数据暴露出去。
+- **存疑卷照常上传**：扫描工作台与后处理页不再用 `needsReviewCount > 0` 拦下整卷上传；图片与识别结果先上传，复核计数随回执返回，后续在服务器或异常卷流程处理。边界写清：**未识别学号、缺页、冲突副本这类没有身份或归属的失败卷仍留在本机**（服务端没有可挂这份成绩的归属，硬上传只会造出无主回执），教师改考号或重识别后照原路径上传。
+- **存疑卷也直接成绩入库（2026-10-24 维护者拍板）**：`scannerSubmissions` 的点名字保存不再因 `needsReviewCount > 0` 只留草稿——低置信度、未配标准答案这类复核标记随成绩一起写进 `student_scores`，回执照常带回 `needsReviewCount`，异常卷队列与 Web 成绩修改继续做复核；`ScannerPostprocessPage` 的「保存成绩入库」不再预先过滤掉存疑卷（`failures` 里那类没有学号或没有完整页的卷本来就不在 `results` 里，照旧不提交）；`saveSessionCorrection` 改一部分就入一部分，返回「改分已入库，这一卷仍有 N 题存疑待复核」；远端单卷「保存此卷」也不再回 `SCAN_CARD_NOT_SAVED` + 存疑文案。代价写清楚：**入库之后本机订正被明确拒绝**（`此卷已入库或已作废，请从成绩修改进入整卡改分`），所以「在本机把存疑题一题一题确认完再入库」这条路径没了，后续改动统一走成绩修改侧。`blockUnreviewed` 参数保留为调用方显式打开的保守入口（现无生产调用方），用于需要「先确认后入库」的场景。
+- **失败但可续传的任务同样锁住改分**：`error` 不等于安全——只要远端会话已经建立，「重试失败页」只会补传失败的那几页并现读最新订正，成功过的页仍是旧识别结果，照样拼出半旧半新的一份快照。判据从「未到终态」改为 `isUploadLocking(status, remoteSessionId)`：在途，或 `error` 且已建远端会话；`done`、`cancelled`、以及从未建过会话的失败不挡改分。锁的取值还要看**持久化的恢复记录**：`dismissJob()` 只是把进度卡从内存里摘掉，`scan_upload_recovery` 还在，重新入队会由 `restoreRecovery()` 接回同一个远端会话和已成功的页——所以关闭进度卡、甚至重启扫描端都不能解锁（与 `localGroupDeleteBlock` 保住原图的口径一致，记录损坏时也按「挡住」处理）。为了不把教师锁死，新增明确出口 `abandonGroupUpload`：删掉这一组的恢复记录并摘掉该组的失败任务，改分随即恢复；正在传输的任务与一条任务里混着别组页面的情况都不能被放弃顶掉。放弃后这一卷按新会话整卷重传，服务器那份永远等不到 `complete` 的半成品不写入成绩。锁的取值最后收成一把四态判定 `groupUploadBlock()`：`in-flight`（还在传，只能等它结束或在进度卡里取消）、`partial-pages`（有页已传出去、还有页能续传，允许放弃）、`completion-pending`（页全传完只差提交，例如重复学号被服务器拒）、`recovery-damaged`（本机恢复记录损坏，读不出远端会话与逐页进度）。四者都禁止改分，但只有 `partial-pages` 旁边给出「放弃续传」：只差提交时放弃等于清掉去重凭据，下一次 reload 会把同一份原卷当成新会话再传一遍；损坏记录更危险——它可能原本就是「只差提交」，甚至 complete 已经成功只是响应丢了，这时放弃再重传会生成第二份回执、把原成绩撤出（评审 P2 独立复现：已入库 5 分 → 记录损坏 → 放弃成功 → 改答案重传 → 两份回执冲突、原成绩被撤）。所以损坏状态只给一个显式出口 `discardDamagedRecovery()`：界面上是「已核对服务器，清除损坏记录」，确认框会带上从损坏记录里尽量捞回来的原远端会话号（`damagedScanUploadRecoverySessionId()`，`remoteSessionId` 字段还能认出时用它，认不出就如实说没有），要求教师先在成绩或异常卷列表核对那一份没有已保存的成绩，确认后才删记录、解锁并把这一卷按新会话重传。两个入口的禁用文案按这四种状态分别措辞。放弃还必须**连带清掉调用方自己的入队标记**（工作台 `uploadJobsRef` 那一行、后处理页 `queuedByPage` 那把 key）：标记留着的话 `queueSuccessfulUploads` 与 `syncAfterFix` 会永久跳过这一组，界面承诺的「改完整卷重传」根本不会发生，所以改分页新增 `onUploadAbandoned` 回调由页面清 key（评审 P2）。
+- **上传在途禁止改分**：远端模式下存疑卷随批立即入队，而逐页上传时每一页都现读本机订正——任务还在飞就保存，先传出去的页保留旧识别、后传出去的页带上新识别，服务器会收到半旧半新的一份快照。上传管理器新增 `isGroupUploading` / `isUploadingStatus`（未到终态即在途），扫描工作台与后处理页据此禁用整卡改分/保存并给出原因。回归：`verify:scanner-upload-manager` 断言在途为真、终态为假，两条 UI 冒烟分别断言两个入口在途时禁用、恢复后按原规则可用。
+- **先上传后改分不再静默**：存疑卷现在随批上传，之后在本机改分不会重传（重复上传同一份卷子会被服务端判成第二份原卷并撤掉已保存成绩）。后处理页与扫描工作台改分保存后都会明确提示「该卷已随本批上传，改动请走 Web 成绩修改」。
+- **记录级读取与删除同样认归档绑定**：`/api/scanner/scan-image/:recordId`、`/api/scanner/record/:recordId` 此前只看「还有没有在用考试」，混合绑定（在用 A + 已清理 B）时持有 A 的教师能读原卷、甚至删除记录，连带清掉共享的 `scan_correction_pages`，把已清理考试的保留证据毁掉。现在与整卡订正同口径：非管理员一律 404。
+- **扫描端 Key 不再绕过归档绑定**：机器分支（`enforceMachineRecordBinding` / `enforceMachineExamBinding`）过去只拒绝「绑定全部被清理」的会话，`X-Api-Key` 因此在混合绑定下照样能 `GET`/`PUT` `/api/scanner/upload/sessions/:id/groups/:groupId/correction`，把已清理考试留下的 `score_snapshot` 改写在用考试的卷面上——给人用的 CR4 口径换一根凭据就失效。现在任一回执绑定落在已清理/已不存在的考试上，机器调用者一律按「考试不存在」404（管理员例外只适用于有用户身份的请求）；卡级还没有会话时保持原「全部绑定已清理」判定。
+- **空白题直接零分**：客观题没涂（原始选项为空）直接 0 分，不再因低置信度进复核；主观题分数格没画给分斜线（`invalid + no_valid_subjective_score` 且没有 `invalidCells`）同样按 0 分确认。两条现场例外继续保留：被选项数过滤掉的越界标签算识别异常，**无论置信度高低都挂复核**并说明「识别到超出选项范围的标签」——`normalizeOptions` 会先把越界值丢掉，只看置信度的话高置信度卷会带着空答案静默入库；同一标签去重（`["A","A"]`）不算异常。多页/双面卡里本页未上报的题（`gradeObjectiveRecognition` 合成的条目）算「未上报」，不会把另一页真实的存疑答案顶掉。扫描端改分视图与低置信度面板不再各自写一套「低于阈值就算存疑」，统一复用共享判分的 `needsReview`。跨页择优还补了页序这一半：`gradeSessionStudentResults` 的 `isBetterObjective` 过去在「同分 + 同为存疑」时不替换，没上报的那一页排在前面就会让它合成的空条目占住位置，真实涂的答案被抹成未作答，并随 `processScannerSession(..., save)` 落进 `question_scores` / `result_json`（评审 P1）。现在择优多一级「本页真的上报过优先」，全部页都没上报的题仍按「未上报」挂复核；这一级放在**比分之前**——漏选倒扣分的计分规则下真实结果是负分、合成条目按未作答拿 0 分，比分那一级会把实际涂选的结果整条换掉（评审 P1 复核）。
+- **已确认接受的风险**：分数格里读不到任何红笔时，「考生没画斜线」与「用黑笔/蓝笔写了分数」在识别结果里完全同形（`status invalid` + `no_valid_subjective_score` + 有效格与拒绝格都为空）。按上面的口径两者都算未作答 0 分且不再挂复核，也就是说非红笔写的分数会被静默判 0。兜底只剩「阅卷必须用红笔」的规范，以及 issue #331 ③ 的强制彩色 + 整页零红笔告警；判分侧不再加额外分支。`verify:recognizer-red-line` 的 blank grid 与 black pen 两例期望随之改为 0 分不复核，并在用例注释里写明这一取舍。
+- **上传契约保留主观题失败原因**：`scanner-upload` 的识别结果校验此前会丢掉 `subjectiveQuestions[].message`，服务端因此永远认不出 `no_valid_subjective_score`，空白大题传上去仍算存疑。字段补进白名单（限长 120），并在 `verify:scanner-upload-flow` 里直接解析一次钉住。
+- **异常队列按整份卡判一次**：低置信度面板原先逐页判分，双面卡的另一页会把「本页没上报的客观题」列成一堆置信度 0 的「未答」存疑项。改为合并整份卡后判一次，与改分视图同一口径。
+- **已上传的存疑卷给出明确指路**：存疑卷现在先上传，之后在本机改分不再重复排队（重复上传同一份考卷会被服务端当成第二份原卷，反而撤掉已保存的成绩），界面会提示「已随本批上传，改动请走 Web 成绩修改」，不再静默。
+- **本轮验证**：`typecheck`、`verify:core-logic`（116/0）、`verify:scan-correction`（改成「带存疑的订正保存即入库、成绩写入、入库后本机再保存被拒」三断言）、`verify:scanner-postprocess-delete-smoke`（点名的存疑组回执 `saved`、两组都写 `student_scores`）、`verify:scanner-postprocess-ui-smoke`（「保存成绩入库」的 POST 组号含存疑组）、`verify:scanner-correction-boundaries`（远端单卷保存 200 入库 + 回执复核计数 + 入库后本机改分 409）、`verify:security-critical`（533/0）、`verify:p1-integrity`（15/0）、`verify:p1-scope`（19/0）、`verify:grading-published-exam`、`verify:scanner-pending`、`verify:scanner-batch-results`、`verify:scanner-duplex-correction`、`verify:scanner-correction-safety`、`verify:scanner-legacy-correction`、`verify:scanner-local-correction`、`verify:scanner-upload-flow`、`verify:scanner-retry-concurrency`、`verify:scanner-review-regressions`、`verify:scanner-panel-session`、`verify:scanner-upload-manager` 全绿；把 `scannerSubmissions` 的门改回原条件后，边界与后处理两条断言如期变红。
+- **验证**：`typecheck`、Web 与扫描端构建；`verify:core-logic`（118 项，含空客观题、高置信度越界标签仍挂复核、重复合法选项只是去重不算异常、跨页合成题不顶掉真实答案（正反两种页序 + 漏选倒扣分那一级）、空白大题零分）；`verify:scanner-upload-flow`（低置信度卷仍上传、入库并保留 `needsReviewCount`）；`verify:scanner-panel-session`（断言「放弃续传」出现、放弃后行内入队标记清除且下一次刷新真的重新排队整卷，以及在途不提供放弃）、`verify:scanner-postprocess-all`（改分页断言放弃按本卡本组本会话点名、`onUploadAbandoned` 回调触发、解锁按钮消失且保存回到脏数据规则）、`verify:scanner-legacy-correction`、`verify:scanner-local-correction`（多场候选下的本地改分、单题块授权 403、整卷授权 200、归档绑定与混合绑定 404、复用卡不牵连授权、歧义会话的原图与结果预览/演算 200 而正式入库 409、同一状态下扫描端 Key 的正常归属 200 与混合绑定 GET/PUT 404 且两侧快照保持不变）、`verify:scan-correction`、`verify:scan-correction-security`、`verify:scanner-correction-safety`、`verify:scanner-correction-boundaries`、`verify:scanner-pending`、`verify:scanner-batch-results`、`verify:scanner-duplex-correction`、`verify:scanner-upload-manager`（两页部分成功：error 仍锁、关闭进度卡仍锁、重建 manager 仍锁，放弃续传后解锁并删掉记录、原图不再为续传保留；在途任务与跨组任务拒绝放弃；单页全传完但 `/complete` 被拒时判成 `completion-pending`——仍锁改分、拒绝放弃、补一次提交即完成，工作台与后处理页在这三种状态下都不出现「放弃续传」按钮；损坏记录单独断言「锁着、不可放弃、确认核对后才可清除、清除后解锁并删记录」，并把「核对过才清」的确认框做成负验证：去掉确认直接清除时两处 UI 冒烟都会红）、`verify:scanner-review-regressions`、`verify:security-critical`（533/0）、`verify:permission-scope`（148/0）、`verify:recognizer-red-line`（18 例 × 150/300 DPI，本机用随包 win-x64 识别器）通过。本机只运行 SQLite，MariaDB 由 CI 执行。
+
+## 2026-10-23：鲁棒性审查——小数题号、模板总分、计分边界与失败回显
+
+- **MariaDB 小题号**：语文模板的 13.1/17.1 等题号原先写入 `INT` 列，strict mode 会 500、非 strict 会把 13.1/13.2 截成同一个 13。迁移 v65 把 `subjective_questions.number`、`question_scores.question_number`、`knowledge_points.question_number`、`answer_overrides.question_number` 改为 DOUBLE；SQLite 新建表同步为 REAL（旧库动态类型本就能存小数）。
+- **填空模板总分**：英语语法填空 10 个空、数学填空 3 个空原先每个都带分，但版式与校验只认首个得分格，导致整块只算 1.5/5 分。改为把块总分 15 记在首个空，其余空不带分。
+- **判分边界**：历史 `indeterminate` 模式改走统一的多选判定；客观题计分规则的分数按 `[-maxScore, maxScore]` 收敛，非有限值归 0；主观题上报分同样先做有限值检查再裁剪。
+- **半分数分桶**：班级对比的分数段改用与总览相同的 `histogram()` 半开区间，89.5 这类半分数不再落在 80-89 与 90-100 之间的空隙。
+- **Windows 切图回滚**：递归 `mkdir` 可能返回 `\\?\C:\...` 扩展长度路径，`path.resolve` 不认识它，导致回滚只删文件、不删新建目录。新增路径归一化后再做目录归属判断；`verify:scanner-pending` 从失败转为通过。
+- **失败不再静默关窗**：新建大考、原卷信息保存、新建答题卡在服务端失败时保留表单并显示错误；扫描后处理删除失败留在页面提示，不再触发扫描端全局未处理 rejection 遮罩；损坏的上传恢复记录改为可读错误。
+- **统计刷新**：大考详情的题目分析/班级对比在切换文理后重新请求，不再显示上一 track 的旧数据。
+- **验证**：`typecheck`、`build`、`verify:core-logic` 104/0、`verify:auth` 153/0、`verify:security-critical` 523/0、`verify:scanner-pending`、`verify:exam-class-memberships`、`verify:class-archive`、`verify:scanner-batch-results`、`verify:scan-correction`、`verify:student-score-display`、`verify:progress-score-rate` 77/0；新增 MariaDB 小题号插入回归，由 CI MariaDB 作业执行。本机无 MariaDB，未本地运行该专项。
+- 评审补充（P2）：扫描后处理页强制删除自身失败（网络错误 / HTTP 500）时，只关了 `confirmOpen` 没清掉上一轮 409 留下的 `blockedNotice`，而确认框开关是 `confirmOpen || blockedNotice`，框会继续挡在错误提示前面。现在失败时一并清空 `blockedNotice`，原因直接显示在选择栏，勾选取舍保留可重试；`verify:scanner-postprocess-ui` 新增「非 force → 409 → force → 500」剧本，断言框已关闭且错误当场可见（退回旧写法时该断言即红）。
+
+- 评审补充（P1）：填空模板把块总分记在首个空后，其余小空的满分是 0，而识别切块的题号清单会列出块内全部小空、网阅面板也照样提交——`ReviewService` 原样按「题号不在答题卡题目范围内」拒绝，英语语法填空（57–65）与数学填空（13–14）的整块卷子从此交不出去。现在满分 0 的本块小题按不可评分对象跳过（不报错、也不写逐题成绩），块总分仍记在首个空；真正不属于本题块或卡面的题号依旧拒绝。`verify:review-submit` 新增逐题模式与题块总分模式两份填空块回归（含落库题号只应有首个空的断言），退回旧实现时直接抛「题号 57 不在答题卡题目范围内」。
 ## 2026-10-17：PR #332 —— 双面批次收尾、红笔分数格强制彩色与告警可恢复、DPI 逐轴取证
 
 - **批次结束按单双面分别判定**：单面时 `MSG_ENDXFER` 的码 7（随包 `twain.h` 2.5.1 的 `TWRC_ENDOFLIST`）且 `Count==0` 才收批；双面时该组合仍继续等待当前张背面，背面到达才成功，未到达则保留正面并报部分失败，不再出现「只出一面却报整批成功」。收尾码与 `Count` 的组合由假 DSM 夹具编译真实扫描循环回归，只在 CI（Linux + g++）执行。

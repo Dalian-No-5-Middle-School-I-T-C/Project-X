@@ -199,7 +199,7 @@ try {
     "SELECT group_id, state FROM scanner_submissions WHERE session_id = ? ORDER BY group_id", validateSession.id);
   assert.deepEqual(survivorReceipts, [{ group_id: "0", state: "pending" }], "不带 previewOnly 时，刷新要给留下的组写 pending 回执");
 
-  // 点名入库：待复核组即使出现在 groupIds 里也不能写成正式成绩。
+  // 点名入库：带存疑的组一起写正式成绩（issue #352 口径），复核计数照常随回执带回。
   const saveSession = await seedPapers("scoped-save", [
     { studentNumber: "92011", confidence: 1 },
     { studentNumber: "92012", confidence: 0.05 },
@@ -215,17 +215,17 @@ try {
   assert.equal(partialBody.results.find(row => row.groupId === "0")?.needsReviewCount, 0);
   assert.equal(partialBody.results.find(row => row.groupId === "1")?.needsReviewCount, 1, "低置信度必须进入待复核");
   assert.equal(partialBody.results.find(row => row.groupId === "0")?.saved, true, "点名的正常组要入库");
-  assert.equal(partialBody.results.find(row => row.groupId === "1")?.saved, false, "待复核组不能跟着入库");
+  assert.equal(partialBody.results.find(row => row.groupId === "1")?.saved, true, "待复核组一起入库，复核标记不拦成绩");
   const saveReceipts = await db.all<{ group_id: string; state: string }>(
     "SELECT group_id, state FROM scanner_submissions WHERE session_id = ? ORDER BY group_id", saveSession.id);
   assert.deepEqual(saveReceipts, [
     { group_id: "0", state: "saved" },
-    { group_id: "1", state: "pending" },
+    { group_id: "1", state: "saved" },
   ]);
   const scored = await db.all<{ student_number: string }>(
     `SELECT u.student_number FROM student_scores ss JOIN users u ON u.id = ss.student_id
      WHERE ss.exam_id = ? AND u.student_number IN ('92011','92012') ORDER BY u.student_number`, exam.lastInsertRowid);
-  assert.deepEqual(scored.map(row => row.student_number), ["92011"], "只有正常组写入正式成绩");
+  assert.deepEqual(scored.map(row => row.student_number), ["92011", "92012"], "存疑组与正常组一起写入正式成绩");
 
   // 预览重卡：每份副本带上自己的判分。保留低置信度的那份时，复核计数不能变成 0。
   await addStudent("92021");

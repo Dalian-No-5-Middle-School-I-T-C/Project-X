@@ -8,6 +8,7 @@ import { listScanRecordsGroupedByStudent, type ScanRecordWithResult, type Studen
 import { persistScannerResultToMainDb } from "./scannerResultPersistence";
 import { recomputeExamRankings } from "./rankingUpdate";
 import { analysisCache } from "./analysisCache";
+import { assertCorrectionPageProvenance } from "./scanCorrectionProvenance";
 import { ensureExamParticipants, isExamParticipant } from "./examParticipants";
 import { databaseTimestamp } from "../db/timestamp";
 import { markScoreMutated } from "./examPublishEvents";
@@ -170,8 +171,8 @@ export async function invalidateScanRecognitionInTransaction(tx: DbAdapter, sess
       await withdraw(tx, receipt.exam_id, receipt.student_number, "scanner_retry");
       changedExams.add(receipt.exam_id);
     }
-    await tx.run("UPDATE scanner_submissions SET state = 'pending', result_json = NULL, score_snapshot = NULL WHERE exam_id = ? AND session_id = ? AND group_id = ?",
-      receipt.exam_id, sessionId, receipt.group_id);
+    await tx.run("UPDATE scanner_submissions SET state = ?, result_json = NULL, score_snapshot = NULL WHERE exam_id = ? AND session_id = ? AND group_id = ?",
+      receipt.previously_saved || receipt.state === "pending" ? "pending" : "correction", receipt.exam_id, sessionId, receipt.group_id);
   }
   await tx.run("UPDATE twain_scan_records SET identity_json = NULL, student_id = NULL, student_conf = NULL, ocr_status = 'processing', ocr_error = NULL WHERE id = ? AND session_id = ?", recordId, sessionId);
   await tx.run("DELETE FROM twain_recognition_results WHERE scan_record_id = ?", recordId);
@@ -216,7 +217,7 @@ export async function discardScannerGroup(card: AnswerCard, sessionId: string, g
       if ((await receipts(tx, receipt.exam_id)).filter(r => r.student_number === current.student_number).length < 2) throw new Error("该学号只有一份有效回执，不能作废");
       await tx.run("UPDATE scanner_submissions SET state = 'discarded' WHERE exam_id = ? AND session_id = ? AND group_id = ?", receipt.exam_id, sessionId, groupId);
       if ((await receipts(tx, receipt.exam_id)).filter(r => r.student_number === current.student_number).length === 1) {
-        await tx.run("UPDATE scanner_submissions SET state = 'pending' WHERE exam_id = ? AND student_number = ? AND state = 'conflict'", receipt.exam_id, current.student_number);
+        await tx.run("UPDATE scanner_submissions SET state = CASE WHEN previously_saved=1 THEN 'pending' ELSE 'correction' END WHERE exam_id = ? AND student_number = ? AND state = 'conflict'", receipt.exam_id, current.student_number);
       }
     });
   });
@@ -284,7 +285,7 @@ export async function recoverScannerSubmissionSnapshot(examId: number, sessionId
         const current = await receipts(tx, examId);
         for (const number of new Set([row.student_number, studentNumber])) {
           if (current.filter(r => r.student_number === number).length > 1) await withdraw(tx, examId, number);
-          else await tx.run("UPDATE scanner_submissions SET state = 'pending' WHERE exam_id = ? AND student_number = ? AND state = 'conflict'", examId, number);
+          else await tx.run("UPDATE scanner_submissions SET state = CASE WHEN previously_saved=1 THEN 'pending' ELSE 'correction' END WHERE exam_id = ? AND student_number = ? AND state = 'conflict'", examId, number);
         }
         return;
       }
@@ -338,6 +339,12 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
       response.discardedGroups = discarded.size;
       response.results = response.results.filter(r => !discarded.has(r.groupId));
       response.failures = response.failures.filter(r => !discarded.has(r.groupId));
+      // A group-scoped save reports only the selected paper. Other groups stay
+      // queued and must not turn the selected paper's successful save into a 409.
+      if (saveGroupId !== undefined) {
+        response.results = response.results.filter(r => r.groupId === saveGroupId);
+        response.failures = response.failures.filter(r => r.groupId === saveGroupId);
+      }
       return response;
     };
     const candidates = [...groups].filter(([groupId]) => !discarded.has(groupId) && !invalidGroups.has(groupId) && !legacyBlock).flatMap(([groupId, rows]) => {
@@ -399,9 +406,9 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
           const student = await tx.get<{id:number}>("SELECT id FROM users WHERE student_number=? AND role_id=3",candidate.studentNumber);
           const roster = await ensureExamParticipants(tx,exam.id);
           const outside = !student || (roster.rosterKnown && !await isExamParticipant(tx,exam.id,student.id));
-          if (outside || prior?.state === "held" || prior?.state === "roster") {
+          if (outside || (prior && ["held","roster","conflict","correction"].includes(prior.state))) {
             await tx.run("UPDATE scanner_submissions SET state=? WHERE exam_id=? AND session_id=? AND group_id=? AND state<>'saved'",
-              outside ? "roster" : "pending",exam.id,sessionId,candidate.groupId);
+              outside ? "roster" : prior?.previously_saved ? "pending" : "correction",exam.id,sessionId,candidate.groupId);
           }
           if (prior && prior.student_number !== candidate.studentNumber && prior.previously_saved) {
             await tx.run("UPDATE scanner_submissions SET previously_saved = 1 WHERE exam_id = ? AND session_id = ? AND group_id = ?", exam.id, sessionId, candidate.groupId);
@@ -460,7 +467,7 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
             const copy = related.find(r => r.session_id === sessionId && r.group_id === candidate.groupId);
             const original = related.find(r => r.state === "saved" && r.result_json
               && !(r.session_id === sessionId && r.group_id === candidate.groupId));
-            if (original && copy && copy.state !== "held" && copy.state !== "roster" && !copy.previously_saved && !copy.score_snapshot && copy.state !== "saved") {
+            if (original && copy && copy.state !== "held" && copy.state !== "roster" && copy.state !== "correction" && !copy.previously_saved && !copy.score_snapshot && copy.state !== "saved") {
               const oldEvidence = await scannerDuplicateEvidence(tx, original.session_id, studentNumber, JSON.parse(original.pages_json));
               const newEvidence = await scannerDuplicateEvidence(tx, sessionId, studentNumber, candidate.pages);
               if (oldEvidence && newEvidence && JSON.stringify(oldEvidence) === JSON.stringify(newEvidence)) {
@@ -471,8 +478,8 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
             }
           }
           if (remaining.length > 1) await withdraw(tx, exam.id, studentNumber);
-          // Resolved attempts remain pending until the teacher explicitly saves them.
-          else await tx.run("UPDATE scanner_submissions SET state = 'pending' WHERE exam_id = ? AND student_number = ? AND state = 'conflict'", exam.id, studentNumber);
+          // Resolved attempts stay in the review queue until the teacher explicitly saves them.
+          else await tx.run("UPDATE scanner_submissions SET state = CASE WHEN previously_saved=1 THEN 'pending' ELSE 'correction' END WHERE exam_id = ? AND student_number = ? AND state = 'conflict'", exam.id, studentNumber);
         }
       });
       if (receiptMutated) {
@@ -501,18 +508,22 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
     const response = await collectSessionResults(card, activeRecords, cached, mode === "save" ? async result => {
       const candidate = candidates.find(c => c.pages.some(p => p.recordId === result.pages[0]?.recordId));
       if (!candidate || discarded.has(candidate.groupId) || (saveGroupId !== undefined && candidate.groupId !== saveGroupId)) return false;
-      // 点名保存（整批 groupIds，或订正这一组的 saveGroupId）在仍有存疑题时只留草稿。
-      // blockUnreviewed 只在调用方显式打开时拦住整会话保存。上传完成接口不打开它：
-      // 那条链路没有确认步骤，必须继续把带复核标记的成绩入库。
       if (saveGroupIds && !saveGroupIds.has(candidate.groupId)) return false;
-      if ((blockUnreviewed || saveGroupIds != null || saveGroupId !== undefined) && result.needsReviewCount > 0) return false;
+      // 存疑题不拦入库（issue #352 维护者口径）：带低置信度标记的成绩照常写正式成绩，
+      // 复核在异常卷队列与 Web 成绩修改里继续做。只有调用方显式打开 blockUnreviewed
+      // 时才拦住入库，作为可选的保守入口保留。
+      if (blockUnreviewed && result.needsReviewCount > 0) return false;
       await db.transaction(async tx => {
         await lockExam(tx, exam.id);
         const current = await receipts(tx, exam.id);
         if (current.filter(r => r.student_number === result.studentId).length > 1) throw new Error("重复学号：所有相关答题卡需订正后重新保存");
         const receipt = current.find(r => r.session_id === sessionId && r.group_id === candidate.groupId);
         if (!receipt) throw new Error("扫描成绩回执缺失，无法保存");
+        // Completion retries are automatic; resolved duplicates still require a named teacher save.
+        const explicitlySelected = saveGroupId === candidate.groupId || saveGroupIds?.has(candidate.groupId);
+        if (receipt.state === "correction" && !explicitlySelected) throw new Error("此卷待核对，请在整卡改分或异常卷列表中显式保存此卷");
         if (receipt.state === "held" || receipt.state === "roster") throw new Error("此卷待老师确认，已有正式成绩保持不变，请在考试或成绩分析页面处理");
+        for (const page of candidate.pages) await assertCorrectionPageProvenance(tx, card, page.recordId);
         if (receipt?.score_snapshot && receipt.previously_saved && receipt.state !== "saved") {
           await restoreScoreSnapshot(tx, receipt);
         } else {
@@ -549,13 +560,13 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
       analysisCache.invalidateExam(exam.id);
       await recomputeExamRankings(db, exam.id);
     }
-    response.reviewCards = all.filter(r => r.state === "pending" && r.previously_saved).map(conflictCard);
+    response.reviewCards = all.filter(r => r.state === "correction" || (r.state === "pending" && r.previously_saved)).map(conflictCard);
     return visible(response);
 }
 
 /**
  * 删除护栏数据源：这些组里哪些回执已经「定论或待老师确认」。
- * 只认 saved/held/conflict/roster 四类（spec §4.1）：validate 阶段给每份卷写的 pending 回执
+ * saved/held/conflict/roster/correction 均需确认；validate 阶段给每份卷写的 pending 回执
  * 是本机判分常态，把它也算进来会让每次本地删除都弹「已上传」的假警告。
  * 参数走 DbAdapter 的 varargs；整体绑数组在 MariaDB 上是占位符与实参数量不匹配。
  */
@@ -563,7 +574,7 @@ export async function listActiveReceiptGroups(db: DbAdapter, sessionId: string, 
   if (!groupIds.length) return [];
   const placeholders = groupIds.map(() => "?").join(",");
   const rows = await db.all<{ group_id: string }>(
-    `SELECT DISTINCT group_id FROM scanner_submissions WHERE session_id = ? AND group_id IN (${placeholders}) AND state IN ('saved','held','conflict','roster')`,
+    `SELECT DISTINCT group_id FROM scanner_submissions WHERE session_id = ? AND group_id IN (${placeholders}) AND state IN ('saved','held','conflict','roster','correction')`,
     sessionId, ...groupIds,
   );
   return rows.map(row => row.group_id);

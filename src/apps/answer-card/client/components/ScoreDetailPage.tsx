@@ -438,8 +438,8 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                     value={formatScore(overview.avgScore)}
                     suffix="分"
                     hint={`满分：${overview.fullScore > 0 ? formatScore(overview.fullScore) : "—"} 分`}
-                    delta={toDelta(previousComparison?.avgScoreChange)}
-                    deltaLabel="较上届"
+                    delta={toDelta(previousComparison?.avgScoreRateChange)}
+                    deltaLabel="较上届得分率(pp)"
                   />
                   <StatCard
                     label="及格率"
@@ -457,9 +457,18 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                   <StatCard label="参考人数" value={String(overview.gradedCount)} />
                   {previousComparison?.prevExamName && (
                     <StatCard
+                      label="较上届得分率变化"
+                      value={formatChange(previousComparison.avgScoreRateChange, " pp")}
+                      hint={previousComparison.avgScoreRateChange == null
+                        ? "任一届满分未知，无法按得分率比较"
+                        : `上届：${previousComparison.prevExamName}`}
+                    />
+                  )}
+                  {previousComparison?.prevExamName && (
+                    <StatCard
                       label="较上届均分变化"
                       value={formatChange(previousComparison.avgScoreChange, " 分")}
-                      hint={`上届：${previousComparison.prevExamName}`}
+                      hint="绝对分差，两届满分不同时不可直接比较"
                     />
                   )}
                   {previousComparison?.prevExamName && (

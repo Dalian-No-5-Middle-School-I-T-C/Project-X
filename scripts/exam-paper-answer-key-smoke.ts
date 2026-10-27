@@ -10,11 +10,11 @@
  *   C. 逐题文字答案全量保存与按页归集（含稀疏原卷页码）；答案页上传/删除/累计上限（OCR 显式关闭）。
  *   D. OCR 文本解析器（区间式/单题式/全角数字/混合行）—— 纯函数断言。
  *   E. 删除考试后清理答案页文件目录。
- *   F. v64 答案原文件直发：exams.answer_key_mode 二选一、直发模式单独开门但原卷图片仍受
+ *   F. v66 答案原文件直发：exams.answer_key_mode 二选一、直发模式单独开门但原卷图片仍受
  *      「显示原卷」控制、答案文件按 DB 登记页码下发（图片内联 / DOCX 附件）、切回 text 不销毁数据。
  *
  * 不覆盖：tesseract.js 真实识别（需要 WASM 与数秒耗时，接口以 ?ocr=0 调用）、
- *         MariaDB 方言（见 scripts/verify-mariadb.ts 的 v54/v64 断言）。
+ *         MariaDB 方言（见 scripts/verify-mariadb.ts 的 v54/v66 断言）。
  *
  * 运行：npm run verify:exam-paper
  */
@@ -480,7 +480,7 @@ async function main() {
   ok(parseAnswerKeyText("1-5 BACD\n完全无关的一段说明文字").length === 0, "区间长度与选项数不匹配时不猜答案");
   ok(parseAnswerKeyText("").length === 0, "空文本 → 空草稿");
 
-  // ── F. 答案原文件直发模式（v64）────────────────────────
+  // ── F. 答案原文件直发模式（v66）────────────────────────
   section("F. 答案原文件直发（需求：可不 OCR，直接把上传件发给学生）");
   const modeExamId = insertExam("答案直发考试", 1);
   sqlite.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?, ?, 88, 0, 88)").run(modeExamId, s1);

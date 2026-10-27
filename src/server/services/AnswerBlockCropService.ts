@@ -108,6 +108,21 @@ async function moveCropFile(sourcePath: string, targetPath: string): Promise<voi
   }
 }
 
+/**
+ * Node 在 Windows 上可能把递归 mkdir 的返回值写成 `\\?\C:\...` 扩展长度路径；
+ * path.resolve 不认识这个前缀，会让目录归属判断与回滚遍历全部落空。
+ * 只剥掉这个由 Node 自己加上的前缀，不改变 `..` 等越界语义。
+ */
+function normalizeFsPath(value: string): string {
+  let normalized = value;
+  if (process.platform === "win32") {
+    // UNC 的扩展形式是 \\?\UNC\server\share，不能只剥前缀，否则会变成相对路径。
+    normalized = normalized.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/, "");
+    normalized = normalized.replace(/^\/\/\?\/UNC\//i, "//").replace(/^\/\/\?\//, "");
+  }
+  return path.resolve(normalized);
+}
+
 /** Restore retry inputs and remove only files created by the aborted transaction. */
 export async function restoreCropFileMoves(moves: CropFileMove[]): Promise<void> {
   for (const { sourcePath, targetPath, createdDir } of [...moves].reverse()) {
@@ -115,14 +130,17 @@ export async function restoreCropFileMoves(moves: CropFileMove[]): Promise<void>
       if (existsSync(sourcePath)) await unlink(targetPath);
       else await moveCropFile(targetPath, sourcePath);
     }
-    if (createdDir) for (let dir = path.dirname(targetPath); isInsideDir(createdDir, dir); dir = path.dirname(dir)) {
-      try { await rmdir(dir); }
-      catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code === "ENOTEMPTY" || code === "EEXIST") break;
-        if (code !== "ENOENT") throw error;
+    if (createdDir) {
+      const boundary = normalizeFsPath(createdDir);
+      for (let dir = path.dirname(normalizeFsPath(targetPath)); isInsideDir(boundary, dir); dir = path.dirname(dir)) {
+        try { await rmdir(dir); }
+        catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === "ENOTEMPTY" || code === "EEXIST") break;
+          if (code !== "ENOENT") throw error;
+        }
+        if (dir === boundary) break;
       }
-      if (dir === createdDir) break;
     }
   }
 }
@@ -145,9 +163,10 @@ function targetFileName(crop: RecognitionBlockCrop, index: number): string {
 
 /** 路径必须严格落在 base 目录内（R07：拒绝 `..`、绝对路径与同前缀目录名）。 */
 export function isInsideDir(base: string, target: string): boolean {
-  const resolvedBase = path.resolve(base);
-  const resolved = path.resolve(target);
-  return resolved === resolvedBase || resolved.startsWith(resolvedBase + path.sep);
+  const resolvedBase = normalizeFsPath(base);
+  const resolved = normalizeFsPath(target);
+  const relative = path.relative(resolvedBase, resolved);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 /** 切块持久化统计（五轮D1：空/无效切块不再静默，返回统计 + 日志定位） */
@@ -216,7 +235,8 @@ export async function persistAnswerBlockCrops(
       if (params.fileMoves) {
         const move: CropFileMove = { sourcePath, targetPath };
         params.fileMoves.push(move);
-        move.createdDir = await mkdir(path.dirname(targetPath), { recursive: true });
+        const createdDir = await mkdir(path.dirname(targetPath), { recursive: true });
+        move.createdDir = createdDir ? normalizeFsPath(createdDir) : undefined;
       }
       await moveCropFile(sourcePath, targetPath);
       movedPaths.push(targetPath);

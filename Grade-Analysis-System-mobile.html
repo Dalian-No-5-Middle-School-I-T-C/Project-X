@@ -190,6 +190,80 @@ body { font-family: 'Noto Sans SC', sans-serif; background: #f1f5f9; }
 </div>
 
 <script>
+/* SCORE_PROGRESS_BROWSER_START */
+/* Generated from src/shared/scoreProgress.ts — do not edit.
+   Regenerate: npx tsx scripts/sync-score-progress-browser.ts */
+"use strict";
+var ScoreProgress = (() => {
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+  // src/shared/scoreProgress.ts
+  var scoreProgress_exports = {};
+  __export(scoreProgress_exports, {
+    NOTABLE_PROGRESS_RATE_PP: () => NOTABLE_PROGRESS_RATE_PP,
+    PROGRESS_RATE_THRESHOLD_PP: () => PROGRESS_RATE_THRESHOLD_PP,
+    examPairInTrend: () => examPairInTrend,
+    hasResolvableFullScore: () => hasResolvableFullScore,
+    judgeProgress: () => judgeProgress,
+    meanScoreRate: () => meanScoreRate,
+    scoreRateChange: () => scoreRateChange,
+    scoreRateOf: () => scoreRateOf
+  });
+  var PROGRESS_RATE_THRESHOLD_PP = 3;
+  var NOTABLE_PROGRESS_RATE_PP = 10;
+  function round1(value) {
+    return Math.round(value * 10) / 10;
+  }
+  function hasResolvableFullScore(fullScore) {
+    return typeof fullScore === "number" && Number.isFinite(fullScore) && fullScore > 0;
+  }
+  function scoreRateOf(score, fullScore) {
+    if (!hasResolvableFullScore(fullScore)) return null;
+    if (typeof score !== "number" || !Number.isFinite(score)) return null;
+    return round1(score / fullScore * 100);
+  }
+  function meanScoreRate(rates) {
+    if (rates.length === 0) return null;
+    if (rates.some((rate) => typeof rate !== "number" || !Number.isFinite(rate))) return null;
+    return round1(rates.reduce((sum, rate) => sum + rate, 0) / rates.length);
+  }
+  function scoreRateChange(current, previous) {
+    if (typeof current !== "number" || !Number.isFinite(current)) return null;
+    if (typeof previous !== "number" || !Number.isFinite(previous)) return null;
+    return round1(current - previous);
+  }
+  function judgeProgress(changePP, thresholdPP = PROGRESS_RATE_THRESHOLD_PP) {
+    if (typeof changePP !== "number" || !Number.isFinite(changePP)) return "unknown";
+    if (changePP >= thresholdPP) return "up";
+    if (changePP <= -thresholdPP) return "down";
+    return "stable";
+  }
+  function examPairInTrend(trend, examId) {
+    const index = trend.findIndex((point) => Number(point.examId) === examId);
+    if (index < 0) return null;
+    return { current: trend[index], previous: index > 0 ? trend[index - 1] : null };
+  }
+  return __toCommonJS(scoreProgress_exports);
+})();
+/* SCORE_PROGRESS_BROWSER_END */
+</script>
+<script>
 // ==================== 全局配置 ====================
 const urlParams = new URLSearchParams(location.search);
 // 安全（R12）：API 目标来源收紧为「页面里的固定值」或「同源」。
@@ -280,6 +354,57 @@ const API = {
   getClassStudents: (id) => apiGet('/api/classes/' + id + '/students')
 };
 
+// ==================== 得分率口径（issue #345）====================
+// 阈值、舍入和进退步判定只在 src/shared/scoreProgress.ts。本页使用内联的
+// 生成包（scripts/sync-score-progress-browser.ts），不再手写第二套数字或舍入。
+const NOTABLE_PROGRESS_PP = ScoreProgress.NOTABLE_PROGRESS_RATE_PP;
+
+/** 得分率 0-100；分母缺失或非正数时返回 null，绝不假设「满分 100」 */
+function rateOf(score, fullScore) {
+  return ScoreProgress.scoreRateOf(score, fullScore);
+}
+
+/**
+ * 某题块/某科的满分依据：只用该题块自己的满分（演示数据的 exam.subjects[].maxScore 是真实分值）。
+ *
+ * 不要退回整卷满分：整卷 fullScore 除以题块得分算出来的是「该题块对整卷的贡献比」，
+ * 不是这个题块的得分率——其他题块的满分一变，它的「得分率」也跟着变（评审 P2）。
+ * 例如两卷客观题均为满分 40 分、学生都得 40 分，仅主观题满分由 60 增至 110 时，
+ * 按整卷满分会算出客观题 40% → 26.7% 并误判为退步。
+ * 拿不到题块满分即返回 null：不虚构分母，题块进退步判定跳过并在界面上说明；
+ * 整卷满分只用于总分比较（见 examFullScore）。
+ */
+function fullScoreFor(exam, subjectName) {
+  const subject = (exam && exam.subjects) ? exam.subjects.find(s => s.name === subjectName) : null;
+  if (subject && Number.isFinite(subject.maxScore) && subject.maxScore > 0) return subject.maxScore;
+  return null;
+}
+
+/** 整卷满分：优先用接口给的 full_score，演示数据则按各科真实分值合计 */
+function examFullScore(exam, scoreRow) {
+  if (scoreRow && Number.isFinite(scoreRow.fullScore) && scoreRow.fullScore > 0) return scoreRow.fullScore;
+  if (exam && exam.subjects) {
+    const sum = exam.subjects.reduce((total, s) => total + (Number.isFinite(s.maxScore) ? s.maxScore : 0), 0);
+    if (sum > 0) return sum;
+  }
+  return null;
+}
+
+/** 得分率变化（百分点）；任一侧没有满分依据即为不可判定 */
+function rateChangePP(curScore, curFull, prevScore, prevFull) {
+  return ScoreProgress.scoreRateChange(rateOf(curScore, curFull), rateOf(prevScore, prevFull));
+}
+
+function formatPP(value) {
+  if (value == null) return '—';
+  return (value > 0 ? '+' : '') + value + ' pp';
+}
+
+/** 得分率展示；无满分依据时显示「—」而不是凭空百分比 */
+function formatRate(value) {
+  return value == null ? '—' : value + '%';
+}
+
 // ==================== 演示数据生成器 ====================
 function generateDemoData() {
   const subjects = [{name:'语文',maxScore:150},{name:'数学',maxScore:150},{name:'英语',maxScore:150},{name:'物理',maxScore:100},{name:'化学',maxScore:100},{name:'生物',maxScore:100}];
@@ -355,18 +480,35 @@ async function fetchExamWithScores(examId) {
 }
 
 async function fetchExams() {
-  if (apiMode === 'demo') return appData.exams;
+  if (apiMode === 'demo') return [...appData.exams].sort(compareExamChronology);
   const exams = await API.getExams();
   return exams.map(e => ({
     id: String(e.id),
     name: e.name || '未命名考试',
     date: e.start_time || e.created_at || '',
+    // 线上接口不给客观题/主观题的分块满分，这里留 null 而不是假设 100：
+    // 写死 100 会把任意卷子的题块得分率算成「得分/100」，满分不是 100 分时就全是错的（issue #345）。
     subjects: [
-      { name: '客观题', maxScore: 100 },
-      { name: '主观题', maxScore: 100 }
+      { name: '客观题', maxScore: null },
+      { name: '主观题', maxScore: null }
     ],
     _raw: e
-  }));
+  })).sort(compareExamChronology);
+}
+
+/** 考试时间升序；时间缺失时用 ID 兜底。演示数据与线上接口都统一到这里。 */
+function examTimeValue(exam) {
+  const raw = exam && (exam.date || exam.start_time || exam.created_at);
+  const value = raw ? Date.parse(raw) : NaN;
+  return Number.isFinite(value) ? value : null;
+}
+function compareExamChronology(a, b) {
+  const ta = examTimeValue(a), tb = examTimeValue(b);
+  if (ta != null && tb != null && ta !== tb) return ta - tb;
+  const na = Number(String((a && a.id) ?? '').replace(/\D/g, ''));
+  const nb = Number(String((b && b.id) ?? '').replace(/\D/g, ''));
+  if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+  return 0;
 }
 
 async function fetchOverview(examId) {
@@ -516,15 +658,18 @@ async function fetchStudentScores(studentId) {
       const res = await apiGet('/api/scores/me');
       const raw = res.scores || [];
       const exams = await fetchExams();
+      const order = new Map(exams.map((e, i) => [String(e.id), i]));
       return raw.map(s => ({
         examId: String(s.examId || s.exam_id),
         studentId: studentId,
         totalScore: s.totalScore || s.total_score || 0,
+        // /api/scores/me 带真实满分（来自答题卡分值投影/逐题满分合计），解析不出来时为 null
+        fullScore: (s.full_score != null ? s.full_score : (s.fullScore != null ? s.fullScore : null)),
         subjectScores: {
           '客观题': s.objectiveScore || s.objective_score || 0,
           '主观题': s.subjectiveScore || s.subjective_score || 0
         }
-      })).filter(s => s.examId);
+      })).filter(s => s.examId).sort((a, b) => (order.get(a.examId) ?? 0) - (order.get(b.examId) ?? 0));
     } catch (e) { console.warn('[Scores] /api/scores/me 失败，回退到逐考试查询:', e); }
   }
   const exams = await fetchExams();
@@ -939,7 +1084,8 @@ function renderStudentRow(stu, exam) {
     '<td class="px-6 py-4 font-bold text-blue-600">' + stu.totalScore + '</td>' +
     exam.subjects.map(s => {
       const score = stu.subjectScores ? stu.subjectScores[s.name] : 0;
-      const color = score >= s.maxScore * 0.8 ? 'text-emerald-600' : score >= s.maxScore * 0.6 ? 'text-slate-700' : 'text-amber-600';
+      const rate = rateOf(score, fullScoreFor(exam, s.name));
+      const color = rate == null ? 'text-slate-700' : rate >= 80 ? 'text-emerald-600' : rate >= 60 ? 'text-slate-700' : 'text-amber-600';
       return '<td class="px-4 py-4 ' + color + ' font-medium">' + score + '</td>';
     }).join('') +
     '<td class="px-6 py-4"><button onclick="showStudentDetail(\'' + stu.studentId + '\')" class="text-blue-600 hover:text-blue-800 text-sm font-medium">详情</button></td>' +
@@ -999,12 +1145,12 @@ async function showStudentDetail(studentId) {
         '<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">' +
           latestExam.subjects.map(s => {
             const score = stu.subjectScores ? stu.subjectScores[s.name] : 0;
-            const pct = Math.round(score / s.maxScore * 100);
-            const color = pct >= 80 ? 'bg-emerald-100 text-emerald-700' : pct >= 60 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700';
+            const pct = rateOf(score, fullScoreFor(latestExam, s.name));
+            const color = pct == null ? 'bg-slate-100 text-slate-700' : pct >= 80 ? 'bg-emerald-100 text-emerald-700' : pct >= 60 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700';
             return '<div class="' + color + ' rounded-lg p-3 text-center">' +
               '<div class="text-xs opacity-70">' + s.name + '</div>' +
               '<div class="text-xl font-bold">' + score + '</div>' +
-              '<div class="text-xs opacity-70">' + pct + '%</div>' +
+              '<div class="text-xs opacity-70">' + formatRate(pct) + '</div>' +
             '</div>';
           }).join('') +
         '</div>' +
@@ -1320,8 +1466,8 @@ async function renderStudentDashboard() {
           const diff = score - avg;
           const diffClass = diff >= 0 ? 'text-emerald-600' : 'text-amber-600';
           const diffIcon = diff >= 0 ? '&#x2191;' : '&#x2193;';
-          const pct = Math.round(score / s.maxScore * 100);
-          const barColor = pct >= 80 ? 'bg-emerald-500' : pct >= 60 ? 'bg-blue-500' : 'bg-amber-500';
+          const pct = rateOf(score, fullScoreFor(latestExam, s.name));
+          const barColor = pct == null ? 'bg-slate-300' : pct >= 80 ? 'bg-emerald-500' : pct >= 60 ? 'bg-blue-500' : 'bg-amber-500';
           return '<div class="bg-slate-50 rounded-xl p-4">' +
             '<div class="flex justify-between items-center mb-2">' +
               '<span class="text-sm font-medium text-slate-700">' + s.name + '</span>' +
@@ -1329,9 +1475,9 @@ async function renderStudentDashboard() {
             '</div>' +
             '<div class="text-2xl font-bold text-slate-800 mb-2">' + score + '</div>' +
             '<div class="w-full bg-slate-200 rounded-full h-2">' +
-              '<div class="' + barColor + ' h-2 rounded-full transition-all" style="width: ' + pct + '%"></div>' +
+              '<div class="' + barColor + ' h-2 rounded-full transition-all" style="width: ' + (pct == null ? 0 : pct) + '%"></div>' +
             '</div>' +
-            '<div class="text-xs text-slate-400 mt-1">班均 ' + avg + '</div>' +
+            '<div class="text-xs text-slate-400 mt-1">班均 ' + avg + (pct == null ? ' · 满分未知' : ' · ' + formatRate(pct)) + '</div>' +
           '</div>';
         }).join('') +
       '</div>' +
@@ -1462,18 +1608,27 @@ async function renderStudentAnalysis() {
   const stu = currentStudent;
   const scores = await fetchStudentScores(stu.id);
   const exams = await fetchExams();
-  const latestExam = exams[exams.length - 1];
-  const latestScore = scores.find(s => s.examId === latestExam.id);
+  // 以学生实际有成绩的最近一场为锚点：全局最新一场可能缺考或未公布。
+  const scoreByExam = new Map(scores.map(s => [String(s.examId), s]));
+  const attended = exams.filter(e => scoreByExam.has(String(e.id)));
+  const latestExam = attended[attended.length - 1] || null;
+  document.getElementById('pageTitle').textContent = '成绩分析';
+  if (!latestExam) {
+    document.getElementById('mainContent').innerHTML = '<div class="max-w-4xl mx-auto bg-white rounded-xl p-8 text-center text-slate-500">暂无可用于分析的已公布成绩。</div>';
+    return;
+  }
+  const latestScore = scoreByExam.get(String(latestExam.id));
+  const prevExam = attended.length >= 2 ? attended[attended.length - 2] : null;
+  const prevScoreRow = prevExam ? scoreByExam.get(String(prevExam.id)) : null;
   const classStats = await fetchClassStats(latestExam.id);
   const classAvg = classStats.find(c => c.className === stu.className);
-
-  document.getElementById('pageTitle').textContent = '成绩分析';
 
   const subjects = latestExam.subjects;
   let strongSubjects = [];
   let weakSubjects = [];
   let improvedSubjects = [];
   let declinedSubjects = [];
+  let unjudgedSubjects = [];
 
   for (const s of subjects) {
     const current = latestScore.subjectScores[s.name];
@@ -1481,22 +1636,34 @@ async function renderStudentAnalysis() {
     if (current >= classMean + 10) strongSubjects.push(s.name);
     else if (current <= classMean - 10) weakSubjects.push(s.name);
 
-    if (scores.length >= 2) {
-      const prev = scores[scores.length - 2].subjectScores[s.name];
-      const change = current - prev;
-      if (change >= 8) improvedSubjects.push({name: s.name, change: change});
-      else if (change <= -8) declinedSubjects.push({name: s.name, change: change});
-    }
+    if (!prevScoreRow) continue;
+    // issue #345：进步/待加强按得分率差判定，绝对分差会被两卷满分的大小带偏
+    const change = rateChangePP(
+      current, fullScoreFor(latestExam, s.name),
+      prevScoreRow.subjectScores[s.name], fullScoreFor(prevExam, s.name)
+    );
+    if (change == null) { unjudgedSubjects.push(s.name); continue; }
+    const direction = ScoreProgress.judgeProgress(change);
+    if (direction === "up") improvedSubjects.push({name: s.name, change: change});
+    else if (direction === "down") declinedSubjects.push({name: s.name, change: change});
   }
 
   let totalTrend = '稳定';
   let totalTrendColor = 'text-slate-600';
-  if (scores.length >= 2) {
-    const diff = scores[scores.length-1].totalScore - scores[scores.length-2].totalScore;
-    if (diff > 20) { totalTrend = '显著进步'; totalTrendColor = 'text-emerald-600'; }
-    else if (diff > 5) { totalTrend = '有所进步'; totalTrendColor = 'text-emerald-500'; }
-    else if (diff < -20) { totalTrend = '明显退步'; totalTrendColor = 'text-red-600'; }
-    else if (diff < -5) { totalTrend = '略有下滑'; totalTrendColor = 'text-amber-600'; }
+  if (prevScoreRow) {
+    const change = rateChangePP(
+      latestScore.totalScore, examFullScore(latestExam, latestScore),
+      prevScoreRow.totalScore, examFullScore(prevExam, prevScoreRow)
+    );
+    if (change == null) {
+      totalTrend = '无法判定（缺少满分依据）';
+      totalTrendColor = 'text-slate-400';
+    }
+    // 显著档仍用共享常量；±3 pp 边界交给 judgeProgress，不再在页面里写第二套比较。
+    else if (change >= NOTABLE_PROGRESS_PP) { totalTrend = '显著进步'; totalTrendColor = 'text-emerald-600'; }
+    else if (ScoreProgress.judgeProgress(change) === "up") { totalTrend = '有所进步'; totalTrendColor = 'text-emerald-500'; }
+    else if (change <= -NOTABLE_PROGRESS_PP) { totalTrend = '明显退步'; totalTrendColor = 'text-red-600'; }
+    else if (ScoreProgress.judgeProgress(change) === "down") { totalTrend = '略有下滑'; totalTrendColor = 'text-amber-600'; }
   }
 
   let html = '<div class="max-w-4xl mx-auto space-y-6 fade-in">' +
@@ -1550,8 +1717,10 @@ async function renderStudentAnalysis() {
         '<p>在最近的 <strong>' + latestExam.name + '</strong> 中，你的总分为 <strong>' + latestScore.totalScore + '</strong> 分，在班级中排名第 <strong>' + (await fetchRankings(latestExam.id, 'class', stu.id)).rank + '</strong>，在年级中排名第 <strong>' + (await fetchRankings(latestExam.id, 'grade', stu.id)).rank + '</strong>。</p>' +
         '<p class="mt-2">与班级平均分（' + (classAvg ? classAvg.totalAvg : '-') + '）相比，你' + (latestScore.totalScore > (classAvg ? classAvg.totalAvg : 0) ? '高于' : '低于') + '班级平均 <strong>' + Math.abs(latestScore.totalScore - (classAvg ? classAvg.totalAvg : 0)).toFixed(1) + '</strong> 分。</p>' +
         '<p class="mt-2">成绩总体趋势：<strong class="' + totalTrendColor + '">' + totalTrend + '</strong>。</p>' +
-        (improvedSubjects.length > 0 ? '<p class="mt-2 text-emerald-600">&#x1F4C8; 进步明显的科目：' + improvedSubjects.map(s => s.name + '(+' + s.change + ')').join('、') + '，继续保持！</p>' : '') +
-        (declinedSubjects.length > 0 ? '<p class="mt-2 text-amber-600">&#x1F4C9; 需要关注的科目：' + declinedSubjects.map(s => s.name + '(' + s.change + ')').join('、') + '，建议分析原因。</p>' : '') +
+        (improvedSubjects.length > 0 ? '<p class="mt-2 text-emerald-600">&#x1F4C8; 进步明显的科目：' + improvedSubjects.map(s => s.name + '(' + formatPP(s.change) + ')').join('、') + '，继续保持！</p>' : '') +
+        (declinedSubjects.length > 0 ? '<p class="mt-2 text-amber-600">&#x1F4C9; 需要关注的科目：' + declinedSubjects.map(s => s.name + '(' + formatPP(s.change) + ')').join('、') + '，建议分析原因。</p>' : '') +
+        '<p class="mt-2 text-xs text-slate-400">进步/退步按得分率（得分 ÷ 满分）的变化比较，不受各科满分不同影响。</p>' +
+        (unjudgedSubjects.length > 0 ? '<p class="mt-2 text-xs text-slate-500">' + unjudgedSubjects.join('、') + ' 缺少题块满分依据，未参与进步/退步判定（整卷满分不能代替题块满分，否则算出的是对整卷的贡献比）。</p>' : '') +
       '</div>' +
     '</div>' +
     '<div class="bg-blue-50 rounded-xl p-6 border border-blue-100">' +

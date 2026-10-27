@@ -1,7 +1,7 @@
 // v54: 教师/管理员端「原卷与答案解析」配置面板（考试管理页打开）。
 // 三件事：答案展示方式（逐题文字 / 原文件直发）、显示原卷开关、上传本次正确答案并人工修正逐题文字。
 // 只做展示配置：面板不判对错，也不与 question_scores 交互。
-// v64: answer_key_mode 决定学生端看到哪一套数据 —— 'text' 看逐题文字（需 OCR 后保存），
+// v66: answer_key_mode 决定学生端看到哪一套数据 —— 'text' 看逐题文字（需 OCR 后保存），
 //      'file' 直接看到上传的答案原文件；两套数据都保留，切换不销毁。
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FileSearch, Plus, RefreshCw, Trash2 } from "lucide-react";
@@ -48,7 +48,7 @@ type AnswerKeyPayload = {
   examName: string | null;
   cardId: string | null;
   showOriginalPaper: number;
-  /** v64: 后端归一化后的答案展示模式，缺字段（旧后端）按 'text' 处理 */
+  /** v66: 后端归一化后的答案展示模式，缺字段（旧后端）按 'text' 处理 */
   answerKeyMode: AnswerKeyMode;
   scorePublished: number;
   hasOriginalPaper: boolean;
@@ -159,7 +159,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
   }
 
   /**
-   * v64: 答案展示方式二选一，即时保存（与「显示原卷」同样是考试级开关）。
+   * v66: 答案展示方式二选一，即时保存（与「显示原卷」同样是考试级开关）。
    * 只改写 exams.answer_key_mode：两套答案数据（逐题文字 / 上传原文件）都留在库里，
    * 所以来回切换不需要重新上传，也不会丢教师已核对的文字答案。
    */
@@ -354,7 +354,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
                 </div>
               </section>
 
-              {/* v64: 答案展示方式 —— 学生端只看得到其中一套数据 */}
+              {/* v66: 答案展示方式 —— 学生端只看得到其中一套数据 */}
               <section className="flex flex-col gap-2">
                 <h4 className="m-0 text-base font-medium text-foreground">答案展示方式</h4>
                 <SegmentedControl

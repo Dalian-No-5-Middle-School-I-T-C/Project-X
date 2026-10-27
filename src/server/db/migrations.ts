@@ -1347,8 +1347,16 @@ MIGRATIONS.push({ version: 63, name: "scan-session-warnings", up(db) {
   })();
 } });
 
+MIGRATIONS.push({ version: 64, name: "scan-correction-provenance", up(db) {
+  addColumnIfMissing(db, "scan_correction_pages", "recovery_fingerprint", "VARCHAR(64)");
+} });
+
+// SQLite 是动态类型，INTEGER 亲和列本来就能存 13.1；MariaDB 的 INT 会拒绝小题号。
+// 这里只记录版本，保持两端迁移号对齐。
+MIGRATIONS.push({ version: 65, name: "question-number-decimals", up() {} });
+
 /**
- * 迁移 64：考试级「本次正确答案」展示模式。
+ * 迁移 66：考试级「本次正确答案」展示模式。
  *
  * v54 只有一条下发通道：教师上传的答案文件留在服务端做 OCR/核对，学生永远只看到
  * exam_answer_keys 里的文字。教师想要「把答案 PDF/扫描图原样发给学生」时，
@@ -1356,8 +1364,9 @@ MIGRATIONS.push({ version: 63, name: "scan-session-warnings", up(db) {
  * 此处新增 exams.answer_key_mode：'text'（沿用文字答案，默认，历史数据行为不变）
  * 与 'file'（把已上传的 exam_answer_key_pages 原样下发）。存量考试不迁移数据，
  * 老库升级后仍是 'text'，不会出现「升级完答案突然变成一堆文件」的意外。
+ * 号位说明：本支最初写的是 64，合 main 时 64/65 已被订正溯源与小数题号占用，故顺延到 66。
  */
-MIGRATIONS.push({ version: 64, name: "exam-answer-key-mode", up(db) {
+MIGRATIONS.push({ version: 66, name: "exam-answer-key-mode", up(db) {
   addColumnIfMissing(db, "exams", "answer_key_mode", "TEXT NOT NULL DEFAULT 'text'");
 } });
 

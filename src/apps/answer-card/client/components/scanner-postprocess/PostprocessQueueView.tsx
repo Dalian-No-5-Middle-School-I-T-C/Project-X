@@ -6,13 +6,14 @@ import {
 } from "../ui/v2";
 import { CardCorrectionButton } from "../CardCorrectionEditor";
 import { CorrectionCanvas } from "./CorrectionCanvas";
+import { RotationButtons, type ImageRotation } from "../RotatedCardImage";
 import type { PostprocessChannel } from "./postprocessChannel";
 import { getScannerMode, isRemoteServerConfigured } from "../../lib/scannerMode";
 import { replaceScopedSelection, type PostprocessQueueItem } from "../../../../../shared/scanPostprocess";
 import { selectStudentDigitCells } from "../../../../../shared/correctionCellSelect";
 import { uniqueScanConflictCards, type ScanConflictCard } from "../../../../../shared/scanPages";
-import { correctionCells, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../../shared/scanCorrection";
-import { OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
+import { correctionCells, mergeRecognitions, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../../shared/scanCorrection";
+import { gradeCombinedRecognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
 import type { SubjectiveQuestionNumber } from "../../../../../shared/types";
 
 export interface ScanMeta { recordId: string; createdAt: string; scanQuality: number | null; }
@@ -242,6 +243,7 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
   const [rosterNumbers, setRosterNumbers] = useState<Set<string> | null>(null);
   const [rosterKnown, setRosterKnown] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [rotation, setRotation] = useState<ImageRotation>(0);
   const cropRef = useRef<HTMLDivElement>(null);
   const digitPageIndex = useMemo(() => (document ? document.pages.findIndex(page => correctionCells(page.layout).some(cell => cell.type === "student_digit")) : -1), [document]);
   const digitPage = document && digitPageIndex >= 0 ? document.pages[digitPageIndex] : null;
@@ -378,8 +380,14 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
         <Button variant="ghost" size="sm" className="mb-2" icon={<ArrowLeft />} onClick={onBack}>返回重卡对比</Button>
       )}
       <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
-        <div ref={cropRef} className="min-h-[220px] w-full shrink-0 overflow-auto rounded-md bg-muted p-3 lg:w-[46%]">
-          <CorrectionCanvas document={document} pageIndex={digitPageIndex} edit={edit} images={images} zoom={3} busy={saving} onToggle={toggleCell} />
+        <div className="flex min-h-0 w-full shrink-0 flex-col gap-2 lg:w-[46%]">
+          <div className="flex items-center gap-2">
+            <RotationButtons rotation={rotation} onChange={setRotation} disabled={saving} />
+            <span className="text-xs text-muted-foreground">原卷方向不正时，先旋转到正向再点选</span>
+          </div>
+          <div ref={cropRef} className="min-h-[220px] w-full overflow-auto rounded-md bg-muted p-3">
+            <CorrectionCanvas document={document} pageIndex={digitPageIndex} edit={edit} images={images} zoom={3} rotation={rotation} busy={saving} onToggle={toggleCell} />
+          </div>
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-3">
           <label className="flex flex-col gap-1.5 text-sm">
@@ -602,16 +610,16 @@ function LowConfidencePanel({ item, channel, onJump }: {
   const rows = useMemo(() => {
     if (!document) return [];
     const list: Array<{ questionNumber: SubjectiveQuestionNumber; label: string; confidence: number; value: string }> = [];
-    for (const page of document.pages) {
-      const recognition = page.recognition;
-      for (const question of recognition.questions ?? []) {
-        if ((question.confidence ?? 0) >= OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD) continue;
-        list.push({ questionNumber: question.questionNumber, label: `第 ${question.questionNumber} 题（客观）`, confidence: question.confidence ?? 0, value: question.selectedOptions.join(",") || "未答" });
-      }
-      for (const question of recognition.subjectiveQuestions ?? []) {
-        if (question.status === "ok") continue;
-        list.push({ questionNumber: question.questionNumber, label: `第 ${question.questionNumber} 题（主观 ${question.status}）`, confidence: question.confidence ?? 0, value: String(question.score) });
-      }
+    // 整份卡合并后判一次：逐页判分会把「本页没上报的题」当成空白低置信度，
+    // 双面卡的另一页因此会列出根本不属于该页的存疑条目（评审 P2）。
+    const graded = gradeCombinedRecognition(document.card, item.groupId, mergeRecognitions(document), OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD);
+    for (const question of graded.questions) {
+      if (!question.needsReview) continue;
+      list.push({ questionNumber: question.questionNumber, label: `第 ${question.questionNumber} 题（客观）`, confidence: question.confidence ?? 0, value: question.selectedOptions.join(",") || "未答" });
+    }
+    for (const question of graded.subjectiveQuestions) {
+      if (!question.needsReview) continue;
+      list.push({ questionNumber: question.questionNumber, label: `第 ${question.questionNumber} 题（主观 ${question.status}）`, confidence: question.confidence ?? 0, value: String(question.score) });
     }
     return list.sort((a, b) => a.confidence - b.confidence);
   }, [document]);

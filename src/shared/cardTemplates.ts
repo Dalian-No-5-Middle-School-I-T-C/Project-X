@@ -221,7 +221,8 @@ function englishTemplate(withListening: boolean): BodyBlock[] {
   ];
   return [
     objectiveBlock("客观题", questions),
-    fillBlankBlock("语法填空", Array.from({ length: 10 }, (_, index) => blankQuestion(56 + index, 1.5, 1)))
+    // 填空块只画一个得分格，块总分记在首个空上；其余空不再各自带分（否则只算到 1.5）。
+    fillBlankBlock("语法填空", Array.from({ length: 10 }, (_, index) => blankQuestion(56 + index, index === 0 ? 15 : 0, 1)))
   ];
 }
 
@@ -232,7 +233,7 @@ function mathTemplate(): BodyBlock[] {
   ];
   return [
     objectiveBlock("选择题", objective),
-    fillBlankBlock("填空题", [blankQuestion(12, 5, 1), blankQuestion(13, 5, 1), blankQuestion(14, 5, 1)]),
+    fillBlankBlock("填空题", [blankQuestion(12, 15, 1), blankQuestion(13, 0, 1), blankQuestion(14, 0, 1)]),
     answerBlock(15, linedQuestion(15, 0, 72))
   ];
 }

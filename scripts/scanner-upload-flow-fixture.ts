@@ -4,7 +4,7 @@ import { mkdtemp, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 
-export async function startScannerFlowFixture(port = 0, host = "127.0.0.1", options: { duplex?: boolean } = {}) {
+export async function startScannerFlowFixture(port = 0, host = "127.0.0.1", options: { duplex?: boolean; localScanner?: boolean; scoreEditing?: boolean } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "projectx-scanner-flow-"));
   process.env.PROJECTX_DB_PATH = path.join(root, "scanner.db");
   process.env.ANSWER_CARD_DATA_DIR = path.join(root, "cards");
@@ -52,7 +52,7 @@ export async function startScannerFlowFixture(port = 0, host = "127.0.0.1", opti
   await db.run("INSERT INTO api_keys (name,api_key,scope,is_active) VALUES (?,?,?,1)", "flow-test", hashSecret(key), "scanner");
   const { default: sharp } = await import("sharp");
   const images: Record<string, string> = {};
-  for (const [index, name] of ["original", "different", "normal", "blank", "replacement", "unknown", "after", "discard"].entries()) {
+  for (const [index, name] of ["original", "different", "normal", "blank", "replacement", "unknown", "after", "discard", "duplicate-a", "duplicate-b", "unrelated"].entries()) {
     images[name] = (await sharp({ create: { width: 24, height: 24, channels: 3, background: { r: index * 25, g: 120, b: 200 } } }).png().toBuffer()).toString("base64");
   }
   images.unreadable = Buffer.from("not-a-readable-scan").toString("base64");
@@ -72,9 +72,19 @@ export async function startScannerFlowFixture(port = 0, host = "127.0.0.1", opti
   app.get("/test/state", async (req, res) => {
     if (req.headers["x-api-key"] !== key) { res.sendStatus(401); return; }
     res.json({ scores: await db.all("SELECT u.student_number,ss.total_score FROM student_scores ss JOIN users u ON u.id=ss.student_id WHERE ss.exam_id=?", exam.lastInsertRowid),
-      receipts: await db.all("SELECT session_id,group_id,student_number,state FROM scanner_submissions WHERE exam_id=?", exam.lastInsertRowid) });
+      receipts: await db.all("SELECT session_id,group_id,student_number,state,result_json FROM scanner_submissions WHERE exam_id=?", exam.lastInsertRowid) });
   });
   app.use("/api/scanner/upload", router);
+  if (options.scoreEditing) {
+    const { authMiddleware } = await import("../src/server/middleware/auth");
+    const { default: scoreEditing } = await import("../src/server/routes/score-editing");
+    app.use("/api/exams", authMiddleware, scoreEditing);
+  }
+  if (options.localScanner) {
+    const { authMiddleware } = await import("../src/server/middleware/auth");
+    const { createScannerRouter } = await import("../src/apps/answer-card/server/scanner");
+    app.use("/api/scanner", authMiddleware, createScannerRouter(false));
+  }
   app.use((error: Error, _req: unknown, res: import("express").Response, _next: unknown) => res.status(409).json({ message: error.message }));
   const server = app.listen(port, host);
   await new Promise<void>(resolve => server.once("listening", resolve));

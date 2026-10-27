@@ -5,7 +5,8 @@ import { databaseTimestamp } from "../db/timestamp";
  * 表: system_settings(key TEXT PRIMARY KEY, value TEXT)
  */
 import { Router } from "express";
-import { requirePermission, authMiddleware } from "../middleware/auth";
+import { authMiddleware } from "../middleware/auth";
+import { requirePermissionCompat } from "../../apps/answer-card/server/middleware";
 import { PERMISSIONS } from "../auth/permissions";
 import { getMysqlDb, buildUpsertSQL } from "../db";
 
@@ -41,15 +42,16 @@ router.get(
 // GET /api/system-settings — 读取全部全局设置（管理员）
 router.get(
   "/",
-  requirePermission(PERMISSIONS.SYSTEM_MANAGE),
-  async (_req, res) => {
+  requirePermissionCompat(PERMISSIONS.SYSTEM_MANAGE),
+  async (req, res) => {
     try {
       const rows = (await getMysqlDb().all(
         "SELECT `key`, value FROM system_settings"
       )) as Array<{ key: string; value: string }>;
       const settings: Record<string, string> = { auto_unpublish_on_score_change: "0" };
       for (const r of rows) settings[r.key] = r.value;
-      res.json({ ok: true, data: settings });
+      // 免登录单机模式没有登录身份；清退学生背景需要管理员本人，前端据此隐藏入口。
+      res.json({ ok: true, data: settings, authenticated: Boolean(req.user?.id) });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err.message });
     }
@@ -60,7 +62,7 @@ router.get(
 // body: { settings: Record<string, string> } 或 { key, value }
 router.put(
   "/",
-  requirePermission(PERMISSIONS.SYSTEM_MANAGE),
+  requirePermissionCompat(PERMISSIONS.SYSTEM_MANAGE),
   async (req, res) => {
     try {
       const body = req.body ?? {};
