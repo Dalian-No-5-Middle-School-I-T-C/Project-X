@@ -43,6 +43,7 @@ import {
 } from "../components/ui/v2";
 import { cn } from "../lib/utils";
 import { EXAM_MODE_LABELS, type ExamMode, type ExamRecord } from "../../../../shared/types";
+import { ANSWER_KEY_MODE_FILE } from "../../../../shared/answerKeyMode";
 
 /** 答题卡下拉「未选择」哨兵：Radix Select 不接受空字符串 value */
 const CARD_PLACEHOLDER = "__no_card__";
@@ -550,6 +551,7 @@ export function ExamManagePage() {
                     {exam.score_published === 1 ? "已公布" : exam.score_published === 2 ? "已撤回" : "未公布"}
                   </Badge>
                   {exam.show_original_paper === 1 && <Badge tone="info" className="shrink-0">原卷开放</Badge>}
+                  {exam.answer_key_mode === ANSWER_KEY_MODE_FILE && <Badge tone="success" className="shrink-0">答案直发</Badge>}
                 </div>
               </div>
               <div className="mt-3 flex flex-wrap justify-end gap-2">
@@ -620,6 +622,7 @@ export function ExamManagePage() {
                       {exam.score_published === 1 ? "已公布" : exam.score_published === 2 ? "已撤回" : "未公布"}
                     </Badge>
                     {exam.show_original_paper === 1 && <Badge tone="info" className="shrink-0">原卷开放</Badge>}
+                    {exam.answer_key_mode === ANSWER_KEY_MODE_FILE && <Badge tone="success" className="shrink-0">答案直发</Badge>}
                   </div>
                 </TableCell>
                 <TableCell className="text-right whitespace-nowrap">

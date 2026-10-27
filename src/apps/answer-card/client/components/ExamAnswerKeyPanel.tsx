@@ -1,9 +1,17 @@
 // v54: 教师/管理员端「原卷与答案解析」配置面板（考试管理页打开）。
-// 三件事：显示原卷开关（跟随考试保存）、上传本次正确答案并 OCR、逐题文字答案人工修正后保存。
-// 只做文字：面板不判对错，也不与 question_scores 交互。
+// 三件事：答案展示方式（逐题文字 / 原文件直发）、显示原卷开关、上传本次正确答案并人工修正逐题文字。
+// 只做展示配置：面板不判对错，也不与 question_scores 交互。
+// v64: answer_key_mode 决定学生端看到哪一套数据 —— 'text' 看逐题文字（需 OCR 后保存），
+//      'file' 直接看到上传的答案原文件；两套数据都保留，切换不销毁。
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FileSearch, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { authFetch, fetchJson, mediaUrl } from "../auth/api";
+import {
+  ANSWER_KEY_MODE_FILE,
+  ANSWER_KEY_MODE_TEXT,
+  normalizeAnswerKeyMode,
+  type AnswerKeyMode,
+} from "../../../../shared/answerKeyMode";
 import {
   Badge,
   Button,
@@ -17,6 +25,7 @@ import {
   DialogTitle,
   Checkbox,
   Input,
+  SegmentedControl,
   Select,
   SelectContent,
   SelectItem,
@@ -39,6 +48,8 @@ type AnswerKeyPayload = {
   examName: string | null;
   cardId: string | null;
   showOriginalPaper: number;
+  /** v64: 后端归一化后的答案展示模式，缺字段（旧后端）按 'text' 处理 */
+  answerKeyMode: AnswerKeyMode;
   scorePublished: number;
   hasOriginalPaper: boolean;
   paperPages: PaperPage[];
@@ -88,6 +99,8 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
   const [panelError, setPanelError] = useState<string | null>(null);
   const [showPaper, setShowPaper] = useState(false);
   const [toggleBusy, setToggleBusy] = useState(false);
+  const [mode, setMode] = useState<AnswerKeyMode>(ANSWER_KEY_MODE_TEXT);
+  const [modeBusy, setModeBusy] = useState(false);
   const [withOcr, setWithOcr] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [ocrBusyPage, setOcrBusyPage] = useState<number | null>(null);
@@ -101,6 +114,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
       const payload = await fetchJson<AnswerKeyPayload>(`/api/exams/${examId}/answer-key`);
       setData(payload);
       setShowPaper(payload.showOriginalPaper === 1);
+      setMode(normalizeAnswerKeyMode(payload.answerKeyMode));
       setRows(payload.answers.map((a) => ({ questionNumber: String(a.questionNumber), answerText: a.answerText, pageIndex: a.pageIndex })));
       setSavedCount(payload.answers.length);
     } catch (err) {
@@ -144,6 +158,33 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
     }
   }
 
+  /**
+   * v64: 答案展示方式二选一，即时保存（与「显示原卷」同样是考试级开关）。
+   * 只改写 exams.answer_key_mode：两套答案数据（逐题文字 / 上传原文件）都留在库里，
+   * 所以来回切换不需要重新上传，也不会丢教师已核对的文字答案。
+   */
+  async function toggleMode(next: AnswerKeyMode) {
+    if (modeBusy || next === mode) return;
+    setModeBusy(true);
+    setPanelError(null);
+    const previous = mode;
+    setMode(next);
+    try {
+      await fetchJson(`/api/exams/${examId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ answerKeyMode: next }),
+      });
+      setData((cur) => (cur ? { ...cur, answerKeyMode: next } : cur));
+      onExamChanged?.();
+    } catch (err) {
+      setMode(previous);
+      setPanelError(err instanceof Error ? err.message : "答案展示方式保存失败");
+    } finally {
+      setModeBusy(false);
+    }
+  }
+
   async function handleFiles(files: File[]) {
     if (files.length === 0 || uploading) return;
     setUploading(true);
@@ -151,7 +192,9 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
     try {
       const formData = new FormData();
       for (const file of files) formData.append("files", file);
-      const res = await authFetch(`/api/exams/${examId}/answer-key/pages${withOcr ? "" : "?ocr=0"}`, {
+      // 直发模式下 OCR 没有下游用途（学生看的是文件本身），不再消耗识别额度
+      const ocrRequested = withOcr && mode === ANSWER_KEY_MODE_TEXT;
+      const res = await authFetch(`/api/exams/${examId}/answer-key/pages${ocrRequested ? "" : "?ocr=0"}`, {
         method: "POST",
         body: formData,
       });
@@ -266,7 +309,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
         <DialogHeader>
           <DialogTitle>原卷与答案解析 — {examName}</DialogTitle>
           <DialogDescription>
-            学生只有在成绩已公布且「显示原卷」开启时才能看到原卷与逐题答案。答案只存文字、不判对错。
+            学生只有在成绩已公布，且「显示原卷」或答案走「原文件直接下发」时，才能看到原卷与答案。答案只做展示，不判对错。
           </DialogDescription>
         </DialogHeader>
 
@@ -290,8 +333,8 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
                   label="显示原卷"
                   description={
                     data?.scorePublished === 1
-                      ? "当前考试已公布，开启后学生立即可查看原卷与逐题答案。"
-                      : "关闭后学生端不出现「查看原卷」入口；开启但未公布成绩时学生仍不可见。"
+                      ? "当前考试已公布，开启后学生立即可查看原卷与答案。"
+                      : "关闭后学生端不出现「查看原卷」入口；开启但未公布成绩时学生仍不可见。答案选「原文件直接下发」时，即使这里关闭，学生也能看答案文件。"
                   }
                   control={
                     <Switch
@@ -309,6 +352,41 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
                   </Badge>
                   <Badge tone={showPaper ? "info" : "neutral"}>{showPaper ? "原卷可见" : "原卷隐藏"}</Badge>
                 </div>
+              </section>
+
+              {/* v64: 答案展示方式 —— 学生端只看得到其中一套数据 */}
+              <section className="flex flex-col gap-2">
+                <h4 className="m-0 text-base font-medium text-foreground">答案展示方式</h4>
+                <SegmentedControl
+                  aria-label="答案展示方式"
+                  value={mode}
+                  size="sm"
+                  onValueChange={(next) => void toggleMode(next)}
+                  items={[
+                    {
+                      value: ANSWER_KEY_MODE_TEXT,
+                      label: "逐题文字（OCR）",
+                      disabled: modeBusy,
+                      tip: "学生看按题号排列的答案文字，需要先 OCR 或手动录入并保存",
+                    },
+                    {
+                      value: ANSWER_KEY_MODE_FILE,
+                      label: "原文件直接下发",
+                      disabled: modeBusy,
+                      tip: "学生直接看到上传的答案文件本身，图片 / PDF / DOCX 原样呈现",
+                    },
+                  ]}
+                />
+                <p className="m-0 text-xs text-muted-foreground">
+                  {mode === ANSWER_KEY_MODE_FILE
+                    ? "当前为原文件直发：学生看到下方上传的答案文件原样，不显示逐题文字表。两种模式的数据都会保留，切回「逐题文字」即恢复原状，无需重新上传。"
+                    : "当前为逐题文字：学生只看已保存的逐题答案，上传的答案文件仅供 OCR 与核对，不会下发。"}
+                </p>
+                {mode === ANSWER_KEY_MODE_FILE && (data?.answerPages.length ?? 0) === 0 && (
+                  <p className="m-0 text-sm text-destructive-fg">
+                    还没有上传答案文件，学生此刻打开的会是空答案 —— 请在下方「本次正确答案」上传，或先切回「逐题文字」。
+                  </p>
+                )}
               </section>
 
               {/* 原卷页（答题卡级资产，只读预览） */}
@@ -337,15 +415,25 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
                 )}
               </section>
 
-              {/* 本次正确答案：上传 + OCR 草稿 */}
+              {/* 本次正确答案：上传 + （文字模式）OCR 草稿 / （直发模式）即为下发给学生的那份文件 */}
               <section className="flex flex-col gap-2">
-                <h4 className="m-0 text-base font-medium text-foreground">本次正确答案（上传后可 OCR 识别，识别结果为草稿）</h4>
-                <ControlRow
-                  htmlFor="answer-key-ocr"
-                  control={<Checkbox id="answer-key-ocr" checked={withOcr} onCheckedChange={(checked) => setWithOcr(checked === true)} />}
-                  label="上传时自动 OCR 识别"
-                  description="识别结果只填进下方表格，仍需教师核对后保存才对学生生效。"
-                />
+                <h4 className="m-0 text-base font-medium text-foreground">
+                  {mode === ANSWER_KEY_MODE_FILE
+                    ? "本次正确答案（上传的文件即学生看到的原样）"
+                    : "本次正确答案（上传后可 OCR 识别，识别结果为草稿）"}
+                </h4>
+                {mode === ANSWER_KEY_MODE_TEXT ? (
+                  <ControlRow
+                    htmlFor="answer-key-ocr"
+                    control={<Checkbox id="answer-key-ocr" checked={withOcr} onCheckedChange={(checked) => setWithOcr(checked === true)} />}
+                    label="上传时自动 OCR 识别"
+                    description="识别结果只填进下方表格，仍需教师核对后保存才对学生生效。"
+                  />
+                ) : (
+                  <p className="m-0 text-xs text-muted-foreground">
+                    直发模式下不跑 OCR，也不会写入逐题文字表；上传后即刻对「成绩已公布」的学生可见。
+                  </p>
+                )}
                 <UploadZone
                   accept=".docx,.pdf,image/*"
                   maxSize={50 * 1024 * 1024}
@@ -359,8 +447,11 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
                   <div className="flex flex-col gap-2">
                     {data?.answerPages.map((page) => (
                       <div key={page.pageIndex} className="flex items-center justify-between gap-3 rounded-lg border border-border-subtle bg-secondary px-3 py-2.5">
-                        <span className="truncate text-sm text-foreground">
-                          答案第 <span className="tabular-nums">{page.pageIndex}</span> 页 · {page.filename}
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span className="truncate text-sm text-foreground">
+                            答案第 <span className="tabular-nums">{page.pageIndex}</span> 页 · {page.filename}
+                          </span>
+                          {mode === ANSWER_KEY_MODE_FILE && <Badge tone="success" className="shrink-0">学生可见</Badge>}
                         </span>
                         <div className="flex shrink-0 gap-2">
                           <Button
@@ -370,16 +461,18 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
                           >
                             预览
                           </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            icon={<RefreshCw />}
-                            loading={ocrBusyPage === page.pageIndex}
-                            disabled={ocrBusyPage !== null}
-                            onClick={() => void reocrPage(page.pageIndex)}
-                          >
-                            重新识别
-                          </Button>
+                          {mode === ANSWER_KEY_MODE_TEXT && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              icon={<RefreshCw />}
+                              loading={ocrBusyPage === page.pageIndex}
+                              disabled={ocrBusyPage !== null}
+                              onClick={() => void reocrPage(page.pageIndex)}
+                            >
+                              重新识别
+                            </Button>
+                          )}
                           <Button size="sm" variant="ghost" className="text-destructive-fg" onClick={() => void deletePage(page.pageIndex)}>
                             删除
                           </Button>
@@ -406,7 +499,9 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
                   </Button>
                 </div>
                 <p className="m-0 text-xs text-muted-foreground">
-                  「归属页」决定答案渲染在哪张原卷图片下方；留空则归到最后一页，不会丢答案。
+                  {mode === ANSWER_KEY_MODE_FILE
+                    ? "当前学生看的是答案原文件，本表暂不下发；数据仍会保存，切回「逐题文字」立即生效。"
+                    : "「归属页」决定答案渲染在哪张原卷图片下方；留空则归到最后一页，不会丢答案。"}
                 </p>
                 {rows.length === 0 ? (
                   <p className="m-0 py-4 text-center text-sm text-muted-foreground">还没有答案，可上传后 OCR，或点击「添加一题」手动录入。</p>
