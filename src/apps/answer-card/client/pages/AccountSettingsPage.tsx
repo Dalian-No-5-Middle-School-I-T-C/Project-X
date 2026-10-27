@@ -190,11 +190,9 @@ export function AccountSettingsPage() {
   // 只在请求的正是被隐藏的 grading 时回退——其余页签（客户端 / AI 服务商 / 数据存储）
   // 本来就该保留：无脑回退会把学生的 AI 页签也锁死。
   const activeSettingsTab: SettingsTab =
-    !canEditGradingSettings && settingsTab === "grading"
-      ? "client"
-      : isStudent && settingsTab === "feedback"
-        ? "client"
-        : settingsTab;
+    !canEditGradingSettings && settingsTab === "grading" ? "client" : settingsTab;
+  const visibleSettingsTab: SettingsTab =
+    isStudent && activeSettingsTab === "feedback" ? "client" : activeSettingsTab;
   // 五轮C1：侧边栏自动展开（客户端级 localStorage 设置，原误放系统级配置页，迁至此「外观/皮肤」区）
   const [railAutoExpand, setRailAutoExpand] = useState(() => {
     try { return localStorage.getItem("projectx-rail-auto-expand") === "true"; } catch { return false; }
@@ -484,7 +482,7 @@ export function AccountSettingsPage() {
 
         {/* v2 Tabs 默认横向：顶部 Tab 条 + 内容区全宽自然排布（绕开 vertical 列布局塌缩） */}
         <Tabs
-          value={activeSettingsTab}
+          value={visibleSettingsTab}
           onValueChange={(v) => setSettingsTab(v as SettingsTab)}
         >
           <TabsList className="px-5">
