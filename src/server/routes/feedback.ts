@@ -439,6 +439,8 @@ router.get("/:id/attachments/:attachmentId", async (req, res) => {
     const absPath = resolveStoredPath(row.stored_path);
     if (!absPath) return res.status(404).json({ ok: false, error: "附件不存在" });
     res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("X-Content-Type-Options", "nosniff");
     res.download(absPath, row.filename, (err) => {
       if (!err) return;
       if (res.headersSent) {
