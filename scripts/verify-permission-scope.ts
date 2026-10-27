@@ -492,6 +492,7 @@ async function main(): Promise<void> {
       `INSERT INTO twain_scan_records (id, session_id, card_id, student_id, image_path, page_num, side, ocr_status, identity_json)
        VALUES (?, ?, ?, '9001', ?, ?, 'front', 'uploaded', '{}')`
     ).run(rec, scanSession, scanCardId, path.join(tmpDir, `${rec}.png`), page);
+    writeFileSync(path.join(tmpDir, `${rec}.png`), "fake-image-for-preview");
     // 两条识别结果都同时含 B1/B2：即使在同一排版页上，他人题块也不该外发。
     db.prepare(
       `INSERT INTO twain_recognition_results (id, scan_record_id, objective_json, subjective_json, total_score, max_score, grade_status)
@@ -516,8 +517,11 @@ async function main(): Promise<void> {
   ok(foreignPreview.status === 403, `范围外教师读评分表原卷预览被 403（实际 ${foreignPreview.status}）`);
   const foreignImage = await get(`/api/scanner/grading-image/${scanCardId}/x.png`, tokenB);
   ok(foreignImage.status === 403, `阅卷上传目录的图片读取按答题卡范围收口（实际 ${foreignImage.status}）`);
-  ok((await get(`/api/scanner/exam/${examScan}/student/${sids["9001"]}/scans`, tokenA)).status === 200,
-    "整卷授权的本场教师仍能正常预览");
+  const ownPreview = await get(`/api/scanner/exam/${examScan}/student/${sids["9001"]}/scans`, tokenA);
+  ok(ownPreview.status === 200, "整卷授权的本场教师仍能正常预览");
+  const ownPreviewPages = (ownPreview.body as { pages?: Array<{ recordId?: string; imageUrl?: string }> }).pages ?? [];
+  ok(ownPreviewPages.length === 2 && ownPreviewPages.every(page => page.imageUrl?.startsWith("/api/scanner/scan-image/")),
+    `评分表预览读取扫描端原卷（实际 ${JSON.stringify(ownPreviewPages).slice(0, 120)}）`);
 
   // 评审 B1：`/api/cards/:cardId/grading/preview/:fileName` 与扫描端的 grading-image
   // 读的是同一个物理目录（`recognition/uploads/<cardId>/`），CR3 的收口却只挂在扫描端那一侧。

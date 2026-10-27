@@ -346,7 +346,19 @@ try {
   assert(!document.body.textContent?.includes("重连后扫描中断"));
   assert(document.body.textContent?.includes("扫描完成"));
   assert(snapshotRequests.length >= 7, "Error classification reads persisted pages, including zero-page errors and refreshes");
-  console.log("PASS scanner panel React/SSE: session metadata; partial view/correction/save; terminal replay and reconnect hydrate persisted pages; hydration retry, zero-page and next-session recovery");
+
+  // issue #320：完成一批后「继续扫描」必须保留当前设置并立刻新建下一批，不用退回设置页。
+  assert(hasAction("继续扫描") && hasAction("开始新扫描"), "完成后同时提供开始新扫描与继续扫描");
+  const scansBeforeContinue = scans.length;
+  const uploadsBeforeContinue = uploads.length;
+  const previouslySelectedSource = scans.at(-1)?.sourceName;
+  await click("继续扫描"); await settle();
+  assert.equal(scans.length, scansBeforeContinue + 1, "继续扫描立即新建一个扫描会话");
+  assert.equal(scans.at(-1)?.sourceName, previouslySelectedSource, "继续扫描沿用上一次的数据源与设置");
+  assert(hasAction("停止扫描"), "继续扫描直接进入扫描中");
+  await act(async () => { streams.at(-1)?.done(); }); await settle();
+  assert.equal(uploads.length, uploadsBeforeContinue + 2, "继续扫出的批次完成后照常上传");
+  console.log("PASS scanner panel React/SSE: session metadata; partial view/correction/save; terminal replay and reconnect hydrate persisted pages; hydration retry, zero-page and next-session recovery; continue-scan");
 } finally {
   releaseCard();
   await act(async () => { root.unmount(); });
