@@ -2,11 +2,10 @@
  * 问题反馈 API（#357）
  * 挂载点: /api/feedback
  * 表: feedback_reports / feedback_attachments
- * 权限: 全部 SYSTEM_MANAGE（主站管理员端）
+ * 权限: 教师 / 管理员可提交并查看自己的反馈；全部列表、处理、删除需 system:manage
  *
- * 反馈落在本系统数据库，不依赖 GitHub：扫卡室网络访问 GitHub 很慢，
- * 直连还需要把 token 放在学校服务器上。管理员在全局设置里查看，
- * 需要转发时一键复制成 Markdown 再贴到 issue。
+ * 反馈落在本系统数据库。管理员在全局设置里查看和处理全部反馈，
+ * 需要转发时一键复制成 Markdown。
  *
  * 附件：单次最多 15 个、单个 100 MiB，文件本体在
  * data/answer-card/feedback/<uuid>/，元数据在 feedback_attachments。
@@ -26,8 +25,11 @@ import { requestUploadBudget, isUploadAlreadyRejected } from "../lib/uploadBudge
 import {
   FeedbackStorageQuotaError,
   FeedbackStorageUnavailableError,
+  beginChunkedFeedbackReservation,
+  FEEDBACK_STREAM_STEP_BYTES,
+  noteFeedbackTempPath,
+  releaseFeedbackUpload,
   reserveFeedbackStorage,
-  reserveRemainingFeedbackStorage,
   settleFeedbackStorage,
   type FeedbackStorageReservation,
 } from "../lib/feedbackStorage";
@@ -125,7 +127,40 @@ async function sweepFeedbackOrphansOnce(): Promise<void> {
   await orphanSweep;
 }
 
-type FeedbackRequest = Express.Request & { feedbackReservation?: FeedbackStorageReservation };
+type FeedbackRequest = Express.Request & {
+  feedbackReservation?: FeedbackStorageReservation;
+  feedbackTempPaths?: string[];
+};
+
+function tempPathsOf(req: Request): string[] {
+  return (req as FeedbackRequest).feedbackTempPaths ?? [];
+}
+
+const STREAM_PREFETCH_SLACK = 64 * 1024;
+
+/** 分块上传：已到达的字节超出当前预留就拒绝，并在还剩一个包的余量时再预留一小段。 */
+function bindChunkedQuota(req: Request, res: Response, reservation: FeedbackStorageReservation): void {
+  let received = 0;
+  req.on("data", (chunk: Buffer) => {
+    received += chunk.length;
+    if (received > reservation.bytes) {
+      const deficit = received - reservation.bytes;
+      if (!reservation.tryGrow(deficit)) {
+        if (isUploadAlreadyRejected(req, res)) return;
+        res.status(413).json({
+          ok: false,
+          code: "FEEDBACK_STORAGE_QUOTA_EXCEEDED",
+          error: "附件空间不够放下这次上传，请减少附件大小或数量后再试。",
+        });
+        res.once("finish", () => req.destroy());
+        return;
+      }
+    }
+    if (reservation.bytes - received < STREAM_PREFETCH_SLACK) {
+      reservation.tryGrow(FEEDBACK_STREAM_STEP_BYTES);
+    }
+  });
+}
 
 type FeedbackRow = {
   id: number;
@@ -274,14 +309,6 @@ function resolveStoredPath(relative: string): string | null {
   return abs.startsWith(feedbackRootPrefix) ? abs : null;
 }
 
-async function removeTempFiles(files: unknown): Promise<void> {
-  if (!Array.isArray(files)) return;
-  await Promise.all(files.map(async (file) => {
-    const filePath = (file as Express.Multer.File | undefined)?.path;
-    if (filePath) await rm(filePath, { force: true }).catch(() => {});
-  }));
-}
-
 const upload = multer({
   storage: multer.diskStorage({
     destination: async (_req, _file, cb) => {
@@ -292,7 +319,15 @@ const upload = multer({
         cb(err as Error, "");
       }
     },
-    filename: (_req, _file, cb) => cb(null, `fb_${randomUUID()}`),
+    filename: (req, _file, cb) => {
+      const name = `fb_${randomUUID()}`;
+      const full = path.join(feedbackTmpDir, name);
+      // 在打开写入流之前登记。中断时按这份清单删除，不能只靠 multer 成功后才有的 req.files。
+      noteFeedbackTempPath(full);
+      const paths = ((req as FeedbackRequest).feedbackTempPaths ??= []);
+      paths.push(full);
+      cb(null, name);
+    },
   }),
   limits: {
     fileSize: MAX_FEEDBACK_ATTACHMENT_BYTES,
@@ -314,72 +349,42 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
     next();
     return;
   }
+  // 预留容量要先读盘。先暂停正文，避免这段时间里流已经开始，后面的 multer 接不到开头。
+  req.pause();
   void purgeStaleTmpUploads(feedbackTmpDir)
     .catch(() => {})
     .then(async () => {
       await sweepFeedbackOrphansOnce();
       const declared = Number(req.headers["content-length"]);
       const hasDeclaredLength = Number.isFinite(declared) && declared > 0;
-      // chunked 请求没有 Content-Length，无法准确预留；不能按「最大请求」硬拒（容量配额较小时
-      // 连一个小附件都会被误杀）。这类请求交给 settle 在移动前按实际大小核算，单个请求仍受
-      // requestUploadBudget 的 1.5 GiB 限制。
-      let reservation: FeedbackStorageReservation | null = null;
-      if (hasDeclaredLength) {
-        try {
-          reservation = await reserveFeedbackStorage(feedbackRoot, feedbackTmpDir, declared);
-        } catch (err) {
-          if (err instanceof FeedbackStorageQuotaError) {
-            res.status(413).json({ ok: false, code: err.code, error: err.message });
-            return;
-          }
-          throw err;
-        }
-      } else {
-        try {
-          reservation = await reserveRemainingFeedbackStorage(
-            feedbackRoot,
-            feedbackTmpDir,
-            MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES
-          );
-        } catch (err) {
-          if (err instanceof FeedbackStorageQuotaError) {
-            res.status(413).json({ ok: false, code: err.code, error: err.message });
-            return;
-          }
-          throw err;
-        }
-      }
-      (req as FeedbackRequest).feedbackReservation = reservation ?? undefined;
-      if (reservation) res.once("close", () => reservation!.release());
-
-      if (!hasDeclaredLength && reservation) {
-        // 无 Content-Length 时按预留的剩余容量流式拒绝：超过就立刻回 413，不把整个 1.5 GiB 先写进 _tmp。
-        let guardRejected = false;
-        let received = 0;
-        const reserved = reservation.bytes;
-        req.on("data", (chunk: Buffer) => {
-          if (guardRejected) return;
-          received += chunk.length;
-          if (received <= reserved) return;
-          guardRejected = true;
-          if (isUploadAlreadyRejected(req, res)) return;
-          res.status(413).json({
-            ok: false,
-            code: "FEEDBACK_STORAGE_QUOTA_EXCEEDED",
-            error: `反馈附件剩余容量不足，本次请求最多还能接收 ${Math.round(reserved / 1024 / 1024)} MiB`,
-          });
+      // 分块请求没有 Content-Length。只预留一个步进，再随正文增长；
+      // 不能把剩余配额一次划给这条连接。单个请求仍受 requestUploadBudget 的上限约束。
+      let reservation: FeedbackStorageReservation;
+      try {
+        reservation = hasDeclaredLength
+          ? await reserveFeedbackStorage(feedbackRoot, feedbackTmpDir, declared)
+          : await beginChunkedFeedbackReservation(feedbackRoot, feedbackTmpDir);
+      } catch (err) {
+        if (err instanceof FeedbackStorageQuotaError) {
+          res.status(413).json({ ok: false, code: err.code, error: err.message });
           res.once("finish", () => req.destroy());
-        });
+          return;
+        }
+        throw err;
       }
+      (req as FeedbackRequest).feedbackReservation = reservation;
+      if (!hasDeclaredLength) bindChunkedQuota(req, res, reservation);
 
+      let multerStarted = false;
       attachmentBudget(req, res, () => {
+        multerStarted = true;
         upload.array("files", MAX_FEEDBACK_ATTACHMENTS)(req, res, async (error) => {
           if (!error) {
             next();
             return;
           }
-          reservation?.release();
-          await removeTempFiles(req.files);
+          // 先删掉本请求已经写完的临时文件，再释放预留。req.files 在中断时经常是空的。
+          await releaseFeedbackUpload(feedbackRoot, feedbackTmpDir, reservation, tempPathsOf(req));
           if (isUploadAlreadyRejected(req, res)) return;
           if (error instanceof multer.MulterError) {
             if (error.code === "LIMIT_FILE_SIZE") {
@@ -406,6 +411,10 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
           next(error);
         });
       });
+      // 请求级预算在进 multer 之前就拒绝时，回调不会执行，预留必须在这里放掉。
+      if (!multerStarted) {
+        await releaseFeedbackUpload(feedbackRoot, feedbackTmpDir, reservation, tempPathsOf(req));
+      }
     })
     .catch(next);
 };
@@ -500,8 +509,7 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
   const files = ((req.files as Express.Multer.File[] | undefined) ?? []).filter(Boolean);
   const reservation = (req as FeedbackRequest).feedbackReservation ?? null;
   const fail = async (message: string, status = 400): Promise<void> => {
-    reservation?.release();
-    await removeTempFiles(files);
+    await releaseFeedbackUpload(feedbackRoot, feedbackTmpDir, reservation, tempPathsOf(req));
     res.status(status).json({ ok: false, error: message });
   };
 
@@ -538,8 +546,10 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
     try {
       reportId = await settleFeedbackStorage(
         feedbackRoot,
+        feedbackTmpDir,
         reservation,
         incomingBytes,
+        tempPathsOf(req),
         async () => {
           const stored: Array<{ filename: string; storedPath: string; mime: string | null; sizeBytes: number }> = [];
           if (files.length > 0) await mkdir(finalDir, { recursive: true });
@@ -592,7 +602,7 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
         pendingOrphanDirs.add(finalDir);
         console.error("[feedback] 附件清理失败，已排队重试:", cleanupErr);
       }
-      await removeTempFiles(files);
+      await releaseFeedbackUpload(feedbackRoot, feedbackTmpDir, reservation, tempPathsOf(req));
       throw err;
     }
     res.status(201).json({ ok: true, data: { id: reportId } });

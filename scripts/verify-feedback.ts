@@ -15,7 +15,7 @@
  *   7. 教师提交、自己的反馈 / 附件与越权拒绝
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -123,6 +123,39 @@ async function main(): Promise<void> {
   const teacherLogin = await auth.login("fb_teacher", "teacher-feedback");
   assert.ok(teacherLogin.success && teacherLogin.token, "教师登录失败");
   const teacherToken = teacherLogin.token!;
+
+  await userRepo.createUser({
+    username: "fb_leader",
+    password: "leader-feedback",
+    name: "反馈测试学年主任",
+    role_id: ROLE_IDS.TEACHER,
+    teacher_role: "grade_leader",
+  });
+  const leaderSession = await auth.login("fb_leader", "leader-feedback");
+  assert.ok(leaderSession.success && leaderSession.token, "学年主任登录失败");
+  const leaderToken = leaderSession.token!;
+
+  await userRepo.createUser({
+    username: "fb_head",
+    password: "head-feedback",
+    name: "反馈测试班主任",
+    role_id: ROLE_IDS.TEACHER,
+    teacher_role: "head_teacher",
+  });
+  const headSession = await auth.login("fb_head", "head-feedback");
+  assert.ok(headSession.success && headSession.token, "班主任登录失败");
+  const headToken = headSession.token!;
+
+  await userRepo.createUser({
+    username: "fb_student",
+    password: "student-feedback",
+    name: "反馈测试学生",
+    role_id: ROLE_IDS.STUDENT,
+    student_number: "FB9001",
+  });
+  const studentSession = await auth.login("fb_student", "student-feedback");
+  assert.ok(studentSession.success && studentSession.token, "学生登录失败");
+  const studentToken = studentSession.token!;
 
   section("1. v66 / v67 迁移与时区");
   const columns = maria
@@ -244,6 +277,8 @@ async function main(): Promise<void> {
   ok((await call("POST", "", undefined, { title: "x", content: "y" })).status === 401, "未登录提交反馈返回 401");
   ok((await call("GET", "", teacherToken)).status === 403, "教师读取全部反馈返回 403");
   ok((await call("GET", "/mine", teacherToken)).status === 200, "教师可读取自己的反馈列表");
+  ok((await call("POST", "", studentToken, { title: "学生反馈", content: "不应成功" })).status === 403, "学生不能提交反馈");
+  ok((await call("GET", "/mine", studentToken)).status === 403, "学生不能读取反馈");
 
   section("3. 提交校验");
   ok((await call("POST", "", adminToken, { title: "  ", content: "正文" })).status === 400, "空标题被拒绝");
@@ -367,10 +402,79 @@ async function main(): Promise<void> {
     headers: { Authorization: `Bearer ${adminToken}` },
   })).status === 404, "删除后附件不可下载");
   const feedbackRoot = path.join(process.env.ANSWER_CARD_DATA_DIR!, "feedback");
+  const tempDir = path.join(feedbackRoot, "_tmp");
   const leftDirs = existsSync(feedbackRoot)
     ? readdirSync(feedbackRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() && entry.name !== "_tmp")
     : [];
   ok(leftDirs.length === 0, "删除反馈后附件目录已清理");
+
+  const parallelBoundary = `----fbpar${Date.now()}`;
+  const parallelBody = Buffer.concat([
+    Buffer.from(
+      `--${parallelBoundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n并发分块\r\n` +
+      `--${parallelBoundary}\r\nContent-Disposition: form-data; name="content"\r\n\r\n正文\r\n` +
+      `--${parallelBoundary}\r\nContent-Disposition: form-data; name="files"; filename="part.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+      "utf8"
+    ),
+    Buffer.alloc(200 * 1024, 7),
+    Buffer.from(`\r\n--${parallelBoundary}--\r\n`, "utf8"),
+  ]);
+  const parallel = await Promise.all([
+    chunkedUpload(adminToken, parallelBoundary, parallelBody),
+    chunkedUpload(adminToken, parallelBoundary, parallelBody),
+  ]);
+  ok(parallel.every((result) => result.status === 201), "两个分块上传都成功，不会被一条连接占满剩余配额");
+  for (const result of parallel) {
+    const id = Number(result.json?.data?.id);
+    if (id) ok((await call("DELETE", `/${id}`, adminToken)).status === 200, "清理并发分块反馈");
+  }
+  ok(!existsSync(tempDir) || readdirSync(tempDir).length === 0, "并发分块上传没有留下临时文件");
+
+  const abortBoundary = `----fbabort${Date.now()}`;
+  await new Promise<void>((resolve) => {
+    const url = new URL(base);
+    const request = http.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        "Content-Type": `multipart/form-data; boundary=${abortBoundary}`,
+      },
+    });
+    request.on("error", () => resolve());
+    request.on("close", () => resolve());
+    const head = Buffer.from(
+      `--${abortBoundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n中断上传\r\n` +
+      `--${abortBoundary}\r\nContent-Disposition: form-data; name="content"\r\n\r\n正文\r\n` +
+      `--${abortBoundary}\r\nContent-Disposition: form-data; name="files"; filename="a.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+      "utf8"
+    );
+    request.write(head);
+    request.write(Buffer.alloc(64 * 1024, 3));
+    request.write(Buffer.from(
+      `\r\n--${abortBoundary}\r\nContent-Disposition: form-data; name="files"; filename="b.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+      "utf8"
+    ));
+    request.write(Buffer.alloc(32 * 1024, 4));
+    setTimeout(() => request.destroy(), 80);
+  });
+  const abortDeadline = Date.now() + 2000;
+  while (Date.now() < abortDeadline) {
+    if (!existsSync(tempDir) || readdirSync(tempDir).length === 0) break;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  ok(!existsSync(tempDir) || readdirSync(tempDir).length === 0, "多附件中断后已写完的临时文件被清掉");
+  const afterAbort = new FormData();
+  afterAbort.set("title", "中断后的配额");
+  afterAbort.set("content", "正文");
+  afterAbort.append("files", new Blob([new Uint8Array(900 * 1024)]), "after.bin");
+  const afterAbortRes = await upload(afterAbort, adminToken);
+  ok(afterAbortRes.status === 201, "中断上传释放预留后，剩余配额立即可用");
+  const afterAbortId = Number(afterAbortRes.json?.data?.id);
+  if (afterAbortId) ok((await call("DELETE", `/${afterAbortId}`, adminToken)).status === 200, "清理中断后的探测反馈");
+  ok(!existsSync(tempDir) || readdirSync(tempDir).length === 0, "探测上传删除后没有临时文件");
 
   const fifteen = new FormData();
   fifteen.set("title", "15 个附件");
@@ -380,20 +484,18 @@ async function main(): Promise<void> {
   const fifteenReport = (await call("GET", "?limit=1", adminToken)).json?.data?.[0];
   ok(fifteenReport?.attachments?.length === 15, "15 个附件全部入库");
 
-  const tempDir = path.join(feedbackRoot, "_tmp");
   mkdirSync(tempDir, { recursive: true });
   const orphanPath = path.join(tempDir, "orphan.bin");
   writeFileSync(orphanPath, Buffer.alloc(700 * 1024));
-  // 准入只把超过 10 分钟的临时件当孤儿；把测试文件时间拨老，模拟进程中断后的残留。
-  const oldTime = new Date(Date.now() - 11 * 60_000);
-  utimesSync(orphanPath, oldTime, oldTime);
+  // 刚留下的临时文件也要立刻计入容量，不能等 10 分钟宽限。
   const orphanForm = new FormData();
   orphanForm.set("title", "孤儿临时文件");
   orphanForm.set("content", "正文");
   orphanForm.append("files", new Blob([new Uint8Array(400 * 1024)]), "c.bin");
   const orphanRes = await upload(orphanForm, adminToken);
   ok(orphanRes.status === 413 && orphanRes.json?.code === "FEEDBACK_STORAGE_QUOTA_EXCEEDED",
-    "孤儿临时文件也计入聚合容量");
+    "刚留下的孤儿临时文件也计入聚合容量");
+  ok(!String(orphanRes.json?.error ?? "").includes("PROJECTX_"), "容量已满的提示不包含环境变量名");
   rmSync(orphanPath, { force: true });
   ok(readdirSync(tempDir).length === 0, "孤儿临时文件清理后不留痕迹");
 
@@ -498,6 +600,22 @@ async function main(): Promise<void> {
     headers: { Authorization: `Bearer ${adminToken}` },
   })).status === 200, "管理员可下载教师附件");
   ok((await call("DELETE", `/${teacherReportId}`, adminToken)).status === 200, "管理员可删除教师反馈");
+
+  for (const [token, label] of [[leaderToken, "学年主任"], [headToken, "班主任"]] as const) {
+    const roleForm = new FormData();
+    roleForm.set("title", `${label}反馈`);
+    roleForm.set("content", `${label}也可以提交`);
+    roleForm.set("category", "suggestion");
+    const roleSubmitted = await upload(roleForm, token);
+    ok(roleSubmitted.status === 201, `${label}可提交反馈`);
+    const roleId = Number(roleSubmitted.json?.data?.id);
+    const roleMine = await call("GET", "/mine?limit=10", token);
+    ok(roleMine.status === 200 && roleMine.json?.data?.some((row: { id: number }) => row.id === roleId),
+      `${label}可读取自己的反馈`);
+    ok((await call("GET", "", token)).status === 403, `${label}不能查看全部反馈`);
+    ok((await call("DELETE", `/${roleId}`, token)).status === 403, `${label}不能删除反馈`);
+    ok((await call("DELETE", `/${roleId}`, adminToken)).status === 200, `管理员可删除${label}的反馈`);
+  }
 
   // 直接插入一条教师提交的记录，再删账号：正文与账号快照应保留，user_id 置空。
   const now = databaseTimestamp();

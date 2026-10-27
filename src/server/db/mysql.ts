@@ -1162,7 +1162,16 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE scan_correction_pages ADD COLUMN recovery_fingerprint VARCHAR(64)",
   ] });
 
-  // v66: 问题反馈（#357），与 SQLite v66 对齐。
+  // 语文模板使用 13.1/17.1 这类小题号；INT 在 strict mode 会拒绝写入，
+  // 非 strict 又会把 13.1/13.2 截成同一个 13。统一改成 DOUBLE，保留数值排序。
+  mariadbMigrations.push({ version: 65, name: "question-number-decimals", sqls: [
+    "ALTER TABLE subjective_questions MODIFY number DOUBLE NOT NULL",
+    "ALTER TABLE knowledge_points MODIFY question_number DOUBLE NOT NULL",
+    "ALTER TABLE question_scores MODIFY question_number DOUBLE",
+    "ALTER TABLE answer_overrides MODIFY question_number DOUBLE",
+  ] });
+
+  // v66: 问题反馈（#357），与 SQLite v66 对齐。放在 v65 之后，保持版本号递增。
   mariadbMigrations.push({ version: 66, name: "feedback-reports", sqls: [
     `CREATE TABLE IF NOT EXISTS feedback_reports (
       id           INT AUTO_INCREMENT PRIMARY KEY,
@@ -1199,15 +1208,6 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
       INDEX idx_feedback_attachments_feedback (feedback_id),
       FOREIGN KEY (feedback_id) REFERENCES feedback_reports(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-  ] });
-
-  // 语文模板使用 13.1/17.1 这类小题号；INT 在 strict mode 会拒绝写入，
-  // 非 strict 又会把 13.1/13.2 截成同一个 13。统一改成 DOUBLE，保留数值排序。
-  mariadbMigrations.push({ version: 65, name: "question-number-decimals", sqls: [
-    "ALTER TABLE subjective_questions MODIFY number DOUBLE NOT NULL",
-    "ALTER TABLE knowledge_points MODIFY question_number DOUBLE NOT NULL",
-    "ALTER TABLE question_scores MODIFY question_number DOUBLE",
-    "ALTER TABLE answer_overrides MODIFY question_number DOUBLE",
   ] });
 
   for (const m of mariadbMigrations) {

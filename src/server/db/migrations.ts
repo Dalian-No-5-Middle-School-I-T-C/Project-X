@@ -1355,8 +1355,7 @@ MIGRATIONS.push({ version: 64, name: "scan-correction-provenance", up(db) {
 // 这里只记录版本，保持两端迁移号对齐。
 MIGRATIONS.push({ version: 65, name: "question-number-decimals", up() {} });
 
-// v66: 问题反馈（#357）。管理员在全局设置提交，落本地库供查看/处理/转发，
-// 不依赖 GitHub（扫卡室网络访问 GitHub 很慢）。
+// v66: 问题反馈（#357）。教师和管理员都可提交，管理员在全局设置统一处理。
 MIGRATIONS.push({ version: 66, name: "feedback-reports", up(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS feedback_reports (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,

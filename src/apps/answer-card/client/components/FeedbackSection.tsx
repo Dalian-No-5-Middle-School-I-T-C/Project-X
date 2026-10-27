@@ -299,8 +299,8 @@ export function FeedbackSection({ mode = "admin" }: { mode?: "admin" | "mine" })
       setFormMsg({
         tone: "success",
         text: isAdminMode
-          ? "已提交。反馈保存在本系统数据库，管理员可在下方查看和处理。"
-          : "已提交。管理员处理后可在这里查看状态。",
+          ? "已提交，可以在下方的全部反馈里查看和处理。"
+          : "已提交。处理进度可以在下方查看。",
       });
       if (filterRef.current !== "all") setFilter("all");
       else await load(true);
@@ -387,8 +387,8 @@ export function FeedbackSection({ mode = "admin" }: { mode?: "admin" | "mine" })
       </div>
       <p className="text-xs text-muted-foreground">
         {isAdminMode
-          ? `扫卡室或教室遇到问题时在这里提交，会自动带上版本、页面与系统信息；可附带最多 ${MAX_FEEDBACK_ATTACHMENTS} 个文件（单个小于 ${MAX_FEEDBACK_ATTACHMENT_BYTES / 1024 / 1024} MB）。反馈保存在本系统数据库，不依赖 GitHub。管理员可在下方查看、标记处理，需要转发时一键复制成 Markdown。`
-          : `遇到问题时在这里提交，会自动带上版本、页面与系统信息；可附带最多 ${MAX_FEEDBACK_ATTACHMENTS} 个文件（单个小于 ${MAX_FEEDBACK_ATTACHMENT_BYTES / 1024 / 1024} MB）。管理员处理后可在这里查看状态和附件。`}
+          ? `在这里提交问题或建议，系统会附上版本、页面和设备信息。每次最多 ${MAX_FEEDBACK_ATTACHMENTS} 个附件，单个小于 ${MAX_FEEDBACK_ATTACHMENT_BYTES / 1024 / 1024} MB。下方可以查看全部反馈、标记处理和删除。`
+          : `在这里提交问题或建议，系统会附上版本、页面和设备信息。每次最多 ${MAX_FEEDBACK_ATTACHMENTS} 个附件，单个小于 ${MAX_FEEDBACK_ATTACHMENT_BYTES / 1024 / 1024} MB。处理进度可以在下方查看。`}
       </p>
 
       {formOpen && (
@@ -489,9 +489,18 @@ export function FeedbackSection({ mode = "admin" }: { mode?: "admin" | "mine" })
         </form>
       )}
 
+      {isAdminMode && (
+        <div className="flex flex-col gap-1 border-t border-border-subtle pt-4">
+          <div className="text-sm font-semibold text-foreground">全部反馈</div>
+          <p className="text-xs text-muted-foreground">
+            教师和管理员提交的反馈都在这里，可以按状态筛选、标记处理或删除。
+          </p>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <span className="text-xs text-muted-foreground">
-          共 {counts.total} 条 · 待处理 {counts.open} 条
+          {isAdminMode ? "全部" : "我的"} {counts.total} 条 · 待处理 {counts.open} 条
         </span>
         <SegmentedControl
           value={filter}

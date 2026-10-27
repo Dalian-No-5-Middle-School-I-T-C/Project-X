@@ -904,8 +904,8 @@ Project-X/
 > （截断后的原卷会让分析「自信地答错」）。
 >
 > 问题反馈附件（#357）：单次最多 15 个、单个 100 MiB；`data/answer-card/feedback/` 聚合容量默认
-> 8192 MiB，可用 `PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB` 调整（天花板 102400 MiB），并发上传在
-> 移动文件前串行核算。
+> 8192 MiB，可用 `PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB` 调整（天花板 102400 MiB）。有 Content-Length
+> 的上传按声明体积预留；分块上传按 256 KiB 步进预留，不会一条连接占满剩余容量。移动文件前按实际占盘串行核算。
 
 > **AI 分析计费与并发配额**（安全 R11，单一来源 `src/shared/aiQuotaLimits.ts`）
 >
