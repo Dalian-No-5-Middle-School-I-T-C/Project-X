@@ -6,14 +6,14 @@
  *   npm run verify:feedback:mariadb     # 专用空 MariaDB（PROJECTX_MARIADB_DATABASE）
  *
  * 覆盖：
- *   1. v65 迁移建表、旧库补表与重复执行
+ *   1. v66 迁移建表、旧库补表与重复执行
  *   2. 提交 / 列表 / 状态流转 / 删除的权限边界
  *   3. 标题、正文、联系方式长度与控制字符
  *   4. 客户端环境信息白名单与服务端环境信息合并
  *   5. 标记处理后 resolved_at / resolved_by 的写入与撤销
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
@@ -26,9 +26,33 @@ if (maria) {
   delete process.env.PROJECTX_MARIADB_HOST;
   delete process.env.PROJECTX_MYSQL_HOST;
 }
+
+const originalCwd = process.cwd();
+let dirtyCwd: string | null = null;
+if (!maria) {
+  // 模拟「原工作目录有 config.yml remote 配置」：先切进去，再由下面的隔离逻辑
+  // 切到临时目录。隔离失效时 detectDialect() 会读到这份配置，SQLite 断言随即失败。
+  dirtyCwd = mkdtempSync(path.join(tmpdir(), "feedback-verify-dirty-"));
+  writeFileSync(path.join(dirtyCwd, "config.yml"), [
+    "database:",
+    "  mode: remote",
+    "  remote:",
+    "    host: 127.0.0.1",
+    "    port: 1",
+    "    database: must-not-touch",
+    "    user: nobody",
+    "    password: none",
+  ].join("\n"), "utf8");
+  process.chdir(dirtyCwd);
+  const { readDbConfig } = await import("../src/server/db/config");
+  assert.equal(readDbConfig().mode, "remote", "隔离回归的 config.yml 必须能被解析为 remote");
+}
 const tmpDir = mkdtempSync(path.join(tmpdir(), "feedback-verify-"));
-if (!maria) process.env.PROJECTX_DB_PATH = path.join(tmpDir, "feedback.db");
+process.env.PROJECTX_DB_PATH = path.join(tmpDir, "feedback.db");
 process.env.PROJECTX_TOKEN_DIR = path.join(tmpDir, "tokens");
+// config.yml 按 process.cwd() 解析；必须在导入数据库模块前隔离，
+// 否则本机 remote 配置会让回归连上业务库并可能轮换管理员口令。
+process.chdir(tmpDir);
 
 let passed = 0;
 let failed = 0;
@@ -50,7 +74,7 @@ function section(title: string): void {
 }
 
 const { initializeDatabase, ensureDefaultAdmin, getDatabase, closeDatabase } = await import("../src/server/db/index");
-const { getMysqlDb, initMariadbSchema, resetAdapter } = await import("../src/server/db/mysql");
+const { getMysqlDb, initMariadbSchema, resetAdapter, detectDialect } = await import("../src/server/db/mysql");
 const { authService } = await import("../src/server/services/AuthService");
 const { UserRepository } = await import("../src/server/repositories/UserRepository");
 const { ROLE_IDS, loadRolePermissions } = await import("../src/server/auth/permissions");
@@ -60,6 +84,7 @@ const express = (await import("express")).default;
 
 async function main(): Promise<void> {
   if (!maria) {
+    assert.equal(detectDialect(), "sqlite", "默认回归必须在临时 SQLite 上运行：config.yml remote 配置未被隔离");
     initializeDatabase();
   } else {
     const existing = await getMysqlDb().get<{ n: number }>(
@@ -91,7 +116,7 @@ async function main(): Promise<void> {
   assert.ok(teacherLogin.success && teacherLogin.token, "教师登录失败");
   const teacherToken = teacherLogin.token!;
 
-  section("1. v65 迁移");
+  section("1. v66 迁移");
   const columns = maria
     ? (await db.all<{ COLUMN_NAME: string }>(
         "SELECT COLUMN_NAME FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'feedback_reports'"
@@ -114,12 +139,10 @@ async function main(): Promise<void> {
     runMigrations(getDatabase());
     runMigrations(getDatabase());
   }
-  const restored = maria
-    ? await db.get<{ c: number }>(
-        "SELECT COUNT(*) AS c FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'feedback_reports'"
-      )
-    : null;
   if (maria) {
+    const restored = await db.get<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'feedback_reports'"
+    );
     ok(Number(restored?.c) === 1, "MariaDB 旧库补表后可重复初始化");
   } else {
     const table = getDatabase().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'feedback_reports'").get();
@@ -254,7 +277,10 @@ try {
 } finally {
   try { closeDatabase(); } catch { /* ignore */ }
   try { resetAdapter(); } catch { /* ignore */ }
-  if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+  try { process.chdir(originalCwd); } catch { /* ignore */ }
+  for (const dir of [tmpDir, dirtyCwd]) {
+    if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 console.log(`\n结果：${passed} 通过，${failed} 失败`);

@@ -11,6 +11,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { fetchJson } from "../auth/api";
+import { ROLE_LABELS } from "../auth/types";
 import { cn } from "../lib/utils";
 import {
   Badge,
@@ -43,7 +44,6 @@ type FeedbackReport = {
   roleName: string;
   context: Record<string, unknown> | null;
   createdAt: string;
-  updatedAt: string;
   resolvedAt: string | null;
   resolvedByName: string | null;
 };
@@ -52,12 +52,6 @@ const CATEGORY_LABELS: Record<FeedbackCategory, string> = {
   problem: "问题",
   suggestion: "建议",
   other: "其他",
-};
-
-const ROLE_LABELS: Record<string, string> = {
-  admin: "管理员",
-  teacher: "教师",
-  student: "学生",
 };
 
 const MAX_TITLE = 100;

@@ -39,7 +39,6 @@ type FeedbackRow = {
   created_at: string;
   updated_at: string;
   resolved_at: string | null;
-  resolved_by: number | null;
   resolver_name: string | null;
 };
 
@@ -101,13 +100,13 @@ function toReport(row: FeedbackRow) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     resolvedAt: row.resolved_at,
-    resolvedByName: row.resolver_name ?? null,
+    resolvedByName: row.resolver_name,
   };
 }
 
 const SELECT_COLUMNS = `f.id, f.category, f.title, f.content, f.contact, f.status,
   f.username, f.display_name, f.role_name, f.context_json,
-  f.created_at, f.updated_at, f.resolved_at, f.resolved_by, u.name AS resolver_name`;
+  f.created_at, f.updated_at, f.resolved_at, u.name AS resolver_name`;
 
 // GET /api/feedback?status=open|resolved|all — 列出反馈（默认全部，待处理排前）
 router.get("/", async (req, res) => {

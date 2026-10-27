@@ -111,6 +111,8 @@ const MIGRATION_ORDER: Array<{ table: string; primaryKey: string; optionalInSour
   { table: "users", primaryKey: "id" },
   { table: "teacher_permissions", primaryKey: "id" },
   { table: "wechat_subscription_bindings", primaryKey: "id" },
+  // v66：旧 SQLite 源库可能没有这张表，有则一并迁移
+  { table: "feedback_reports", primaryKey: "id", optionalInSource: true },
 
   // 班级层
   { table: "classes", primaryKey: "id" },
@@ -181,8 +183,6 @@ const MIGRATION_ORDER: Array<{ table: string; primaryKey: string; optionalInSour
   { table: "ai_analysis_jobs", primaryKey: "id" },
   { table: "ai_provider_calls", primaryKey: "id" },
   { table: "entity_lifecycle_events", primaryKey: "id" },
-  // v66：旧 SQLite 源库可能没有这张表，有则一并迁移
-  { table: "feedback_reports", primaryKey: "id", optionalInSource: true },
 ];
 
 /**

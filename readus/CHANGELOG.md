@@ -2,11 +2,9 @@
 
 ## 2026-10-27：#357 主站管理员端问题反馈页
 
-- **入口**：`全局设置` 新增「问题反馈」区。表单参照提 issue：类型（问题 / 建议 / 其他）、标题、详细描述、可选联系方式；提交时自动附带前端版本、当前页面、浏览器与操作系统（含位数）、屏幕、服务端平台 / Node / 数据库方言。仅 `system:manage` 管理员可提交和查看。
-- **落库而非直连 GitHub**：反馈写入本系统数据库（新表 `feedback_reports`，SQLite / MariaDB 均为 v66 迁移），扫卡室网络访问 GitHub 慢也不影响提交；管理员列表可标记已处理 / 重新打开、删除，并一键复制成可贴进 issue 的 Markdown。不在服务器保存 GitHub token。
-- **权限与输入边界**：提交、列表、状态变更、删除全部要求管理员；标题 ≤100 字、正文 ≤5000 字、联系方式 ≤100 字，超限返回 400 而不是静默截断；清理控制字符；环境信息只收白名单扁平标量（≤30 键、单值 ≤500 字、总大小 ≤8KB），超限丢弃客户端部分并保留服务端信息。删除提交人账号时保留反馈正文与账号快照（`ON DELETE SET NULL`）。
-- **验证**：新增 `verify:feedback`（SQLite 52/0：旧库补表与重复迁移、未登录 401 / 教师 403、长度与类型校验、控制字符、环境信息清洗、状态流转与处理人、删除及账号删除后的快照保留），`verify:feedback:mariadb` 供 CI 空库执行；`typecheck`、`vite build --mode web`、`build:server`、`verify:auth`（154/0）、`verify:security-critical`（533/0）、`verify:core-logic`（118/0）通过。管理员端浏览器实测提交、详情、标记已处理、筛选、`ConfirmDialog` 删除正常；剪贴板被拒时显示明确提示（复制成功的系统剪贴板路径未在自动化环境验证）。
-- **未验证**：本机无 MariaDB 实例，MariaDB 迁移与 API 回归未在本地执行；按 issue 范围只做「主站管理员端」，扫描端未接入该页面。
+- `全局设置` 新增「问题反馈」区（仅管理员）：类型 / 标题 / 正文 / 可选联系方式，自动附带版本、页面、浏览器与系统信息；反馈落 `feedback_reports`（SQLite / MariaDB v66），可标记处理、删除、一键复制 Markdown，不依赖 GitHub，也不在服务器保存 token。
+- 所有 `/api/feedback` 端点要求 `system:manage`；标题 ≤100、正文 ≤5000、联系方式 ≤100 字，超限返回 400；清理控制字符；环境信息只收白名单扁平标量（≤30 键、≤8KB）。
+- 验证：`verify:feedback`（52/0，含 config.yml remote 隔离回归）与 MariaDB 回归；`verify:auth` 154/0、`verify:security-critical` 533/0、`verify:core-logic` 118/0；typecheck、Web / 服务端构建、管理员端浏览器实测通过。本机无 MariaDB，方言路径由 CI 覆盖。
 
 ## 2026-10-26：扫描端防护恢复与 Service Worker 注册拦截
 
