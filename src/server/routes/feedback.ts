@@ -343,6 +343,26 @@ const attachmentBudget = requestUploadBudget({
   label: "问题反馈附件上传",
 });
 
+let preflightBlock: { entered: () => void; gate: Promise<void> } | null = null;
+
+/** 测试用：下一次 multipart 预检在读盘和预留之前停住，便于模拟客户端中途断开。 */
+export function blockNextFeedbackPreflightForTests(): { entered: Promise<void>; unblock: () => void } {
+  let entered!: () => void;
+  let unblock!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { unblock = resolve; });
+  preflightBlock = { entered, gate };
+  return { entered: enteredPromise, unblock };
+}
+
+async function waitForPreflightBlock(): Promise<void> {
+  const block = preflightBlock;
+  if (!block) return;
+  preflightBlock = null;
+  block.entered();
+  await block.gate;
+}
+
 /** JSON 请求直接放行；multipart 先预留容量、走上传统计与 multer，再交给路由处理。 */
 const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
   if (!req.is("multipart/form-data")) {
@@ -351,10 +371,22 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
   }
   // 预留容量要先读盘。先暂停正文，避免这段时间里流已经开始，后面的 multer 接不到开头。
   req.pause();
+  // multer 还没挂上中断处理时，客户端断开不能把已经划走的预留留到进程退出。
+  let phase: "preflight" | "multer" | "abandoned" = "preflight";
+  const abandonPreflight = () => {
+    if (phase === "preflight") phase = "abandoned";
+  };
+  req.on("aborted", abandonPreflight);
+  req.on("close", () => {
+    if (req.aborted) abandonPreflight();
+  });
   void purgeStaleTmpUploads(feedbackTmpDir)
     .catch(() => {})
     .then(async () => {
+      await waitForPreflightBlock();
+      if (phase !== "preflight" || req.aborted) return;
       await sweepFeedbackOrphansOnce();
+      if (phase !== "preflight" || req.aborted) return;
       const declared = Number(req.headers["content-length"]);
       const hasDeclaredLength = Number.isFinite(declared) && declared > 0;
       // 分块请求没有 Content-Length。只预留一个步进，再随正文增长；
@@ -365,6 +397,7 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
           ? await reserveFeedbackStorage(feedbackRoot, feedbackTmpDir, declared)
           : await beginChunkedFeedbackReservation(feedbackRoot, feedbackTmpDir);
       } catch (err) {
+        if (phase !== "preflight" || req.aborted) return;
         if (err instanceof FeedbackStorageQuotaError) {
           res.status(413).json({ ok: false, code: err.code, error: err.message });
           res.once("finish", () => req.destroy());
@@ -377,6 +410,11 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
         }
         throw err;
       }
+      if (phase !== "preflight" || req.aborted) {
+        await releaseFeedbackUpload(feedbackRoot, feedbackTmpDir, reservation, tempPathsOf(req));
+        return;
+      }
+      phase = "multer";
       (req as FeedbackRequest).feedbackReservation = reservation;
       if (!hasDeclaredLength) bindChunkedQuota(req, res, reservation);
 

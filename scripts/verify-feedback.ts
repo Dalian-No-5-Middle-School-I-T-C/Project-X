@@ -87,7 +87,7 @@ const { ROLE_IDS, loadRolePermissions } = await import("../src/server/auth/permi
 const { databaseTimestamp } = await import("../src/server/db/timestamp");
 const feedbackModule = await import("../src/server/routes/feedback");
 const feedbackRouter = feedbackModule.default;
-const { withTimezone } = feedbackModule;
+const { withTimezone, blockNextFeedbackPreflightForTests } = feedbackModule;
 const {
   failNextFeedbackUsageRefreshForTests,
   failNextPostCommitFeedbackUsageRefreshForTests,
@@ -452,6 +452,40 @@ async function main(): Promise<void> {
     if (id) ok((await call("DELETE", `/${id}`, adminToken)).status === 200, "清理核算故障夹具");
   }
   ok(!existsSync(tempDir) || readdirSync(tempDir).length === 0, "核算故障夹具没有留下临时文件");
+
+  const heldPreflight = blockNextFeedbackPreflightForTests();
+  await new Promise<void>((resolve, reject) => {
+    const url = new URL(base);
+    const request = http.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        "Content-Type": "multipart/form-data; boundary=----preflight",
+        "Content-Length": String(900 * 1024),
+      },
+    });
+    const failTimer = setTimeout(() => reject(new Error("预检没有进入等待")), 3000);
+    request.on("error", () => undefined);
+    void heldPreflight.entered.then(() => {
+      clearTimeout(failTimer);
+      request.destroy();
+      setTimeout(resolve, 50);
+    });
+    request.flushHeaders();
+  });
+  heldPreflight.unblock();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const afterDrop = new FormData();
+  afterDrop.set("title", "预检中断后的配额");
+  afterDrop.set("content", "正文");
+  afterDrop.append("files", new Blob([new Uint8Array(200 * 1024)]), "after-drop.bin");
+  const afterDropRes = await upload(afterDrop, adminToken);
+  ok(afterDropRes.status === 201, "预检期间客户端断开不会占住容量预留");
+  const afterDropId = Number(afterDropRes.json?.data?.id);
+  if (afterDropId) ok((await call("DELETE", `/${afterDropId}`, adminToken)).status === 200, "清理预检中断探测反馈");
 
   const parallelBoundary = `----fbpar${Date.now()}`;
   const parallelBody = Buffer.concat([
