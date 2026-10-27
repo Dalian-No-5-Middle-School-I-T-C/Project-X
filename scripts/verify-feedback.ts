@@ -52,6 +52,8 @@ const tmpDir = mkdtempSync(path.join(tmpdir(), "feedback-verify-"));
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "feedback.db");
 process.env.PROJECTX_TOKEN_DIR = path.join(tmpDir, "tokens");
 process.env.ANSWER_CARD_DATA_DIR = path.join(tmpDir, "answer-card");
+// 聚合容量测试：1 MiB 足以覆盖小附件，又能在不写大盘的情况下触发上限。
+process.env.PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB = "1";
 // config.yml 按 process.cwd() 解析；必须在导入数据库模块前隔离，
 // 否则本机 remote 配置会让回归连上业务库并可能轮换管理员口令。
 process.chdir(tmpDir);
@@ -352,6 +354,28 @@ async function main(): Promise<void> {
   ok((await upload(sixteen, adminToken)).status === 400, "超过 15 个附件被拒绝");
   const tempDir = path.join(feedbackRoot, "_tmp");
   ok(!existsSync(tempDir) || readdirSync(tempDir).length === 0, "被拒绝的上传没有遗留临时文件");
+
+  const concurrentA = new FormData();
+  concurrentA.set("title", "并发附件 A");
+  concurrentA.set("content", "正文");
+  concurrentA.append("files", new Blob([new Uint8Array(700 * 1024)]), "a.bin");
+  const concurrentB = new FormData();
+  concurrentB.set("title", "并发附件 B");
+  concurrentB.set("content", "正文");
+  concurrentB.append("files", new Blob([new Uint8Array(700 * 1024)]), "b.bin");
+  const concurrent = await Promise.all([upload(concurrentA, adminToken), upload(concurrentB, adminToken)]);
+  const statuses = concurrent.map((result) => result.status).sort((a, b) => a - b);
+  ok(statuses[0] === 201 && statuses[1] === 413, "并发上传只放行一个，容量核算串行");
+  const quotaRejected = concurrent.find((result) => result.status === 413);
+  ok(quotaRejected?.json?.code === "FEEDBACK_STORAGE_QUOTA_EXCEEDED", "容量超限返回明确错误码");
+
+  const overQuota = new FormData();
+  overQuota.set("title", "超容量附件");
+  overQuota.set("content", "正文");
+  overQuota.append("files", new Blob([new Uint8Array(1024 * 1024 + 1)]), "big.bin");
+  const over = await upload(overQuota, adminToken);
+  ok(over.status === 413 && over.json?.code === "FEEDBACK_STORAGE_QUOTA_EXCEEDED", "聚合容量超限被拒绝");
+  ok(!existsSync(tempDir) || readdirSync(tempDir).length === 0, "容量拒绝后没有遗留临时文件");
 
   // 直接插入一条教师提交的记录，再删账号：正文与账号快照应保留，user_id 置空。
   const now = databaseTimestamp();

@@ -22,6 +22,7 @@ import { getMysqlDb } from "../db";
 import { databaseTimestamp } from "../db/timestamp";
 import { resolveAnswerCardDataDir } from "../db/paths";
 import { requestUploadBudget, isUploadAlreadyRejected } from "../lib/uploadBudget";
+import { withFeedbackStorageQuota, FeedbackStorageQuotaError } from "../lib/feedbackStorage";
 import { purgeStaleTmpUploads } from "../../apps/answer-card/server/paperQuota";
 import {
   MAX_FEEDBACK_ATTACHMENTS,
@@ -369,49 +370,57 @@ router.post("/", receiveFeedbackUpload, async (req, res) => {
 
     const storageKey = randomUUID();
     const finalDir = path.join(feedbackRoot, storageKey);
-    const stored: Array<{ filename: string; storedPath: string; mime: string | null; sizeBytes: number }> = [];
+    const incomingBytes = files.reduce((sum, file) => sum + file.size, 0);
     try {
-      if (files.length > 0) await mkdir(finalDir, { recursive: true });
-      for (let index = 0; index < files.length; index += 1) {
-        const file = files[index];
-        const originalName = safeOriginalName(file.originalname);
-        const storedName = `${index}${safeExtension(originalName)}`;
-        const target = path.join(finalDir, storedName);
-        await rename(file.path, target);
-        stored.push({
-          filename: originalName,
-          storedPath: path.relative(dataRoot, target).split(path.sep).join("/"),
-          mime: file.mimetype ? file.mimetype.slice(0, MAX_MIME) : null,
-          sizeBytes: file.size,
-        });
-      }
+      const reportId = await withFeedbackStorageQuota(
+        feedbackRoot,
+        feedbackTmpDir,
+        incomingBytes,
+        async () => {
+          const stored: Array<{ filename: string; storedPath: string; mime: string | null; sizeBytes: number }> = [];
+          if (files.length > 0) await mkdir(finalDir, { recursive: true });
+          for (let index = 0; index < files.length; index += 1) {
+            const file = files[index];
+            const originalName = safeOriginalName(file.originalname);
+            const storedName = `${index}${safeExtension(originalName)}`;
+            const target = path.join(finalDir, storedName);
+            await rename(file.path, target);
+            stored.push({
+              filename: originalName,
+              storedPath: path.relative(dataRoot, target).split(path.sep).join("/"),
+              mime: file.mimetype ? file.mimetype.slice(0, MAX_MIME) : null,
+              sizeBytes: file.size,
+            });
+          }
 
-      const user = req.user!;
-      const db = getMysqlDb();
-      const now = databaseTimestamp();
-      const contextJson = buildContextJson(sanitizeContext(rawContext), db.dialect);
-      const reportId = await db.transaction(async (tx) => {
-        const result = await tx.run(
-          `INSERT INTO feedback_reports
-             (user_id, username, display_name, role_name, category, title, content, contact, context_json, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
-          user.id,
-          user.username.slice(0, 100),
-          user.name.slice(0, 100),
-          user.role_name.slice(0, 32),
-          category, title, content, contact || null, contextJson, now, now
-        );
-        const id = Number(result.lastInsertRowid);
-        for (const attachment of stored) {
-          await tx.run(
-            `INSERT INTO feedback_attachments
-               (feedback_id, filename, stored_path, mime, size_bytes, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            id, attachment.filename, attachment.storedPath, attachment.mime, attachment.sizeBytes, now
-          );
+          const user = req.user!;
+          const db = getMysqlDb();
+          const now = databaseTimestamp();
+          const contextJson = buildContextJson(sanitizeContext(rawContext), db.dialect);
+          return db.transaction(async (tx) => {
+            const result = await tx.run(
+              `INSERT INTO feedback_reports
+                 (user_id, username, display_name, role_name, category, title, content, contact, context_json, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+              user.id,
+              user.username.slice(0, 100),
+              user.name.slice(0, 100),
+              user.role_name.slice(0, 32),
+              category, title, content, contact || null, contextJson, now, now
+            );
+            const id = Number(result.lastInsertRowid);
+            for (const attachment of stored) {
+              await tx.run(
+                `INSERT INTO feedback_attachments
+                   (feedback_id, filename, stored_path, mime, size_bytes, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+                id, attachment.filename, attachment.storedPath, attachment.mime, attachment.sizeBytes, now
+              );
+            }
+            return id;
+          });
         }
-        return id;
-      });
+      );
       res.status(201).json({ ok: true, data: { id: reportId } });
     } catch (err) {
       await rm(finalDir, { recursive: true, force: true }).catch(() => {});
@@ -419,6 +428,12 @@ router.post("/", receiveFeedbackUpload, async (req, res) => {
       throw err;
     }
   } catch (err: any) {
+    if (err instanceof FeedbackStorageQuotaError) {
+      if (!res.headersSent) {
+        res.status(413).json({ ok: false, code: err.code, error: err.message });
+      }
+      return;
+    }
     if (!res.headersSent) res.status(500).json({ ok: false, error: err.message });
   }
 });
