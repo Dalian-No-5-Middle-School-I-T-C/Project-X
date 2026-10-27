@@ -3,7 +3,7 @@
 ## 2026-10-27：#357 主站管理员端问题反馈页
 
 - `全局设置` 新增「问题反馈」区（仅管理员）：类型 / 标题 / 正文 / 可选联系方式，自动附带版本、页面、浏览器与系统信息；反馈落 `feedback_reports`（SQLite / MariaDB v66，迁移时 UTC 时间归一化到目标库本地），可标记处理、删除、分页加载、一键复制 Markdown，不依赖 GitHub，也不在服务器保存 token。
-- 反馈可附带最多 15 个、单个小于 100 MiB 的文件（日志、截图、PDF、压缩包等），文件存 `data/answer-card/feedback/<uuid>/`，元数据在 `feedback_attachments`（v67）；管理员可下载，删除先清文件再删库，清理失败会保留反馈以便重试。上传经请求级累计预算、multer 临时目录与失败清理，下载固定按附件下发，不在页面内联。`feedback/` 聚合容量默认 8 GiB，可用 `PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB` 调整（天花板 100 GiB）；上传前按 Content-Length 预留，预检把 `_tmp` 孤儿也计入、结算按实际占用核算且不含重复计数，路由启动时同步清空 `_tmp`；无 Content-Length 的 chunked 请求不按最大请求误拒，容量统计读不出来时拒绝上传。
+- 反馈可附带最多 15 个、单个小于 100 MiB 的文件（日志、截图、PDF、压缩包等），文件存 `data/answer-card/feedback/<uuid>/`，元数据在 `feedback_attachments`（v67）；管理员可下载，删除先清文件再删库，清理失败会保留反馈以便重试。上传经请求级累计预算、multer 临时目录与失败清理，下载固定按附件下发，不在页面内联。`feedback/` 聚合容量默认 8 GiB，可用 `PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB` 调整（天花板 100 GiB）；上传前按 Content-Length 预留，预检把 `_tmp` 孤儿也计入、结算按实际占用核算且不重复计数，路由启动时同步清空 `_tmp`；无 Content-Length 的 chunked 请求不按最大请求误拒，容量统计读不出来时拒绝上传；事务失败后的附件目录清理失败会排队重试，首次上传核对并回收无附件记录的孤儿目录。
 - 所有 `/api/feedback` 端点要求 `system:manage`；标题 ≤100、正文 ≤5000、联系方式 ≤100 字，超限返回 400；清理控制字符；环境信息只收白名单扁平标量（≤30 键、≤8KB）。
 - 验证：`verify:feedback`（89/0，含 config.yml remote 隔离、分页、附件 15/16 上限、孤儿临时文件、并发聚合容量、chunked 上传、下载权限与删除清理）与 MariaDB 回归；`verify:auth` 154/0、`verify:security-critical` 533/0、`verify:core-logic` 118/0；typecheck、Web / 服务端构建、管理员端浏览器实测通过。本机无 MariaDB，方言路径由 CI 覆盖。
 

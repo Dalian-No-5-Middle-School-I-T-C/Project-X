@@ -14,8 +14,8 @@
 import { Router, type RequestHandler } from "express";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
-import { readdirSync, unlinkSync } from "node:fs";
-import { mkdir, rename, rm } from "node:fs/promises";
+import { readdirSync, unlinkSync, type Dirent } from "node:fs";
+import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
@@ -63,6 +63,64 @@ try {
     try { unlinkSync(path.join(feedbackTmpDir, entry.name)); } catch { /* 留给下一次清理 */ }
   }
 } catch { /* 目录还不存在 */ }
+
+const pendingOrphanDirs = new Set<string>();
+let orphanSweepDone = false;
+let orphanSweep: Promise<void> | null = null;
+
+async function retryPendingOrphanDirs(): Promise<void> {
+  for (const dir of [...pendingOrphanDirs]) {
+    try {
+      await rm(dir, { recursive: true, force: true });
+      pendingOrphanDirs.delete(dir);
+    } catch { /* 保留到下一次上传再试 */ }
+  }
+}
+
+/**
+ * 首次上传时核对「有目录、无附件记录」的孤儿目录（崩溃或清理失败遗留）。
+ * 只删超过 10 分钟的目录，避免删掉另一个并发请求刚建好、事务尚未提交的目录。
+ */
+async function sweepFeedbackOrphansOnce(): Promise<void> {
+  await retryPendingOrphanDirs();
+  if (orphanSweepDone) return;
+  if (!orphanSweep) {
+    orphanSweep = (async () => {
+      try {
+        const rows = await getMysqlDb().all<{ stored_path: string }>("SELECT stored_path FROM feedback_attachments");
+        const referenced = new Set<string>();
+        for (const row of rows) {
+          const absPath = resolveStoredPath(row.stored_path);
+          if (absPath) referenced.add(path.dirname(absPath));
+        }
+        let entries: Dirent[];
+        try {
+          entries = await readdir(feedbackRoot, { withFileTypes: true });
+        } catch {
+          entries = [];
+        }
+        for (const entry of entries) {
+          if (!entry.isDirectory() || entry.name === "_tmp") continue;
+          const dir = path.join(feedbackRoot, entry.name);
+          if (referenced.has(dir)) continue;
+          try {
+            const info = await stat(dir);
+            if (Date.now() - info.mtimeMs < 10 * 60_000) continue;
+            await rm(dir, { recursive: true, force: true });
+          } catch {
+            pendingOrphanDirs.add(dir);
+          }
+        }
+        orphanSweepDone = true;
+      } catch (err) {
+        console.error("[feedback] 附件孤儿目录核对失败:", err);
+      } finally {
+        orphanSweep = null;
+      }
+    })();
+  }
+  await orphanSweep;
+}
 
 type FeedbackRequest = Express.Request & { feedbackReservation?: FeedbackStorageReservation };
 
@@ -250,6 +308,7 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
   void purgeStaleTmpUploads(feedbackTmpDir)
     .catch(() => {})
     .then(async () => {
+      await sweepFeedbackOrphansOnce();
       const declared = Number(req.headers["content-length"]);
       const hasDeclaredLength = Number.isFinite(declared) && declared > 0;
       // chunked 请求没有 Content-Length，无法准确预留；不能按「最大请求」硬拒（容量配额较小时
@@ -411,8 +470,9 @@ router.post("/", receiveFeedbackUpload, async (req, res) => {
     const storageKey = randomUUID();
     const finalDir = path.join(feedbackRoot, storageKey);
     const incomingBytes = files.reduce((sum, file) => sum + file.size, 0);
+    let reportId: number;
     try {
-      const reportId = await settleFeedbackStorage(
+      reportId = await settleFeedbackStorage(
         feedbackRoot,
         reservation,
         incomingBytes,
@@ -461,12 +521,17 @@ router.post("/", receiveFeedbackUpload, async (req, res) => {
           });
         }
       );
-      res.status(201).json({ ok: true, data: { id: reportId } });
     } catch (err) {
-      await rm(finalDir, { recursive: true, force: true }).catch(() => {});
+      try {
+        await rm(finalDir, { recursive: true, force: true });
+      } catch (cleanupErr) {
+        pendingOrphanDirs.add(finalDir);
+        console.error("[feedback] 附件清理失败，已排队重试:", cleanupErr);
+      }
       await removeTempFiles(files);
       throw err;
     }
+    res.status(201).json({ ok: true, data: { id: reportId } });
   } catch (err: any) {
     if (err instanceof FeedbackStorageQuotaError) {
       if (!res.headersSent) {

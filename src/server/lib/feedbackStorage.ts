@@ -129,10 +129,10 @@ export function settleFeedbackStorage<T>(
   }
   const run = quotaQueue.then(async () => {
     reservation?.release();
-    // 此时本请求的文件已经落盘：used 已包含它们，不能再加一遍 incoming；
-    // 同时包含 _tmp 里的孤儿文件，只有 stat 失败才按不可读处理。
+    // used 已包含本请求以及已经缓冲完成的并发请求的 _tmp 文件；再叠加 reservedBytes
+    // 会把同一批字节算两遍。串行队列保证前一个请求移动完成后，后一个才看到它的永久占用。
     const used = await directoryBytes(feedbackRoot);
-    if (used + reservedBytes > MAX_FEEDBACK_STORAGE_BYTES) {
+    if (used > MAX_FEEDBACK_STORAGE_BYTES) {
       throw new FeedbackStorageQuotaError();
     }
     return task();
