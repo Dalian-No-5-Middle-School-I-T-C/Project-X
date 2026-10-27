@@ -71,6 +71,8 @@ export interface StartUploadInput {
   paperSize?: string;
   /** 本机扫描会话。同一张卡的 groupId 会跨会话重号，有它才能判断是不是同一份原卷。 */
   localSessionId?: string;
+  /** 本场考试。远端重复卷按姓名匹配时用；没有就只能手输考号。 */
+  examId?: number | null;
   pages: UploadPageInput[];
 }
 
@@ -94,6 +96,8 @@ export interface UploadJobSnapshot {
   /** 非终态提示：相关联的冲突（如重复学号撤出），不影响任务继续上传 */
   notice?: string;
   canCorrectStudentId: boolean;
+  /** 上传时已知的考试。远端冲突卡用它做姓名联想。 */
+  examId?: number | null;
 }
 
 export interface UploadManagerSnapshot {
@@ -128,6 +132,7 @@ interface JobRecord {
   name: string;
   cardId: string;
   localSessionId?: string;
+  examId?: number | null;
   /** 安全 R35：随会话创建上报的卡版本指纹，服务端据此拒绝旧版本上传 */
   cardVersion: string;
   dpi: number;
@@ -359,6 +364,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         notice: j.notice,
         canCorrectStudentId: new Set(j.pages.map(p => p.input.groupId ?? `sheet:${p.input.pageNum}`)).size === 1,
         reviewCards: j.reviewCards,
+        examId: j.examId ?? null,
         results: j.results,
         resultRows: j.resultRows,
       })),
@@ -923,6 +929,7 @@ if (j.cancelled) throw cancelledError(j);
       name: input.name,
       cardId: input.cardId,
       localSessionId: input.localSessionId,
+      examId: input.examId ?? null,
       cardVersion: input.cardVersion,
       dpi: input.dpi ?? 300,
       paperSize: input.paperSize ?? "A4",

@@ -102,6 +102,11 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const [sessionId, setSessionId] = useState("");
   /** 本场扫描归属考试；重复学号订正时用于花名册联想 */
   const [sessionExamId, setSessionExamId] = useState<number | null>(null);
+  const sessionExamIdRef = useRef<number | null>(null);
+  const assignSessionExamId = (examId: number | null) => {
+    sessionExamIdRef.current = examId;
+    setSessionExamId(examId);
+  };
   const [progressMessage, setProgressMessage] = useState("");
   const [pages, setPages] = useState<ScanPage[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
@@ -450,17 +455,24 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       const data = await readResults(sid);
       if (!current()) return;
       applyResults(data);
-      if (examFromSnapshot !== undefined) setSessionExamId(examFromSnapshot);
-      else {
-        const metaResponse = await authFetch(`/api/scanner/scan/${sid}`);
-        const meta = await metaResponse.json();
-        if (current() && metaResponse.ok) {
-          setSessionExamId(typeof meta.examId === "number" ? meta.examId : null);
+      // 姓名联想只服务重复卷。先丢掉上一场的考试，避免新请求慢或失败时仍按旧名册填考号。
+      assignSessionExamId(null);
+      let resolvedExamId: number | null = examFromSnapshot ?? null;
+      if (examFromSnapshot === undefined) {
+        try {
+          const metaResponse = await authFetch(`/api/scanner/scan/${sid}`);
+          if (!metaResponse.ok) throw new Error(`读取考试信息失败（HTTP ${metaResponse.status}）`);
+          const meta = await metaResponse.json();
+          resolvedExamId = typeof meta.examId === "number" ? meta.examId : null;
+        } catch {
+          resolvedExamId = null;
         }
       }
-      // 远端模式：成绩汇总一完成即自动后台上传（先出分、图片续传，进度见右上角进度条）
+      if (!current()) return;
+      assignSessionExamId(resolvedExamId);
+      // 远端模式：成绩汇总一完成即自动后台上传。联想元数据失败不能挡住这一步。
       if (!partial && getScannerMode() === "remote" && isRemoteServerConfigured()) {
-        queueSuccessfulUploads(data, sid);
+        queueSuccessfulUploads(data, sid, resolvedExamId);
       }
     }
     catch (err) {
@@ -472,7 +484,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   }
 
   /** 把成功答题卡加入后台上传队列（自动与手动共用；已入队的组自动跳过） */
-  function queueSuccessfulUploads(data: ScanBatchResponse, sid: string) {
+  function queueSuccessfulUploads(data: ScanBatchResponse, sid: string, examId: number | null = sessionExamIdRef.current) {
     const metadata = sessionUploadRef.current;
     if (!metadata || metadata.sessionId !== sid) return;
     const nextJobs = { ...uploadJobsRef.current };
@@ -487,6 +499,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         identityMode: metadata.identityMode,
         kind: "scan", cardId: metadata.cardId, name: `扫描_${result.studentId}`,
         localSessionId: sid,
+        examId,
         dpi: metadata.dpi, paperSize: metadata.paperSize, cardVersion: metadata.cardVersion,
         pages: result.pages.map(page => ({
           recordId: page.recordId,
@@ -684,6 +697,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     setErrorMessage("");
     setScanErrorMessage("");
     partialSessionRef.current = false;
+    assignSessionExamId(null);
     setSourcesDiag(null);
     detectSources();
   }

@@ -47,6 +47,11 @@ let includeFailure = false;
 let failNextSummary = false;
 let failNextSnapshot = false;
 let retainedPageCount = 2;
+let snapshotExamId: number | null = null;
+let metaBehavior: "ok" | "fail" | "text" | "hold" = "ok";
+let releaseMetaHold: (() => void) | null = null;
+let includeRosterConflict = false;
+const participantSearchUrls: string[] = [];
 const snapshotRequests: string[] = [];
 const summaryRequests: string[] = [];
 const retryRequests: unknown[] = [];
@@ -60,7 +65,12 @@ const summary = () => ({ failures: includeFailure ? [{ groupId: "1", studentId: 
     { groupId: "9", studentId: "91009", pageCount: 1, needsReviewCount: 1,
       totalScore: 0, maxScore: 5, objectiveScore: 0, objectiveMaxScore: 5, subjectiveScore: 0, subjectiveMaxScore: 0,
       pages: [{ recordId: "page-9", pageNum: 9, layoutPage: 1, side: "front", objectiveScore: 0, subjectiveScore: 0, totalScore: 0, totalMaxScore: 5 }], saved: false },
-  ] });
+  ],
+  reviewCards: includeRosterConflict ? [{
+    sessionId: "scan-local", groupId: "dup", studentId: "91001", previouslySaved: false,
+    pages: [{ recordId: "page-dup", pageNum: 1, layoutPage: 1, side: "front" }],
+  }] : [],
+  });
 install("fetch", async (input: unknown, init?: RequestInit) => {
   const url = String(input);
   if (url.includes("/api/cards/")) { cardRequests++; await cardReady; return Response.json(card); }
@@ -72,7 +82,20 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   if (/\/scan\/scan-\d+$/.test(url)) {
     snapshotRequests.push(url);
     if (failNextSnapshot) { failNextSnapshot = false; return Response.json({ message: "临时读取页面失败" }, { status: 503 }); }
-    return Response.json({ session: { status: "error", error_msg: "未扫描到页面" }, records:
+    if (metaBehavior !== "ok") {
+      const behavior = metaBehavior;
+      metaBehavior = "ok";
+      if (behavior === "fail") return Response.json({ message: "考试信息暂时读不到" }, { status: 503 });
+      if (behavior === "text") return new Response("not-json", { status: 200, headers: { "content-type": "text/plain" } });
+      return await new Promise<Response>((resolve) => {
+        releaseMetaHold = () => resolve(Response.json({
+          examId: snapshotExamId,
+          session: { status: "error", error_msg: "未扫描到页面" },
+          records: [],
+        }));
+      });
+    }
+    return Response.json({ examId: snapshotExamId, session: { status: "error", error_msg: "未扫描到页面" }, records:
       Array.from({ length: retainedPageCount }, (_, index) => ({ id: `page-${index + 1}`, pageNum: index + 1,
         side: "front", studentId: index === 0 ? "91001" : null, studentConf: null, ocrStatus: "done" })) });
   }
@@ -89,6 +112,10 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   }
   if (url.includes("/scan-image/")) return new Response("img", { headers: { "content-type": "image/png" } });
   if (url.endsWith("/health")) return Response.json({ ok: true, capabilities: { scannerClientApi: true } });
+  if (url.includes("/participant-search")) {
+    participantSearchUrls.push(url);
+    return Response.json({ students: [] });
+  }
   if (/\/api\/scanner\/session\/[^/]+\/groups\/[^/]+\/correction$/.test(url)) {
     if (init?.method === "PUT") {
       correctionSaves.push(JSON.parse(String(init.body)) as { pages: unknown[] });
@@ -346,6 +373,51 @@ try {
   assert(!document.body.textContent?.includes("重连后扫描中断"));
   assert(document.body.textContent?.includes("扫描完成"));
   assert(snapshotRequests.length >= 7, "Error classification reads persisted pages, including zero-page errors and refreshes");
+
+  includeRosterConflict = true;
+  const beforeMetaFail = uploads.length;
+  metaBehavior = "fail";
+  await click("开始新扫描"); await settle();
+  await click("开始扫描"); await settle();
+  await act(async () => { streams.at(-1)!.done(); }); await settle();
+  assert.equal(uploads.length, beforeMetaFail + 2, "考试信息接口失败时，成功卷仍然入队");
+  assert.equal(uploads.at(-1)?.examId ?? null, null, "考试信息失败时不把上一场考试带进上传任务");
+  assert(!document.body.textContent?.includes("汇总失败"), "可选的考试信息失败不能显示成汇总失败");
+  assert(!document.querySelector('[aria-label="搜索学生"]'), "考试信息失败时重复卷退回手输考号");
+
+  const beforeMetaText = uploads.length;
+  metaBehavior = "text";
+  await click("开始新扫描"); await settle();
+  await click("开始扫描"); await settle();
+  await act(async () => { streams.at(-1)!.done(); }); await settle();
+  assert.equal(uploads.length, beforeMetaText + 2, "考试信息不是 JSON 时，成功卷仍然入队");
+  assert.equal(uploads.at(-1)?.examId ?? null, null);
+
+  snapshotExamId = 11;
+  await click("开始新扫描"); await settle();
+  await click("开始扫描"); await settle();
+  await act(async () => { streams.at(-1)!.done(); }); await settle();
+  assert.equal(uploads.at(-1)?.examId, 11, "本场考试 ID 随上传任务交给远端冲突卡");
+  assert(document.querySelector('[aria-label="搜索学生"]'), "有考试 ID 时重复卷可以按姓名搜索");
+
+  metaBehavior = "hold";
+  snapshotExamId = 12;
+  await click("刷新汇总");
+  await settle();
+  assert(!document.querySelector('[aria-label="搜索学生"]'), "新的考试信息还没回来时，不能继续用上一场的名册");
+  releaseMetaHold?.();
+  await settle();
+  const search = document.querySelector<HTMLInputElement>('[aria-label="搜索学生"]');
+  assert(search, "新考试信息到达后恢复姓名搜索");
+  const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+  await act(async () => {
+    valueSetter?.call(search, "张三");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  });
+  assert(participantSearchUrls.some((entry) => entry.includes("/api/exams/12/participant-search")), "刷新后按新的考试搜索");
+  assert(!participantSearchUrls.some((entry) => entry.includes("/api/exams/11/")), "不能再查上一场的名册");
+
   console.log("PASS scanner panel React/SSE: session metadata; partial view/correction/save; terminal replay and reconnect hydrate persisted pages; hydration retry, zero-page and next-session recovery");
 } finally {
   releaseCard();
