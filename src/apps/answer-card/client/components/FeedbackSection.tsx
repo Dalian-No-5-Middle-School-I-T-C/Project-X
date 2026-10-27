@@ -153,6 +153,8 @@ export function FeedbackSection() {
   const [counts, setCounts] = useState({ total: 0, open: 0 });
   const [filter, setFilter] = useState<FeedbackFilter>("all");
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [formOpen, setFormOpen] = useState(false);
@@ -168,30 +170,51 @@ export function FeedbackSection() {
   const [busyId, setBusyId] = useState<number | null>(null);
   const [pendingDelete, setPendingDelete] = useState<FeedbackReport | null>(null);
   const loadSeq = useRef(0);
+  const filterRef = useRef(filter);
 
-  const load = useCallback(async () => {
-    // 筛选快速切换时只让最新一次请求提交结果，避免旧响应覆盖新状态。
+  const load = useCallback(async (reset = true, offset = 0) => {
+    // 筛选快速切换时只让最新一次请求提交结果；重载时读取当前筛选，避免 PATCH/DELETE
+    // 在筛选已变化后还按旧筛选发起请求。
     const seq = ++loadSeq.current;
-    setLoading(true);
+    const activeFilter = filterRef.current;
+    if (reset) {
+      setLoading(true);
+      setHasMore(false);
+      setReports([]);
+    } else {
+      setLoadingMore(true);
+    }
     setLoadError(null);
     try {
-      const query = filter === "all" ? "" : `?status=${filter}`;
-      const res = await fetchJson<{ ok: boolean; data: FeedbackReport[]; counts: { total: number; open: number } }>(
-        `/api/feedback${query}`
-      );
+      const params = new URLSearchParams();
+      if (activeFilter !== "all") params.set("status", activeFilter);
+      params.set("offset", String(offset));
+      const res = await fetchJson<{
+        ok: boolean;
+        data: FeedbackReport[];
+        counts: { total: number; open: number };
+        hasMore: boolean;
+      }>(`/api/feedback?${params.toString()}`);
       if (seq !== loadSeq.current) return;
-      setReports(Array.isArray(res.data) ? res.data : []);
+      setReports((prev) => (reset ? res.data : [...prev, ...res.data]));
       setCounts(res.counts ?? { total: 0, open: 0 });
+      setHasMore(Boolean(res.hasMore));
     } catch (err: any) {
       if (seq !== loadSeq.current) return;
-      setReports([]);
+      if (reset) setReports([]);
       setLoadError(err?.message || "反馈列表加载失败");
     } finally {
-      if (seq === loadSeq.current) setLoading(false);
+      if (seq === loadSeq.current) {
+        if (reset) setLoading(false);
+        else setLoadingMore(false);
+      }
     }
-  }, [filter]);
+  }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    filterRef.current = filter;
+    void load(true);
+  }, [filter, load]);
 
   const resetForm = () => {
     setCategory("problem");
@@ -227,8 +250,8 @@ export function FeedbackSection() {
       });
       resetForm();
       setFormMsg({ tone: "success", text: "已提交。反馈保存在本系统数据库，管理员可在下方查看和处理。" });
-      if (filter === "all") await load();
-      else setFilter("all");
+      if (filterRef.current !== "all") setFilter("all");
+      else await load(true);
     } catch (err: any) {
       setFormMsg({ tone: "error", text: err?.message || "提交失败" });
     } finally {
@@ -245,7 +268,7 @@ export function FeedbackSection() {
         method: "PATCH",
         body: JSON.stringify({ status: next }),
       });
-      await load();
+      await load(true);
     } catch (err: any) {
       setLoadError(err?.message || "操作失败");
     } finally {
@@ -260,7 +283,7 @@ export function FeedbackSection() {
       await fetchJson(`/api/feedback/${report.id}`, { method: "DELETE" });
       if (expandedId === report.id) setExpandedId(null);
       setPendingDelete(null);
-      await load();
+      await load(true);
     } catch (err: any) {
       setLoadError(err?.message || "删除失败");
     } finally {
@@ -361,7 +384,10 @@ export function FeedbackSection() {
         </span>
         <SegmentedControl
           value={filter}
-          onValueChange={(value) => setFilter(value as FeedbackFilter)}
+          onValueChange={(value) => {
+            filterRef.current = value as FeedbackFilter;
+            setFilter(value as FeedbackFilter);
+          }}
           items={[
             { value: "all", label: "全部" },
             { value: "open", label: "待处理" },
@@ -471,6 +497,19 @@ export function FeedbackSection() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {!loading && hasMore && (
+        <div className="flex justify-center">
+          <Button
+            variant="outline"
+            size="sm"
+            loading={loadingMore}
+            onClick={() => void load(false, reports.length)}
+          >
+            加载更多
+          </Button>
         </div>
       )}
 

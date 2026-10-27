@@ -259,6 +259,14 @@ async function main(): Promise<void> {
   const stillThere = (await call("GET", "", adminToken)).json?.data?.[0];
   ok(stillThere?.category === "suggestion", "建议类型按提交值保存");
 
+  await call("POST", "", adminToken, { title: "分页测试", content: "正文" });
+  const firstPage = await call("GET", "?limit=1&offset=0", adminToken);
+  ok(firstPage.json?.data?.length === 1 && firstPage.json?.hasMore === true, "limit/offset 第一页带 hasMore");
+  const secondPage = await call("GET", "?limit=1&offset=1", adminToken);
+  ok(secondPage.json?.data?.length === 1 && secondPage.json?.hasMore === false, "第二页可取到剩余反馈");
+  const clamped = await call("GET", "?limit=999&offset=-5", adminToken);
+  ok(clamped.json?.data?.length === 2 && clamped.json?.hasMore === false, "limit 上限与负 offset 被收敛");
+
   // 直接插入一条教师提交的记录，再删账号：正文与账号快照应保留，user_id 置空。
   const now = databaseTimestamp();
   const snapshotId = (await db.run(

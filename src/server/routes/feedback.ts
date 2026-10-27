@@ -23,7 +23,8 @@ const MAX_TITLE = 100;
 const MAX_CONTENT = 5000;
 const MAX_CONTACT = 100;
 const MAX_CONTEXT_BYTES = 8 * 1024;
-const LIST_LIMIT = 500;
+const DEFAULT_LIMIT = 100;
+const MAX_LIMIT = 200;
 
 type FeedbackRow = {
   id: number;
@@ -121,11 +122,15 @@ const SELECT_COLUMNS = `f.id, f.category, f.title, f.content, f.contact, f.statu
   f.username, f.display_name, f.role_name, f.context_json,
   f.created_at, f.resolved_at, u.name AS resolver_name`;
 
-// GET /api/feedback?status=open|resolved|all — 列出反馈（默认全部，待处理排前）
+// GET /api/feedback?status=open|resolved|all&limit=100&offset=0 — 列表（默认全部，待处理排前）
 router.get("/", async (req, res) => {
   try {
     const requested = typeof req.query.status === "string" ? req.query.status : "all";
     const status = requested === "open" || requested === "resolved" ? requested : null;
+    const rawLimit = Number.parseInt(String(req.query.limit ?? ""), 10);
+    const rawOffset = Number.parseInt(String(req.query.offset ?? ""), 10);
+    const limit = Math.min(MAX_LIMIT, Math.max(1, Number.isNaN(rawLimit) ? DEFAULT_LIMIT : rawLimit));
+    const offset = Math.max(0, Number.isNaN(rawOffset) ? 0 : rawOffset);
     const db = getMysqlDb();
     const rows = await db.all<FeedbackRow>(
       `SELECT ${SELECT_COLUMNS}
@@ -133,17 +138,22 @@ router.get("/", async (req, res) => {
          LEFT JOIN users u ON u.id = f.resolved_by
         ${status ? "WHERE f.status = ?" : ""}
         ORDER BY CASE WHEN f.status = 'open' THEN 0 ELSE 1 END, f.created_at DESC
-        LIMIT ${LIST_LIMIT}`,
-      ...(status ? [status] : [])
+        LIMIT ? OFFSET ?`,
+      ...(status ? [status] : []),
+      limit + 1,
+      offset
     );
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
     const counts = await db.get<{ total: number | string; open: number | string | null }>(
       `SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END), 0) AS open
          FROM feedback_reports`
     );
     res.json({
       ok: true,
-      data: rows.map((row) => toReport(row, db.dialect)),
+      data: page.map((row) => toReport(row, db.dialect)),
       counts: { total: Number(counts?.total ?? 0), open: Number(counts?.open ?? 0) },
+      hasMore,
     });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
