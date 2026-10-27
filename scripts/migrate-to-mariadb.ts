@@ -97,6 +97,7 @@ const SQLITE_ONLY_VERSIONS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 10]);
 // v3 补全：+answer_block_crops / scanner_submissions / exam_publish_events / exam_participants /
 //         wechat_subscription_bindings / wechat_grade_release_notifications / exam_answer_keys /
 //         exam_answer_key_pages（漏登记的表会被静默丢数据，见 assertMigrationCoverage）
+// v66 补全：+feedback_reports（旧源库可能没有，optionalInSource）
 
 const MIGRATION_ORDER: Array<{ table: string; primaryKey: string; optionalInSource?: boolean }> = [
   // 独立表（无外键依赖）
@@ -180,6 +181,8 @@ const MIGRATION_ORDER: Array<{ table: string; primaryKey: string; optionalInSour
   { table: "ai_analysis_jobs", primaryKey: "id" },
   { table: "ai_provider_calls", primaryKey: "id" },
   { table: "entity_lifecycle_events", primaryKey: "id" },
+  // v66：旧 SQLite 源库可能没有这张表，有则一并迁移
+  { table: "feedback_reports", primaryKey: "id", optionalInSource: true },
 ];
 
 /**
