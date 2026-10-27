@@ -3,7 +3,8 @@
  *
  * 单次请求的 15 × 100 MiB 只是「一次」的上限：管理员可以反复提交，每次都永久占盘。
  * 这里按 `data/answer-card/feedback/` 整个目录的实际占盘做聚合闸门（排除 `_tmp` 暂存），
- * 并把「测容量 → 移动/入库」串行化，避免两个并发上传各自看到旧容量后一起越界。
+ * 并在 multer 落临时文件之前按 Content-Length 预留容量；「测容量 → 移动/入库」串行执行，
+ * 避免两个并发上传各自看到旧容量后一起越界，也避免接近上限时先把 1.5 GiB 写进暂存盘。
  *
  * 默认 8 GiB，可用 PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB 调整，天花板 100 GiB。
  */
@@ -43,15 +44,31 @@ export class FeedbackStorageQuotaError extends Error {
   }
 }
 
+/** 目录读不出来时不能当成 0：宁可拒绝上传，也不能在错误基线上放行。 */
+export class FeedbackStorageUnavailableError extends Error {
+  readonly code = "FEEDBACK_STORAGE_UNAVAILABLE";
+
+  constructor() {
+    super("无法统计反馈附件容量，已拒绝本次上传，请稍后重试");
+    this.name = "FeedbackStorageUnavailableError";
+  }
+}
+
+export interface FeedbackStorageReservation {
+  /** 幂等释放；上传失败/响应关闭后由路由调用。 */
+  release(): void;
+}
+
 async function directoryBytes(dir: string, skipDir: string): Promise<number> {
-  let total = 0;
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return 0; // 目录还不存在（尚未上传过附件）
+  } catch (err: any) {
+    if (err?.code === "ENOENT") return 0; // 目录还不存在（尚未上传过附件）
+    throw new FeedbackStorageUnavailableError();
   }
   const skip = path.resolve(skipDir);
+  let total = 0;
   for (const entry of entries) {
     if (entry.isSymbolicLink()) continue;
     const full = path.join(dir, entry.name);
@@ -59,25 +76,61 @@ async function directoryBytes(dir: string, skipDir: string): Promise<number> {
     if (entry.isDirectory()) {
       total += await directoryBytes(full, skipDir);
     } else if (entry.isFile()) {
-      try { total += (await stat(full)).size; } catch { /* 并发删除：留给下一次核算 */ }
+      try {
+        total += (await stat(full)).size;
+      } catch (err: any) {
+        if (err?.code === "ENOENT") continue; // 统计期间被并发删除
+        throw new FeedbackStorageUnavailableError();
+      }
     }
   }
   return total;
 }
 
+let reservedBytes = 0;
 let quotaQueue: Promise<void> = Promise.resolve();
 
-/** 串行执行「测容量 → 移动/入库」，防止并发上传在检查后一起落盘越界。 */
-export function withFeedbackStorageQuota<T>(
+/** 在 multer 写临时文件之前预留容量；返回的 release 必须幂等。 */
+export function reserveFeedbackStorage(
   feedbackRoot: string,
   tmpDir: string,
+  bytes: number
+): Promise<FeedbackStorageReservation> {
+  const run = quotaQueue.then(async () => {
+    const used = await directoryBytes(feedbackRoot, tmpDir);
+    if (used + reservedBytes + bytes > MAX_FEEDBACK_STORAGE_BYTES) {
+      throw new FeedbackStorageQuotaError();
+    }
+    reservedBytes += bytes;
+    let released = false;
+    return {
+      release() {
+        if (released) return;
+        released = true;
+        reservedBytes = Math.max(0, reservedBytes - bytes);
+      },
+    } satisfies FeedbackStorageReservation;
+  });
+  quotaQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+/** 上传完成/失败时把预留换成实际占用，再串行执行「测容量 → 移动/入库」。 */
+export function settleFeedbackStorage<T>(
+  feedbackRoot: string,
+  tmpDir: string,
+  reservation: FeedbackStorageReservation | null,
   incomingBytes: number,
   task: () => Promise<T>
 ): Promise<T> {
-  if (incomingBytes <= 0) return task();
+  if (incomingBytes <= 0) {
+    reservation?.release();
+    return task();
+  }
   const run = quotaQueue.then(async () => {
+    reservation?.release();
     const used = await directoryBytes(feedbackRoot, tmpDir);
-    if (used + incomingBytes > MAX_FEEDBACK_STORAGE_BYTES) {
+    if (used + reservedBytes + incomingBytes > MAX_FEEDBACK_STORAGE_BYTES) {
       throw new FeedbackStorageQuotaError();
     }
     return task();

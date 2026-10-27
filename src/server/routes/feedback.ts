@@ -22,7 +22,13 @@ import { getMysqlDb } from "../db";
 import { databaseTimestamp } from "../db/timestamp";
 import { resolveAnswerCardDataDir } from "../db/paths";
 import { requestUploadBudget, isUploadAlreadyRejected } from "../lib/uploadBudget";
-import { withFeedbackStorageQuota, FeedbackStorageQuotaError } from "../lib/feedbackStorage";
+import {
+  FeedbackStorageQuotaError,
+  FeedbackStorageUnavailableError,
+  reserveFeedbackStorage,
+  settleFeedbackStorage,
+  type FeedbackStorageReservation,
+} from "../lib/feedbackStorage";
 import { purgeStaleTmpUploads } from "../../apps/answer-card/server/paperQuota";
 import {
   MAX_FEEDBACK_ATTACHMENTS,
@@ -48,6 +54,8 @@ const dataRoot = resolveAnswerCardDataDir();
 const feedbackRoot = path.join(dataRoot, "feedback");
 const feedbackTmpDir = path.join(feedbackRoot, "_tmp");
 const feedbackRootPrefix = `${path.resolve(feedbackRoot)}${path.sep}`;
+
+type FeedbackRequest = Express.Request & { feedbackReservation?: FeedbackStorageReservation };
 
 type FeedbackRow = {
   id: number;
@@ -224,7 +232,7 @@ const attachmentBudget = requestUploadBudget({
   label: "问题反馈附件上传",
 });
 
-/** JSON 请求直接放行；multipart 先过上传统计与 multer，再交给路由处理。 */
+/** JSON 请求直接放行；multipart 先预留容量、走上传统计与 multer，再交给路由处理。 */
 const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
   if (!req.is("multipart/form-data")) {
     next();
@@ -232,13 +240,31 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
   }
   void purgeStaleTmpUploads(feedbackTmpDir)
     .catch(() => {})
-    .then(() => {
+    .then(async () => {
+      const declared = Number(req.headers["content-length"]);
+      const reserveBytes = Number.isFinite(declared) && declared > 0
+        ? declared
+        : MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES;
+      let reservation: FeedbackStorageReservation;
+      try {
+        reservation = await reserveFeedbackStorage(feedbackRoot, feedbackTmpDir, reserveBytes);
+      } catch (err) {
+        if (err instanceof FeedbackStorageQuotaError) {
+          res.status(413).json({ ok: false, code: err.code, error: err.message });
+          return;
+        }
+        throw err;
+      }
+      (req as FeedbackRequest).feedbackReservation = reservation;
+      res.once("close", () => reservation.release());
+
       attachmentBudget(req, res, () => {
         upload.array("files", MAX_FEEDBACK_ATTACHMENTS)(req, res, async (error) => {
           if (!error) {
             next();
             return;
           }
+          reservation.release();
           await removeTempFiles(req.files);
           if (isUploadAlreadyRejected(req, res)) return;
           if (error instanceof multer.MulterError) {
@@ -337,7 +363,9 @@ router.get("/", async (req, res) => {
 // POST /api/feedback — 提交反馈（multipart 可带附件），自动附带服务端环境信息
 router.post("/", receiveFeedbackUpload, async (req, res) => {
   const files = ((req.files as Express.Multer.File[] | undefined) ?? []).filter(Boolean);
+  const reservation = (req as FeedbackRequest).feedbackReservation ?? null;
   const fail = async (message: string, status = 400): Promise<void> => {
+    reservation?.release();
     await removeTempFiles(files);
     res.status(status).json({ ok: false, error: message });
   };
@@ -372,9 +400,10 @@ router.post("/", receiveFeedbackUpload, async (req, res) => {
     const finalDir = path.join(feedbackRoot, storageKey);
     const incomingBytes = files.reduce((sum, file) => sum + file.size, 0);
     try {
-      const reportId = await withFeedbackStorageQuota(
+      const reportId = await settleFeedbackStorage(
         feedbackRoot,
         feedbackTmpDir,
+        reservation,
         incomingBytes,
         async () => {
           const stored: Array<{ filename: string; storedPath: string; mime: string | null; sizeBytes: number }> = [];
@@ -431,6 +460,12 @@ router.post("/", receiveFeedbackUpload, async (req, res) => {
     if (err instanceof FeedbackStorageQuotaError) {
       if (!res.headersSent) {
         res.status(413).json({ ok: false, code: err.code, error: err.message });
+      }
+      return;
+    }
+    if (err instanceof FeedbackStorageUnavailableError) {
+      if (!res.headersSent) {
+        res.status(500).json({ ok: false, code: err.code, error: err.message });
       }
       return;
     }
@@ -507,23 +542,48 @@ router.delete("/:id", async (req, res) => {
     const id = parsePositiveId(req.params.id);
     if (!id) return res.status(400).json({ ok: false, error: "无效的反馈 ID" });
     const db = getMysqlDb();
+    const existing = await db.get<{ id: number }>("SELECT id FROM feedback_reports WHERE id = ?", id);
+    if (!existing) return res.status(404).json({ ok: false, error: "反馈不存在" });
+
     const attachments = await db.all<{ stored_path: string }>(
       "SELECT stored_path FROM feedback_attachments WHERE feedback_id = ?",
       id
     );
-    const result = await db.run("DELETE FROM feedback_reports WHERE id = ?", id);
-    if (result.changes === 0) return res.status(404).json({ ok: false, error: "反馈不存在" });
-
     const dirs = new Set<string>();
     for (const attachment of attachments) {
       const absPath = resolveStoredPath(attachment.stored_path);
-      if (absPath) dirs.add(path.dirname(absPath));
+      if (!absPath) {
+        return res.status(500).json({
+          ok: false,
+          code: "FEEDBACK_ATTACHMENT_PATH_INVALID",
+          error: "附件路径异常，未删除反馈，请稍后重试",
+        });
+      }
+      dirs.add(path.dirname(absPath));
     }
+    // 先清文件再删库：清理失败时保留反馈，管理员可以重试；反过来会留下无法再定位的孤儿文件。
     for (const dir of dirs) {
-      if (dir.startsWith(feedbackRootPrefix)) {
-        await rm(dir, { recursive: true, force: true }).catch(() => {});
+      if (!dir.startsWith(feedbackRootPrefix)) {
+        return res.status(500).json({
+          ok: false,
+          code: "FEEDBACK_ATTACHMENT_PATH_INVALID",
+          error: "附件路径异常，未删除反馈，请稍后重试",
+        });
+      }
+      try {
+        await rm(dir, { recursive: true, force: true });
+      } catch (err) {
+        console.error("[feedback] 附件清理失败:", err);
+        return res.status(500).json({
+          ok: false,
+          code: "FEEDBACK_ATTACHMENT_CLEANUP_FAILED",
+          error: "附件文件清理失败，反馈未删除，请重试",
+        });
       }
     }
+
+    const result = await db.run("DELETE FROM feedback_reports WHERE id = ?", id);
+    if (result.changes === 0) return res.status(404).json({ ok: false, error: "反馈不存在" });
     res.json({ ok: true, message: "反馈已删除" });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
