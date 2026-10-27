@@ -119,7 +119,6 @@ export function reserveFeedbackStorage(
 /** 上传完成/失败时把预留换成实际占用，再串行执行「测容量 → 移动/入库」。 */
 export function settleFeedbackStorage<T>(
   feedbackRoot: string,
-  tmpDir: string,
   reservation: FeedbackStorageReservation | null,
   incomingBytes: number,
   task: () => Promise<T>
@@ -130,9 +129,10 @@ export function settleFeedbackStorage<T>(
   }
   const run = quotaQueue.then(async () => {
     reservation?.release();
-    // 结算时排除 _tmp：本请求和并发请求的临时件已由预留覆盖，不能再按实际字节加一遍。
-    const used = await directoryBytes(feedbackRoot, tmpDir);
-    if (used + reservedBytes + incomingBytes > MAX_FEEDBACK_STORAGE_BYTES) {
+    // 此时本请求的文件已经落盘：used 已包含它们，不能再加一遍 incoming；
+    // 同时包含 _tmp 里的孤儿文件，只有 stat 失败才按不可读处理。
+    const used = await directoryBytes(feedbackRoot);
+    if (used + reservedBytes > MAX_FEEDBACK_STORAGE_BYTES) {
       throw new FeedbackStorageQuotaError();
     }
     return task();

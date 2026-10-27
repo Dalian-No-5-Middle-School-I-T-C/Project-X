@@ -411,7 +411,6 @@ router.post("/", receiveFeedbackUpload, async (req, res) => {
     try {
       const reportId = await settleFeedbackStorage(
         feedbackRoot,
-        feedbackTmpDir,
         reservation,
         incomingBytes,
         async () => {
