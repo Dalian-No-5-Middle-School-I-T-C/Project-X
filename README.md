@@ -356,7 +356,7 @@ node scripts/hash-release-artifacts.cjs --check --root <产物目录>
 #### 环境要求
 
 - Windows 操作系统
-- Node.js 须满足 `>=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1`（开发、CI 与打包机同一范围）。25.x 已停更，没有 CVE-2026-111497 的补丁，服务端会拒绝启动。已核对的扫描端 Electron 39.8.10（Chromium 142.0.7444.265）在壳直接加载远端页面，或本地壳向非本机地址发请求时，只接受 gzip 与 deflate
+- Node.js 须满足 `>=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1`（开发、CI 与打包机同一范围）。25.x 已停更，没有 CVE-2026-111497 的补丁，服务端会拒绝启动。已核对的扫描端 Electron 43.8.3（Chromium 150.0.7871.250，内嵌 Node.js 24.22.0，仍低于修复版本 24.22.1）在壳直接加载远端页面，或本地壳向非本机地址发请求时，只接受 gzip 与 deflate
 - Visual Studio 2022（编译 C++ 原生模块需要）
 - OpenCV 4.13+（识别引擎编译需要）
 
@@ -366,7 +366,7 @@ node scripts/hash-release-artifacts.cjs --check --root <产物目录>
 npm install --ignore-scripts
 ```
 
-> 使用 `--ignore-scripts` 避免 Electron 下载 SSL 问题。安装后需手动重建原生模块：
+> 使用 `--ignore-scripts` 跳过依赖安装脚本。Electron 43 起二进制不在 `npm install` 时下载，x64 打包命令会先执行 `electron:install`。安装后需手动重建原生模块：
 > ```powershell
 > npm rebuild better-sqlite3
 > ```
@@ -677,7 +677,7 @@ Project-X/
 | **数据库** | SQLite via better-sqlite3（本地模式）/ MariaDB 10.11 via mysql2（远程模式，32位兼容） |
 | **跨方言层** | DbAdapter 统一接口 + buildUpsertSQL + buildInsertIgnore |
 | **PDF** | pdfkit（毫米级精确排版） |
-| **桌面** | Electron 39 + electron-builder + WiX Toolset |
+| **桌面** | Electron 43.8.3 + electron-builder + WiX Toolset |
 | **构建** | Vite（前端）+ esbuild（后端） |
 
 ---
