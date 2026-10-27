@@ -30,17 +30,18 @@ function writeJson(key: string, value: unknown): void {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore quota/private mode */ }
 }
 
-export function readPostprocessSessions(cardId: string): PostprocessSessionRef[] {
-  const saved = readJson<{ at?: number; sessions?: unknown }>(`${SESSIONS_PREFIX}/${encodeURIComponent(cardId)}`);
+export function readPostprocessSessions(cardId: string, userId?: number | null): PostprocessSessionRef[] {
+  const saved = readJson<{ at?: number; userId?: unknown; sessions?: unknown }>(`${SESSIONS_PREFIX}/${encodeURIComponent(cardId)}`);
   if (!saved || typeof saved.at !== "number" || Date.now() - saved.at > MAX_AGE_MS || !Array.isArray(saved.sessions)) return [];
+  if (userId != null && saved.userId !== userId) return [];
   return saved.sessions.filter((item): item is PostprocessSessionRef => Boolean(item)
     && typeof (item as PostprocessSessionRef).sessionId === "string"
     && typeof (item as PostprocessSessionRef).pageCount === "number");
 }
 
-export function writePostprocessSessions(cardId: string, sessions: PostprocessSessionRef[]): void {
+export function writePostprocessSessions(cardId: string, sessions: PostprocessSessionRef[], userId?: number | null): void {
   if (!cardId) return;
-  writeJson(`${SESSIONS_PREFIX}/${encodeURIComponent(cardId)}`, { at: Date.now(), sessions });
+  writeJson(`${SESSIONS_PREFIX}/${encodeURIComponent(cardId)}`, { at: Date.now(), userId: typeof userId === "number" ? userId : null, sessions });
 }
 
 export function readActivePostprocess(): { cardId: string; cardTitle: string; userId: number | null; at: number } | null {

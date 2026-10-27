@@ -75,8 +75,9 @@ function testCorrectionDraft(): void {
 function testPostprocessResume(): void {
   const cardId = "card-1";
   const sessions = [{ sessionId: "s1", pageCount: 2 }, { sessionId: "s2", pageCount: 1 }];
-  writePostprocessSessions(cardId, sessions);
-  assert.deepEqual(readPostprocessSessions(cardId), sessions, "会话列表按卡恢复");
+  writePostprocessSessions(cardId, sessions, 7);
+  assert.deepEqual(readPostprocessSessions(cardId, 7), sessions, "会话列表按卡恢复");
+  assert.deepEqual(readPostprocessSessions(cardId, 8), [], "换账号不恢复别人的会话列表");
 
   writeActivePostprocess(cardId, "高一语文", 7);
   const active = readActivePostprocess();

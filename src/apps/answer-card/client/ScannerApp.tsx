@@ -110,7 +110,7 @@ function ScannerAppInner() {
       clearActivePostprocess();
       return;
     }
-    const sessions = readPostprocessSessions(active.cardId);
+    const sessions = readPostprocessSessions(active.cardId, user.id);
     if (!sessions.length) {
       clearActivePostprocess();
       return;
@@ -124,7 +124,7 @@ function ScannerAppInner() {
   // 会话列表随卡片落到本机：崩溃重载后仍能回到同一批卷。
   useEffect(() => {
     if (!selectedCardId) return;
-    writePostprocessSessions(selectedCardId, postSessions);
+    writePostprocessSessions(selectedCardId, postSessions, user?.id);
     if (postSessions.length) writeActivePostprocess(selectedCardId, selectedCardTitle, user?.id);
     else clearActivePostprocess();
   }, [selectedCardId, selectedCardTitle, postSessions, user?.id]);
@@ -218,7 +218,7 @@ function ScannerAppInner() {
               setCardVersionNote(`本机缓存版本 ${version}（未连上服务器，${updatedAt}）`);
               setSelectedCardId(cardId);
               setSelectedCardTitle(card?.title || cardId);
-              const restored = readPostprocessSessions(cardId);
+              const restored = readPostprocessSessions(cardId, user?.id);
               const active = readActivePostprocess();
               setPostSessions(restored);
               setPage(active?.cardId === cardId && active.userId === user?.id ? "postprocess" : "workspace");
@@ -231,7 +231,7 @@ function ScannerAppInner() {
             setCardVersionNote("");
             setSelectedCardId(cardId);
             setSelectedCardTitle(card?.title || cardId);
-            const restored = readPostprocessSessions(cardId);
+            const restored = readPostprocessSessions(cardId, user?.id);
             const active = readActivePostprocess();
             setPostSessions(restored);
             setPage(active?.cardId === cardId && active.userId === user?.id ? "postprocess" : "workspace");
