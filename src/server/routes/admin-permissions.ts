@@ -220,7 +220,7 @@ router.put("/", async (req, res) => {
       teacher_id
     );
     if (!teacherRow) {
-      res.status(400).json({ message: "教师不存在或未启用（需 role_id=2 的启用状态用户）" });
+      res.status(400).json({ message: "教师账号不存在或未启用。" });
       return;
     }
     const payload = {

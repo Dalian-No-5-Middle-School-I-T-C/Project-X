@@ -280,10 +280,10 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
                       已连接服务器：<code className="font-mono">{readServerUrl()}</code>。扫描与导入的图片都会上传。
                       {isInsecureRemoteTarget(readServerUrl()) && (
                         <span className="mt-1 block text-warning-foreground">
-                          该地址是跨机明文 HTTP：
+                          该地址使用明文 HTTP：
                           {canSendCredentialsToConfiguredServer(readServerUrl()).allowed
-                            ? "已按你的显式确认继续发送 API Key，建议尽快换成 https://。"
-                            : "API Key 不会被发送，上传会失败。请在「服务器连接」中改用 https:// 或显式勾选明文许可。"}
+                            ? "已按你的确认继续发送 API Key，建议尽快改用 https://。"
+                            : "API Key 不会发送，上传会失败。请在「服务器连接」中改用 https:// 或勾选明文许可。"}
                         </span>
                       )}
                     </p>

@@ -210,7 +210,7 @@ export function BorderlineDialog({
           )}
         </DialogBody>
         <DialogFooter>
-          <span className="mr-auto text-xs text-muted-foreground">线下学生是补差重点，线上学生是培优重点</span>
+          <span className="mr-auto text-xs text-muted-foreground">线下补差 · 线上培优</span>
           <Button variant="outline" size="sm" icon={<Download />} onClick={exportCsv} disabled={!data || data.items.length === 0}>导出 CSV</Button>
           <Button variant="ghost" onClick={onClose}>关闭</Button>
         </DialogFooter>

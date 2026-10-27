@@ -293,7 +293,7 @@ export function ExamManagePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ studentIds: ids }),
       });
-      setStatus("应考名单已保存（用于扫描入库身份校验与名单展示，公布不再要求名单齐全）");
+      setStatus("应考名单已保存。");
       setRosterExam(null);
     } catch (err) {
       setRosterErr(err instanceof Error ? err.message : "保存名单失败");
@@ -309,7 +309,7 @@ export function ExamManagePage() {
     setRosterErr(null);
     try {
       await fetchJson(`/api/exams/${rosterExam.id}/participants`, { method: "DELETE" });
-      setStatus("显式应考名单已清除（已回落年级/班级名册快照）");
+      setStatus("已恢复为年级/班级名册。");
       await openRosterModal(rosterExam);
     } catch (err) {
       setRosterErr(err instanceof Error ? err.message : "恢复班级/年级名册失败");
@@ -950,7 +950,7 @@ export function ExamManagePage() {
           <DialogHeader>
             <DialogTitle>公布分数</DialogTitle>
             <DialogDescription>
-              确认公布「{publishTarget?.name ?? ""}」的成绩？将公布当前已录入的成绩，无需等待所有应考学生出分；后续补录或改分默认保持公布并更新统计；管理员开启自动撤回时需重新公布。
+              确认公布「{publishTarget?.name ?? ""}」的成绩？将公布当前已录入的成绩，后续补录或改分默认保持公布。
             </DialogDescription>
           </DialogHeader>
           {/* v54: 公布表单的「公布后显示原卷」，勾选状态随本次公布写入 exams.show_original_paper */}
@@ -982,7 +982,7 @@ export function ExamManagePage() {
           <DialogHeader>
             <DialogTitle>批量公布成绩</DialogTitle>
             <DialogDescription>
-              确认公布选中的 {selectedExamIds.size} 场考试的成绩？将公布当前已录入的成绩，无需等待所有应考学生出分；后续补录或改分默认保持公布并更新统计；管理员开启自动撤回时需重新公布。
+              确认公布选中的 {selectedExamIds.size} 场考试的成绩？将公布当前已录入的成绩，后续补录或改分默认保持公布。
             </DialogDescription>
           </DialogHeader>
           <DialogBody className="flex flex-col gap-3">
@@ -997,7 +997,7 @@ export function ExamManagePage() {
                 />
               }
               label="公布后显示原卷"
-              description={`对本批 ${selectedExamIds.size} 场考试统一生效；未上传原卷的考试即使勾选，学生侧仍显示「原卷未上传」。`}
+              description={`对本批 ${selectedExamIds.size} 场考试统一生效；没有上传原卷的考试，学生仍会看到「原卷未上传」。`}
             />
           </DialogBody>
           <DialogFooter>
@@ -1039,8 +1039,8 @@ export function ExamManagePage() {
           <DialogHeader>
             <DialogTitle>应考名单 — {rosterExam?.name ?? ""}</DialogTitle>
             <DialogDescription>
-              名单外学号不允许扫描入库；公布只要求该场已有成绩，不再要求名单内学生全部出分。
-              来源：{rosterData?.source === "explicit" ? "管理员显式名单" : rosterData?.source === "roster" ? "年级/班级名册（自动）" : "未确定"}
+              名单外学号不能扫描入库。
+              来源：{rosterData?.source === "explicit" ? "管理员指定名单" : rosterData?.source === "roster" ? "年级/班级名册（自动）" : "未确定"}
               （共 {rosterData?.total ?? 0} 人{rosterData?.missing ? `，${rosterData.missing} 人无账号记录` : ""}）
             </DialogDescription>
           </DialogHeader>
@@ -1053,7 +1053,7 @@ export function ExamManagePage() {
             </p>
             {!rosterData?.known && (
               <div className="rounded border border-warning bg-warning/10 px-3 py-2 text-sm text-warning-fg">
-                该考试尚未设置应考范围，不影响公布已有成绩。可从下方添加学生并保存名单，用于核对后续录入的学生身份。
+                该考试尚未设置应考范围；不影响公布已有成绩。可以添加学生并保存名单，用于核对后续扫描录入的身份。
               </div>
             )}
 

@@ -262,14 +262,14 @@ try {
   }) as typeof scannerUploadManager.discardDamagedRecovery;
   await click("刷新汇总"); await settle();
   assert(!hasAction("放弃续传"), "损坏记录不提供放弃");
-  assert(hasAction("已核对服务器，清除损坏记录"), "损坏记录要给出核对后的清除入口");
+  assert(hasAction("清除损坏记录"), "损坏记录要给出核对后的清除入口");
   assert([...document.querySelectorAll("button")].filter(node => node.textContent?.trim() === "整卡改分")
     .every(node => node.disabled), "损坏记录同样禁止改分");
   dom.window.confirm = (() => false) as typeof dom.window.confirm;
-  await click("已核对服务器，清除损坏记录"); await settle();
+  await click("清除损坏记录"); await settle();
   assert.deepEqual(discardCalls, [], "没确认核对过就不清除记录");
   dom.window.confirm = (() => true) as typeof dom.window.confirm;
-  await click("已核对服务器，清除损坏记录"); await settle();
+  await click("清除损坏记录"); await settle();
   assert.equal(discardCalls.length, 1, "确认核对后清除这一组的损坏记录");
   assert.equal(discardCalls[0].split("/")[1], "0", "清除要点名到被点击的那一组");
   assert(document.body.textContent?.includes("待上传"), "清除后这一组回到待上传");

@@ -30,7 +30,7 @@ type Settings = {
 };
 
 const FIELDS: Array<{ key: keyof Settings; label: string; desc: string; type: "toggle" | "number" | "select"; options?: Array<{ value: string; label: string }> }> = [
-  { key: "auto_unpublish_on_score_change", label: "成绩变动时自动撤回公布", desc: "默认关闭：补录、改分及异常卷处理后保持公布，学生可查看最新成绩、排名和统计；开启后，成绩变动将撤回整场公布，需教师重新公布。仅影响后续变动。", type: "toggle" },
+  { key: "auto_unpublish_on_score_change", label: "成绩变动时自动撤回公布", desc: "默认关闭：补录、改分和异常卷处理后会保持公布，学生能看到最新成绩；开启后，成绩变动会撤回整场公布，需要教师重新公布。", type: "toggle" },
   { key: "require_original_paper", label: "创建后提示上传原卷", desc: "创建答题卡后打开原卷面板，可关闭并稍后补充；不限制答题卡或 PDF 导出", type: "toggle" },
   { key: "highlight_missing_paper", label: "侧边栏高亮未上传原卷", desc: "左侧列表用颜色标记缺少原卷的考试", type: "toggle" },
 ];
@@ -176,7 +176,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
     });
 
   async function handleImportDemo() {
-    if (!confirm("将导入演示测试数据（十几场考试、16 名学生、3 个合集，含网阅演示）。演示教师口令随机生成、只显示一次；原有「演示-」前缀数据（含在其上完成的阅卷/改分）会被清空重建。是否继续？")) return;
+    if (!confirm("将导入演示测试数据（16 名学生、十几场考试、3 个合集，含网阅演示）。演示教师口令只显示一次；原有「演示-」数据会被清空重建。是否继续？")) return;
     setDevMsg(null);
     setDevBusy(true);
     try {
@@ -430,8 +430,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          学生端「我的 → 成绩发布提醒」开不起来时先看这里：环境变量是否齐、能否取到 access_token、有没有人已绑定。
-          三项都不涉及小程序发布状态——发布状态只影响后面的推送环节。
+          学生端「成绩发布提醒」无法开启时，可在这里检查配置、令牌和学生绑定情况。
         </p>
 
         {!wechat && !wechatErr && !wechatBusy && (
@@ -440,7 +439,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
         {wechatErr && (
           <Banner tone="error">
             {wechatErr}
-            {wechatErr.trimStart().startsWith("<") ? "——多半是这一版后端还没部署到本服务器" : ""}
+            {wechatErr.trimStart().startsWith("<") ? "（服务器返回了网页错误页，请确认后端已更新并正常运行）" : ""}
           </Banner>
         )}
         {wechat && (
@@ -470,7 +469,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
               <span className="text-sm font-semibold tabular-nums text-foreground">{wechat.boundStudents ?? 0} 人</span>
             </WechatRow>
             {!wechat.boundStudents && (
-              <p className="text-xs text-muted-foreground">还没有学生绑定成功。让测试学生用体验版打开开关，看到「已开启成绩提醒」后再回来重新自检。</p>
+              <p className="text-xs text-muted-foreground">还没有学生绑定。请用测试学生打开成绩提醒后再自检。</p>
             )}
           </div>
         )}
@@ -483,7 +482,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
           学生历史背景图
         </div>
         <p className="text-xs text-muted-foreground">
-          学生网页端已经不再显示或上传背景图。这里清掉他们以前传过的文件，并把账号里保存的透明度归零。教师和管理员的背景图不会动。
+          学生网页端已不再使用背景图。这里会清除学生此前上传的背景图，并把账号里的透明度归零；教师和管理员的背景图不受影响。
         </p>
         <div>
           <Button
@@ -507,7 +506,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
           开发者工具
         </div>
         <p className="text-xs text-muted-foreground">
-          用于演示与调研场景的快速数据操作。即时执行，<strong className="font-semibold text-foreground">不会保存到全局设置中</strong>，也不影响已有的真实考试数据。
+          演示与调研工具。以下操作立即生效，与页面底部的保存无关，也不会改动已有真实考试数据。
         </p>
         <div className="flex flex-wrap items-center gap-3">
           <Button

@@ -154,7 +154,7 @@ export function StudentSemesterComparison() {
 
         {current.avgScoreRate == null && (
           <p className="text-xs text-muted-foreground">
-            部分考试缺少满分依据，得分率与进步/退步判定不可用，此处不做估算。
+            部分考试未设置满分，学期得分率暂时无法计算。
           </p>
         )}
 
