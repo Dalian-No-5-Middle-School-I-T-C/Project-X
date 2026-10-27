@@ -15,6 +15,7 @@
  */
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
@@ -207,6 +208,35 @@ async function main(): Promise<void> {
     return { status: response.status, json };
   }
 
+  /** 无 Content-Length 的 chunked multipart（模拟流式客户端）。 */
+  function chunkedUpload(token: string, boundary: string, body: Buffer): Promise<{ status: number; json: any }> {
+    return new Promise((resolve, reject) => {
+      const url = new URL(base);
+      const request = http.request({
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        },
+      }, (response) => {
+        let raw = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => { raw += chunk; });
+        response.on("end", () => {
+          let json: any = null;
+          try { json = JSON.parse(raw); } catch { /* empty */ }
+          resolve({ status: response.statusCode ?? 0, json });
+        });
+      });
+      request.on("error", reject);
+      request.write(body);
+      request.end();
+    });
+  }
+
   ok((await call("GET", "")).status === 401, "未登录读取反馈返回 401");
   ok((await call("POST", "", undefined, { title: "x", content: "y" })).status === 401, "未登录提交反馈返回 401");
   ok((await call("GET", "", teacherToken)).status === 403, "教师读取反馈返回 403");
@@ -389,6 +419,16 @@ async function main(): Promise<void> {
   const over = await upload(overQuota, adminToken);
   ok(over.status === 413 && over.json?.code === "FEEDBACK_STORAGE_QUOTA_EXCEEDED", "聚合容量超限被拒绝");
   ok(!existsSync(tempDir) || readdirSync(tempDir).length === 0, "容量拒绝后没有遗留临时文件");
+
+  const boundary = `----fbtest${Date.now()}`;
+  const chunkedBody = Buffer.from([
+    `--${boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n分块上传测试\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="content"\r\n\r\n正文\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="tiny.txt"\r\nContent-Type: text/plain\r\n\r\nhello\r\n`,
+    `--${boundary}--\r\n`,
+  ].join(""), "utf8");
+  const chunked = await chunkedUpload(adminToken, boundary, chunkedBody);
+  ok(chunked.status === 201, "无 Content-Length 的附件上传不被容量预检误拒");
 
   // 直接插入一条教师提交的记录，再删账号：正文与账号快照应保留，user_id 置空。
   const now = databaseTimestamp();

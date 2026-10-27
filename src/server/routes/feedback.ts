@@ -251,21 +251,24 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
     .catch(() => {})
     .then(async () => {
       const declared = Number(req.headers["content-length"]);
-      const reserveBytes = Number.isFinite(declared) && declared > 0
-        ? declared
-        : MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES;
-      let reservation: FeedbackStorageReservation;
-      try {
-        reservation = await reserveFeedbackStorage(feedbackRoot, feedbackTmpDir, reserveBytes);
-      } catch (err) {
-        if (err instanceof FeedbackStorageQuotaError) {
-          res.status(413).json({ ok: false, code: err.code, error: err.message });
-          return;
+      const hasDeclaredLength = Number.isFinite(declared) && declared > 0;
+      // chunked 请求没有 Content-Length，无法准确预留；不能按「最大请求」硬拒（容量配额较小时
+      // 连一个小附件都会被误杀）。这类请求交给 settle 在移动前按实际大小核算，单个请求仍受
+      // requestUploadBudget 的 1.5 GiB 限制。
+      let reservation: FeedbackStorageReservation | null = null;
+      if (hasDeclaredLength) {
+        try {
+          reservation = await reserveFeedbackStorage(feedbackRoot, feedbackTmpDir, declared);
+        } catch (err) {
+          if (err instanceof FeedbackStorageQuotaError) {
+            res.status(413).json({ ok: false, code: err.code, error: err.message });
+            return;
+          }
+          throw err;
         }
-        throw err;
       }
-      (req as FeedbackRequest).feedbackReservation = reservation;
-      res.once("close", () => reservation.release());
+      (req as FeedbackRequest).feedbackReservation = reservation ?? undefined;
+      if (reservation) res.once("close", () => reservation!.release());
 
       attachmentBudget(req, res, () => {
         upload.array("files", MAX_FEEDBACK_ATTACHMENTS)(req, res, async (error) => {
@@ -273,7 +276,7 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
             next();
             return;
           }
-          reservation.release();
+          reservation?.release();
           await removeTempFiles(req.files);
           if (isUploadAlreadyRejected(req, res)) return;
           if (error instanceof multer.MulterError) {
