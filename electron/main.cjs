@@ -461,13 +461,13 @@ async function createWindow() {
       const box = document.createElement("div");
       box.id = id;
       box.setAttribute("role", "status");
-      box.style.cssText = "position:fixed;left:16px;bottom:16px;z-index:99999;max-width:440px;background:#fff;color:#111;border:1px solid #9bbf9b;border-left:4px solid #4c8a4c;border-radius:8px;padding:10px 14px;box-shadow:0 8px 24px rgba(0,0,0,.16);font:13px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif;";
+      box.style.cssText = "position:fixed;left:16px;bottom:16px;z-index:99999;max-width:440px;background:var(--px-bg-surface);color:var(--px-fg-primary);border:1px solid var(--px-success-border);border-left:4px solid var(--px-success-bg);border-radius:var(--px-radius-md);padding:10px 14px;box-shadow:0 8px 24px rgba(0,0,0,.16);font:13px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif;";
       const text = document.createElement("span");
-      text.textContent = "扫描端界面已自动恢复。未保存的订正已作为本机草稿保留，重新打开原卷后会恢复。";
+      text.textContent = "扫描端界面已自动恢复。本机草稿会尝试恢复未保存的订正，请核对后重新保存。";
       const close = document.createElement("button");
       close.type = "button";
       close.textContent = "知道了";
-      close.style.cssText = "margin-left:10px;cursor:pointer;border:1px solid #ccc;background:#fff;border-radius:6px;padding:2px 8px;font:inherit;";
+      close.style.cssText = "margin-left:10px;cursor:pointer;border:1px solid var(--px-border-strong);background:var(--px-bg-surface);color:var(--px-fg-primary);border-radius:var(--px-radius-sm);padding:2px 8px;font:inherit;";
       close.onclick = () => box.remove();
       box.append(text, close);
       document.body.appendChild(box);

@@ -122,12 +122,22 @@ function ScannerAppInner() {
   }, [user?.id, selectedCardId]);
 
   // 会话列表随卡片落到本机：崩溃重载后仍能回到同一批卷。
+  // 未登录/登录态过期时不写：否则会把 userId 改成 null，崩溃后同一账号也恢复不了。
   useEffect(() => {
-    if (!selectedCardId) return;
-    writePostprocessSessions(selectedCardId, postSessions, user?.id);
-    if (postSessions.length) writeActivePostprocess(selectedCardId, selectedCardTitle, user?.id);
+    if (!selectedCardId || !user) return;
+    writePostprocessSessions(selectedCardId, postSessions, user.id);
+    if (postSessions.length) writeActivePostprocess(selectedCardId, selectedCardTitle, user.id);
     else clearActivePostprocess();
   }, [selectedCardId, selectedCardTitle, postSessions, user?.id]);
+
+  // 登出/会话过期时清掉工作台选择，避免下一个登录账号继承上一人的扫描会话。
+  useEffect(() => {
+    if (user || !selectedCardId) return;
+    setSelectedCardId("");
+    setSelectedCardTitle("");
+    setPostSessions([]);
+    setPage("select");
+  }, [user?.id, selectedCardId]);
 
   if (loading) {
     return (

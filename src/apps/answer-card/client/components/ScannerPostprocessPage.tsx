@@ -146,6 +146,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
     if (!group) return;
     setActive(group);
     setView(saved.view);
+    if (saved.view === "queue") setFocusIssue({ sessionId: saved.sessionId, groupId: saved.groupId });
     setResumedFromCrash(true);
   }, [groups, cardId]);
 
@@ -330,7 +331,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
       </header>
       {resumedFromCrash && (
         <div role="status" className="flex items-center gap-2 border-b border-info-border bg-info-soft px-5 py-2 text-sm text-info-fg">
-          已恢复上次停留的卷；未保存的订正会从本机草稿恢复。保存后草稿会自动清除。
+          已恢复上次停留的卷；本机草稿可用时会恢复未保存的订正，请核对后保存。
           <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setResumedFromCrash(false)}>知道了</Button>
         </div>
       )}

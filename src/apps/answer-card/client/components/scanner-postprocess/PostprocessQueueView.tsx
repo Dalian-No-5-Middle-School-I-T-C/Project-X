@@ -149,10 +149,10 @@ export function PostprocessQueueView({ queue, channel, examIdForSession, scans, 
 
       <div className="min-w-0 flex-1 overflow-auto">
         {fixTarget
-          ? <StudentIdPanel sessionId={fixTarget.sessionId} groupId={fixTarget.groupId} channel={channel} examId={examIdForSession(fixTarget.sessionId)}
+          ? <StudentIdPanel key={`${fixTarget.sessionId}/${fixTarget.groupId}`} sessionId={fixTarget.sessionId} groupId={fixTarget.groupId} channel={channel} examId={examIdForSession(fixTarget.sessionId)}
               onResolved={onResolved} onBack={() => setFixTarget(null)} />
           : current.kind === "student_id"
-            ? <StudentIdPanel sessionId={current.sessionId} groupId={current.groupId} channel={channel} examId={examIdForSession(current.sessionId)} onResolved={onResolved} />
+            ? <StudentIdPanel key={`${current.sessionId}/${current.groupId}`} sessionId={current.sessionId} groupId={current.groupId} channel={channel} examId={examIdForSession(current.sessionId)} onResolved={onResolved} />
             : current.kind === "duplicate"
               ? <DuplicatePanel item={current} channel={channel} scans={scans} onResolved={onResolved} onPreviewDiscard={onPreviewDiscard} onFixStudentId={target => setFixTarget(target)} />
               : current.kind === "missing_page"
@@ -281,6 +281,7 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
   const [saving, setSaving] = useState(false);
   const [rotation, setRotation] = useState<ImageRotation>(0);
   const [draftRestored, setDraftRestored] = useState(false);
+  const [draftPersisted, setDraftPersisted] = useState<boolean | null>(null);
   const cropRef = useRef<HTMLDivElement>(null);
   const digitPageIndex = useMemo(() => (document ? document.pages.findIndex(page => correctionCells(page.layout).some(cell => cell.type === "student_digit")) : -1), [document]);
   const digitPage = document && digitPageIndex >= 0 ? document.pages[digitPageIndex] : null;
@@ -320,6 +321,7 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
       setTyped(null);
       setDraftRestored(false);
     }
+    setDraftPersisted(null);
   }, [document, sessionId, groupId]);
 
   // 考号修改同样即时落本机草稿：位数没选完时 typed 是唯一真值，必须一起存。
@@ -332,9 +334,10 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
     if (!dirty) {
       clearCorrectionDraft(document.card.id, sessionId, groupId);
       setDraftRestored(false);
+      setDraftPersisted(null);
       return;
     }
-    writeCorrectionDraft(document.card.id, sessionId, groupId, document, edits, typed);
+    setDraftPersisted(writeCorrectionDraft(document.card.id, sessionId, groupId, document, edits, typed));
   }, [document, edits, typed, sessionId, groupId]);
 
   useEffect(() => {
@@ -422,6 +425,7 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
       if (!response.ok) throw new Error(result.message || "保存考号失败");
       clearCorrectionDraft(document.card.id, sessionId, groupId);
       setDraftRestored(false);
+      setDraftPersisted(null);
       notify.success(`考号已改为 ${digitsFromCells}`);
       await onResolved(sessionId, groupId);
     } catch (err) {
@@ -478,6 +482,7 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
             </Button>
           </div>
           {draftRestored && <p className="m-0 text-xs text-info-fg">已恢复上次未保存的考号修改。</p>}
+          {draftPersisted === false && <p className="m-0 text-xs text-destructive-fg">本机草稿保存失败，请先点击「确认考号」保存。</p>}
           <p className="m-0 text-xs text-muted-foreground">
             {complete ? "也可以直接在左图点 digit 格改某一位；单选列内互斥，与上面的输入同源。"
               : `卡面每列都要恰好选中一个数字（共 ${digitColumns.length} 位），当前格选不完整，不能提交。`}

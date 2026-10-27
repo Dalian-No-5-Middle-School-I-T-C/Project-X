@@ -228,6 +228,7 @@ let root3: ReturnType<typeof createRoot> | null = null;
 let root4: ReturnType<typeof createRoot> | null = null;
 let root5: ReturnType<typeof createRoot> | null = null;
 let root6: ReturnType<typeof createRoot> | null = null;
+let root7: ReturnType<typeof createRoot> | null = null;
 async function settle(ms = 12) { await act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); }); }
 async function clickNode(node: Element) {
   await act(async () => {
@@ -592,6 +593,76 @@ try {
   assert.equal((text().match(/题（客观）/g) ?? []).length, 1, "第二页没上报的题不能被重复列成存疑");
   assert(!text().includes("未答"), "合成条目不能伪装成本页的空白作答");
 
+  // ── 两份考号异常卷来回切换：各自草稿必须隔离，不能把上一份写到下一份键下 ──
+  {
+    const docFor = (sid: string): CorrectionDocument => {
+      const recognized = { ...recognition, studentId: { status: "ok", value: "10001" } } as typeof recognition;
+      return { card, version, pages: [{
+        sourceType: "twain_scan_record", sourceId: `${sid}-p1`, revision: 0, layout,
+        recognition: recognized, ...recognizedCells(layout, recognized), imageUrl: `/${sid}`,
+      }] };
+    };
+    const studentDocs = new Map([["a", docFor("a")], ["b", docFor("b")]]);
+    const studentChannel = {
+      ...localChannel(),
+      request: async (url: string) => {
+        const sid = [...studentDocs.keys()].find(key => url.includes(`/session/${key}/`));
+        return sid ? Response.json(studentDocs.get(sid)) : Response.json({ message: "unknown" }, { status: 404 });
+      },
+    };
+    const studentHost = document.createElement("div");
+    document.body.append(studentHost);
+    root7 = createRoot(studentHost);
+    const queueItems = [
+      { id: "sid-b", kind: "student_id" as const, sessionId: "b", groupId: "1", studentId: null, label: "考号问题",
+        conflicts: [], missingLayoutPages: [], needsReviewCount: 0 },
+      { id: "sid-a", kind: "student_id" as const, sessionId: "a", groupId: "2", studentId: null, label: "考号问题",
+        conflicts: [], missingLayoutPages: [], needsReviewCount: 0 },
+    ];
+    await act(async () => root7!.render(createElement(TooltipProvider, null, createElement(PostprocessQueueView, {
+      channel: studentChannel, queue: queueItems, scans: [], examIdForSession: () => null,
+      layoutPageCountFor: () => 1, onResolved: () => {}, onPreviewDiscard: () => {}, onDelete: async () => {}, onJumpToCorrection: () => {},
+    }))));
+    await settle();
+    const input = () => studentHost.querySelector('input[aria-label="考号"]') as HTMLInputElement;
+    const next = () => {
+      const button = [...studentHost.querySelectorAll("button")].find(node => node.textContent?.trim() === "下一条");
+      assert(button, "队列需要下一条入口");
+      return button;
+    };
+    const setInput = async (value: string) => {
+      await act(async () => {
+        valueSetter.call(input(), value);
+        input().dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+      });
+      await settle();
+    };
+    assert.equal(input().value, "10001", "B 的初始考号来自卡面格选");
+    await setInput("1000");
+    assert.equal(input().value, "1000", "B 只输了一半，保持手输值");
+    await act(async () => { next().click(); });
+    await settle();
+    assert.equal(input().value, "10001", "切到 A 时不能带着 B 的未保存手输值");
+    await setInput("2000");
+    await act(async () => { next().click(); });
+    await settle();
+    assert.equal(input().value, "1000", "切回 B 要恢复 B 自己的半截草稿，不能被 A 覆盖或清掉");
+    await act(async () => { next().click(); });
+    await settle();
+    assert.equal(input().value, "2000", "切回 A 也要恢复 A 自己的草稿");
+    // 本机存储写不进去时，界面不能继续宣称「已自动保存草稿」。
+    const storageProto = dom.window.Storage.prototype as Storage;
+    const realSetItem = storageProto.setItem;
+    storageProto.setItem = () => { throw new Error("QuotaExceededError"); };
+    await setInput("2001");
+    assert(studentHost.textContent?.includes("本机草稿保存失败"), "草稿写入失败要当场提示");
+    storageProto.setItem = realSetItem;
+    await setInput("2000");
+    assert(!studentHost.textContent?.includes("本机草稿保存失败"), "恢复写入后失败提示要消失");
+    await act(async () => { root7!.unmount(); });
+    root7 = null;
+    studentHost.remove();
+  }
 
   await clickText("去改这题");assert(jumped);
   const releasedGroups: string[] = [];
@@ -689,7 +760,7 @@ try {
 } catch (error) {
   failure = error;
 } finally {
-  await act(async () => { root.unmount(); root2?.unmount(); root3?.unmount(); root4?.unmount(); root5?.unmount(); root6?.unmount(); });
+  await act(async () => { root.unmount(); root2?.unmount(); root3?.unmount(); root4?.unmount(); root5?.unmount(); root6?.unmount(); root7?.unmount(); });
   notify.info = realNotifyInfo;
   scannerUploadManager.startUpload = realStartUpload;
   // 不关掉 jsdom 的 window，其定时器与观察者会让进程一直挂着

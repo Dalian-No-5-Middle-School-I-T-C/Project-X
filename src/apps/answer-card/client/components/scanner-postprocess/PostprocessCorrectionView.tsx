@@ -89,6 +89,8 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
   const [loadTick, setLoadTick] = useState(0);
   /** 本次加载是否从本机草稿恢复：闪退/白屏后要明确告诉老师改动还在。 */
   const [draftRestored, setDraftRestored] = useState(false);
+  /** null=没有待保存修改；true=本机草稿写入成功；false=写入失败，必须提示别重载。 */
+  const [draftPersisted, setDraftPersisted] = useState<boolean | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
   /** 本组件创建的原卷 blob URL；切卷/卸载时统一回收，避免多页大图把渲染进程撑爆。 */
   const blobUrlsRef = useRef<Set<string>>(new Set());
@@ -117,6 +119,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
           setEdits(baseEdits);
           setDraftRestored(false);
         }
+        setDraftPersisted(null);
         setPageIndex(0);
       } catch (error) {
         if (alive) setMessage(error instanceof Error ? error.message : "加载失败");
@@ -260,9 +263,10 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
     if (!dirty) {
       clearCorrectionDraft(document.card.id, sessionId, groupId);
       setDraftRestored(false);
+      setDraftPersisted(null);
       return;
     }
-    writeCorrectionDraft(document.card.id, sessionId, groupId, document, edits);
+    setDraftPersisted(writeCorrectionDraft(document.card.id, sessionId, groupId, document, edits));
   }, [document, edits, dirty, busy, locked, sessionId, groupId]);
 
   const missing = document?.pages.some(p => !p.recognition.geometry) ?? false;
@@ -315,6 +319,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
       if (!response.ok) throw new Error(result.message || "保存失败");
       if (document) clearCorrectionDraft(document.card.id, sessionId, groupId);
       setDraftRestored(false);
+      setDraftPersisted(null);
       // 只有本机正式入库才锁。远端模式的草稿保存即使带回 saved，也还要等上传，不能把界面锁死。
       if (result.saved && !draftOnly) setSavedOnce(true);
       else if (typeof result.message === "string" && result.message) setMessage(result.message);
@@ -483,7 +488,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
             ? <span className="text-muted-foreground">本卷成绩已入库，不能再从扫描端改；后续改分请到 Web 端「成绩修改」，或重扫该卷由服务器重新判分。</span>
             : errors.length
             ? <span className="text-destructive-fg">{[...new Set(errors)].slice(0, 3).join("；")}{errors.length > 3 ? "…" : ""}</span>
-            : <span className="text-muted-foreground">{missing ? "此页缺少坐标数据，点选不可用；请在异常处理里重新识别该卡。" : dirty ? "修改尚未保存，已自动存本机草稿；左图点选与右表改分同步生效。" : "左图点填涂格改，右表按题改，两边同步。"}</span>}
+            : <span className="text-muted-foreground">{missing ? "此页缺少坐标数据，点选不可用；请在异常处理里重新识别该卡。" : dirty ? (draftPersisted === false ? "修改尚未保存，本机草稿保存失败；请尽快点击「保存修改」，不要直接关闭或重载。" : "修改尚未保存，已自动存本机草稿；左图点选与右表改分同步生效。") : "左图点填涂格改，右表按题改，两边同步。"}</span>}
       </div>
     </div>
   );

@@ -66,7 +66,7 @@ export function writeCorrectionDraft(
   document: CorrectionDocument,
   edits: CorrectionEdit[],
   typed?: string | null,
-): void {
+): boolean {
   try {
     const revisions: Record<string, number> = {};
     for (const page of document.pages) revisions[page.sourceId] = page.revision;
@@ -74,11 +74,14 @@ export function writeCorrectionDraft(
       savedAt: Date.now(),
       revisions,
       edits: edits.map(edit => ({ ...edit, selected: [...edit.selected], touched: edit.touched ? [...edit.touched] : undefined })),
-      ...(typed ? { typed } : {}),
+      // 空串是老师主动清空考号的有效状态，不能按 falsy 丢掉。
+      ...(typed !== undefined && typed !== null ? { typed } : {}),
     };
     localStorage.setItem(storageKey(cardId, sessionId, groupId), JSON.stringify(draft));
+    return true;
   } catch {
-    /* 隐私模式或配额满：不影响正在进行的订正 */
+    /* 隐私模式或配额满：由调用方提示「本机草稿未保存」，不能假装成功 */
+    return false;
   }
 }
 

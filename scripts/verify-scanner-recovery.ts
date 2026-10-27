@@ -9,8 +9,12 @@ import assert from "node:assert/strict";
 
 class MemoryStorage {
   private map = new Map<string, string>();
+  failWrites = false;
   getItem(key: string): string | null { return this.map.get(key) ?? null; }
-  setItem(key: string, value: string): void { this.map.set(key, String(value)); }
+  setItem(key: string, value: string): void {
+    if (this.failWrites) throw new Error("QuotaExceededError");
+    this.map.set(key, String(value));
+  }
   removeItem(key: string): void { this.map.delete(key); }
   clear(): void { this.map.clear(); }
   key(index: number): string | null { return [...this.map.keys()][index] ?? null; }
@@ -54,7 +58,7 @@ function testCorrectionDraft(): void {
   const doc = makeDocument(3);
   const edits = makeEdits(3);
 
-  writeCorrectionDraft(cardId, sessionId, groupId, doc, edits);
+  assert.equal(writeCorrectionDraft(cardId, sessionId, groupId, doc, edits), true, "草稿写入成功要返回 true");
   const restored = readCorrectionDraft(cardId, sessionId, groupId);
   assert(restored, "草稿应可读回");
   assert.deepEqual(restored!.edits, edits, "格选与 touched 原样恢复");
@@ -63,8 +67,17 @@ function testCorrectionDraft(): void {
   assert(!draftMatchesDocument(restored!, { ...doc, pages: [...doc.pages, doc.pages[0]] } as CorrectionDocument),
     "页数变化必须丢弃");
 
+  // 老师把考号清空也是有效草稿状态，空串不能被当成「没有手输」丢掉。
+  assert.equal(writeCorrectionDraft(cardId, sessionId, groupId, doc, edits, ""), true);
+  assert.equal(readCorrectionDraft(cardId, sessionId, groupId)?.typed, "", "空考号也要原样恢复");
+
   clearCorrectionDraft(cardId, sessionId, groupId);
   assert.equal(readCorrectionDraft(cardId, sessionId, groupId), null, "清除后不能再恢复");
+
+  // 配额满/隐私模式：写入失败必须返回 false，界面才能提示「本机草稿未保存」。
+  (localStorage as unknown as MemoryStorage).failWrites = true;
+  assert.equal(writeCorrectionDraft(cardId, sessionId, groupId, doc, edits), false, "写入失败返回 false");
+  (localStorage as unknown as MemoryStorage).failWrites = false;
 
   // 损坏的 JSON 不能把页面卡死，读取时应直接当无草稿。
   localStorage.setItem("projectx-correction-draft/v1/card-1/session-1/group-1", "{not-json");

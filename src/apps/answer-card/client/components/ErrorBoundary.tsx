@@ -30,7 +30,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               <AlertTriangle size={22} aria-hidden />
             </span>
             <p className="m-0 mt-3 text-lg font-semibold text-foreground">界面遇到异常</p>
-            <p className="m-0 mt-1 text-sm text-muted-foreground">请重新加载页面。扫描端会自动保留未保存的订正草稿。</p>
+            <p className="m-0 mt-1 text-sm text-muted-foreground">请重新加载页面。已写入本机的订正草稿会保留。</p>
             <details className="m-0 mt-3 rounded-sm bg-muted p-2 text-left text-xs text-muted-foreground">
               <summary className="cursor-pointer select-none">技术信息</summary>
               <p className="m-0 mt-2 break-words">{this.state.error.message}</p>
