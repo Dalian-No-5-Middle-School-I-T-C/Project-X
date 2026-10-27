@@ -4,6 +4,7 @@ import {
   BrainCircuit,
   Database,
   Gauge,
+  MessageSquareWarning,
   Monitor,
   Moon,
   Plus,
@@ -17,6 +18,7 @@ import { fetchJson, authFetch } from "../auth/api";
 import { backgroundWriteSession } from "../lib/backgroundOpacityWrites";
 import { cn } from "../lib/utils";
 import { SkinSwitcher, SKIN_OPTIONS } from "../components/SkinSwitcher";
+import { FeedbackSection } from "../components/FeedbackSection";
 import {
   Button,
   Checkbox,
@@ -47,7 +49,7 @@ function isMaskedApiKey(key: string): boolean {
   return key.startsWith("••••••••") && key.length === 12;
 }
 
-type SettingsTab = "grading" | "client" | "ai" | "db";
+type SettingsTab = "grading" | "client" | "ai" | "feedback" | "db";
 
 interface ProviderEditorState {
   editing: boolean;
@@ -188,7 +190,11 @@ export function AccountSettingsPage() {
   // 只在请求的正是被隐藏的 grading 时回退——其余页签（客户端 / AI 服务商 / 数据存储）
   // 本来就该保留：无脑回退会把学生的 AI 页签也锁死。
   const activeSettingsTab: SettingsTab =
-    !canEditGradingSettings && settingsTab === "grading" ? "client" : settingsTab;
+    !canEditGradingSettings && settingsTab === "grading"
+      ? "client"
+      : isStudent && settingsTab === "feedback"
+        ? "client"
+        : settingsTab;
   // 五轮C1：侧边栏自动展开（客户端级 localStorage 设置，原误放系统级配置页，迁至此「外观/皮肤」区）
   const [railAutoExpand, setRailAutoExpand] = useState(() => {
     try { return localStorage.getItem("projectx-rail-auto-expand") === "true"; } catch { return false; }
@@ -465,7 +471,13 @@ export function AccountSettingsPage() {
           <div className="min-w-0">
             <h1 className="mb-0 text-lg font-semibold text-foreground">账号设置</h1>
             <p className="m-0 mt-1.5 text-xs text-muted-foreground">
-              {canEditGradingSettings ? "阅卷 · 客户端 · AI 服务商 · 数据存储" : "客户端 · AI 服务商"}
+              {[
+                canEditGradingSettings ? "阅卷" : null,
+                "客户端",
+                "AI 服务商",
+                isAdmin && isElectron ? "数据存储" : null,
+                !isStudent ? "问题反馈" : null,
+              ].filter(Boolean).join(" · ")}
             </p>
           </div>
         </div>
@@ -488,6 +500,11 @@ export function AccountSettingsPage() {
             <TabsTrigger value="ai">
               <BrainCircuit size={15} /> AI 设置
             </TabsTrigger>
+            {!isStudent && (
+              <TabsTrigger value="feedback">
+                <MessageSquareWarning size={15} /> 问题反馈
+              </TabsTrigger>
+            )}
             {isAdmin && isElectron && (
               <TabsTrigger value="db">
                 <Database size={15} /> 数据存储
@@ -761,6 +778,12 @@ export function AccountSettingsPage() {
               </p>
             )}
           </TabsContent>
+
+          {!isStudent && (
+            <TabsContent value="feedback" className="px-5 py-5">
+              <FeedbackSection mode="mine" />
+            </TabsContent>
+          )}
 
           <TabsContent value="db" className="flex flex-col gap-4 px-5 py-5">
             <div className="flex max-w-xl flex-col gap-4">

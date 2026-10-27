@@ -11,14 +11,14 @@
  * 附件：单次最多 15 个、单个 100 MiB，文件本体在
  * data/answer-card/feedback/<uuid>/，元数据在 feedback_attachments。
  */
-import { Router, type RequestHandler } from "express";
+import { Router, type Request, type RequestHandler, type Response } from "express";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
 import { readdirSync, unlinkSync, type Dirent } from "node:fs";
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { authMiddleware, requirePermission } from "../middleware/auth";
-import { PERMISSIONS } from "../auth/permissions";
+import { authMiddleware, requirePermission, requireRole } from "../middleware/auth";
+import { PERMISSIONS, roleHasPermission } from "../auth/permissions";
 import { getMysqlDb } from "../db";
 import { databaseTimestamp } from "../db/timestamp";
 import { resolveAnswerCardDataDir } from "../db/paths";
@@ -39,7 +39,9 @@ import {
 
 const router = Router();
 router.use(authMiddleware);
-router.use(requirePermission(PERMISSIONS.SYSTEM_MANAGE));
+
+const requireAdmin = requirePermission(PERMISSIONS.SYSTEM_MANAGE);
+const requireTeacher = requireRole("admin", "teacher");
 
 const CATEGORIES = new Set(["problem", "suggestion", "other"]);
 const MAX_TITLE = 100;
@@ -367,8 +369,7 @@ const SELECT_COLUMNS = `f.id, f.category, f.title, f.content, f.contact, f.statu
   f.username, f.display_name, f.role_name, f.context_json,
   f.created_at, f.resolved_at, u.name AS resolver_name`;
 
-// GET /api/feedback?status=open|resolved|all&limit=100&cursor=<lastId> — 列表
-router.get("/", async (req, res) => {
+async function listFeedback(req: Request, res: Response, ownerId?: number): Promise<void> {
   try {
     const requested = typeof req.query.status === "string" ? req.query.status : "all";
     const status = requested === "open" || requested === "resolved" ? requested : null;
@@ -376,11 +377,13 @@ router.get("/", async (req, res) => {
     const limit = Math.min(MAX_LIMIT, Math.max(1, Number.isNaN(rawLimit) ? DEFAULT_LIMIT : rawLimit));
     const cursor = req.query.cursor === undefined ? null : parsePositiveId(req.query.cursor);
     if (req.query.cursor !== undefined && !cursor) {
-      return res.status(400).json({ ok: false, error: "无效的分页游标" });
+      res.status(400).json({ ok: false, error: "无效的分页游标" });
+      return;
     }
     const db = getMysqlDb();
     const conditions: string[] = [];
     const params: Array<string | number> = [];
+    if (ownerId !== undefined) { conditions.push("f.user_id = ?"); params.push(ownerId); }
     if (status) { conditions.push("f.status = ?"); params.push(status); }
     if (cursor) { conditions.push("f.id < ?"); params.push(cursor); }
     const rows = await db.all<FeedbackRow>(
@@ -415,10 +418,16 @@ router.get("/", async (req, res) => {
       attachmentsByReport.set(feedbackId, list);
     }
 
-    const counts = await db.get<{ total: number | string; open: number | string | null }>(
-      `SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END), 0) AS open
-         FROM feedback_reports`
-    );
+    const counts = ownerId !== undefined
+      ? await db.get<{ total: number | string; open: number | string | null }>(
+          `SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END), 0) AS open
+             FROM feedback_reports WHERE user_id = ?`,
+          ownerId
+        )
+      : await db.get<{ total: number | string; open: number | string | null }>(
+          `SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END), 0) AS open
+             FROM feedback_reports`
+        );
     res.json({
       ok: true,
       data: page.map((row) => toReport(row, db.dialect, attachmentsByReport.get(Number(row.id)) ?? [])),
@@ -429,10 +438,20 @@ router.get("/", async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
   }
+}
+
+// GET /api/feedback — 全部反馈（管理员）
+router.get("/", requireAdmin, (req, res) => {
+  void listFeedback(req, res);
 });
 
-// POST /api/feedback — 提交反馈（multipart 可带附件），自动附带服务端环境信息
-router.post("/", receiveFeedbackUpload, async (req, res) => {
+// GET /api/feedback/mine — 当前账号自己的反馈（教师 / 管理员）
+router.get("/mine", requireTeacher, (req, res) => {
+  void listFeedback(req, res, req.user!.id);
+});
+
+// POST /api/feedback — 提交反馈（教师 / 管理员，multipart 可带附件）
+router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
   const files = ((req.files as Express.Multer.File[] | undefined) ?? []).filter(Boolean);
   const reservation = (req as FeedbackRequest).feedbackReservation ?? null;
   const fail = async (message: string, status = 400): Promise<void> => {
@@ -549,19 +568,26 @@ router.post("/", receiveFeedbackUpload, async (req, res) => {
   }
 });
 
-// GET /api/feedback/:id/attachments/:attachmentId — 下载附件（仅管理员）
-router.get("/:id/attachments/:attachmentId", async (req, res) => {
+// GET /api/feedback/:id/attachments/:attachmentId — 下载附件（管理员，或反馈提交人）
+router.get("/:id/attachments/:attachmentId", requireTeacher, async (req, res) => {
   try {
     const feedbackId = parsePositiveId(req.params.id);
     const attachmentId = parsePositiveId(req.params.attachmentId);
     if (!feedbackId || !attachmentId) {
       return res.status(400).json({ ok: false, error: "无效的附件 ID" });
     }
-    const row = await getMysqlDb().get<{ filename: string; stored_path: string }>(
-      "SELECT filename, stored_path FROM feedback_attachments WHERE id = ? AND feedback_id = ?",
+    const row = await getMysqlDb().get<{ filename: string; stored_path: string; user_id: number | null }>(
+      `SELECT a.filename, a.stored_path, f.user_id
+         FROM feedback_attachments a
+         JOIN feedback_reports f ON f.id = a.feedback_id
+        WHERE a.id = ? AND a.feedback_id = ?`,
       attachmentId, feedbackId
     );
     if (!row) return res.status(404).json({ ok: false, error: "附件不存在" });
+    const isAdmin = roleHasPermission(req.user!.role_id, PERMISSIONS.SYSTEM_MANAGE);
+    if (!isAdmin && Number(row.user_id) !== req.user!.id) {
+      return res.status(403).json({ ok: false, error: "无权下载他人的反馈附件" });
+    }
     const absPath = resolveStoredPath(row.stored_path);
     if (!absPath) return res.status(404).json({ ok: false, error: "附件不存在" });
     res.setHeader("Cache-Control", "private, no-store");
@@ -584,8 +610,8 @@ router.get("/:id/attachments/:attachmentId", async (req, res) => {
   }
 });
 
-// PATCH /api/feedback/:id — 标记已处理 / 重新打开
-router.patch("/:id", async (req, res) => {
+// PATCH /api/feedback/:id — 标记已处理 / 重新打开（管理员）
+router.patch("/:id", requireAdmin, async (req, res) => {
   try {
     const id = parsePositiveId(req.params.id);
     if (!id) return res.status(400).json({ ok: false, error: "无效的反馈 ID" });
@@ -612,8 +638,8 @@ router.patch("/:id", async (req, res) => {
   }
 });
 
-// DELETE /api/feedback/:id — 删除反馈并清理附件文件
-router.delete("/:id", async (req, res) => {
+// DELETE /api/feedback/:id — 删除反馈并清理附件文件（管理员）
+router.delete("/:id", requireAdmin, async (req, res) => {
   try {
     const id = parsePositiveId(req.params.id);
     if (!id) return res.status(400).json({ ok: false, error: "无效的反馈 ID" });

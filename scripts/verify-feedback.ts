@@ -12,6 +12,7 @@
  *   4. 客户端环境信息白名单与服务端环境信息合并
  *   5. 标记处理后 resolved_at / resolved_by 的写入与撤销
  *   6. 附件 multipart 上传、下载权限、15 / 16 个上限与删除清理
+ *   7. 教师提交、自己的反馈 / 附件与越权拒绝
  */
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -239,8 +240,8 @@ async function main(): Promise<void> {
 
   ok((await call("GET", "")).status === 401, "未登录读取反馈返回 401");
   ok((await call("POST", "", undefined, { title: "x", content: "y" })).status === 401, "未登录提交反馈返回 401");
-  ok((await call("GET", "", teacherToken)).status === 403, "教师读取反馈返回 403");
-  ok((await call("POST", "", teacherToken, { title: "x", content: "y" })).status === 403, "教师提交反馈返回 403");
+  ok((await call("GET", "", teacherToken)).status === 403, "教师读取全部反馈返回 403");
+  ok((await call("GET", "/mine", teacherToken)).status === 200, "教师可读取自己的反馈列表");
 
   section("3. 提交校验");
   ok((await call("POST", "", adminToken, { title: "  ", content: "正文" })).status === 400, "空标题被拒绝");
@@ -432,6 +433,37 @@ async function main(): Promise<void> {
   ].join(""), "utf8");
   const chunked = await chunkedUpload(adminToken, boundary, chunkedBody);
   ok(chunked.status === 201, "无 Content-Length 的附件上传不被容量预检误拒");
+
+  section("7. 教师端提交与自己的反馈");
+  const teacherForm = new FormData();
+  teacherForm.set("title", "教师端反馈");
+  teacherForm.set("content", "教师提交正文");
+  teacherForm.set("category", "problem");
+  teacherForm.append("files", new Blob(["teacher-file"], { type: "text/plain" }), "teacher.txt");
+  const teacherSubmitted = await upload(teacherForm, teacherToken);
+  ok(teacherSubmitted.status === 201, "教师可提交反馈");
+  const teacherReportId = Number(teacherSubmitted.json?.data?.id);
+
+  const mine = await call("GET", "/mine?limit=10", teacherToken);
+  ok(mine.status === 200 && mine.json?.data?.some((row: { id: number }) => row.id === teacherReportId),
+    "教师可读取自己的反馈");
+  const mineReport = mine.json?.data?.find((row: { id: number }) => row.id === teacherReportId);
+  ok(mineReport?.attachments?.length === 1, "教师自己的反馈附件可读");
+  const teacherAttachment = mineReport?.attachments?.[0];
+  const teacherDownload = await fetch(`${base}/${teacherReportId}/attachments/${teacherAttachment?.id}`, {
+    headers: { Authorization: `Bearer ${teacherToken}` },
+  });
+  ok(teacherDownload.status === 200 && (await teacherDownload.text()) === "teacher-file", "教师可下载自己的附件");
+  ok((await call("PATCH", `/${teacherReportId}`, teacherToken, { status: "resolved" })).status === 403,
+    "教师不能修改反馈状态");
+  ok((await call("DELETE", `/${teacherReportId}`, teacherToken)).status === 403, "教师不能删除反馈");
+
+  const adminView = await call("GET", "?limit=10", adminToken);
+  ok(adminView.json?.data?.some((row: { id: number }) => row.id === teacherReportId), "管理员能看到教师反馈");
+  ok((await fetch(`${base}/${teacherReportId}/attachments/${teacherAttachment?.id}`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  })).status === 200, "管理员可下载教师附件");
+  ok((await call("DELETE", `/${teacherReportId}`, adminToken)).status === 200, "管理员可删除教师反馈");
 
   // 直接插入一条教师提交的记录，再删账号：正文与账号快照应保留，user_id 置空。
   const now = databaseTimestamp();

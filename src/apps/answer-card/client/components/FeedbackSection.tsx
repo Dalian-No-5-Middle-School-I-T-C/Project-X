@@ -171,7 +171,9 @@ function Banner({ tone, children }: { tone: "success" | "error"; children: React
   );
 }
 
-export function FeedbackSection() {
+export function FeedbackSection({ mode = "admin" }: { mode?: "admin" | "mine" }) {
+  const isAdminMode = mode === "admin";
+  const endpoint = isAdminMode ? "/api/feedback" : "/api/feedback/mine";
   const [reports, setReports] = useState<FeedbackReport[]>([]);
   const [counts, setCounts] = useState({ total: 0, open: 0 });
   const [filter, setFilter] = useState<FeedbackFilter>("all");
@@ -219,7 +221,7 @@ export function FeedbackSection() {
         data: FeedbackReport[];
         counts: { total: number; open: number };
         nextCursor: number | null;
-      }>(`/api/feedback?${params.toString()}`);
+      }>(`${endpoint}?${params.toString()}`);
       if (seq !== loadSeq.current) return;
       setReports((prev) => (reset ? res.data : [...prev, ...res.data]));
       setCounts(res.counts ?? { total: 0, open: 0 });
@@ -238,7 +240,7 @@ export function FeedbackSection() {
         }
       }
     }
-  }, []);
+  }, [endpoint]);
 
   useEffect(() => {
     filterRef.current = filter;
@@ -294,7 +296,12 @@ export function FeedbackSection() {
         body: form,
       });
       resetForm();
-      setFormMsg({ tone: "success", text: "已提交。反馈保存在本系统数据库，管理员可在下方查看和处理。" });
+      setFormMsg({
+        tone: "success",
+        text: isAdminMode
+          ? "已提交。反馈保存在本系统数据库，管理员可在下方查看和处理。"
+          : "已提交。管理员处理后可在这里查看状态。",
+      });
       if (filterRef.current !== "all") setFilter("all");
       else await load(true);
     } catch (err: any) {
@@ -361,11 +368,11 @@ export function FeedbackSection() {
   const totalAttachmentBytes = attachments.reduce((sum, file) => sum + file.size, 0);
 
   return (
-    <div className="flex flex-col gap-3 border-t border-border-subtle pt-5">
+    <div className={cn("flex flex-col gap-3", isAdminMode && "border-t border-border-subtle pt-5")}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
           <MessageSquareWarning size={15} className="shrink-0" />
-          问题反馈
+          {isAdminMode ? "问题反馈" : "我的反馈"}
         </div>
         <Button
           variant={formOpen ? "outline" : "primary"}
@@ -379,8 +386,9 @@ export function FeedbackSection() {
         </Button>
       </div>
       <p className="text-xs text-muted-foreground">
-        扫卡室或教室遇到问题时在这里提交，会自动带上版本、页面与系统信息；可附带最多 {MAX_FEEDBACK_ATTACHMENTS} 个文件（单个小于 {MAX_FEEDBACK_ATTACHMENT_BYTES / 1024 / 1024} MB）。
-        反馈保存在本系统数据库，不依赖 GitHub。管理员可在下方查看、标记处理，需要转发时一键复制成 Markdown。
+        {isAdminMode
+          ? `扫卡室或教室遇到问题时在这里提交，会自动带上版本、页面与系统信息；可附带最多 ${MAX_FEEDBACK_ATTACHMENTS} 个文件（单个小于 ${MAX_FEEDBACK_ATTACHMENT_BYTES / 1024 / 1024} MB）。反馈保存在本系统数据库，不依赖 GitHub。管理员可在下方查看、标记处理，需要转发时一键复制成 Markdown。`
+          : `遇到问题时在这里提交，会自动带上版本、页面与系统信息；可附带最多 ${MAX_FEEDBACK_ATTACHMENTS} 个文件（单个小于 ${MAX_FEEDBACK_ATTACHMENT_BYTES / 1024 / 1024} MB）。管理员处理后可在这里查看状态和附件。`}
       </p>
 
       {formOpen && (
@@ -562,25 +570,29 @@ export function FeedbackSection() {
                       {copiedId === report.id ? <Check size={14} /> : <ClipboardCopy size={14} />}
                       {copiedId === report.id ? "已复制" : "复制"}
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={busyId === report.id}
-                      onClick={() => void toggleStatus(report)}
-                    >
-                      {report.status === "open" ? <Check size={14} /> : <RotateCcw size={14} />}
-                      {report.status === "open" ? "标记已处理" : "重新打开"}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-destructive-fg"
-                      disabled={busyId === report.id}
-                      onClick={() => setPendingDelete(report)}
-                    >
-                      <Trash2 size={14} />
-                      删除
-                    </Button>
+                    {isAdminMode && (
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={busyId === report.id}
+                          onClick={() => void toggleStatus(report)}
+                        >
+                          {report.status === "open" ? <Check size={14} /> : <RotateCcw size={14} />}
+                          {report.status === "open" ? "标记已处理" : "重新打开"}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive-fg"
+                          disabled={busyId === report.id}
+                          onClick={() => setPendingDelete(report)}
+                        >
+                          <Trash2 size={14} />
+                          删除
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -647,16 +659,18 @@ export function FeedbackSection() {
         </div>
       )}
 
-      <ConfirmDialog
-        open={pendingDelete !== null}
-        onOpenChange={(open) => { if (!open) setPendingDelete(null); }}
-        title="删除反馈"
-        description={`确认删除反馈「${pendingDelete?.title ?? ""}」？删除后不可恢复。`}
-        confirmLabel="删除"
-        tone="danger"
-        loading={pendingDelete !== null && busyId === pendingDelete.id}
-        onConfirm={() => { if (pendingDelete) void deleteReport(pendingDelete); }}
-      />
+      {isAdminMode && (
+        <ConfirmDialog
+          open={pendingDelete !== null}
+          onOpenChange={(open) => { if (!open) setPendingDelete(null); }}
+          title="删除反馈"
+          description={`确认删除反馈「${pendingDelete?.title ?? ""}」？删除后不可恢复。`}
+          confirmLabel="删除"
+          tone="danger"
+          loading={pendingDelete !== null && busyId === pendingDelete.id}
+          onConfirm={() => { if (pendingDelete) void deleteReport(pendingDelete); }}
+        />
+      )}
     </div>
   );
 }
