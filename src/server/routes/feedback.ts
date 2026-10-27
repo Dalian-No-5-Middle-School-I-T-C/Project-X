@@ -370,6 +370,11 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
           res.once("finish", () => req.destroy());
           return;
         }
+        if (err instanceof FeedbackStorageUnavailableError) {
+          res.status(500).json({ ok: false, code: err.code, error: err.message });
+          res.once("finish", () => req.destroy());
+          return;
+        }
         throw err;
       }
       (req as FeedbackRequest).feedbackReservation = reservation;
@@ -596,6 +601,7 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
         }
       );
     } catch (err) {
+      // 只处理提交前的失败。事务提交之后的容量核算失败由 settle 吞掉并返回 id，不能进这里删目录。
       try {
         await rm(finalDir, { recursive: true, force: true });
       } catch (cleanupErr) {

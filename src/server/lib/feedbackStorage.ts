@@ -81,7 +81,24 @@ const releasers = new WeakMap<FeedbackStorageReservation, () => void>();
 let reservedBytes = 0;
 /** 永久文件 + 没有预留覆盖的临时文件。活跃上传的临时字节由 reservedBytes 代表。 */
 let baseUsage = 0;
+/**
+ * 最近一次核算失败。为 true 时不能凭旧的 baseUsage 放行，必须先重新扫盘成功。
+ * 已经提交入库的反馈不受影响。
+ */
+let usageUnknown = false;
+let refreshFaultsRemaining = 0;
+let postCommitRefreshFaultsRemaining = 0;
 let quotaQueue: Promise<void> = Promise.resolve();
+
+/** 测试用：下一次容量刷新直接失败。生产路径不会调用。 */
+export function failNextFeedbackUsageRefreshForTests(): void {
+  refreshFaultsRemaining += 1;
+}
+
+/** 测试用：下一次「事务已经提交之后」的容量刷新失败，且不得回滚该次提交。 */
+export function failNextPostCommitFeedbackUsageRefreshForTests(): void {
+  postCommitRefreshFaultsRemaining += 1;
+}
 
 function enqueue<T>(task: () => Promise<T>): Promise<T> {
   const run = quotaQueue.then(task, task);
@@ -151,11 +168,31 @@ async function scanTmp(tmpDir: string): Promise<{ uncovered: number; covered: nu
 }
 
 async function refreshBaseUsage(feedbackRoot: string, tmpDir: string): Promise<void> {
-  const permanent = await directoryBytes(feedbackRoot, tmpDir);
-  const { uncovered, covered } = await scanTmp(tmpDir);
-  // 临时文件已经比预留更大时，把多出来的部分算进基线，避免预留落后于落盘。
-  const excess = Math.max(0, covered - reservedBytes);
-  baseUsage = permanent + uncovered + excess;
+  if (refreshFaultsRemaining > 0) {
+    refreshFaultsRemaining -= 1;
+    usageUnknown = true;
+    throw new FeedbackStorageUnavailableError();
+  }
+  try {
+    const permanent = await directoryBytes(feedbackRoot, tmpDir);
+    const { uncovered, covered } = await scanTmp(tmpDir);
+    // 临时文件已经比预留更大时，把多出来的部分算进基线，避免预留落后于落盘。
+    const excess = Math.max(0, covered - reservedBytes);
+    baseUsage = permanent + uncovered + excess;
+    usageUnknown = false;
+  } catch (err) {
+    usageUnknown = true;
+    throw err instanceof FeedbackStorageUnavailableError ? err : new FeedbackStorageUnavailableError();
+  }
+}
+
+function notePostCommitRefreshFailure(err?: unknown): void {
+  usageUnknown = true;
+  if (err) {
+    console.error("[feedback-storage] 反馈已提交，容量重新核算失败，已暂停后续上传直到核算恢复:", err);
+  } else {
+    console.error("[feedback-storage] 反馈已提交，容量重新核算失败，已暂停后续上传直到核算恢复");
+  }
 }
 
 function createReservation(initial: number): FeedbackStorageReservation {
@@ -166,7 +203,7 @@ function createReservation(initial: number): FeedbackStorageReservation {
       return held;
     },
     tryGrow(extra: number): boolean {
-      if (released) return false;
+      if (released || usageUnknown) return false;
       if (extra <= 0) return true;
       if (baseUsage + reservedBytes + extra > MAX_FEEDBACK_STORAGE_BYTES) return false;
       reservedBytes += extra;
@@ -232,12 +269,20 @@ export function releaseFeedbackUpload(
       coveredTmp.delete(path.resolve(filePath));
       await rm(filePath, { force: true }).catch(() => {});
     }
-    await refreshBaseUsage(feedbackRoot, tmpDir);
+    try {
+      await refreshBaseUsage(feedbackRoot, tmpDir);
+    } catch (err) {
+      usageUnknown = true;
+      console.error("[feedback-storage] 释放上传预留时无法重新核算容量:", err);
+    }
     releaseLocked(reservation);
   });
 }
 
-/** 上传完成时串行执行「按实际占盘核算 → 移动/入库」。成功后才释放预留。 */
+/**
+ * 上传完成时串行执行「按实际占盘核算 → 移动/入库」。
+ * 事务提交之后的核算失败只把容量标成未知并暂停后续上传，不再把这次提交当成失败。
+ */
 export function settleFeedbackStorage<T>(
   feedbackRoot: string,
   tmpDir: string,
@@ -247,13 +292,27 @@ export function settleFeedbackStorage<T>(
   task: () => Promise<T>
 ): Promise<T> {
   return enqueue(async () => {
+    await refreshBaseUsage(feedbackRoot, tmpDir);
+    if (usageUnknown) throw new FeedbackStorageUnavailableError();
     if (incomingBytes > 0) {
       const used = await directoryBytes(feedbackRoot);
       if (used > MAX_FEEDBACK_STORAGE_BYTES) throw new FeedbackStorageQuotaError();
     }
     const result = await task();
     for (const filePath of tempPaths) coveredTmp.delete(path.resolve(filePath));
-    await refreshBaseUsage(feedbackRoot, tmpDir);
+    if (postCommitRefreshFaultsRemaining > 0) {
+      postCommitRefreshFaultsRemaining -= 1;
+      notePostCommitRefreshFailure();
+      releaseLocked(reservation);
+      return result;
+    }
+    try {
+      await refreshBaseUsage(feedbackRoot, tmpDir);
+    } catch (err) {
+      notePostCommitRefreshFailure(err);
+      releaseLocked(reservation);
+      return result;
+    }
     releaseLocked(reservation);
     return result;
   });

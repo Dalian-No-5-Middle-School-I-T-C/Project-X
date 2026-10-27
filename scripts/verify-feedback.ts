@@ -88,6 +88,10 @@ const { databaseTimestamp } = await import("../src/server/db/timestamp");
 const feedbackModule = await import("../src/server/routes/feedback");
 const feedbackRouter = feedbackModule.default;
 const { withTimezone } = feedbackModule;
+const {
+  failNextFeedbackUsageRefreshForTests,
+  failNextPostCommitFeedbackUsageRefreshForTests,
+} = await import("../src/server/lib/feedbackStorage");
 const express = (await import("express")).default;
 
 async function main(): Promise<void> {
@@ -407,6 +411,47 @@ async function main(): Promise<void> {
     ? readdirSync(feedbackRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() && entry.name !== "_tmp")
     : [];
   ok(leftDirs.length === 0, "删除反馈后附件目录已清理");
+
+  failNextPostCommitFeedbackUsageRefreshForTests();
+  const keptForm = new FormData();
+  keptForm.set("title", "核算失败仍保留");
+  keptForm.set("content", "正文");
+  keptForm.append("files", new Blob(["kept-bytes"]), "kept.txt");
+  const kept = await upload(keptForm, adminToken);
+  ok(kept.status === 201, "提交后容量核算失败仍返回成功");
+  const keptId = Number(kept.json?.data?.id);
+  const keptRow = (await call("GET", "?limit=10", adminToken)).json?.data?.find((row: { id: number }) => row.id === keptId);
+  ok(keptRow?.attachments?.length === 1 && keptRow.attachments[0]?.filename === "kept.txt",
+    "核算失败后附件元数据仍在");
+  const keptDownload = await fetch(`${base}/${keptId}/attachments/${keptRow?.attachments?.[0]?.id}`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  ok(keptDownload.status === 200 && (await keptDownload.text()) === "kept-bytes", "核算失败后附件文件仍可下载");
+
+  failNextFeedbackUsageRefreshForTests();
+  const blockedForm = new FormData();
+  blockedForm.set("title", "核算未知时拒绝");
+  blockedForm.set("content", "正文");
+  blockedForm.append("files", new Blob(["nope"]), "nope.txt");
+  const blocked = await upload(blockedForm, adminToken);
+  ok(blocked.status === 500 && blocked.json?.code === "FEEDBACK_STORAGE_UNAVAILABLE",
+    "容量未知时拒绝后续上传");
+  ok(!(await call("GET", "?limit=10", adminToken)).json?.data?.some((row: { title: string }) => row.title === "核算未知时拒绝"),
+    "被拒绝的上传没有入库");
+  const keptAgain = await fetch(`${base}/${keptId}/attachments/${keptRow?.attachments?.[0]?.id}`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  ok(keptAgain.status === 200 && (await keptAgain.text()) === "kept-bytes", "拒绝后续上传时没有删掉已提交附件");
+
+  const recoveredForm = new FormData();
+  recoveredForm.set("title", "核算恢复后可提交");
+  recoveredForm.set("content", "正文");
+  const recovered = await upload(recoveredForm, adminToken);
+  ok(recovered.status === 201, "重新核算成功后可以继续提交");
+  for (const id of [keptId, Number(recovered.json?.data?.id)]) {
+    if (id) ok((await call("DELETE", `/${id}`, adminToken)).status === 200, "清理核算故障夹具");
+  }
+  ok(!existsSync(tempDir) || readdirSync(tempDir).length === 0, "核算故障夹具没有留下临时文件");
 
   const parallelBoundary = `----fbpar${Date.now()}`;
   const parallelBody = Buffer.concat([
