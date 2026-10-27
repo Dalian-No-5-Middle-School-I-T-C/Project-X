@@ -108,6 +108,15 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
   // v2.5.6: 提升为工作台级常驻选择器（见侧栏「图片去向」卡），直扫与导入共用同一份状态
   const [imageMode, setImageMode] = useScannerMode();
 
+  // 从后处理页点「继续扫描」回工作台时，直接把扫描面板挂出来并自动开扫；
+  // 否则工作台仍停在落地页，autoStartScan 根本传不到未挂载的 ScannerPanel。
+  useEffect(() => {
+    if (!autoStartScan) return;
+    setScanning(true);
+    setGradingResult(null);
+    setStatus("");
+  }, [autoStartScan]);
+
   // 右上角上传进度卡避开 340px 侧栏，别盖住「图片去向 / 开始扫描 / 导入阅卷」。
   useEffect(() => {
     const root = document.documentElement;
