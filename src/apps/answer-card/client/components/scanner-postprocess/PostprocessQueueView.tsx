@@ -34,6 +34,8 @@ export interface PostprocessQueueViewProps {
   layoutPageCountFor: (sessionId: string) => number;
   /** 从扫描结果点开的异常：把指针定位到该组，而不是永远从队首开始 */
   focus?: { sessionId: string; groupId: string } | null;
+  /** 当前停留的队列项变化：父页面用它持久化崩溃恢复位置，而不是只记最初打开的那组。 */
+  onCurrentChange?: (sessionId: string, groupId: string) => void;
   /** 处理完成（考号已改、重复卷已定性等）：页面重拉批结果并按需补传 */
   onResolved: (sessionId: string, groupId: string) => void | Promise<void>;
   /** 远端预览没有回执。记下「不保留」的那份，由页面在后续预览里滤掉，不能打本地作废接口。 */
@@ -54,7 +56,7 @@ const kindTone = (kind: PostprocessQueueItem["kind"]): "danger" | "warning" | "n
   kind === "low_confidence" ? "warning" : kind === "other" ? "neutral" : "danger"
 );
 
-export function PostprocessQueueView({ queue, channel, examIdForSession, scans, layoutPageCountFor, focus, onResolved, onJumpToCorrection, onDelete, onPreviewDiscard }: PostprocessQueueViewProps) {
+export function PostprocessQueueView({ queue, channel, examIdForSession, scans, layoutPageCountFor, focus, onCurrentChange, onResolved, onJumpToCorrection, onDelete, onPreviewDiscard }: PostprocessQueueViewProps) {
   const [cursor, setCursor] = useState(0);
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
   const [resolved, setResolved] = useState<Set<string>>(new Set());
@@ -86,6 +88,11 @@ export function PostprocessQueueView({ queue, channel, examIdForSession, scans, 
 
   const index = Math.min(cursor, Math.max(0, queue.length - 1));
   const current = queue[index];
+
+  useEffect(() => {
+    if (!current) return;
+    onCurrentChange?.(current.sessionId, current.groupId);
+  }, [current?.sessionId, current?.groupId, onCurrentChange]);
   const total = queue.length + resolved.size;
   const skippedCount = queue.filter(item => skipped.has(item.id)).length;
 

@@ -136,6 +136,13 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   }, [batches, sessions, sessionLayouts, card]);
   const queue = useMemo(() => buildPostprocessQueue(groups), [groups]);
 
+  const handleQueueCurrent = useCallback((sessionId: string, groupId: string) => {
+    const group = groups.find(entry => entry.sessionId === sessionId && entry.groupId === groupId);
+    if (!group) return;
+    setActive(group);
+    setFocusIssue({ sessionId, groupId });
+  }, [groups]);
+
   // 闪退重载后回到上次停留的卷/视图；组已不存在时静默忽略，仍停在结果页。
   useEffect(() => {
     if (resumeAppliedRef.current || groups.length === 0) return;
@@ -389,6 +396,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
           scans={scans}
           layoutPageCountFor={sessionId => sessionLayouts[sessionId]?.pageCount ?? 0}
           focus={focusIssue}
+          onCurrentChange={handleQueueCurrent}
           onResolved={syncAfterFix}
           onPreviewDiscard={(sessionId, groupId) => rememberPreviewDiscard(cardId, sessionId, groupId)}
           onDelete={handleDelete}

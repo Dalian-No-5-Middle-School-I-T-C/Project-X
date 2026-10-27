@@ -619,11 +619,14 @@ try {
       { id: "sid-a", kind: "student_id" as const, sessionId: "a", groupId: "2", studentId: null, label: "考号问题",
         conflicts: [], missingLayoutPages: [], needsReviewCount: 0 },
     ];
+    const currentChanges: string[] = [];
     await act(async () => root7!.render(createElement(TooltipProvider, null, createElement(PostprocessQueueView, {
       channel: studentChannel, queue: queueItems, scans: [], examIdForSession: () => null,
-      layoutPageCountFor: () => 1, onResolved: () => {}, onPreviewDiscard: () => {}, onDelete: async () => {}, onJumpToCorrection: () => {},
+      layoutPageCountFor: () => 1, onCurrentChange: (sessionId, groupId) => currentChanges.push(`${sessionId}/${groupId}`),
+      onResolved: () => {}, onPreviewDiscard: () => {}, onDelete: async () => {}, onJumpToCorrection: () => {},
     }))));
     await settle();
+    assert.deepEqual(currentChanges, ["b/1"], "当前队列项变化要上抛给页面持久化");
     const input = () => studentHost.querySelector('input[aria-label="考号"]') as HTMLInputElement;
     const next = () => {
       const button = [...studentHost.querySelectorAll("button")].find(node => node.textContent?.trim() === "下一条");
@@ -643,6 +646,7 @@ try {
     await act(async () => { next().click(); });
     await settle();
     assert.equal(input().value, "10001", "切到 A 时不能带着 B 的未保存手输值");
+    assert.equal(currentChanges.at(-1), "a/2", "下一条后上抛的当前项要跟着变");
     await setInput("2000");
     await act(async () => { next().click(); });
     await settle();

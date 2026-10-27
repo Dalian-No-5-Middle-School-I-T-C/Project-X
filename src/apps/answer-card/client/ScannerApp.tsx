@@ -126,9 +126,11 @@ function ScannerAppInner() {
   useEffect(() => {
     if (!selectedCardId || !user) return;
     writePostprocessSessions(selectedCardId, postSessions, user.id);
-    if (postSessions.length) writeActivePostprocess(selectedCardId, selectedCardTitle, user.id);
+    // 只有在后处理页才记「活动卡」；老师主动回到工作台后崩溃，重载应回工作台，
+    // 而不是被一个仅因存在历史会话就写回的标记拉回后处理。
+    if (page === "postprocess" && postSessions.length) writeActivePostprocess(selectedCardId, selectedCardTitle, user.id);
     else clearActivePostprocess();
-  }, [selectedCardId, selectedCardTitle, postSessions, user?.id]);
+  }, [selectedCardId, selectedCardTitle, postSessions, page, user?.id]);
 
   // 登出/会话过期时清掉工作台选择，避免下一个登录账号继承上一人的扫描会话。
   useEffect(() => {
