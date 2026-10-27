@@ -105,6 +105,11 @@ function ScannerAppInner() {
     if (!user || selectedCardId) return;
     const active = readActivePostprocess();
     if (!active) return;
+    // 旧版本没有 userId 的标记或换账号后的标记一律不恢复，避免把上一个账号的卷子带给新账号。
+    if (active.userId == null || active.userId !== user.id) {
+      clearActivePostprocess();
+      return;
+    }
     const sessions = readPostprocessSessions(active.cardId);
     if (!sessions.length) {
       clearActivePostprocess();
@@ -120,9 +125,9 @@ function ScannerAppInner() {
   useEffect(() => {
     if (!selectedCardId) return;
     writePostprocessSessions(selectedCardId, postSessions);
-    if (postSessions.length) writeActivePostprocess(selectedCardId, selectedCardTitle);
+    if (postSessions.length) writeActivePostprocess(selectedCardId, selectedCardTitle, user?.id);
     else clearActivePostprocess();
-  }, [selectedCardId, selectedCardTitle, postSessions]);
+  }, [selectedCardId, selectedCardTitle, postSessions, user?.id]);
 
   if (loading) {
     return (
@@ -216,7 +221,7 @@ function ScannerAppInner() {
               const restored = readPostprocessSessions(cardId);
               const active = readActivePostprocess();
               setPostSessions(restored);
-              setPage(active?.cardId === cardId ? "postprocess" : "workspace");
+              setPage(active?.cardId === cardId && active.userId === user?.id ? "postprocess" : "workspace");
               return;
             }
             // 远端新建的卡不在本机库：直扫/阅卷只读本机服务，先进本机库（幂等 upsert）
@@ -229,7 +234,7 @@ function ScannerAppInner() {
             const restored = readPostprocessSessions(cardId);
             const active = readActivePostprocess();
             setPostSessions(restored);
-            setPage(active?.cardId === cardId ? "postprocess" : "workspace");
+            setPage(active?.cardId === cardId && active.userId === user?.id ? "postprocess" : "workspace");
           } catch (e: unknown) {
             const err = e as { status?: number; message?: string };
             if (err?.status === 404) {

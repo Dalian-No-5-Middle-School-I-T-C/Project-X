@@ -78,9 +78,10 @@ function testPostprocessResume(): void {
   writePostprocessSessions(cardId, sessions);
   assert.deepEqual(readPostprocessSessions(cardId), sessions, "会话列表按卡恢复");
 
-  writeActivePostprocess(cardId, "高一语文");
+  writeActivePostprocess(cardId, "高一语文", 7);
   const active = readActivePostprocess();
-  assert(active?.cardId === cardId && active.cardTitle === "高一语文", "活动卡号与标题恢复");
+  assert(active?.cardId === cardId && active.cardTitle === "高一语文" && active.userId === 7,
+    "活动卡号、标题与账号一起恢复");
   clearActivePostprocess();
   assert.equal(readActivePostprocess(), null, "正常离开后清掉活动卡");
 

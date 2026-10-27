@@ -43,16 +43,22 @@ export function writePostprocessSessions(cardId: string, sessions: PostprocessSe
   writeJson(`${SESSIONS_PREFIX}/${encodeURIComponent(cardId)}`, { at: Date.now(), sessions });
 }
 
-export function readActivePostprocess(): { cardId: string; cardTitle: string; at: number } | null {
-  const saved = readJson<{ cardId?: unknown; cardTitle?: unknown; at?: unknown }>(ACTIVE_KEY);
+export function readActivePostprocess(): { cardId: string; cardTitle: string; userId: number | null; at: number } | null {
+  const saved = readJson<{ cardId?: unknown; cardTitle?: unknown; userId?: unknown; at?: unknown }>(ACTIVE_KEY);
   if (!saved || typeof saved.cardId !== "string" || typeof saved.at !== "number"
     || Date.now() - saved.at > MAX_AGE_MS) return null;
-  return { cardId: saved.cardId, cardTitle: typeof saved.cardTitle === "string" ? saved.cardTitle : saved.cardId, at: saved.at };
+  return {
+    cardId: saved.cardId,
+    cardTitle: typeof saved.cardTitle === "string" ? saved.cardTitle : saved.cardId,
+    // 扫描机可能多人使用：只恢复同一账号上次的页面。
+    userId: typeof saved.userId === "number" ? saved.userId : null,
+    at: saved.at,
+  };
 }
 
-export function writeActivePostprocess(cardId: string, cardTitle: string): void {
+export function writeActivePostprocess(cardId: string, cardTitle: string, userId: number | null | undefined): void {
   if (!cardId) return;
-  writeJson(ACTIVE_KEY, { cardId, cardTitle, at: Date.now() });
+  writeJson(ACTIVE_KEY, { cardId, cardTitle, userId: typeof userId === "number" ? userId : null, at: Date.now() });
 }
 
 export function clearActivePostprocess(): void {
