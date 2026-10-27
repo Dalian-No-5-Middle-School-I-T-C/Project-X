@@ -5,6 +5,7 @@ import {
   EmptyState, Input, Progress, Spinner, Tip, notify,
 } from "../ui/v2";
 import { CardCorrectionButton } from "../CardCorrectionEditor";
+import { ParticipantLookupField } from "../ParticipantLookupField";
 import { CorrectionCanvas } from "./CorrectionCanvas";
 import { RotationButtons, type ImageRotation } from "../RotatedCardImage";
 import type { PostprocessChannel } from "./postprocessChannel";
@@ -238,7 +239,6 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
   const [edits, setEdits] = useState<CorrectionEdit[]>([]);
   /** 老师手输但还没落到格上的原文；null = 没有手输，显示格选结果 */
   const [typed, setTyped] = useState<string | null>(null);
-  const [roster, setRoster] = useState<Array<{ id: number; name: string; student_number: string | null }>>([]);
   /** 这场考试的应考名单学号。联想搜索是班级模糊匹配且只返回 20 条，不能用来判断在不在名单。 */
   const [rosterNumbers, setRosterNumbers] = useState<Set<string> | null>(null);
   const [rosterKnown, setRosterKnown] = useState(false);
@@ -298,26 +298,6 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
     return () => { alive = false; };
   }, [examId, channel]);
 
-  // 花名册联想：300ms 防抖；读不到考试就退化为纯手输。只负责提示姓名，不判定应考资格。
-  useEffect(() => {
-    const keyword = value.trim();
-    if (examId === null || keyword.length < 2) { setRoster([]); return; }
-    let alive = true;
-    const timer = setTimeout(() => {
-      void (async () => {
-        try {
-          const response = await channel.request(`/api/exams/${examId}/participant-search?q=${encodeURIComponent(keyword)}`);
-          const data = await response.json();
-          if (!alive) return;
-          if (response.ok) {
-            setRoster((data.students ?? []) as Array<{ id: number; name: string; student_number: string | null }>);
-          }
-        } catch { /* 名单查不到不影响手输 */ }
-      })();
-    }, 300);
-    return () => { alive = false; clearTimeout(timer); };
-  }, [value, examId, channel]);
-
   const digits = value.trim();
   // 只有应考名单本身读成功才敢说「不在名单」。联想接口忽略 examId，且 LIMIT 20，不能当名单。
   const notInRoster = rosterKnown && rosterNumbers !== null && /^\d+$/.test(digits) && digits.length >= 2 && !rosterNumbers.has(digits);
@@ -349,7 +329,7 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
       : entry));
   }
 
-  function useRosterNumber(number: string) { setRoster([]); onDigitInput(number); }
+  function useRosterNumber(number: string) { onDigitInput(number); }
 
   async function confirm() {
     if (!document || !digitsFromCells || !inSync) return;
@@ -390,22 +370,11 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
           </div>
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-3">
+          <ParticipantLookupField examId={examId} request={channel.request} disabled={saving} onPick={useRosterNumber} />
           <label className="flex flex-col gap-1.5 text-sm">
             <span className="text-muted-foreground">考号（卡面共 {digitColumns.length} 位）</span>
             <Input value={value} onChange={e => onDigitInput(e.target.value)} inputMode="numeric" placeholder="按卡面位数输入数字" aria-label="考号" />
           </label>
-          {examId !== null && roster.length > 0 && (
-            <ul className="m-0 flex max-h-40 flex-col gap-1 overflow-auto rounded-md border border-border-subtle bg-card p-1.5 text-sm">
-              {roster.map(student => (
-                <li key={student.id}>
-                  <button type="button" className="w-full truncate rounded-sm px-1.5 py-1 text-left hover:bg-secondary" onClick={() => useRosterNumber(student.student_number ?? "")}>
-                    <span className="tabular-nums">{student.student_number ?? "无考号"}</span>
-                    <span className="ml-2 text-muted-foreground">{student.name}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
           {examId === null && <p className="m-0 text-xs text-muted-foreground">本机未确定考试归属，花名册联想不可用，请直接按卡面位数输入考号。</p>}
           {notInRoster && <Badge tone="danger" dot>该考号不在应考名单</Badge>}
           <div className="flex items-center gap-2">
@@ -482,7 +451,7 @@ function DuplicatePanel({ item, channel, scans, onResolved, onPreviewDiscard, on
     return (
       <PanelShell title="考号重复" description={item.label}>
         <p className="m-0 text-sm text-muted-foreground">只读到一份回执，无法并排定性。请核对原卷后改考号，或到服务端处理已入库的那一份。</p>
-        <Button variant="outline" size="sm" className="mt-3" disabled={busy} onClick={() => onFixStudentId({ sessionId: item.sessionId, groupId: item.groupId })}>不是同一人 → 改考号</Button>
+        <Button variant="outline" size="sm" className="mt-3" disabled={busy} onClick={() => onFixStudentId({ sessionId: item.sessionId, groupId: item.groupId })}>改考号 / 按姓名匹配</Button>
       </PanelShell>
     );
   }
@@ -515,7 +484,7 @@ function DuplicatePanel({ item, channel, scans, onResolved, onPreviewDiscard, on
                     <Button variant="outline" size="sm" disabled={busy || otherSaved} loading={busy} onClick={() => void keep(card, other)}>保留这份</Button>
                   </span>
                 </Tip>
-                <Button variant="ghost" size="sm" disabled={busy} onClick={() => onFixStudentId({ sessionId: card.sessionId, groupId: card.groupId })}>不是同一人 → 改考号</Button>
+                <Button variant="ghost" size="sm" disabled={busy} onClick={() => onFixStudentId({ sessionId: card.sessionId, groupId: card.groupId })}>改考号 / 按姓名匹配</Button>
               </div>
             </div>
           );

@@ -100,6 +100,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   // 检测诊断（根因/建议/原始输出）：把「未检测到扫描仪」这一类笼统文案拆成可操作结论
   const [sourcesDiag, setSourcesDiag] = useState<ScannerSourcesResult | null>(null);
   const [sessionId, setSessionId] = useState("");
+  /** 本场扫描归属考试；重复学号订正时用于花名册联想 */
+  const [sessionExamId, setSessionExamId] = useState<number | null>(null);
   const [progressMessage, setProgressMessage] = useState("");
   const [pages, setPages] = useState<ScanPage[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
@@ -426,11 +428,13 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     setResultsBusy(true);
     setErrorMessage("");
     try {
+      let examFromSnapshot: number | null | undefined;
       if (partial) {
         const response = await authFetch(`/api/scanner/scan/${sid}`);
         const snapshot = await response.json();
         if (!current()) return;
         if (!response.ok) throw new Error(snapshot.message || `读取保留页面失败（HTTP ${response.status}）`);
+        examFromSnapshot = typeof snapshot.examId === "number" ? snapshot.examId : null;
         const records = snapshot.records as Array<Omit<ScanPage, "recordId"> & { id: string }>;
         const retainedPages = records.map(({ id, ...page }) => ({ ...page, recordId: id }));
         pagesRef.current = retainedPages;
@@ -446,6 +450,14 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       const data = await readResults(sid);
       if (!current()) return;
       applyResults(data);
+      if (examFromSnapshot !== undefined) setSessionExamId(examFromSnapshot);
+      else {
+        const metaResponse = await authFetch(`/api/scanner/scan/${sid}`);
+        const meta = await metaResponse.json();
+        if (current() && metaResponse.ok) {
+          setSessionExamId(typeof meta.examId === "number" ? meta.examId : null);
+        }
+      }
       // 远端模式：成绩汇总一完成即自动后台上传（先出分、图片续传，进度见右上角进度条）
       if (!partial && getScannerMode() === "remote" && isRemoteServerConfigured()) {
         queueSuccessfulUploads(data, sid);
@@ -999,6 +1011,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           {errorMessage && <p role="alert" className="text-sm text-destructive-fg">{errorMessage}</p>}
           {(reviewCards.length > 0 || failures.some(f => f.conflicts?.length)) && <ScannerConflictCards
             cards={uniqueScanConflictCards([...reviewCards, ...failures.flatMap(f => f.conflicts ?? [])])}
+            examId={sessionExamId}
             onChanged={() => fetchCombinedResults(sessionId)} />}
           {failures.length > 0 && (
             <div className="flex flex-col gap-3 rounded-md border border-warning-border bg-warning-soft p-3">
