@@ -14,6 +14,7 @@
 import { Router, type RequestHandler } from "express";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
+import { readdirSync, unlinkSync } from "node:fs";
 import { mkdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { authMiddleware, requirePermission } from "../middleware/auth";
@@ -55,8 +56,13 @@ const feedbackRoot = path.join(dataRoot, "feedback");
 const feedbackTmpDir = path.join(feedbackRoot, "_tmp");
 const feedbackRootPrefix = `${path.resolve(feedbackRoot)}${path.sep}`;
 
-// 进程启动时清掉上次中断留下的临时上传件：此刻还没有本进程的上传，删全量是安全的。
-void purgeStaleTmpUploads(feedbackTmpDir, 0).catch(() => {});
+// 启动时同步清掉上次中断留下的临时上传件：此刻还没有本进程的上传，不存在误删在途文件的窗口。
+try {
+  for (const entry of readdirSync(feedbackTmpDir, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    try { unlinkSync(path.join(feedbackTmpDir, entry.name)); } catch { /* 留给下一次清理 */ }
+  }
+} catch { /* 目录还不存在 */ }
 
 type FeedbackRequest = Express.Request & { feedbackReservation?: FeedbackStorageReservation };
 
