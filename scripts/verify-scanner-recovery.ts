@@ -113,11 +113,17 @@ function testPostprocessResume(): void {
   clearActivePostprocess(7);
   assert.equal(readActivePostprocess(7), null, "正常离开后清掉活动卡");
 
-  writePostprocessView(cardId, { view: "correction", sessionId: "s1", groupId: "0" });
-  assert.deepEqual(readPostprocessView(cardId), { view: "correction", sessionId: "s1", groupId: "0" },
+  writePostprocessView(cardId, { view: "correction", sessionId: "s1", groupId: "0" }, 7);
+  assert.deepEqual(readPostprocessView(cardId, 7), { view: "correction", sessionId: "s1", groupId: "0" },
     "上次停留的组与视图恢复");
-  clearPostprocessView(cardId);
-  assert.equal(readPostprocessView(cardId), null, "正常离开后清掉停留位置");
+  writePostprocessView(cardId, { view: "queue", sessionId: "s9", groupId: "1" }, 8);
+  assert.deepEqual(readPostprocessView(cardId, 7), { view: "correction", sessionId: "s1", groupId: "0" },
+    "另一个账号打开同一张卡不能改掉我的停留位置");
+  assert.deepEqual(readPostprocessView(cardId, 8), { view: "queue", sessionId: "s9", groupId: "1" }, "各看各的停留位置");
+  clearPostprocessView(cardId, 7);
+  assert.equal(readPostprocessView(cardId, 7), null, "正常离开后清掉停留位置");
+  assert.ok(readPostprocessView(cardId, 8), "清自己的停留位置不影响别人");
+  clearPostprocessView(cardId, 8);
   console.log("  ✓ 后处理续接：会话列表 / 活动卡 / 停留视图 / 正常离开清理");
 }
 

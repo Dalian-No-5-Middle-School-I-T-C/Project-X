@@ -442,7 +442,7 @@ try {
 
   // ── 续扫第二批：groupId 跨会话重号，删除与选择都必须按会话隔离 ──
   await act(async () => { root.unmount(); });
-  localStorage.removeItem(`projectx-postprocess-view/v1/${encodeURIComponent(card.id)}`);
+  localStorage.removeItem(`projectx-postprocess-view/v1/anon/${encodeURIComponent(card.id)}`);
   allClean = false;
   secondGroupResolved = false;
   const host2 = document.createElement("div");
@@ -483,7 +483,7 @@ try {
 
   // ── 重卡定性：队列项是被作废的那份时，补传必须跟着「保留下来的那份」走 ──
   await act(async () => { root2.unmount(); });
-  localStorage.removeItem(`projectx-postprocess-view/v1/${encodeURIComponent(card.id)}`);
+  localStorage.removeItem(`projectx-postprocess-view/v1/anon/${encodeURIComponent(card.id)}`);
   const host3 = document.createElement("div");
   document.body.appendChild(host3);
   root3 = createRoot(host3);
@@ -517,7 +517,7 @@ try {
   await act(async () => { root3.unmount(); });
   const resumeFlags = { allClean, secondGroupResolved };
   allClean = false; secondGroupResolved = false;
-  const viewKey = `projectx-postprocess-view/v1/${encodeURIComponent(card.id)}`;
+  const viewKey = `projectx-postprocess-view/v1/anon/${encodeURIComponent(card.id)}`;
   localStorage.removeItem(viewKey);
   // scan-1 的队列是 [考号问题 组 1, 存疑 组 0]；停在第二条才是「恢复中间那一条」
   localStorage.setItem(viewKey, JSON.stringify({ view: "queue", sessionId: "scan-1", groupId: "0", at: Date.now() }));
@@ -542,7 +542,7 @@ try {
 
   // ── 远端卡 404：本机卡也没有时，页面仍能返回，而不是停在没有按钮的失败态 ──
   await act(async () => { root3.unmount(); });
-  localStorage.removeItem(`projectx-postprocess-view/v1/${encodeURIComponent(card.id)}`);
+  localStorage.removeItem(`projectx-postprocess-view/v1/anon/${encodeURIComponent(card.id)}`);
   hideCard = true;
   const host4 = document.createElement("div");
   document.body.appendChild(host4);
@@ -560,7 +560,7 @@ try {
 
   // A valid score-cell combination still needs explicit teacher confirmation when recognition says review.
   await act(async () => { root4!.unmount(); });
-  localStorage.removeItem(`projectx-postprocess-view/v1/${encodeURIComponent(card.id)}`);
+  localStorage.removeItem(`projectx-postprocess-view/v1/anon/${encodeURIComponent(card.id)}`);
   const reviewCard = createDefaultCard("subjective-review");
   reviewCard.bodyBlocks = [{id:"review-block",type:"subjective",title:"待确认",questions:[
     {id:"review-question",number:2,score:30,style:"manual_score_grid",kind:"plain_box",minHeightMm:30},

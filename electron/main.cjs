@@ -476,24 +476,13 @@ async function createWindow() {
     appendLog("INFO", "[Renderer] did-finish-load");
     if (!pendingRecoveryNotice) return;
     pendingRecoveryNotice = false;
-    void mainWindow.webContents.executeJavaScript(`(() => {
-      const id = "__px_renderer_recovered_notice";
-      if (document.getElementById(id)) return;
-      const box = document.createElement("div");
-      box.id = id;
-      box.setAttribute("role", "status");
-      box.style.cssText = "position:fixed;left:16px;bottom:16px;z-index:99999;max-width:440px;background:var(--px-bg-surface);color:var(--px-fg-primary);border:1px solid var(--px-success-border);border-left:4px solid var(--px-success-bg);border-radius:var(--px-radius-md);padding:10px 14px;box-shadow:0 8px 24px rgba(0,0,0,.16);font:13px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif;";
-      const text = document.createElement("span");
-      text.textContent = "扫描端界面已自动恢复。本机草稿会尝试恢复未保存的订正，请核对后重新保存。";
-      const close = document.createElement("button");
-      close.type = "button";
-      close.textContent = "知道了";
-      close.style.cssText = "margin-left:10px;cursor:pointer;border:1px solid var(--px-border-strong);background:var(--px-bg-surface);color:var(--px-fg-primary);border-radius:var(--px-radius-sm);padding:2px 8px;font:inherit;";
-      close.onclick = () => box.remove();
-      box.append(text, close);
-      document.body.appendChild(box);
-    })()`).catch((error) => {
-      appendLog("WARN", `[Renderer] 恢复提示注入失败: ${error instanceof Error ? error.message : String(error)}`);
+    // 只交数据、不塞 DOM：提示卡由渲染进程里的 ScannerNotice（v2 组件 + 语义令牌）渲染，
+    // 事件名与 src/apps/answer-card/client/components/ScannerNotice.tsx 成对，改动时两边一起改。
+    void mainWindow.webContents.executeJavaScript(
+      "window.__projectxRendererRecovered = true;" +
+      "window.dispatchEvent(new Event(\"projectx:renderer-recovered\"));",
+    ).catch((error) => {
+      appendLog("WARN", `[Renderer] 恢复提示派发失败: ${error instanceof Error ? error.message : String(error)}`);
     });
   });
   mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {

@@ -79,19 +79,24 @@ export function clearActivePostprocess(userId?: number | null): void {
   try { localStorage.removeItem(activeKey(userId)); } catch { /* ignore */ }
 }
 
-export function readPostprocessView(cardId: string): PostprocessViewState | null {
-  const saved = readJson<PostprocessViewState & { at?: number }>(`${VIEW_PREFIX}/${encodeURIComponent(cardId)}`);
+/** 多人共用一台扫描机时，停留视图也按账号存：别人打开同一张卡不会把「停在哪」改掉。 */
+export function readPostprocessView(cardId: string, userId?: number | null): PostprocessViewState | null {
+  const saved = readJson<PostprocessViewState & { at?: number }>(viewKey(cardId, userId));
   if (!saved || typeof saved.at !== "number" || Date.now() - saved.at > MAX_AGE_MS) return null;
   if (saved.view !== "results" && saved.view !== "correction" && saved.view !== "queue") return null;
   if (typeof saved.sessionId !== "string" || typeof saved.groupId !== "string") return null;
   return { view: saved.view, sessionId: saved.sessionId, groupId: saved.groupId };
 }
 
-export function writePostprocessView(cardId: string, state: PostprocessViewState): void {
-  writeJson(`${VIEW_PREFIX}/${encodeURIComponent(cardId)}`, { ...state, at: Date.now() });
+export function writePostprocessView(cardId: string, state: PostprocessViewState, userId?: number | null): void {
+  writeJson(viewKey(cardId, userId), { ...state, at: Date.now() });
 }
 
 /** 正常离开后处理页时清掉停留位置；只有闪退/进程崩溃不会走到这里，才会在下次打开时恢复。 */
-export function clearPostprocessView(cardId: string): void {
-  try { localStorage.removeItem(`${VIEW_PREFIX}/${encodeURIComponent(cardId)}`); } catch { /* ignore */ }
+export function clearPostprocessView(cardId: string, userId?: number | null): void {
+  try { localStorage.removeItem(viewKey(cardId, userId)); } catch { /* ignore */ }
+}
+
+function viewKey(cardId: string, userId?: number | null): string {
+  return `${VIEW_PREFIX}/${typeof userId === "number" ? userId : "anon"}/${encodeURIComponent(cardId)}`;
 }

@@ -168,7 +168,8 @@ function ScannerAppInner() {
         cardId={selectedCardId}
         cardTitle={selectedCardTitle}
         sessions={postSessions}
-        onBack={() => { clearActivePostprocess(user?.id); clearPostprocessView(selectedCardId); setPage("workspace"); }}
+        userId={user?.id ?? null}
+        onBack={() => { clearActivePostprocess(user?.id); clearPostprocessView(selectedCardId, user?.id); setPage("workspace"); }}
       />
     );
   }

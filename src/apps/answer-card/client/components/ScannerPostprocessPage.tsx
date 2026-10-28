@@ -27,9 +27,11 @@ export interface ScannerPostprocessPageProps {
   cardTitle: string;
   sessions: Array<{ sessionId: string; pageCount: number }>;
   onBack: () => void;
+  /** 停留位置按账号隔离：同机多人共用时不互相改写恢复位置。 */
+  userId?: number | null;
 }
 
-export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: ScannerPostprocessPageProps) {
+export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, userId }: ScannerPostprocessPageProps) {
   const [view, setView] = useState<View>("results");
   const [localCard, setLocalCard] = useState<AnswerCard | null>(null);
   const [remoteCard, setRemoteCard] = useState<AnswerCard | null>(null);
@@ -147,7 +149,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   useEffect(() => {
     if (resumeAppliedRef.current || groups.length === 0) return;
     resumeAppliedRef.current = true;
-    const saved = readPostprocessView(cardId);
+    const saved = readPostprocessView(cardId, userId);
     if (!saved) return;
     const group = groups.find(entry => entry.sessionId === saved.sessionId && entry.groupId === saved.groupId);
     if (!group) return;
@@ -161,7 +163,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   const resumeTarget = view === "queue" ? queueCurrent : active;
   useEffect(() => {
     if (!resumeTarget) return;
-    writePostprocessView(cardId, { view, sessionId: resumeTarget.sessionId, groupId: resumeTarget.groupId });
+    writePostprocessView(cardId, { view, sessionId: resumeTarget.sessionId, groupId: resumeTarget.groupId }, userId);
   }, [cardId, view, resumeTarget]);
   const issueGroups = useMemo(() => new Set(queue.map(item => `${item.sessionId}/${item.groupId}`)).size, [queue]);
   const uploaded = useMemo(() => Object.values(batches).flatMap(b => b.results).filter(r => r.saved).length, [batches]);
