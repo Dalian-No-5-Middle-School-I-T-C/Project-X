@@ -141,6 +141,11 @@ async function attachmentDirReferenced(dir: string): Promise<boolean> {
 async function retryPendingOrphanDirs(): Promise<void> {
   for (const dir of [...pendingOrphanDirs]) {
     try {
+      // 即使是待清理集合，也重新确认没有被附件记录引用（并发事务可能在排队期间提交）。
+      if (await attachmentDirReferenced(dir)) {
+        pendingOrphanDirs.delete(dir);
+        continue;
+      }
       await rm(dir, { recursive: true, force: true });
       pendingOrphanDirs.delete(dir);
       invalidateFeedbackStorageUsage();
