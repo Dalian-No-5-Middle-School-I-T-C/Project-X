@@ -103,16 +103,12 @@ function ScannerAppInner() {
   // 否则草稿还在本机却没有入口。只在刚登录且尚未选卡时触发。
   useEffect(() => {
     if (!user || selectedCardId) return;
-    const active = readActivePostprocess();
+    // 只读本人槽位：同机其他账号的标记原样留着，他们回来时仍能自动回到自己的后处理页。
+    const active = readActivePostprocess(user.id);
     if (!active) return;
-    // 旧版本没有 userId 的标记或换账号后的标记一律不恢复，避免把上一个账号的卷子带给新账号。
-    if (active.userId == null || active.userId !== user.id) {
-      clearActivePostprocess();
-      return;
-    }
     const sessions = readPostprocessSessions(active.cardId, user.id);
     if (!sessions.length) {
-      clearActivePostprocess();
+      clearActivePostprocess(user.id);
       return;
     }
     setSelectedCardId(active.cardId);
@@ -129,7 +125,7 @@ function ScannerAppInner() {
     // 只有在后处理页才记「活动卡」；老师主动回到工作台后崩溃，重载应回工作台，
     // 而不是被一个仅因存在历史会话就写回的标记拉回后处理。
     if (page === "postprocess" && postSessions.length) writeActivePostprocess(selectedCardId, selectedCardTitle, user.id);
-    else clearActivePostprocess();
+    else clearActivePostprocess(user.id);
   }, [selectedCardId, selectedCardTitle, postSessions, page, user?.id]);
 
   // 登出/会话过期时清掉工作台选择，避免下一个登录账号继承上一人的扫描会话。
@@ -172,7 +168,7 @@ function ScannerAppInner() {
         cardId={selectedCardId}
         cardTitle={selectedCardTitle}
         sessions={postSessions}
-        onBack={() => { clearActivePostprocess(); clearPostprocessView(selectedCardId); setPage("workspace"); }}
+        onBack={() => { clearActivePostprocess(user?.id); clearPostprocessView(selectedCardId); setPage("workspace"); }}
       />
     );
   }
@@ -184,7 +180,7 @@ function ScannerAppInner() {
         cardTitle={selectedCardTitle}
         cardVersionNote={cardVersionNote}
         onBack={() => {
-          clearActivePostprocess();
+          clearActivePostprocess(user?.id);
           setSelectedCardId("");
           setSelectedCardTitle("");
           setPostSessions([]);
@@ -231,7 +227,7 @@ function ScannerAppInner() {
               setSelectedCardId(cardId);
               setSelectedCardTitle(card?.title || cardId);
               const restored = readPostprocessSessions(cardId, user?.id);
-              const active = readActivePostprocess();
+              const active = readActivePostprocess(user?.id);
               setPostSessions(restored);
               setPage(active?.cardId === cardId && active.userId === user?.id ? "postprocess" : "workspace");
               return;
@@ -244,7 +240,7 @@ function ScannerAppInner() {
             setSelectedCardId(cardId);
             setSelectedCardTitle(card?.title || cardId);
             const restored = readPostprocessSessions(cardId, user?.id);
-            const active = readActivePostprocess();
+            const active = readActivePostprocess(user?.id);
             setPostSessions(restored);
             setPage(active?.cardId === cardId && active.userId === user?.id ? "postprocess" : "workspace");
           } catch (e: unknown) {

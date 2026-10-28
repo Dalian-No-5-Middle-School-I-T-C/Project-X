@@ -100,11 +100,18 @@ function testPostprocessResume(): void {
   assert.deepEqual(readPostprocessSessions(cardId, 8), [{ sessionId: "s9", pageCount: 1 }], "各自的列表互不覆盖");
 
   writeActivePostprocess(cardId, "高一语文", 7);
-  const active = readActivePostprocess();
+  const active = readActivePostprocess(7);
   assert(active?.cardId === cardId && active.cardTitle === "高一语文" && active.userId === 7,
     "活动卡号、标题与账号一起恢复");
-  clearActivePostprocess();
-  assert.equal(readActivePostprocess(), null, "正常离开后清掉活动卡");
+  // 同机换账号：B 的活动卡不覆盖 A 的，B 登录/离开也不能删掉 A 的恢复入口。
+  assert.equal(readActivePostprocess(8), null, "换账号读不到别人的活动卡");
+  writeActivePostprocess("card-2", "高二数学", 8);
+  assert.equal(readActivePostprocess(7)?.cardId, cardId, "另一个账号写活动卡不覆盖我的");
+  clearActivePostprocess(8);
+  assert.equal(readActivePostprocess(8), null, "清掉自己的活动卡");
+  assert.equal(readActivePostprocess(7)?.cardId, cardId, "清自己的活动卡不影响别人");
+  clearActivePostprocess(7);
+  assert.equal(readActivePostprocess(7), null, "正常离开后清掉活动卡");
 
   writePostprocessView(cardId, { view: "correction", sessionId: "s1", groupId: "0" });
   assert.deepEqual(readPostprocessView(cardId), { view: "correction", sessionId: "s1", groupId: "0" },

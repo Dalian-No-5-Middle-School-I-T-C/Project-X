@@ -49,14 +49,22 @@ function sessionsKey(cardId: string, userId?: number | null): string {
   return `${SESSIONS_PREFIX}/${typeof userId === "number" ? userId : "anon"}/${encodeURIComponent(cardId)}`;
 }
 
-export function readActivePostprocess(): { cardId: string; cardTitle: string; userId: number | null; at: number } | null {
-  const saved = readJson<{ cardId?: unknown; cardTitle?: unknown; userId?: unknown; at?: unknown }>(ACTIVE_KEY);
+/**
+ * 扫描机多人共用：活动卡也按账号存。共用一个槽位的话，后登录的人既看不到前一个人的
+ * 恢复入口，还会在登录时把它删掉，前一个人回来就失去自动回到后处理页的机会。
+ */
+function activeKey(userId?: number | null): string {
+  return `${ACTIVE_KEY}/${typeof userId === "number" ? userId : "anon"}`;
+}
+
+export function readActivePostprocess(userId?: number | null): { cardId: string; cardTitle: string; userId: number | null; at: number } | null {
+  const saved = readJson<{ cardId?: unknown; cardTitle?: unknown; userId?: unknown; at?: unknown }>(activeKey(userId));
   if (!saved || typeof saved.cardId !== "string" || typeof saved.at !== "number"
     || Date.now() - saved.at > MAX_AGE_MS) return null;
+  if (userId != null && saved.userId !== userId) return null;
   return {
     cardId: saved.cardId,
     cardTitle: typeof saved.cardTitle === "string" ? saved.cardTitle : saved.cardId,
-    // 扫描机可能多人使用：只恢复同一账号上次的页面。
     userId: typeof saved.userId === "number" ? saved.userId : null,
     at: saved.at,
   };
@@ -64,11 +72,11 @@ export function readActivePostprocess(): { cardId: string; cardTitle: string; us
 
 export function writeActivePostprocess(cardId: string, cardTitle: string, userId: number | null | undefined): void {
   if (!cardId) return;
-  writeJson(ACTIVE_KEY, { cardId, cardTitle, userId: typeof userId === "number" ? userId : null, at: Date.now() });
+  writeJson(activeKey(userId), { cardId, cardTitle, userId: typeof userId === "number" ? userId : null, at: Date.now() });
 }
 
-export function clearActivePostprocess(): void {
-  try { localStorage.removeItem(ACTIVE_KEY); } catch { /* ignore */ }
+export function clearActivePostprocess(userId?: number | null): void {
+  try { localStorage.removeItem(activeKey(userId)); } catch { /* ignore */ }
 }
 
 export function readPostprocessView(cardId: string): PostprocessViewState | null {
