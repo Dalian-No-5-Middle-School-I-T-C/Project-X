@@ -189,7 +189,10 @@ async function sweepFeedbackOrphansOnce(): Promise<void> {
         let entries: Dirent[];
         try {
           entries = await readdir(feedbackRoot, { withFileTypes: true });
-        } catch {
+        } catch (err: any) {
+          // 目录不存在才是「没有附件目录」；EIO/EACCES 等读失败要保留重试机会，
+          // 否则会永久标记扫描完成，孤儿目录再也不会被回收。
+          if (err?.code !== "ENOENT") throw err;
           entries = [];
         }
         for (const entry of entries) {
