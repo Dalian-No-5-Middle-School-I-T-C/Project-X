@@ -153,6 +153,9 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
   // 用 ref 追踪最新值，避免 SSE onmessage / setTimeout 闭包捕获到过期的 state
   const pagesRef = useRef<ScanPage[]>([]);
   const sessionIdRef = useRef("");
+  /** 卸载时才取的回调：卸载清理的闭包里读 props 会拿到第一次渲染的值。 */
+  const onBatchArchivedRef = useRef(onBatchArchived);
+  useEffect(() => { onBatchArchivedRef.current = onBatchArchived; }, [onBatchArchived]);
 
   // UI-5: SSE 断开重连状态
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -224,6 +227,15 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
     return () => {
       eventSourceRef.current?.close();
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      // 离开面板（关闭 / 返回工作台 / 切走卡片）不等于放弃这一批：扫描还在跑就先停设备，
+      // 已扫出的页面交给后处理页，避免后台继续送纸却再也找不到这批卷的入口。
+      const sid = sessionIdRef.current;
+      if (!sid) return;
+      if (!completedRef.current) {
+        void authFetch(`/api/scanner/scan/${sid}/cancel`, { method: "POST" }).catch(() => undefined);
+      }
+      const pageCount = pagesRef.current.length;
+      if (pageCount > 0) onBatchArchivedRef.current?.(sid, pageCount);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

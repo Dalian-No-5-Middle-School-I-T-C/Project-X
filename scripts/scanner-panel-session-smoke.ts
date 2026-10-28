@@ -48,6 +48,8 @@ let failNextSummary = false;
 let failNextSnapshot = false;
 let retainedPageCount = 2;
 const snapshotRequests: string[] = [];
+const cancelRequests: string[] = [];
+const archivedBatches: string[] = [];
 const summaryRequests: string[] = [];
 const retryRequests: unknown[] = [];
 const correctionSaves: Array<{ pages: unknown[] }> = [];
@@ -65,6 +67,7 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   const url = String(input);
   if (url.includes("/api/cards/")) { cardRequests++; await cardReady; return Response.json(card); }
   if (url.endsWith("/sources")) return Response.json({ sources: [], code: "NO_SOURCES" });
+  if (/\/scan\/scan-\d+\/cancel$/.test(url)) { cancelRequests.push(url); return Response.json({ ok: true }); }
   if (url.endsWith("/scan")) {
     scans.push(JSON.parse(String(init?.body)));
     return Response.json({ sessionId: `scan-${scans.length}` });
@@ -126,8 +129,10 @@ async function click(label: string) {
 function hasAction(label: string) {
   return [...document.querySelectorAll("button")].some(node => node.textContent?.trim() === label);
 }
+let panelMounted = true;
 try {
-  await act(async () => { root.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id }))); });
+  await act(async () => { root.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id,
+    onBatchArchived: (sid: string, pageCount: number) => { archivedBatches.push(`${sid}/${pageCount}`); } }))); });
   await settle();
   const checkbox = document.querySelector<HTMLButtonElement>('[role="checkbox"]');
   assert(checkbox, "Actual legacy-mode control is mounted");
@@ -358,10 +363,27 @@ try {
   assert(hasAction("停止扫描"), "继续扫描直接进入扫描中");
   await act(async () => { streams.at(-1)?.done(); }); await settle();
   assert.equal(uploads.length, uploadsBeforeContinue + 2, "继续扫出的批次完成后照常上传");
-  console.log("PASS scanner panel React/SSE: session metadata; partial view/correction/save; terminal replay and reconnect hydrate persisted pages; hydration retry, zero-page and next-session recovery; continue-scan");
+
+  // 扫描中离开面板（关闭 / 返回工作台）：停掉后台扫描，并把已扫页面交给后处理页，
+  // 否则设备继续送纸、这一批却再也找不到入口。
+  await click("开始新扫描"); await settle();
+  await click("开始扫描"); await settle();
+  const midScanSession = `scan-${scans.length}`;
+  await act(async () => { streams.at(-1)?.emit({ type: "page_done", recordId: "mid-page", pageNum: 1, side: "front" }); }); await settle();
+  assert(hasAction("停止扫描"), "离开前确实处于扫描中");
+  const cancelsBeforeLeave = cancelRequests.length;
+  const archivedBeforeLeave = archivedBatches.length;
+  await act(async () => { root.unmount(); }); panelMounted = false;
+  await settle();
+  assert(cancelRequests.slice(cancelsBeforeLeave).some(url => url.includes(midScanSession)),
+    "扫描中离开面板要终止后台扫描，不能让设备继续送纸");
+  assert(archivedBatches.slice(archivedBeforeLeave).includes(`${midScanSession}/1`),
+    "已扫出的页面要交给后处理页，离开面板不等于丢掉这一批");
+
+  console.log("PASS scanner panel React/SSE: session metadata; partial view/correction/save; terminal replay and reconnect hydrate persisted pages; hydration retry, zero-page and next-session recovery; continue-scan; leave-mid-scan");
 } finally {
   releaseCard();
-  await act(async () => { root.unmount(); });
+  if (panelMounted) await act(async () => { root.unmount(); });
   serverStatus.stop(); scannerUploadManager.startUpload = startUpload;
   dom.window.close();
   for (const [name, descriptor] of globals) {
