@@ -72,7 +72,7 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
     setPreviewLoading(true);
     try {
       const data = await fetchJson<{
-        pages: Array<{ recordId: string; pageNum: number; side: string; fileName: string }>;
+        pages: Array<{ recordId: string; pageNum: number; side: string; fileName?: string; imageUrl?: string }>;
         cardId: string;
       }>(`/api/scanner/exam/${examId}/student/${studentId}/scans`);
       if (data.pages.length === 0) {
@@ -83,7 +83,9 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
           recordId: p.recordId,
           pageNum: p.pageNum,
           side: p.side,
-          imageUrl: mediaUrl(`/api/scanner/grading-image/${data.cardId}/${encodeURIComponent(p.fileName)}`)
+          // 扫描端上传的卷走 scan-image，旧导入批次走 grading-image；服务端已给出完整路径，
+          // 前端只补媒体票据，避免再按来源各拼一套 URL。
+          imageUrl: mediaUrl(p.imageUrl ?? `/api/scanner/grading-image/${data.cardId}/${encodeURIComponent(p.fileName ?? "")}`)
         }));
         setPreviewPages(pages);
       }

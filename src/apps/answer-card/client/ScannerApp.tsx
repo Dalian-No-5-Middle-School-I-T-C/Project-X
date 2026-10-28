@@ -38,6 +38,8 @@ function ScannerAppInner() {
   const [selectedCardTitle, setSelectedCardTitle] = useState<string>("");
   // v2.7.2：本卡已扫完的批次会话；返回工作台续扫后新批次累加进来，异常队列共用同一份
   const [postSessions, setPostSessions] = useState<Array<{ sessionId: string; pageCount: number }>>([]);
+  /** 后处理页点「继续扫描」→ 回到工作台并自动开下一批；工作台消费后清掉，避免再次进入重复开扫。 */
+  const [pendingContinueScan, setPendingContinueScan] = useState(false);
   // 安全 R35：离线用缓存卡进入时的工作台提示（版本 + 缓存时间），空串表示版本与服务器一致
   const [cardVersionNote, setCardVersionNote] = useState<string>("");
   // v2.1.0: 皮肤 = 风格维度（与明暗正交），同步策略与 web 端 App 保持一致。
@@ -170,6 +172,10 @@ function ScannerAppInner() {
         sessions={postSessions}
         userId={user?.id ?? null}
         onBack={() => { clearActivePostprocess(user?.id); clearPostprocessView(selectedCardId, user?.id); setPage("workspace"); }}
+        onContinueScan={() => {
+          setPendingContinueScan(true);
+          setPage("workspace");
+        }}
       />
     );
   }
@@ -186,6 +192,11 @@ function ScannerAppInner() {
           setSelectedCardTitle("");
           setPostSessions([]);
           setPage("select");
+        }}
+        autoStartScan={pendingContinueScan}
+        onAutoStartConsumed={() => setPendingContinueScan(false)}
+        onBatchArchived={(sid, pageCount) => {
+          setPostSessions(prev => [...prev.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }]);
         }}
         onScansComplete={(sid, pageCount) => {
           setPostSessions(prev => [...prev.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }]);

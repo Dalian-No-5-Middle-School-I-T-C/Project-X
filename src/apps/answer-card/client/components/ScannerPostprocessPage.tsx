@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowLeft } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Play } from "lucide-react";
 import { Badge, Button, SegmentedControl, Spinner, notify } from "./ui/v2";
 import { authFetch } from "../auth/api";
 import { fetchCardDetailSynced } from "../lib/scannerSync";
@@ -27,11 +27,13 @@ export interface ScannerPostprocessPageProps {
   cardTitle: string;
   sessions: Array<{ sessionId: string; pageCount: number }>;
   onBack: () => void;
+  /** 同一答题卡继续扫下一批：回到工作台并自动开扫，新批次累加到本页。 */
+  onContinueScan?: () => void;
   /** 停留位置按账号隔离：同机多人共用时不互相改写恢复位置。 */
   userId?: number | null;
 }
 
-export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, userId }: ScannerPostprocessPageProps) {
+export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, onContinueScan, userId }: ScannerPostprocessPageProps) {
   const [view, setView] = useState<View>("results");
   const [localCard, setLocalCard] = useState<AnswerCard | null>(null);
   const [remoteCard, setRemoteCard] = useState<AnswerCard | null>(null);
@@ -338,6 +340,11 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, us
             { value: "queue", label: <span className="flex items-center gap-1.5">异常处理{queue.length > 0 && <Badge tone="danger" className="h-[18px] px-1.5 text-[10.5px] tabular-nums">{queue.length}</Badge>}</span> },
           ]}
         />
+        {onContinueScan && (
+          <Button variant="primary" size="sm" icon={<Play size={15} />} onClick={onContinueScan}>
+            继续扫描
+          </Button>
+        )}
       </header>
       {resumedFromCrash && (
         <div role="status" className="flex items-center gap-2 border-b border-info-border bg-info-soft px-5 py-2 text-sm text-info-fg">
