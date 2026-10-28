@@ -70,7 +70,8 @@ const feedbackTrashDir = path.join(feedbackRoot, "_trash");
 const feedbackRootPrefix = `${path.resolve(feedbackRoot)}${path.sep}`;
 
 // 启动时同步清掉上次中断留下的临时上传件：此刻还没有本进程的上传，不存在误删在途文件的窗口。
-try {
+let feedbackTmpReady = false;
+function prepareFeedbackTmpDir(): void {
   mkdirSync(feedbackTmpDir, { recursive: true });
   for (const entry of readdirSync(feedbackTmpDir, { withFileTypes: true })) {
     if (!entry.isFile()) continue;
@@ -83,7 +84,14 @@ try {
       markFeedbackTempFileLeaked(filePath);
     }
   }
-} catch { /* 目录不可用；真正上传时会再报错 */ }
+}
+try {
+  prepareFeedbackTmpDir();
+  feedbackTmpReady = true;
+} catch (err) {
+  // 目录级扫描失败时不能当成空目录：保留未就绪状态，后续上传先重试清扫，失败就拒收。
+  console.error("[feedback] 临时目录启动清理失败，附件上传将暂时拒绝:", err);
+}
 
 const pendingOrphanDirs = new Set<string>();
 const youngOrphanDirs = new Set<string>();
@@ -398,6 +406,15 @@ function resolveStoredPath(relative: string): string | null {
 
 type StagedAttachmentDir = { original: string; staged: string };
 
+class FeedbackDeleteInProgressError extends Error {
+  readonly code = "FEEDBACK_DELETE_IN_PROGRESS";
+
+  constructor() {
+    super("该反馈正在被其他请求删除，请稍后重试");
+    this.name = "FeedbackDeleteInProgressError";
+  }
+}
+
 /** 把附件目录原子移动到 `_trash`：数据库删除成功后才真正清理，失败可以移回。 */
 async function stageAttachmentDirs(dirs: string[]): Promise<StagedAttachmentDir[]> {
   await mkdir(feedbackTrashDir, { recursive: true });
@@ -416,9 +433,9 @@ async function stageAttachmentDirs(dirs: string[]): Promise<StagedAttachmentDir[
           invalidateFeedbackStorageUsage();
           const leftover = await stat(target).catch(() => null);
           if (leftover?.isDirectory()) {
-            // _trash 里还留着同名暂存目录，纳入本次清理。
-            activeStagedDirs.add(target);
-            staged.push({ original: dir, staged: target });
+            // 另一个删除请求已经把它移进 _trash：不能共用同一份暂存目录，
+            // 否则一方恢复、另一方清理会互相踩，留下无记录的孤儿目录。
+            throw new FeedbackDeleteInProgressError();
           }
           continue;
         }
@@ -577,6 +594,18 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
   state.feedbackTempPaths = [];
   state.feedbackUploadFinished = false;
   state.feedbackFileBytes = 0;
+  if (!feedbackTmpReady) {
+    try {
+      prepareFeedbackTmpDir();
+      feedbackTmpReady = true;
+    } catch (err) {
+      console.error("[feedback] 临时目录仍不可用，拒绝本次附件上传:", err);
+      if (!res.headersSent && !res.destroyed && !req.destroyed) {
+        res.status(503).json({ ok: false, error: "反馈附件临时目录暂时不可用，请稍后重试" });
+      }
+      return;
+    }
+  }
   void purgeStaleTmpUploads(feedbackTmpDir, 60 * 60_000, activeFeedbackTempFiles())
     .catch(() => {})
     .then(async () => {
@@ -961,6 +990,9 @@ router.delete("/:id", requireAdmin, async (req, res) => {
     try {
       staged = await stageAttachmentDirs([...dirs]);
     } catch (err) {
+      if (err instanceof FeedbackDeleteInProgressError) {
+        return res.status(409).json({ ok: false, code: err.code, error: err.message });
+      }
       console.error("[feedback] 附件目录暂存失败:", err);
       return res.status(500).json({
         ok: false,

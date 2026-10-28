@@ -864,6 +864,24 @@ async function main(): Promise<void> {
   ok(!((await call("GET", "?limit=200", adminToken)).json?.data ?? []).some((row: any) => row.id === missingId),
     "目录丢失的反馈已从列表删除");
 
+  // 两个管理员同时删除同一反馈：一方成功，另一方 404/409，不共用 _trash 目录。
+  const concurrentForm = new FormData();
+  concurrentForm.set("title", "并发删除同一反馈");
+  concurrentForm.set("content", "正文");
+  concurrentForm.append("files", new Blob(["concurrent"], { type: "text/plain" }), "concurrent.txt");
+  const concurrentReport = await upload(concurrentForm, adminToken);
+  const concurrentId = Number(concurrentReport.json?.data?.id);
+  const [deleteA, deleteB] = await Promise.all([
+    call("DELETE", `/${concurrentId}`, adminToken),
+    call("DELETE", `/${concurrentId}`, adminToken),
+  ]);
+  const deleteStatuses = [deleteA.status, deleteB.status].sort((a, b) => a - b);
+  ok(deleteStatuses[0] === 200 && (deleteStatuses[1] === 404 || deleteStatuses[1] === 409),
+    "并发删除同一反馈只成功一次");
+  ok(!((await call("GET", "?limit=200", adminToken)).json?.data ?? []).some((row: any) => row.id === concurrentId),
+    "并发删除后反馈已从列表移除");
+  ok(!existsSync(trashDir) || readdirSync(trashDir).length === 0, "并发删除后暂存目录为空");
+
   // 模拟进程在「已移入 _trash、尚未删库」时退出：后续请求应把目录恢复回原位。
   const crashForm = new FormData();
   crashForm.set("title", "删除中断恢复");
