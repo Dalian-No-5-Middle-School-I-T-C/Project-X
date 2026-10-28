@@ -191,8 +191,10 @@ export function AccountSettingsPage() {
   // 本来就该保留：无脑回退会把学生的 AI 页签也锁死。
   const activeSettingsTab: SettingsTab =
     !canEditGradingSettings && settingsTab === "grading" ? "client" : settingsTab;
+  // 单机免登录模式没有提交人身份：不显示反馈入口，避免「看得见但提交必 401」。
+  const canUseFeedback = Boolean(user) && !isStudent;
   const visibleSettingsTab: SettingsTab =
-    isStudent && activeSettingsTab === "feedback" ? "client" : activeSettingsTab;
+    !canUseFeedback && activeSettingsTab === "feedback" ? "client" : activeSettingsTab;
   // 五轮C1：侧边栏自动展开（客户端级 localStorage 设置，原误放系统级配置页，迁至此「外观/皮肤」区）
   const [railAutoExpand, setRailAutoExpand] = useState(() => {
     try { return localStorage.getItem("projectx-rail-auto-expand") === "true"; } catch { return false; }
@@ -474,7 +476,7 @@ export function AccountSettingsPage() {
                 "客户端",
                 "AI 服务商",
                 isAdmin && isElectron ? "数据存储" : null,
-                !isStudent ? "问题反馈" : null,
+                canUseFeedback ? "问题反馈" : null,
               ].filter(Boolean).join(" · ")}
             </p>
           </div>
@@ -498,7 +500,7 @@ export function AccountSettingsPage() {
             <TabsTrigger value="ai">
               <BrainCircuit size={15} /> AI 设置
             </TabsTrigger>
-            {!isStudent && (
+            {canUseFeedback && (
               <TabsTrigger value="feedback">
                 <MessageSquareWarning size={15} /> 问题反馈
               </TabsTrigger>
@@ -777,7 +779,7 @@ export function AccountSettingsPage() {
             )}
           </TabsContent>
 
-          {!isStudent && (
+          {canUseFeedback && (
             <TabsContent value="feedback" className="px-5 py-5">
               <FeedbackSection mode="mine" />
             </TabsContent>

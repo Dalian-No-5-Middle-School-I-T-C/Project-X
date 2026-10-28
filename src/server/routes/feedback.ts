@@ -2,10 +2,11 @@
  * 问题反馈 API（#357）
  * 挂载点: /api/feedback
  * 表: feedback_reports / feedback_attachments
- * 权限: 教师 / 管理员可提交并查看自己的反馈；全部列表、处理、删除需 system:manage
+ * 权限: 全部 SYSTEM_MANAGE（主站管理员端）
  *
- * 反馈落在本系统数据库。管理员在全局设置里查看和处理全部反馈，
- * 需要转发时一键复制成 Markdown。
+ * 反馈落在本系统数据库，不依赖 GitHub：扫卡室网络访问 GitHub 很慢，
+ * 直连还需要把 token 放在学校服务器上。管理员在全局设置里查看，
+ * 需要转发时一键复制成 Markdown 再贴到 issue。
  *
  * 附件：单次最多 15 个、单个 100 MiB，文件本体在
  * data/answer-card/feedback/<uuid>/，元数据在 feedback_attachments。
@@ -13,8 +14,9 @@
 import { Router, type Request, type RequestHandler, type Response } from "express";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
-import { readdirSync, unlinkSync, type Dirent } from "node:fs";
+import { createWriteStream, mkdirSync, readdirSync, unlinkSync, type Dirent } from "node:fs";
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { Transform } from "node:stream";
 import path from "node:path";
 import { authMiddleware, requirePermission, requireRole } from "../middleware/auth";
 import { PERMISSIONS, roleHasPermission } from "../auth/permissions";
@@ -25,11 +27,9 @@ import { requestUploadBudget, isUploadAlreadyRejected } from "../lib/uploadBudge
 import {
   FeedbackStorageQuotaError,
   FeedbackStorageUnavailableError,
-  beginChunkedFeedbackReservation,
-  FEEDBACK_STREAM_STEP_BYTES,
-  noteFeedbackTempPath,
-  releaseFeedbackUpload,
-  reserveFeedbackStorage,
+  createFeedbackStorageReservation,
+  invalidateFeedbackStorageUsage,
+  markFeedbackTempFileLeaked,
   settleFeedbackStorage,
   type FeedbackStorageReservation,
 } from "../lib/feedbackStorage";
@@ -42,6 +42,10 @@ import {
 
 const router = Router();
 router.use(authMiddleware);
+// 任何反馈请求都先核对一次暂存目录：进程在删除中途退出时，文件能尽快回到原位。
+router.use((_req, _res, next) => {
+  void reconcileFeedbackTrashOnce().finally(next);
+});
 
 const requireAdmin = requirePermission(PERMISSIONS.SYSTEM_MANAGE);
 const requireTeacher = requireRole("admin", "teacher");
@@ -59,26 +63,121 @@ const MAX_MIME = 150;
 const dataRoot = resolveAnswerCardDataDir();
 const feedbackRoot = path.join(dataRoot, "feedback");
 const feedbackTmpDir = path.join(feedbackRoot, "_tmp");
+const feedbackTrashDir = path.join(feedbackRoot, "_trash");
 const feedbackRootPrefix = `${path.resolve(feedbackRoot)}${path.sep}`;
 
 // 启动时同步清掉上次中断留下的临时上传件：此刻还没有本进程的上传，不存在误删在途文件的窗口。
 try {
+  mkdirSync(feedbackTmpDir, { recursive: true });
   for (const entry of readdirSync(feedbackTmpDir, { withFileTypes: true })) {
     if (!entry.isFile()) continue;
-    try { unlinkSync(path.join(feedbackTmpDir, entry.name)); } catch { /* 留给下一次清理 */ }
+    const filePath = path.join(feedbackTmpDir, entry.name);
+    try {
+      unlinkSync(filePath);
+    } catch {
+      // 重启后没有存活的预留；删不掉的年轻临时件也要立刻按占盘计入准入，
+      // 不能靠 _tmp 的 10 分钟宽限期（它假设文件有活跃预留）。
+      markFeedbackTempFileLeaked(filePath);
+    }
   }
-} catch { /* 目录还不存在 */ }
+} catch { /* 目录不可用；真正上传时会再报错 */ }
 
 const pendingOrphanDirs = new Set<string>();
+const youngOrphanDirs = new Set<string>();
+const ORPHAN_GRACE_MS = 10 * 60_000;
 let orphanSweepDone = false;
 let orphanSweep: Promise<void> | null = null;
+let trashReconcile: Promise<void> | null = null;
+const activeStagedDirs = new Set<string>();
+
+/**
+ * 删除反馈时附件目录先移到 `_trash`，数据库成功删除后再清理。
+ * 这里处理崩溃/失败遗留：记录还在就移回原位，记录已经没了就删掉。
+ * 每次请求都核对一次（目录通常为空，readdir 成本很低），不依赖进程重启。
+ */
+async function reconcileFeedbackTrashOnce(): Promise<void> {
+  if (!trashReconcile) {
+    trashReconcile = (async () => {
+      try {
+        let entries: Dirent[];
+        try {
+          entries = await readdir(feedbackTrashDir, { withFileTypes: true });
+        } catch (err: any) {
+          if (err?.code === "ENOENT") return;
+          throw err;
+        }
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const staged = path.join(feedbackTrashDir, entry.name);
+          if (activeStagedDirs.has(staged)) continue; // 本进程里有删除正在进行，不抢它的目录
+          const original = path.join(feedbackRoot, entry.name);
+          try {
+            const row = await getMysqlDb().get<{ id: number }>(
+              "SELECT id FROM feedback_attachments WHERE stored_path LIKE ? LIMIT 1",
+              `feedback/${entry.name}/%`
+            );
+            if (row) {
+              await rename(staged, original);
+              console.log(`[feedback] 已恢复暂存的附件目录: ${entry.name}`);
+            } else {
+              await rm(staged, { recursive: true, force: true });
+              invalidateFeedbackStorageUsage();
+            }
+          } catch (err) {
+            console.error("[feedback] 暂存附件目录核对失败:", entry.name, err);
+          }
+        }
+      } catch (err) {
+        console.error("[feedback] 暂存附件目录核对失败:", err);
+      } finally {
+        trashReconcile = null;
+      }
+    })();
+  }
+  await trashReconcile;
+}
+
+async function attachmentDirReferenced(dir: string): Promise<boolean> {
+  const row = await getMysqlDb().get<{ id: number }>(
+    "SELECT id FROM feedback_attachments WHERE stored_path LIKE ? LIMIT 1",
+    `feedback/${path.basename(dir)}/%`
+  );
+  return Boolean(row);
+}
 
 async function retryPendingOrphanDirs(): Promise<void> {
   for (const dir of [...pendingOrphanDirs]) {
     try {
+      // 即使是待清理集合，也重新确认没有被附件记录引用（并发事务可能在排队期间提交）。
+      if (await attachmentDirReferenced(dir)) {
+        pendingOrphanDirs.delete(dir);
+        continue;
+      }
       await rm(dir, { recursive: true, force: true });
       pendingOrphanDirs.delete(dir);
+      invalidateFeedbackStorageUsage();
     } catch { /* 保留到下一次上传再试 */ }
+  }
+  // 首次核对时因未满宽限期被跳过的目录，之后每次上传都复查一次；满 10 分钟再删。
+  for (const dir of [...youngOrphanDirs]) {
+    try {
+      const info = await stat(dir);
+      if (Date.now() - info.mtimeMs < ORPHAN_GRACE_MS) continue;
+      // 期间可能有并发上传的事务已经提交，删除前必须重新确认没有附件记录。
+      if (await attachmentDirReferenced(dir)) {
+        youngOrphanDirs.delete(dir);
+        continue;
+      }
+      await rm(dir, { recursive: true, force: true });
+      youngOrphanDirs.delete(dir);
+      invalidateFeedbackStorageUsage();
+    } catch (err: any) {
+      if (err?.code === "ENOENT") {
+        youngOrphanDirs.delete(dir);
+        continue;
+      }
+      // 查询或删除失败都留到下一次复查；下一次仍会重新确认引用关系，不能转入盲删集合。
+    }
   }
 }
 
@@ -87,6 +186,7 @@ async function retryPendingOrphanDirs(): Promise<void> {
  * 只删超过 10 分钟的目录，避免删掉另一个并发请求刚建好、事务尚未提交的目录。
  */
 async function sweepFeedbackOrphansOnce(): Promise<void> {
+  await reconcileFeedbackTrashOnce();
   await retryPendingOrphanDirs();
   if (orphanSweepDone) return;
   if (!orphanSweep) {
@@ -101,19 +201,27 @@ async function sweepFeedbackOrphansOnce(): Promise<void> {
         let entries: Dirent[];
         try {
           entries = await readdir(feedbackRoot, { withFileTypes: true });
-        } catch {
+        } catch (err: any) {
+          // 目录不存在才是「没有附件目录」；EIO/EACCES 等读失败要保留重试机会，
+          // 否则会永久标记扫描完成，孤儿目录再也不会被回收。
+          if (err?.code !== "ENOENT") throw err;
           entries = [];
         }
         for (const entry of entries) {
-          if (!entry.isDirectory() || entry.name === "_tmp") continue;
+          if (!entry.isDirectory() || entry.name === "_tmp" || entry.name === "_trash") continue;
           const dir = path.join(feedbackRoot, entry.name);
           if (referenced.has(dir)) continue;
           try {
             const info = await stat(dir);
-            if (Date.now() - info.mtimeMs < 10 * 60_000) continue;
+            if (Date.now() - info.mtimeMs < ORPHAN_GRACE_MS) {
+              youngOrphanDirs.add(dir);
+              continue;
+            }
             await rm(dir, { recursive: true, force: true });
+            invalidateFeedbackStorageUsage();
           } catch {
-            pendingOrphanDirs.add(dir);
+            // 读取/删除临时失败，回到年轻集合下一轮重新核对引用和宽限期，不直接盲删。
+            youngOrphanDirs.add(dir);
           }
         }
         orphanSweepDone = true;
@@ -129,38 +237,14 @@ async function sweepFeedbackOrphansOnce(): Promise<void> {
 
 type FeedbackRequest = Express.Request & {
   feedbackReservation?: FeedbackStorageReservation;
+  /** multer 存储引擎逐个登记临时文件，失败/断连时按这份清单清理（req.files 可能还没赋值）。 */
   feedbackTempPaths?: string[];
+  /** 本次请求累计已写入的附件字节数（文本字段不算）。 */
+  feedbackFileBytes?: number;
+  /** multer 回调已经给出结果：此后由路由或错误处理负责清理，断连兜底不再介入。 */
+  feedbackUploadFinished?: boolean;
+  feedbackFinalize?: Promise<void>;
 };
-
-function tempPathsOf(req: Request): string[] {
-  return (req as FeedbackRequest).feedbackTempPaths ?? [];
-}
-
-const STREAM_PREFETCH_SLACK = 64 * 1024;
-
-/** 分块上传：已到达的字节超出当前预留就拒绝，并在还剩一个包的余量时再预留一小段。 */
-function bindChunkedQuota(req: Request, res: Response, reservation: FeedbackStorageReservation): void {
-  let received = 0;
-  req.on("data", (chunk: Buffer) => {
-    received += chunk.length;
-    if (received > reservation.bytes) {
-      const deficit = received - reservation.bytes;
-      if (!reservation.tryGrow(deficit)) {
-        if (isUploadAlreadyRejected(req, res)) return;
-        res.status(413).json({
-          ok: false,
-          code: "FEEDBACK_STORAGE_QUOTA_EXCEEDED",
-          error: "附件空间不够放下这次上传，请减少附件大小或数量后再试。",
-        });
-        res.once("finish", () => req.destroy());
-        return;
-      }
-    }
-    if (reservation.bytes - received < STREAM_PREFETCH_SLACK) {
-      reservation.tryGrow(FEEDBACK_STREAM_STEP_BYTES);
-    }
-  });
-}
 
 type FeedbackRow = {
   id: number;
@@ -309,26 +393,161 @@ function resolveStoredPath(relative: string): string | null {
   return abs.startsWith(feedbackRootPrefix) ? abs : null;
 }
 
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: async (_req, _file, cb) => {
+type StagedAttachmentDir = { original: string; staged: string };
+
+/** 把附件目录原子移动到 `_trash`：数据库删除成功后才真正清理，失败可以移回。 */
+async function stageAttachmentDirs(dirs: string[]): Promise<StagedAttachmentDir[]> {
+  await mkdir(feedbackTrashDir, { recursive: true });
+  const staged: StagedAttachmentDir[] = [];
+  try {
+    for (const dir of dirs) {
+      const target = path.join(feedbackTrashDir, path.basename(dir));
+      // 先登记再移动：避免核对逻辑在 rename 完成与登记之间把目录抢回去。
+      activeStagedDirs.add(target);
       try {
-        await mkdir(feedbackTmpDir, { recursive: true });
-        cb(null, feedbackTmpDir);
-      } catch (err) {
-        cb(err as Error, "");
+        await rename(dir, target);
+      } catch (err: any) {
+        activeStagedDirs.delete(target);
+        if (err?.code === "ENOENT") {
+          // 附件目录已经丢了（还原数据库、数据盘丢文件等）：当作已清理，继续删库。
+          invalidateFeedbackStorageUsage();
+          const leftover = await stat(target).catch(() => null);
+          if (leftover?.isDirectory()) {
+            // _trash 里还留着同名暂存目录，纳入本次清理。
+            activeStagedDirs.add(target);
+            staged.push({ original: dir, staged: target });
+          }
+          continue;
+        }
+        throw err;
       }
-    },
-    filename: (req, _file, cb) => {
-      const name = `fb_${randomUUID()}`;
-      const full = path.join(feedbackTmpDir, name);
-      // 在打开写入流之前登记。中断时按这份清单删除，不能只靠 multer 成功后才有的 req.files。
-      noteFeedbackTempPath(full);
-      const paths = ((req as FeedbackRequest).feedbackTempPaths ??= []);
-      paths.push(full);
-      cb(null, name);
-    },
-  }),
+      staged.push({ original: dir, staged: target });
+    }
+  } catch (err) {
+    await restoreStagedDirs(staged);
+    throw err;
+  }
+  return staged;
+}
+
+/** 数据库删除失败时把暂存目录移回原位；返回是否全部恢复。 */
+async function restoreStagedDirs(staged: StagedAttachmentDir[]): Promise<boolean> {
+  let ok = true;
+  for (const entry of [...staged].reverse()) {
+    try {
+      await rename(entry.staged, entry.original);
+    } catch (err) {
+      ok = false;
+      console.error("[feedback] 暂存附件目录恢复失败，后续请求会重试:", entry.staged, err);
+    } finally {
+      activeStagedDirs.delete(entry.staged);
+    }
+  }
+  return ok;
+}
+
+async function removeStagedDirs(staged: StagedAttachmentDir[]): Promise<void> {
+  for (const entry of staged) {
+    try {
+      await rm(entry.staged, { recursive: true, force: true });
+      invalidateFeedbackStorageUsage();
+    } catch (err) {
+      pendingOrphanDirs.add(entry.staged);
+      invalidateFeedbackStorageUsage();
+      console.error("[feedback] 暂存附件清理失败，已排队重试:", entry.staged, err);
+    } finally {
+      activeStagedDirs.delete(entry.staged);
+    }
+  }
+}
+
+/** 按请求登记的路径清理临时文件；Windows 上偶发占用时重试，仍删不掉就继续按占盘计数。 */
+async function removeRegisteredTempFiles(req: FeedbackRequest): Promise<void> {
+  for (const filePath of req.feedbackTempPaths ?? []) {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rm(filePath, { force: true });
+        break;
+      } catch (err) {
+        if (attempt >= 4) {
+          markFeedbackTempFileLeaked(filePath);
+          console.error("[feedback] 临时文件清理失败，继续按占盘计数:", filePath, err);
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+  }
+}
+
+/** 先清临时文件、再释放预留：任何还留在 _tmp 的年轻文件都必须有预留或泄漏登记在册。 */
+function finalizeFeedbackUpload(req: FeedbackRequest): Promise<void> {
+  if (!req.feedbackFinalize) {
+    req.feedbackFinalize = (async () => {
+      await removeRegisteredTempFiles(req);
+      req.feedbackReservation?.release();
+    })();
+  }
+  return req.feedbackFinalize;
+}
+
+/** 按文件字节流式预留的 multer 存储：文本字段不占附件配额，文件写入受配额背压。 */
+const feedbackStorageEngine: multer.StorageEngine = {
+  _handleFile(req, file, cb) {
+    const state = req as FeedbackRequest;
+    const reservation = state.feedbackReservation;
+    const filename = `fb_${randomUUID()}`;
+    const filePath = path.join(feedbackTmpDir, filename);
+    (state.feedbackTempPaths ??= []).push(filePath);
+    const out = createWriteStream(filePath);
+    let size = 0;
+    let finished = false;
+    let transform: Transform;
+    const fail = (err: Error): void => {
+      if (finished) return;
+      finished = true;
+      file.stream.unpipe(transform);
+      out.destroy();
+      cb(err);
+    };
+    transform = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        if (finished) { callback(); return; }
+        size += chunk.length;
+        state.feedbackFileBytes = (state.feedbackFileBytes ?? 0) + chunk.length;
+        const total = state.feedbackFileBytes;
+        const held = reservation?.bytes ?? 0;
+        if (!reservation || total > reservation.limit) {
+          callback(new FeedbackStorageQuotaError());
+          return;
+        }
+        if (total <= held) { callback(null, chunk); return; }
+        reservation.ensureBytes(total)
+          .then((covered) => {
+            if (finished) { callback(); return; }
+            if (!covered) { callback(new FeedbackStorageQuotaError()); return; }
+            callback(null, chunk);
+          })
+          .catch((err) => callback(err as Error));
+      },
+    });
+    transform.on("error", fail);
+    out.on("error", fail);
+    file.stream.on("error", fail);
+    out.on("finish", () => {
+      if (finished) return;
+      finished = true;
+      cb(null, { destination: feedbackTmpDir, filename, path: filePath, size });
+    });
+    file.stream.pipe(transform).pipe(out);
+  },
+  _removeFile(_req, file, cb) {
+    rm((file as Express.Multer.File).path, { force: true }).then(() => cb(null), (err) => cb(err));
+  },
+};
+
+const upload = multer({
+  storage: feedbackStorageEngine,
   limits: {
     fileSize: MAX_FEEDBACK_ATTACHMENT_BYTES,
     files: MAX_FEEDBACK_ATTACHMENTS,
@@ -343,92 +562,63 @@ const attachmentBudget = requestUploadBudget({
   label: "问题反馈附件上传",
 });
 
-let preflightBlock: { entered: () => void; gate: Promise<void> } | null = null;
-
-/** 测试用：下一次 multipart 预检在读盘和预留之前停住，便于模拟客户端中途断开。 */
-export function blockNextFeedbackPreflightForTests(): { entered: Promise<void>; unblock: () => void } {
-  let entered!: () => void;
-  let unblock!: () => void;
-  const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
-  const gate = new Promise<void>((resolve) => { unblock = resolve; });
-  preflightBlock = { entered, gate };
-  return { entered: enteredPromise, unblock };
-}
-
-async function waitForPreflightBlock(): Promise<void> {
-  const block = preflightBlock;
-  if (!block) return;
-  preflightBlock = null;
-  block.entered();
-  await block.gate;
-}
-
-/** JSON 请求直接放行；multipart 先预留容量、走上传统计与 multer，再交给路由处理。 */
+/** JSON 请求直接放行；multipart 先走上传统计与 multer，再交给路由处理。 */
 const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
   if (!req.is("multipart/form-data")) {
     next();
     return;
   }
-  // 预留容量要先读盘。先暂停正文，避免这段时间里流已经开始，后面的 multer 接不到开头。
-  req.pause();
-  // multer 还没挂上中断处理时，客户端断开不能把已经划走的预留留到进程退出。
-  let phase: "preflight" | "multer" | "abandoned" = "preflight";
-  const abandonPreflight = () => {
-    if (phase === "preflight") phase = "abandoned";
-  };
-  req.on("aborted", abandonPreflight);
-  req.on("close", () => {
-    if (req.aborted) abandonPreflight();
-  });
+  const state = req as FeedbackRequest;
+  state.feedbackTempPaths = [];
+  state.feedbackUploadFinished = false;
+  state.feedbackFileBytes = 0;
   void purgeStaleTmpUploads(feedbackTmpDir)
     .catch(() => {})
     .then(async () => {
-      await waitForPreflightBlock();
-      if (phase !== "preflight" || req.aborted) return;
       await sweepFeedbackOrphansOnce();
-      if (phase !== "preflight" || req.aborted) return;
-      const declared = Number(req.headers["content-length"]);
-      const hasDeclaredLength = Number.isFinite(declared) && declared > 0;
-      // 分块请求没有 Content-Length。只预留一个步进，再随正文增长；
-      // 不能把剩余配额一次划给这条连接。单个请求仍受 requestUploadBudget 的上限约束。
-      let reservation: FeedbackStorageReservation;
-      try {
-        reservation = hasDeclaredLength
-          ? await reserveFeedbackStorage(feedbackRoot, feedbackTmpDir, declared)
-          : await beginChunkedFeedbackReservation(feedbackRoot, feedbackTmpDir);
-      } catch (err) {
-        if (phase !== "preflight" || req.aborted) return;
-        if (err instanceof FeedbackStorageQuotaError) {
-          res.status(413).json({ ok: false, code: err.code, error: err.message });
-          res.once("finish", () => req.destroy());
-          return;
-        }
-        if (err instanceof FeedbackStorageUnavailableError) {
-          res.status(500).json({ ok: false, code: err.code, error: err.message });
-          res.once("finish", () => req.destroy());
-          return;
-        }
-        throw err;
-      }
-      if (phase !== "preflight" || req.aborted) {
-        await releaseFeedbackUpload(feedbackRoot, feedbackTmpDir, reservation, tempPathsOf(req));
+      // 上传前重新核对一次树外变化（管理员手工清理孤儿、删除暂存等），
+      // 同一次上传内部再复用缓存，避免每个预留步长都全量扫盘。
+      invalidateFeedbackStorageUsage();
+      // 初始不占额度：只有真的写到文件字节才在存储引擎里申请预留，
+      // 纯文本反馈、只声明长度不传文件的慢请求都不会锁住附件配额。
+      const reservation = createFeedbackStorageReservation(
+        feedbackRoot,
+        feedbackTmpDir,
+        MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES
+      );
+      if (res.destroyed || req.destroyed) {
+        reservation.release();
         return;
       }
-      phase = "multer";
-      (req as FeedbackRequest).feedbackReservation = reservation;
-      if (!hasDeclaredLength) bindChunkedQuota(req, res, reservation);
+      state.feedbackReservation = reservation;
+      // 断连兜底：multer 通常会在断流时自行回滚并回调，回调里会先清理再释放；
+      // 这里只处理「回调始终没来」的情况，且不再进入路由后才触发。
+      res.once("close", () => {
+        if (state.feedbackUploadFinished) return;
+        const timer = setTimeout(() => {
+          if (state.feedbackUploadFinished) return;
+          void finalizeFeedbackUpload(state);
+        }, 1000);
+        timer.unref();
+      });
 
-      let multerStarted = false;
       attachmentBudget(req, res, () => {
-        multerStarted = true;
         upload.array("files", MAX_FEEDBACK_ATTACHMENTS)(req, res, async (error) => {
+          state.feedbackUploadFinished = true;
           if (!error) {
             next();
             return;
           }
-          // 先删掉本请求已经写完的临时文件，再释放预留。req.files 在中断时经常是空的。
-          await releaseFeedbackUpload(feedbackRoot, feedbackTmpDir, reservation, tempPathsOf(req));
+          await finalizeFeedbackUpload(state);
           if (isUploadAlreadyRejected(req, res)) return;
+          if (error instanceof FeedbackStorageQuotaError) {
+            res.status(413).json({ ok: false, code: error.code, error: error.message });
+            return;
+          }
+          if (error instanceof FeedbackStorageUnavailableError) {
+            res.status(500).json({ ok: false, code: error.code, error: error.message });
+            return;
+          }
           if (error instanceof multer.MulterError) {
             if (error.code === "LIMIT_FILE_SIZE") {
               res.status(413).json({
@@ -454,10 +644,6 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
           next(error);
         });
       });
-      // 请求级预算在进 multer 之前就拒绝时，回调不会执行，预留必须在这里放掉。
-      if (!multerStarted) {
-        await releaseFeedbackUpload(feedbackRoot, feedbackTmpDir, reservation, tempPathsOf(req));
-      }
     })
     .catch(next);
 };
@@ -549,10 +735,11 @@ router.get("/mine", requireTeacher, (req, res) => {
 
 // POST /api/feedback — 提交反馈（教师 / 管理员，multipart 可带附件）
 router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
+  const state = req as FeedbackRequest;
   const files = ((req.files as Express.Multer.File[] | undefined) ?? []).filter(Boolean);
-  const reservation = (req as FeedbackRequest).feedbackReservation ?? null;
+  const reservation = state.feedbackReservation ?? null;
   const fail = async (message: string, status = 400): Promise<void> => {
-    await releaseFeedbackUpload(feedbackRoot, feedbackTmpDir, reservation, tempPathsOf(req));
+    await finalizeFeedbackUpload(state);
     res.status(status).json({ ok: false, error: message });
   };
 
@@ -589,10 +776,8 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
     try {
       reportId = await settleFeedbackStorage(
         feedbackRoot,
-        feedbackTmpDir,
         reservation,
         incomingBytes,
-        tempPathsOf(req),
         async () => {
           const stored: Array<{ filename: string; storedPath: string; mime: string | null; sizeBytes: number }> = [];
           if (files.length > 0) await mkdir(finalDir, { recursive: true });
@@ -639,18 +824,19 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
         }
       );
     } catch (err) {
-      // 只处理提交前的失败。事务提交之后的容量核算失败由 settle 吞掉并返回 id，不能进这里删目录。
       try {
         await rm(finalDir, { recursive: true, force: true });
       } catch (cleanupErr) {
         pendingOrphanDirs.add(finalDir);
+        invalidateFeedbackStorageUsage();
         console.error("[feedback] 附件清理失败，已排队重试:", cleanupErr);
       }
-      await releaseFeedbackUpload(feedbackRoot, feedbackTmpDir, reservation, tempPathsOf(req));
+      await finalizeFeedbackUpload(state);
       throw err;
     }
     res.status(201).json({ ok: true, data: { id: reportId } });
   } catch (err: any) {
+    await finalizeFeedbackUpload(state);
     if (err instanceof FeedbackStorageQuotaError) {
       if (!res.headersSent) {
         res.status(413).json({ ok: false, code: err.code, error: err.message });
@@ -742,6 +928,7 @@ router.delete("/:id", requireAdmin, async (req, res) => {
   try {
     const id = parsePositiveId(req.params.id);
     if (!id) return res.status(400).json({ ok: false, error: "无效的反馈 ID" });
+    await reconcileFeedbackTrashOnce();
     const db = getMysqlDb();
     const existing = await db.get<{ id: number }>("SELECT id FROM feedback_reports WHERE id = ?", id);
     if (!existing) return res.status(404).json({ ok: false, error: "反馈不存在" });
@@ -762,29 +949,39 @@ router.delete("/:id", requireAdmin, async (req, res) => {
       }
       dirs.add(path.dirname(absPath));
     }
-    // 先清文件再删库：清理失败时保留反馈，管理员可以重试；反过来会留下无法再定位的孤儿文件。
-    for (const dir of dirs) {
-      if (!dir.startsWith(feedbackRootPrefix)) {
-        return res.status(500).json({
-          ok: false,
-          code: "FEEDBACK_ATTACHMENT_PATH_INVALID",
-          error: "附件路径异常，未删除反馈，请稍后重试",
-        });
-      }
-      try {
-        await rm(dir, { recursive: true, force: true });
-      } catch (err) {
-        console.error("[feedback] 附件清理失败:", err);
-        return res.status(500).json({
-          ok: false,
-          code: "FEEDBACK_ATTACHMENT_CLEANUP_FAILED",
-          error: "附件文件清理失败，反馈未删除，请重试",
-        });
-      }
+    // 附件目录先原子移入 _trash：数据库删除成功后再清理；数据库失败则移回，
+    // 既不会留下指向空文件的记录，也不会留下无法定位的孤儿文件。
+    let staged: StagedAttachmentDir[];
+    try {
+      staged = await stageAttachmentDirs([...dirs]);
+    } catch (err) {
+      console.error("[feedback] 附件目录暂存失败:", err);
+      return res.status(500).json({
+        ok: false,
+        code: "FEEDBACK_ATTACHMENT_STAGE_FAILED",
+        error: "附件文件暂存失败，反馈未删除，请重试",
+      });
     }
 
-    const result = await db.run("DELETE FROM feedback_reports WHERE id = ?", id);
-    if (result.changes === 0) return res.status(404).json({ ok: false, error: "反馈不存在" });
+    let result;
+    try {
+      result = await db.run("DELETE FROM feedback_reports WHERE id = ?", id);
+    } catch (err) {
+      console.error("[feedback] 删除反馈失败，正在恢复附件:", err);
+      const restored = await restoreStagedDirs(staged);
+      return res.status(500).json({
+        ok: false,
+        code: "FEEDBACK_DELETE_FAILED",
+        error: restored
+          ? "删除反馈失败，附件已恢复，请重试"
+          : "删除反馈失败，附件已暂存并会继续恢复，请稍后重试",
+      });
+    }
+    if (result.changes === 0) {
+      await removeStagedDirs(staged);
+      return res.status(404).json({ ok: false, error: "反馈不存在" });
+    }
+    await removeStagedDirs(staged);
     res.json({ ok: true, message: "反馈已删除" });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
