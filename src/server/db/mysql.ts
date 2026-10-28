@@ -1171,7 +1171,7 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE answer_overrides MODIFY question_number DOUBLE",
   ] });
 
-  // v66: 问题反馈（#357），与 SQLite v66 对齐。
+  // v66: 问题反馈（#357），与 SQLite v66 对齐。放在 v65 之后，保持版本号递增。
   mariadbMigrations.push({ version: 66, name: "feedback-reports", sqls: [
     `CREATE TABLE IF NOT EXISTS feedback_reports (
       id           INT AUTO_INCREMENT PRIMARY KEY,
