@@ -42,6 +42,10 @@ import {
 
 const router = Router();
 router.use(authMiddleware);
+// 任何反馈请求都先核对一次暂存目录：进程在删除中途退出时，文件能尽快回到原位。
+router.use((_req, _res, next) => {
+  void reconcileFeedbackTrashOnce().finally(next);
+});
 
 const requireAdmin = requirePermission(PERMISSIONS.SYSTEM_MANAGE);
 const requireTeacher = requireRole("admin", "teacher");
@@ -74,15 +78,14 @@ const pendingOrphanDirs = new Set<string>();
 let orphanSweepDone = false;
 let orphanSweep: Promise<void> | null = null;
 let trashReconcile: Promise<void> | null = null;
-let trashReconciled = false;
 const activeStagedDirs = new Set<string>();
 
 /**
  * 删除反馈时附件目录先移到 `_trash`，数据库成功删除后再清理。
  * 这里处理崩溃/失败遗留：记录还在就移回原位，记录已经没了就删掉。
+ * 每次请求都核对一次（目录通常为空，readdir 成本很低），不依赖进程重启。
  */
 async function reconcileFeedbackTrashOnce(): Promise<void> {
-  if (trashReconciled) return;
   if (!trashReconcile) {
     trashReconcile = (async () => {
       try {
@@ -90,13 +93,9 @@ async function reconcileFeedbackTrashOnce(): Promise<void> {
         try {
           entries = await readdir(feedbackTrashDir, { withFileTypes: true });
         } catch (err: any) {
-          if (err?.code === "ENOENT") {
-            trashReconciled = true;
-            return;
-          }
+          if (err?.code === "ENOENT") return;
           throw err;
         }
-        let failed = false;
         for (const entry of entries) {
           if (!entry.isDirectory()) continue;
           const staged = path.join(feedbackTrashDir, entry.name);
@@ -114,11 +113,11 @@ async function reconcileFeedbackTrashOnce(): Promise<void> {
               await rm(staged, { recursive: true, force: true });
             }
           } catch (err) {
-            failed = true;
             console.error("[feedback] 暂存附件目录核对失败:", entry.name, err);
           }
         }
-        if (!failed) trashReconciled = true;
+      } catch (err) {
+        console.error("[feedback] 暂存附件目录核对失败:", err);
       } finally {
         trashReconcile = null;
       }
@@ -368,7 +367,6 @@ async function restoreStagedDirs(staged: StagedAttachmentDir[]): Promise<boolean
       await rename(entry.staged, entry.original);
     } catch (err) {
       ok = false;
-      trashReconciled = false;
       console.error("[feedback] 暂存附件目录恢复失败，后续请求会重试:", entry.staged, err);
     } finally {
       activeStagedDirs.delete(entry.staged);

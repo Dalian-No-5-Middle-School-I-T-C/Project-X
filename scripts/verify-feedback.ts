@@ -16,7 +16,7 @@
  *   8. 教师提交、自己的反馈 / 附件与越权拒绝
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -674,6 +674,32 @@ async function main(): Promise<void> {
     "数据库删除失败后附件文件已恢复");
   ok(!existsSync(trashDir) || readdirSync(trashDir).length === 0, "数据库删除失败后暂存目录已清空");
   ok((await call("DELETE", `/${restoreId}`, adminToken)).status === 200, "附件恢复后可再次删除");
+
+  // 模拟进程在「已移入 _trash、尚未删库」时退出：后续请求应把目录恢复回原位。
+  const crashForm = new FormData();
+  crashForm.set("title", "删除中断恢复");
+  crashForm.set("content", "正文");
+  crashForm.append("files", new Blob(["crash-me"], { type: "text/plain" }), "crash.txt");
+  const crashReport = await upload(crashForm, adminToken);
+  ok(crashReport.status === 201, "准备删除中断恢复测试");
+  const crashId = Number(crashReport.json?.data?.id);
+  const crashRow = await getMysqlDb().get<{ stored_path: string }>(
+    "SELECT stored_path FROM feedback_attachments WHERE feedback_id = ?",
+    crashId
+  );
+  const crashDir = path.dirname(path.resolve(process.env.ANSWER_CARD_DATA_DIR!, crashRow!.stored_path));
+  mkdirSync(trashDir, { recursive: true });
+  renameSync(crashDir, path.join(trashDir, path.basename(crashDir)));
+  ok(!existsSync(crashDir), "模拟删除中断后附件目录在暂存区");
+  const afterCrashList = await call("GET", "?limit=1", adminToken);
+  ok(afterCrashList.status === 200 && existsSync(crashDir), "后续请求已恢复暂存附件目录");
+  const crashAttachment = afterCrashList.json?.data?.[0]?.attachments?.[0];
+  const crashDownload = await fetch(`${base}/${crashId}/attachments/${crashAttachment?.id}`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  ok(crashDownload.status === 200 && (await crashDownload.text()) === "crash-me", "恢复后附件可下载");
+  ok(!existsSync(trashDir) || readdirSync(trashDir).length === 0, "恢复后暂存目录为空");
+  ok((await call("DELETE", `/${crashId}`, adminToken)).status === 200, "清理删除中断恢复测试");
 
   const fieldsForm = new FormData();
   fieldsForm.set("title", "字段过多");
