@@ -71,7 +71,14 @@ try {
   mkdirSync(feedbackTmpDir, { recursive: true });
   for (const entry of readdirSync(feedbackTmpDir, { withFileTypes: true })) {
     if (!entry.isFile()) continue;
-    try { unlinkSync(path.join(feedbackTmpDir, entry.name)); } catch { /* 留给下一次清理 */ }
+    const filePath = path.join(feedbackTmpDir, entry.name);
+    try {
+      unlinkSync(filePath);
+    } catch {
+      // 重启后没有存活的预留；删不掉的年轻临时件也要立刻按占盘计入准入，
+      // 不能靠 _tmp 的 10 分钟宽限期（它假设文件有活跃预留）。
+      markFeedbackTempFileLeaked(filePath);
+    }
   }
 } catch { /* 目录不可用；真正上传时会再报错 */ }
 
