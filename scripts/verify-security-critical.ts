@@ -2069,8 +2069,10 @@ async function main(): Promise<void> {
       const parallelBackups = (): string[] => existsSync(backupDir)
         ? readdirSync(backupDir).filter((name) => name.startsWith(`projectx_exam${parallelExam}_`))
         : [];
-      for (let i = 0; i < 40 && parallelBackups().length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
-      // 备份是 fire-and-forget：再等一拍，让可能出现的重复备份有机会落盘
+      // 结考备份是 fire-and-forget；CI 高负载下 Online Backup 可能超过 2 秒，
+      // 这里只断言「最终只有 1 份」，不把落盘耗时当成失败。
+      for (let i = 0; i < 200 && parallelBackups().length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+      // 再等一拍，让可能出现的重复备份有机会落盘
       await new Promise((resolve) => setTimeout(resolve, 400));
       check(parallelBackups().length === 1,
         `并发判分只产生 1 份结考备份（实际 ${parallelBackups().length}：${parallelBackups().join(",") || "无"}）`);
@@ -2084,8 +2086,8 @@ async function main(): Promise<void> {
         ? readdirSync(backupDir).filter((name) => name.startsWith(`projectx_exam${rerunExam}_`))
         : [];
       const waitForBackup = async (): Promise<void> => {
-        for (let i = 0; i < 40 && rerunBackups().length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
-        // 备份是 fire-and-forget：再等一拍，让可能出现的重复备份有机会落盘
+        for (let i = 0; i < 200 && rerunBackups().length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+        // 再等一拍，让可能出现的重复备份有机会落盘
         await new Promise((resolve) => setTimeout(resolve, 400));
       };
 
