@@ -442,6 +442,7 @@ async function removeStagedDirs(staged: StagedAttachmentDir[]): Promise<void> {
       invalidateFeedbackStorageUsage();
     } catch (err) {
       pendingOrphanDirs.add(entry.staged);
+      invalidateFeedbackStorageUsage();
       console.error("[feedback] 暂存附件清理失败，已排队重试:", entry.staged, err);
     } finally {
       activeStagedDirs.delete(entry.staged);
@@ -816,6 +817,7 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
         await rm(finalDir, { recursive: true, force: true });
       } catch (cleanupErr) {
         pendingOrphanDirs.add(finalDir);
+        invalidateFeedbackStorageUsage();
         console.error("[feedback] 附件清理失败，已排队重试:", cleanupErr);
       }
       await finalizeFeedbackUpload(state);
