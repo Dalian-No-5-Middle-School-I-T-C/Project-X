@@ -348,8 +348,14 @@ async function stageAttachmentDirs(dirs: string[]): Promise<StagedAttachmentDir[
   try {
     for (const dir of dirs) {
       const target = path.join(feedbackTrashDir, path.basename(dir));
-      await rename(dir, target);
+      // 先登记再移动：避免核对逻辑在 rename 完成与登记之间把目录抢回去。
       activeStagedDirs.add(target);
+      try {
+        await rename(dir, target);
+      } catch (err) {
+        activeStagedDirs.delete(target);
+        throw err;
+      }
       staged.push({ original: dir, staged: target });
     }
   } catch (err) {
