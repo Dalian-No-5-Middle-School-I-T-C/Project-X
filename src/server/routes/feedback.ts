@@ -422,7 +422,8 @@ async function stageAttachmentDirs(dirs: string[]): Promise<StagedAttachmentDir[
   try {
     for (const dir of dirs) {
       const target = path.join(feedbackTrashDir, path.basename(dir));
-      // 先登记再移动：避免核对逻辑在 rename 完成与登记之间把目录抢回去。
+      // 同一个 _trash 目录只能由一个删除请求持有；不能复用别人的标记。
+      if (activeStagedDirs.has(target)) throw new FeedbackDeleteInProgressError();
       activeStagedDirs.add(target);
       try {
         await rename(dir, target);
@@ -958,71 +959,93 @@ router.patch("/:id", requireAdmin, async (req, res) => {
   }
 });
 
+// 同一反馈的 DELETE 串行执行：并发删除不会同时把同一个目录搬进 _trash。
+const feedbackDeleteChains = new Map<number, Promise<unknown>>();
+function enqueueFeedbackDelete<T>(id: number, work: () => Promise<T>): Promise<T> {
+  const previous = feedbackDeleteChains.get(id) ?? Promise.resolve();
+  const run = previous.then(work, work);
+  const tail = run.then(() => undefined, () => undefined);
+  feedbackDeleteChains.set(id, tail);
+  void tail.then(() => {
+    if (feedbackDeleteChains.get(id) === tail) feedbackDeleteChains.delete(id);
+  });
+  return run;
+}
+
 // DELETE /api/feedback/:id — 删除反馈并清理附件文件（管理员）
 router.delete("/:id", requireAdmin, async (req, res) => {
+  const id = parsePositiveId(req.params.id);
+  if (!id) {
+    res.status(400).json({ ok: false, error: "无效的反馈 ID" });
+    return;
+  }
   try {
-    const id = parsePositiveId(req.params.id);
-    if (!id) return res.status(400).json({ ok: false, error: "无效的反馈 ID" });
-    await reconcileFeedbackTrashOnce();
-    const db = getMysqlDb();
-    const existing = await db.get<{ id: number }>("SELECT id FROM feedback_reports WHERE id = ?", id);
-    if (!existing) return res.status(404).json({ ok: false, error: "反馈不存在" });
+    await enqueueFeedbackDelete(id, async () => {
+      try {
+        await reconcileFeedbackTrashOnce();
+        const db = getMysqlDb();
+        const existing = await db.get<{ id: number }>("SELECT id FROM feedback_reports WHERE id = ?", id);
+        if (!existing) return res.status(404).json({ ok: false, error: "反馈不存在" });
 
-    const attachments = await db.all<{ stored_path: string }>(
-      "SELECT stored_path FROM feedback_attachments WHERE feedback_id = ?",
-      id
-    );
-    const dirs = new Set<string>();
-    for (const attachment of attachments) {
-      const absPath = resolveStoredPath(attachment.stored_path);
-      if (!absPath) {
-        return res.status(500).json({
-          ok: false,
-          code: "FEEDBACK_ATTACHMENT_PATH_INVALID",
-          error: "附件路径异常，未删除反馈，请稍后重试",
-        });
-      }
-      dirs.add(path.dirname(absPath));
-    }
-    // 附件目录先原子移入 _trash：数据库删除成功后再清理；数据库失败则移回，
-    // 既不会留下指向空文件的记录，也不会留下无法定位的孤儿文件。
-    let staged: StagedAttachmentDir[];
-    try {
-      staged = await stageAttachmentDirs([...dirs]);
-    } catch (err) {
-      if (err instanceof FeedbackDeleteInProgressError) {
-        return res.status(409).json({ ok: false, code: err.code, error: err.message });
-      }
-      console.error("[feedback] 附件目录暂存失败:", err);
-      return res.status(500).json({
-        ok: false,
-        code: "FEEDBACK_ATTACHMENT_STAGE_FAILED",
-        error: "附件文件暂存失败，反馈未删除，请重试",
-      });
-    }
+        const attachments = await db.all<{ stored_path: string }>(
+          "SELECT stored_path FROM feedback_attachments WHERE feedback_id = ?",
+          id
+        );
+        const dirs = new Set<string>();
+        for (const attachment of attachments) {
+          const absPath = resolveStoredPath(attachment.stored_path);
+          if (!absPath) {
+            return res.status(500).json({
+              ok: false,
+              code: "FEEDBACK_ATTACHMENT_PATH_INVALID",
+              error: "附件路径异常，未删除反馈，请稍后重试",
+            });
+          }
+          dirs.add(path.dirname(absPath));
+        }
+        // 附件目录先原子移入 _trash：数据库删除成功后再清理；数据库失败则移回，
+        // 既不会留下指向空文件的记录，也不会留下无法定位的孤儿文件。
+        let staged: StagedAttachmentDir[];
+        try {
+          staged = await stageAttachmentDirs([...dirs]);
+        } catch (err) {
+          if (err instanceof FeedbackDeleteInProgressError) {
+            return res.status(409).json({ ok: false, code: err.code, error: err.message });
+          }
+          console.error("[feedback] 附件目录暂存失败:", err);
+          return res.status(500).json({
+            ok: false,
+            code: "FEEDBACK_ATTACHMENT_STAGE_FAILED",
+            error: "附件文件暂存失败，反馈未删除，请重试",
+          });
+        }
 
-    let result;
-    try {
-      result = await db.run("DELETE FROM feedback_reports WHERE id = ?", id);
-    } catch (err) {
-      console.error("[feedback] 删除反馈失败，正在恢复附件:", err);
-      const restored = await restoreStagedDirs(staged);
-      return res.status(500).json({
-        ok: false,
-        code: "FEEDBACK_DELETE_FAILED",
-        error: restored
-          ? "删除反馈失败，附件已恢复，请重试"
-          : "删除反馈失败，附件已暂存并会继续恢复，请稍后重试",
-      });
-    }
-    if (result.changes === 0) {
-      await removeStagedDirs(staged);
-      return res.status(404).json({ ok: false, error: "反馈不存在" });
-    }
-    await removeStagedDirs(staged);
-    res.json({ ok: true, message: "反馈已删除" });
+        let result;
+        try {
+          result = await db.run("DELETE FROM feedback_reports WHERE id = ?", id);
+        } catch (err) {
+          console.error("[feedback] 删除反馈失败，正在恢复附件:", err);
+          const restored = await restoreStagedDirs(staged);
+          return res.status(500).json({
+            ok: false,
+            code: "FEEDBACK_DELETE_FAILED",
+            error: restored
+              ? "删除反馈失败，附件已恢复，请重试"
+              : "删除反馈失败，附件已暂存并会继续恢复，请稍后重试",
+          });
+        }
+        if (result.changes === 0) {
+          await removeStagedDirs(staged);
+          return res.status(404).json({ ok: false, error: "反馈不存在" });
+        }
+        await removeStagedDirs(staged);
+        res.json({ ok: true, message: "反馈已删除" });
+      } catch (err: any) {
+        if (!res.headersSent) res.status(500).json({ ok: false, error: err.message });
+      }
+    });
   } catch (err: any) {
-    res.status(500).json({ ok: false, error: err.message });
+    if (!res.headersSent) res.status(500).json({ ok: false, error: err.message });
   }
 });
 
