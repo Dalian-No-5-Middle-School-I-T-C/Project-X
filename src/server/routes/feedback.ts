@@ -131,6 +131,8 @@ type FeedbackRequest = Express.Request & {
   feedbackReservation?: FeedbackStorageReservation;
   /** multer 在 filename 阶段逐个登记，失败/断连时按这份清单清理（req.files 可能还没赋值）。 */
   feedbackTempPaths?: string[];
+  /** 已经遇到文件 part：在此之前收到的只是文本字段，不占用附件配额。 */
+  feedbackHasFiles?: boolean;
   /** multer 回调已经给出结果：此后由路由或错误处理负责清理，断连兜底不再介入。 */
   feedbackUploadFinished?: boolean;
   feedbackFinalize?: Promise<void>;
@@ -330,6 +332,16 @@ const upload = multer({
       cb(null, name);
     },
   }),
+  // 配额已满时仍允许解析纯文本表单；只有真的带文件才拒绝（此时还没有写入任何文件）。
+  fileFilter: (req, _file, cb) => {
+    const state = req as FeedbackRequest;
+    state.feedbackHasFiles = true;
+    if (!state.feedbackReservation) {
+      cb(new FeedbackStorageQuotaError());
+      return;
+    }
+    cb(null, true);
+  },
   limits: {
     fileSize: MAX_FEEDBACK_ATTACHMENT_BYTES,
     files: MAX_FEEDBACK_ATTACHMENTS,
@@ -352,6 +364,7 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
   }
   const state = req as FeedbackRequest;
   state.feedbackTempPaths = [];
+  state.feedbackHasFiles = false;
   state.feedbackUploadFinished = false;
   void purgeStaleTmpUploads(feedbackTmpDir)
     .catch(() => {})
@@ -360,31 +373,28 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
       const declared = Number(req.headers["content-length"]);
       const hasDeclaredLength = Number.isFinite(declared) && declared > 0;
       let reservation: FeedbackStorageReservation | null = null;
+      // 优先按整包 Content-Length 预留；装不下时降级为按文件字节渐进预留，
+      // 这样配额接近上限时纯文本反馈仍能提交，带文件的请求也不会先把整包写进 _tmp。
+      let progressive = !hasDeclaredLength;
       if (hasDeclaredLength) {
         try {
           reservation = await reserveFeedbackStorage(feedbackRoot, feedbackTmpDir, declared);
         } catch (err) {
-          if (err instanceof FeedbackStorageQuotaError) {
-            res.status(413).json({ ok: false, code: err.code, error: err.message });
-            return;
-          }
-          throw err;
+          if (!(err instanceof FeedbackStorageQuotaError)) throw err;
+          progressive = true;
         }
-      } else {
-        // chunked 请求没有 Content-Length：先只预留一小步，正文到达时再分块追加，
-        // 单个慢速连接不会把全部剩余配额一次性锁死，小附件也不会被整块上限误判。
+      }
+      if (progressive) {
         try {
           reservation = await reserveRemainingFeedbackStorage(
             feedbackRoot,
             feedbackTmpDir,
-            MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES
+            hasDeclaredLength ? Math.min(MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES, declared) : MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES
           );
         } catch (err) {
-          if (err instanceof FeedbackStorageQuotaError) {
-            res.status(413).json({ ok: false, code: err.code, error: err.message });
-            return;
-          }
-          throw err;
+          if (!(err instanceof FeedbackStorageQuotaError)) throw err;
+          // 附件配额已满：不预留；纯文本仍可提交，带文件会在 fileFilter 处回 413。
+          reservation = null;
         }
       }
       if (res.destroyed || req.destroyed) {
@@ -403,7 +413,7 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
         timer.unref();
       });
 
-      if (!hasDeclaredLength && reservation) {
+      if (progressive && reservation) {
         const step = chunkedReservationStep();
         let received = 0;
         let growth: Promise<unknown> | null = null;
@@ -426,6 +436,8 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
         req.on("data", (chunk: Buffer) => {
           if (streamRejected || growth) return;
           received += chunk.length;
+          // 第一个文件 part 之前收到的只是文本字段：它们有独立的字段上限，不占附件配额。
+          if (!state.feedbackHasFiles) return;
           const held = reservation.bytes;
           if (held >= reservation.limit) return; // 单请求上限交给 uploadBudget
           const needCoverage = received > held;
@@ -466,6 +478,10 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
           }
           await finalizeFeedbackUpload(state);
           if (isUploadAlreadyRejected(req, res)) return;
+          if (error instanceof FeedbackStorageQuotaError) {
+            res.status(413).json({ ok: false, code: error.code, error: error.message });
+            return;
+          }
           if (error instanceof multer.MulterError) {
             if (error.code === "LIMIT_FILE_SIZE") {
               res.status(413).json({

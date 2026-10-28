@@ -16,7 +16,7 @@
  *   8. 教师提交、自己的反馈 / 附件与越权拒绝
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -279,6 +279,20 @@ async function main(): Promise<void> {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     return predicate();
+  }
+
+  /** 已落盘的反馈附件字节数（不含 _tmp 暂存）。 */
+  function feedbackDiskBytes(dir: string): number {
+    let total = 0;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== "_tmp") total += feedbackDiskBytes(full);
+      } else if (entry.isFile()) {
+        total += statSync(full).size;
+      }
+    }
+    return total;
   }
 
   ok((await call("GET", "")).status === 401, "未登录读取反馈返回 401");
@@ -586,6 +600,36 @@ async function main(): Promise<void> {
   );
   await new Promise((resolve) => setTimeout(resolve, 500));
   ok(!existsSync(tempDir) || readdirSync(tempDir).length === 0, "chunked 拒绝后没有遗留临时文件");
+
+  // 附件配额接近上限时，纯文本反馈不占附件配额：整包预留下不去也要能提交。
+  const fillForm = new FormData();
+  fillForm.set("title", "填满附件容量");
+  fillForm.set("content", "正文");
+  const fillSize = feedbackStorage.MAX_FEEDBACK_STORAGE_BYTES - feedbackDiskBytes(feedbackRoot) - 2000;
+  ok(fillSize > 0, "接近上限的填充大小有效");
+  fillForm.append("files", new Blob([new Uint8Array(fillSize)]), "fill.bin");
+  const filled = await upload(fillForm, adminToken);
+  ok(filled.status === 201, "接近上限的附件仍可提交");
+
+  const textOnlyForm = new FormData();
+  textOnlyForm.set("title", "满额纯文本");
+  textOnlyForm.set("content", "x".repeat(3000));
+  textOnlyForm.set("category", "problem");
+  const textOnly = await upload(textOnlyForm, adminToken);
+  ok(textOnly.status === 201, "附件配额接近上限时纯文字反馈仍可提交");
+
+  const textBoundary = `----fbtext${Date.now()}`;
+  const textChunkedBody = Buffer.from([
+    `--${textBoundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\nchunked 纯文本\r\n`,
+    `--${textBoundary}\r\nContent-Disposition: form-data; name="content"\r\n\r\n${"y".repeat(3000)}\r\n`,
+    `--${textBoundary}--\r\n`,
+  ].join(""), "utf8");
+  const textChunked = await chunkedUpload(adminToken, textBoundary, textChunkedBody);
+  ok(textChunked.status === 201, "chunked 纯文字反馈也不占附件配额");
+
+  ok((await call("DELETE", `/${Number(filled.json?.data?.id)}`, adminToken)).status === 200, "清理填满容量反馈");
+  ok((await call("DELETE", `/${Number(textOnly.json?.data?.id)}`, adminToken)).status === 200, "清理纯文本反馈");
+  ok((await call("DELETE", `/${Number(textChunked.json?.data?.id)}`, adminToken)).status === 200, "清理 chunked 纯文本反馈");
 
   const fieldsForm = new FormData();
   fieldsForm.set("title", "字段过多");
