@@ -42,6 +42,7 @@ await act(async () => { dom.window.dispatchEvent(new dom.window.Event("projectx:
 const recovered = document.querySelector('[role="status"]');
 assert(recovered, "崩溃重载后要提示已自动恢复");
 assert(recovered!.textContent?.includes("界面已自动恢复"), "恢复提示文案");
+assert(recovered!.className.includes("z-(--px-z-toast)"), "层级走语义令牌阶梯，不写死 z-index");
 assert.equal(recoveredFlag.__projectxRendererRecovered, false, "标记读一次即清，后续导航不再重复弹");
 await act(async () => { button(recovered!, "知道了")!.click(); });
 assert.equal(document.querySelector('[role="status"]'), null, "关闭后恢复提示消失");
