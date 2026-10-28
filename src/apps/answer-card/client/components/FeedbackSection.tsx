@@ -299,7 +299,7 @@ export function FeedbackSection({ mode = "admin" }: { mode?: "admin" | "mine" })
       setFormMsg({
         tone: "success",
         text: isAdminMode
-          ? "已提交。反馈保存在本系统数据库，管理员可在下方查看和处理。"
+          ? "已提交，可在下方查看和处理。"
           : "已提交。管理员处理后可在这里查看状态。",
       });
       if (filterRef.current !== "all") setFilter("all");
@@ -387,7 +387,7 @@ export function FeedbackSection({ mode = "admin" }: { mode?: "admin" | "mine" })
       </div>
       <p className="text-xs text-muted-foreground">
         {isAdminMode
-          ? `扫卡室或教室遇到问题时在这里提交，会自动带上版本、页面与系统信息；可附带最多 ${MAX_FEEDBACK_ATTACHMENTS} 个文件（单个小于 ${MAX_FEEDBACK_ATTACHMENT_BYTES / 1024 / 1024} MB）。反馈保存在本系统数据库，不依赖 GitHub。管理员可在下方查看、标记处理，需要转发时一键复制成 Markdown。`
+          ? `扫卡室或教室遇到问题时在这里提交，会自动带上版本、页面与系统信息；可附带最多 ${MAX_FEEDBACK_ATTACHMENTS} 个文件（单个小于 ${MAX_FEEDBACK_ATTACHMENT_BYTES / 1024 / 1024} MB）。提交后可在下方查看、标记处理，需要转发时一键复制成 Markdown。`
           : `遇到问题时在这里提交，会自动带上版本、页面与系统信息；可附带最多 ${MAX_FEEDBACK_ATTACHMENTS} 个文件（单个小于 ${MAX_FEEDBACK_ATTACHMENT_BYTES / 1024 / 1024} MB）。管理员处理后可在这里查看状态和附件。`}
       </p>
 

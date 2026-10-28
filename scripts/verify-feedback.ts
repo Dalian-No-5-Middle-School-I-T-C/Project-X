@@ -12,7 +12,8 @@
  *   4. 客户端环境信息白名单与服务端环境信息合并
  *   5. 标记处理后 resolved_at / resolved_by 的写入与撤销
  *   6. 附件 multipart 上传、下载权限、15 / 16 个上限与删除清理
- *   7. 教师提交、自己的反馈 / 附件与越权拒绝
+ *   7. chunked 分块预留、慢速并发、断连临时文件清理
+ *   8. 教师提交、自己的反馈 / 附件与越权拒绝
  */
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -88,6 +89,7 @@ const { databaseTimestamp } = await import("../src/server/db/timestamp");
 const feedbackModule = await import("../src/server/routes/feedback");
 const feedbackRouter = feedbackModule.default;
 const { withTimezone } = feedbackModule;
+const feedbackStorage = await import("../src/server/lib/feedbackStorage");
 const express = (await import("express")).default;
 
 async function main(): Promise<void> {
@@ -240,6 +242,45 @@ async function main(): Promise<void> {
     });
   }
 
+  /** 可暂停的 chunked multipart：先写一段正文，等并发请求跑完再补完。 */
+  function openChunkedUpload(token: string, boundary: string) {
+    let settle!: (result: { status: number; json: any; error?: string }) => void;
+    const done = new Promise<{ status: number; json: any; error?: string }>((resolve) => { settle = resolve; });
+    const url = new URL(base);
+    const request = http.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      },
+    }, (response) => {
+      let raw = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { raw += chunk; });
+      response.on("end", () => {
+        let json: any = null;
+        try { json = JSON.parse(raw); } catch { /* empty */ }
+        settle({ status: response.statusCode ?? 0, json });
+      });
+    });
+    request.on("error", (error: NodeJS.ErrnoException) => {
+      settle({ status: 0, json: null, error: error.code ?? "ERROR" });
+    });
+    return { request, done };
+  }
+
+  async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (predicate()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return predicate();
+  }
+
   ok((await call("GET", "")).status === 401, "未登录读取反馈返回 401");
   ok((await call("POST", "", undefined, { title: "x", content: "y" })).status === 401, "未登录提交反馈返回 401");
   ok((await call("GET", "", teacherToken)).status === 403, "教师读取全部反馈返回 403");
@@ -367,10 +408,85 @@ async function main(): Promise<void> {
     headers: { Authorization: `Bearer ${adminToken}` },
   })).status === 404, "删除后附件不可下载");
   const feedbackRoot = path.join(process.env.ANSWER_CARD_DATA_DIR!, "feedback");
+  const tempDir = path.join(feedbackRoot, "_tmp");
   const leftDirs = existsSync(feedbackRoot)
     ? readdirSync(feedbackRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() && entry.name !== "_tmp")
     : [];
   ok(leftDirs.length === 0, "删除反馈后附件目录已清理");
+
+  section("6.1 chunked 分块预留与断连清理");
+  const quotaRoot = path.join(tmpDir, "quota-unit");
+  const quotaTmp = path.join(quotaRoot, "_tmp");
+  mkdirSync(quotaTmp, { recursive: true });
+  const step = feedbackStorage.chunkedReservationStep();
+  ok(step > 0 && step < feedbackStorage.MAX_FEEDBACK_STORAGE_BYTES, "chunked 预留步长小于总配额");
+  const unitReservation = await feedbackStorage.reserveRemainingFeedbackStorage(quotaRoot, quotaTmp, 10 * 1024 * 1024);
+  ok(unitReservation.bytes === step, "chunked 初始只预留一步，不锁死剩余配额");
+  await unitReservation.grow(step);
+  ok(unitReservation.bytes === step * 2, "chunked 可按接收进度追加预留");
+  unitReservation.release();
+
+  // 慢速 chunked 在途时，声明长度的上传仍应被准入（旧实现会把剩余配额整块占走）。
+  const slowBoundary = `----fbslow${Date.now()}`;
+  const slow = openChunkedUpload(adminToken, slowBoundary);
+  slow.request.write([
+    `--${slowBoundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n慢速 chunked\r\n`,
+    `--${slowBoundary}\r\nContent-Disposition: form-data; name="content"\r\n\r\n正文\r\n`,
+    `--${slowBoundary}\r\nContent-Disposition: form-data; name="files"; filename="slow.txt"\r\nContent-Type: text/plain\r\n\r\n`,
+  ].join(""), "utf8");
+  slow.request.write(Buffer.alloc(20 * 1024, 0x61));
+  // 等临时文件真正落盘，确认慢速请求已建立预留后再发起并发上传。
+  ok(await waitFor(() => existsSync(tempDir) && readdirSync(tempDir).length > 0), "慢速 chunked 已开始写入临时文件");
+
+  const declaredForm = new FormData();
+  declaredForm.set("title", "并发声明长度");
+  declaredForm.set("content", "正文");
+  declaredForm.append("files", new Blob([new Uint8Array(600 * 1024)]), "declared.bin");
+  const declaredRes = await upload(declaredForm, adminToken);
+  ok(declaredRes.status === 201, "慢速 chunked 只占一步预留，并发上传不被饿死");
+
+  slow.request.end(`\r\n--${slowBoundary}--\r\n`);
+  const slowRes = await slow.done;
+  ok(slowRes.status === 201, "慢速 chunked 上传完成");
+  ok((await call("DELETE", `/${Number(declaredRes.json?.data?.id)}`, adminToken)).status === 200, "清理并发测试反馈");
+  ok((await call("DELETE", `/${Number(slowRes.json?.data?.id)}`, adminToken)).status === 200, "清理慢速测试反馈");
+
+  // 超过一步的 chunked 上传会继续追加预留。
+  const growBoundary = `----fbgrow${Date.now()}`;
+  const growBody = Buffer.concat([
+    Buffer.from([
+      `--${growBoundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\nchunked 追加预留\r\n`,
+      `--${growBoundary}\r\nContent-Disposition: form-data; name="content"\r\n\r\n正文\r\n`,
+      `--${growBoundary}\r\nContent-Disposition: form-data; name="files"; filename="grow.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+    ].join(""), "utf8"),
+    Buffer.alloc(300 * 1024, 0x62),
+    Buffer.from(`\r\n--${growBoundary}--\r\n`, "utf8"),
+  ]);
+  const grown = await chunkedUpload(adminToken, growBoundary, growBody);
+  ok(grown.status === 201, "chunked 超过一步时按进度追加预留");
+  ok((await call("DELETE", `/${Number(grown.json?.data?.id)}`, adminToken)).status === 200, "清理追加预留测试反馈");
+
+  // 多附件 chunked 中途断开：前序已完成的 part 也要清理，预留随后释放。
+  const abortBoundary = `----fbabort${Date.now()}`;
+  const aborted = openChunkedUpload(adminToken, abortBoundary);
+  aborted.request.write([
+    `--${abortBoundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n断连测试\r\n`,
+    `--${abortBoundary}\r\nContent-Disposition: form-data; name="content"\r\n\r\n正文\r\n`,
+    `--${abortBoundary}\r\nContent-Disposition: form-data; name="files"; filename="done.txt"\r\nContent-Type: text/plain\r\n\r\ndone\r\n`,
+    `--${abortBoundary}\r\nContent-Disposition: form-data; name="files"; filename="pending.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+  ].join(""), "utf8");
+  aborted.request.write(Buffer.alloc(10 * 1024, 0x63));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  aborted.request.destroy();
+  ok(await waitFor(() => !existsSync(tempDir) || readdirSync(tempDir).length === 0), "断连后已完成的临时 part 也被清理");
+
+  const afterAbortForm = new FormData();
+  afterAbortForm.set("title", "断连后继续上传");
+  afterAbortForm.set("content", "正文");
+  afterAbortForm.append("files", new Blob([new Uint8Array(700 * 1024)]), "after-abort.bin");
+  const afterAbort = await upload(afterAbortForm, adminToken);
+  ok(afterAbort.status === 201, "断连后预留已释放，后续上传不受影响");
+  ok((await call("DELETE", `/${Number(afterAbort.json?.data?.id)}`, adminToken)).status === 200, "清理断连测试反馈");
 
   const fifteen = new FormData();
   fifteen.set("title", "15 个附件");
@@ -380,7 +496,6 @@ async function main(): Promise<void> {
   const fifteenReport = (await call("GET", "?limit=1", adminToken)).json?.data?.[0];
   ok(fifteenReport?.attachments?.length === 15, "15 个附件全部入库");
 
-  const tempDir = path.join(feedbackRoot, "_tmp");
   mkdirSync(tempDir, { recursive: true });
   const orphanPath = path.join(tempDir, "orphan.bin");
   writeFileSync(orphanPath, Buffer.alloc(700 * 1024));
