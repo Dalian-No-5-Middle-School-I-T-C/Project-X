@@ -38,6 +38,10 @@ function ScannerAppInner() {
   const [selectedCardTitle, setSelectedCardTitle] = useState<string>("");
   // v2.7.2：本卡已扫完的批次会话；返回工作台续扫后新批次累加进来，异常队列共用同一份
   const [postSessions, setPostSessions] = useState<Array<{ sessionId: string; pageCount: number }>>([]);
+  /** 离开工作台时 selectedCardId 会先被清空，而扫描面板的卸载清理要等到提交阶段才归档；
+   *  落盘得认「刚才那张卡」，否则重选同一张卡时会被上次写下的旧列表覆盖。 */
+  const lastSelectedCardIdRef = useRef("");
+  useEffect(() => { if (selectedCardId) lastSelectedCardIdRef.current = selectedCardId; }, [selectedCardId]);
   /** 后处理页点「继续扫描」→ 回到工作台并自动开下一批；工作台消费后清掉，避免再次进入重复开扫。 */
   const [pendingContinueScan, setPendingContinueScan] = useState(false);
   // 安全 R35：离线用缓存卡进入时的工作台提示（版本 + 缓存时间），空串表示版本与服务器一致
@@ -122,11 +126,13 @@ function ScannerAppInner() {
   // 会话列表随卡片落到本机：崩溃重载后仍能回到同一批卷。
   // 未登录/登录态过期时不写：否则会把 userId 改成 null，崩溃后同一账号也恢复不了。
   useEffect(() => {
-    if (!selectedCardId || !user) return;
-    writePostprocessSessions(selectedCardId, postSessions, user.id);
+    // 返回卡片列表时 selectedCardId 已清空，但面板卸载清理刚归档的批次要归到刚才那张卡上。
+    const targetCardId = selectedCardId || lastSelectedCardIdRef.current;
+    if (!targetCardId || !user) return;
+    writePostprocessSessions(targetCardId, postSessions, user.id);
     // 只有在后处理页才记「活动卡」；老师主动回到工作台后崩溃，重载应回工作台，
     // 而不是被一个仅因存在历史会话就写回的标记拉回后处理。
-    if (page === "postprocess" && postSessions.length) writeActivePostprocess(selectedCardId, selectedCardTitle, user.id);
+    if (selectedCardId && page === "postprocess" && postSessions.length) writeActivePostprocess(selectedCardId, selectedCardTitle, user.id);
     else clearActivePostprocess(user.id);
   }, [selectedCardId, selectedCardTitle, postSessions, page, user?.id]);
 

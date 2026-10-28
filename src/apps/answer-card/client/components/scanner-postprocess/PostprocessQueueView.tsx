@@ -254,7 +254,8 @@ function useSinglePageImage(channel: PostprocessChannel, document: CorrectionDoc
     urlRef.current = null;
   }, []);
 
-  return imageUrl ? { [sourceId ?? ""]: imageUrl } : {};
+  // 每次渲染返回新对象会让下游的滚屏 effect 跟着每次按键重跑，把老师滚开的视图又拉回去。
+  return useMemo(() => (imageUrl ? { [sourceId ?? ""]: imageUrl } : {}), [imageUrl, sourceId]);
 }
 
 function PanelShell({ title, description, children }: { title: string; description?: string; children: ReactNode }) {

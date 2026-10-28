@@ -668,7 +668,13 @@ try {
       await settle();
     };
     assert.equal(input().value, "10001", "B 的初始考号来自卡面格选");
+    // 打字不能把视口拽回裁图区：滚动只该在换页/换图时发生。
+    let scrollCalls = 0;
+    const realScrollIntoView = dom.window.Element.prototype.scrollIntoView;
+    dom.window.Element.prototype.scrollIntoView = function () { scrollCalls += 1; };
     await setInput("1000");
+    dom.window.Element.prototype.scrollIntoView = realScrollIntoView;
+    assert.equal(scrollCalls, 0, "同一页输入考号不该触发滚屏");
     assert.equal(input().value, "1000", "B 只输了一半，保持手输值");
     await act(async () => { next().click(); });
     await settle();

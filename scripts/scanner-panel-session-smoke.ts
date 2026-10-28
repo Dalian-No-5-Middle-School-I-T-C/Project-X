@@ -49,6 +49,9 @@ let failNextSnapshot = false;
 let retainedPageCount = 2;
 const snapshotRequests: string[] = [];
 const cancelRequests: string[] = [];
+/** 让下一次答题卡版本请求挂起，模拟「点开始扫描后立刻离开」的在途窗口。 */
+let holdNextCard = false;
+let releaseHeldCard: (() => void) | null = null;
 const archivedBatches: string[] = [];
 const summaryRequests: string[] = [];
 const retryRequests: unknown[] = [];
@@ -65,7 +68,7 @@ const summary = () => ({ failures: includeFailure ? [{ groupId: "1", studentId: 
   ] });
 install("fetch", async (input: unknown, init?: RequestInit) => {
   const url = String(input);
-  if (url.includes("/api/cards/")) { cardRequests++; await cardReady; return Response.json(card); }
+  if (url.includes("/api/cards/")) { cardRequests++; if (holdNextCard) { holdNextCard = false; await new Promise<void>(resolve => { releaseHeldCard = resolve; }); } await cardReady; return Response.json(card); }
   if (url.endsWith("/sources")) return Response.json({ sources: [], code: "NO_SOURCES" });
   if (/\/scan\/scan-\d+\/cancel$/.test(url)) { cancelRequests.push(url); return Response.json({ ok: true }); }
   if (url.endsWith("/scan")) {
@@ -380,7 +383,29 @@ try {
   assert(archivedBatches.slice(archivedBeforeLeave).includes(`${midScanSession}/1`),
     "已扫出的页面要交给后处理页，离开面板不等于丢掉这一批");
 
-  console.log("PASS scanner panel React/SSE: session metadata; partial view/correction/save; terminal replay and reconnect hydrate persisted pages; hydration retry, zero-page and next-session recovery; continue-scan; leave-mid-scan");
+  // 启动请求还在路上就离开：晚到的响应不能再建会话、也不能再开进度流（否则设备继续送纸却没人看）。
+  const lateHost = document.createElement("div");
+  document.body.append(lateHost);
+  const lateRoot = createRoot(lateHost);
+  const scansBeforeLate = scans.length;
+  const streamsBeforeLate = streams.length;
+  await act(async () => { lateRoot.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id }))); });
+  await settle();
+  // 面板挂载时自己会读一次卡设置；等它读完再挂起，挂到的才是「开始扫描」那次版本请求。
+  holdNextCard = true;
+  await act(async () => {
+    [...lateHost.querySelectorAll("button")].find(node => node.textContent?.trim() === "开始扫描")!.click();
+  });
+  await settle();
+  assert(releaseHeldCard, "答题卡版本请求应处于挂起状态");
+  await act(async () => { lateRoot.unmount(); });
+  await act(async () => { releaseHeldCard?.(); });
+  await settle();
+  assert.equal(scans.length, scansBeforeLate, "离开后晚到的启动请求不能再建扫描会话");
+  assert.equal(streams.length, streamsBeforeLate, "离开后不能再给新会话开进度流");
+  lateHost.remove();
+
+  console.log("PASS scanner panel React/SSE: session metadata; partial view/correction/save; terminal replay and reconnect hydrate persisted pages; hydration retry, zero-page and next-session recovery; continue-scan; leave-mid-scan; leave-before-start");
 } finally {
   releaseCard();
   if (panelMounted) await act(async () => { root.unmount(); });

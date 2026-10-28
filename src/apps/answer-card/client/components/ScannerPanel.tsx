@@ -227,6 +227,8 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
     return () => {
       eventSourceRef.current?.close();
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      // 卸载后仍有在途的启动请求：自增尝试号让它在返回时走取消分支，别在新会话上继续开流。
+      scanAttemptRef.current += 1;
       // 离开面板（关闭 / 返回工作台 / 切走卡片）不等于放弃这一批：扫描还在跑就先停设备，
       // 已扫出的页面交给后处理页，避免后台继续送纸却再也找不到这批卷的入口。
       const sid = sessionIdRef.current;
