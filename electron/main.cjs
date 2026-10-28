@@ -191,9 +191,11 @@ async function startLocalServer() {
 
   try {
     const serverModule = await import(pathToFileURL(serverBundle).href);
-    // 环境变量拼错时不要带着 NaN 去探测端口：那会一路落到系统随机端口，本机草稿也就跟着读不到
+    // 环境变量拼错时不要带着 NaN/越界值去探测端口：那会一路落到系统随机端口，本机草稿也就跟着读不到
     const parsedPort = Number(process.env.PROJECTX_ELECTRON_PORT || 5174);
-    const preferredPort = Number.isInteger(parsedPort) && parsedPort > 0 ? parsedPort : 5174;
+    const preferredPort = Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort + PORT_LADDER_STEPS <= 65535
+      ? parsedPort
+      : 5174;
     const chosenPort = await pickLocalPort(preferredPort, (message) => {
       console.warn(`[Electron] ${message}`);
       appendLog("WARN", `[Electron] ${message}`);
