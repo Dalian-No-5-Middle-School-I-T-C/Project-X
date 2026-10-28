@@ -90,6 +90,7 @@ const feedbackModule = await import("../src/server/routes/feedback");
 const feedbackRouter = feedbackModule.default;
 const { withTimezone } = feedbackModule;
 const feedbackStorage = await import("../src/server/lib/feedbackStorage");
+const { purgeStaleTmpUploads } = await import("../src/apps/answer-card/server/paperQuota");
 const express = (await import("express")).default;
 
 async function main(): Promise<void> {
@@ -478,6 +479,19 @@ async function main(): Promise<void> {
   await unitReservation.ensureBytes(step * 2);
   ok(unitReservation.bytes === step * 2, "可按累计目标追加预留");
   unitReservation.release();
+
+  const purgeDir = path.join(tmpDir, "purge-unit");
+  mkdirSync(purgeDir, { recursive: true });
+  const staleTempPath = path.join(purgeDir, "stale.bin");
+  writeFileSync(staleTempPath, "stale");
+  const staleTime = new Date(Date.now() - 2 * 60 * 60_000);
+  utimesSync(staleTempPath, staleTime, staleTime);
+  feedbackStorage.markActiveFeedbackTempFile(staleTempPath);
+  const keptStale = await purgeStaleTmpUploads(purgeDir, 60 * 60_000, feedbackStorage.activeFeedbackTempFiles());
+  ok(keptStale === 0 && existsSync(staleTempPath), "过期清理跳过活跃上传的临时文件");
+  feedbackStorage.unmarkActiveFeedbackTempFile(staleTempPath);
+  const removedStale = await purgeStaleTmpUploads(purgeDir, 60 * 60_000, feedbackStorage.activeFeedbackTempFiles());
+  ok(removedStale === 1 && !existsSync(staleTempPath), "非活跃的过期临时文件正常清理");
 
   // 慢速 chunked 在途时，声明长度的上传仍应被准入（旧实现会把剩余配额整块占走）。
   const slowBoundary = `----fbslow${Date.now()}`;

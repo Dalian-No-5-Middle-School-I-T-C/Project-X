@@ -27,10 +27,13 @@ import { requestUploadBudget, isUploadAlreadyRejected } from "../lib/uploadBudge
 import {
   FeedbackStorageQuotaError,
   FeedbackStorageUnavailableError,
+  activeFeedbackTempFiles,
   createFeedbackStorageReservation,
   invalidateFeedbackStorageUsage,
+  markActiveFeedbackTempFile,
   markFeedbackTempFileLeaked,
   settleFeedbackStorage,
+  unmarkActiveFeedbackTempFile,
   type FeedbackStorageReservation,
 } from "../lib/feedbackStorage";
 import { purgeStaleTmpUploads } from "../../apps/answer-card/server/paperQuota";
@@ -485,6 +488,7 @@ function finalizeFeedbackUpload(req: FeedbackRequest): Promise<void> {
   if (!req.feedbackFinalize) {
     req.feedbackFinalize = (async () => {
       await removeRegisteredTempFiles(req);
+      for (const tempPath of req.feedbackTempPaths ?? []) unmarkActiveFeedbackTempFile(tempPath);
       req.feedbackReservation?.release();
     })();
   }
@@ -499,6 +503,7 @@ const feedbackStorageEngine: multer.StorageEngine = {
     const filename = `fb_${randomUUID()}`;
     const filePath = path.join(feedbackTmpDir, filename);
     (state.feedbackTempPaths ??= []).push(filePath);
+    markActiveFeedbackTempFile(filePath);
     const out = createWriteStream(filePath);
     let size = 0;
     let finished = false;
@@ -572,7 +577,7 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
   state.feedbackTempPaths = [];
   state.feedbackUploadFinished = false;
   state.feedbackFileBytes = 0;
-  void purgeStaleTmpUploads(feedbackTmpDir)
+  void purgeStaleTmpUploads(feedbackTmpDir, 60 * 60_000, activeFeedbackTempFiles())
     .catch(() => {})
     .then(async () => {
       await sweepFeedbackOrphansOnce();
@@ -834,6 +839,7 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
       await finalizeFeedbackUpload(state);
       throw err;
     }
+    for (const tempPath of state.feedbackTempPaths ?? []) unmarkActiveFeedbackTempFile(tempPath);
     res.status(201).json({ ok: true, data: { id: reportId } });
   } catch (err: any) {
     await finalizeFeedbackUpload(state);

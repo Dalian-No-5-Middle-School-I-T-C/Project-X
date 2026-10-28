@@ -106,9 +106,24 @@ const ORPHAN_TMP_GRACE_MS = 10 * 60_000;
 
 /** 清理失败、预留已经释放的临时文件：按实际占盘继续计入准入，直到确认删除。 */
 const leakedTempFiles = new Set<string>();
+const activeTempFiles = new Set<string>();
+
+export function markActiveFeedbackTempFile(filePath: string): void {
+  activeTempFiles.add(path.resolve(filePath));
+}
+
+export function unmarkActiveFeedbackTempFile(filePath: string): void {
+  activeTempFiles.delete(path.resolve(filePath));
+}
+
+export function activeFeedbackTempFiles(): ReadonlySet<string> {
+  return activeTempFiles;
+}
 
 export function markFeedbackTempFileLeaked(filePath: string): void {
-  leakedTempFiles.add(path.resolve(filePath));
+  const resolved = path.resolve(filePath);
+  activeTempFiles.delete(resolved);
+  leakedTempFiles.add(resolved);
   invalidateFeedbackStorageUsage();
 }
 
@@ -144,7 +159,9 @@ async function admissionUsage(feedbackRoot: string, tmpDir: string): Promise<num
   for (const entry of entries) {
     if (!entry.isFile()) continue;
     const full = path.join(tmpDir, entry.name);
-    if (leakedTempFiles.has(path.resolve(full))) continue;
+    const resolved = path.resolve(full);
+    if (leakedTempFiles.has(resolved)) continue;
+    if (activeTempFiles.has(resolved)) continue; // 活跃上传由各自预留覆盖
     try {
       const info = await stat(full);
       if (now - info.mtimeMs >= ORPHAN_TMP_GRACE_MS) total += info.size;

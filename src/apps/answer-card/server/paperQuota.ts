@@ -79,7 +79,11 @@ export const DEFAULT_PAPER_LIMITS = DEFAULT_PAPER_STORAGE_LIMITS;
  * 路由自身的 `finally` 只能覆盖「进入了处理函数」的那部分，所以再补一道「只删超过存活期的普通文件」的
  * 兜底清理，由上传入口顺带触发（不引入定时器，重启后第一次上传即自愈）。
  */
-export async function purgeStaleTmpUploads(tmpDir: string, maxAgeMs = 60 * 60_000): Promise<number> {
+export async function purgeStaleTmpUploads(
+  tmpDir: string,
+  maxAgeMs = 60 * 60_000,
+  skipPaths?: ReadonlySet<string>
+): Promise<number> {
   const now = Date.now();
   let removed = 0;
   let entries;
@@ -91,6 +95,7 @@ export async function purgeStaleTmpUploads(tmpDir: string, maxAgeMs = 60 * 60_00
   for (const entry of entries) {
     if (!entry.isFile()) continue; // 目录与符号链接一律不碰
     const full = path.join(tmpDir, entry.name);
+    if (skipPaths?.has(path.resolve(full))) continue; // 活跃上传自己的临时文件
     try {
       const info = await stat(full);
       if (now - info.mtimeMs < maxAgeMs) continue;
