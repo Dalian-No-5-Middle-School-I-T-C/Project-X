@@ -18,7 +18,7 @@ import { skinPatchDecision } from "./lib/skinPatchGuard";
 import { useSkinPreferenceWriter } from "./lib/skinSync";
 import {
   clearActivePostprocess, clearPostprocessView, readActivePostprocess, readPostprocessSessions,
-  writeActivePostprocess, writePostprocessSessions,
+  resolvePersistCardId, writeActivePostprocess, writePostprocessSessions,
 } from "./lib/postprocessResume";
 
 // ── ScannerApp：三屏容器 ──
@@ -39,9 +39,12 @@ function ScannerAppInner() {
   // v2.7.2：本卡已扫完的批次会话；返回工作台续扫后新批次累加进来，异常队列共用同一份
   const [postSessions, setPostSessions] = useState<Array<{ sessionId: string; pageCount: number }>>([]);
   /** 离开工作台时 selectedCardId 会先被清空，而扫描面板的卸载清理要等到提交阶段才归档；
-   *  落盘得认「刚才那张卡」，否则重选同一张卡时会被上次写下的旧列表覆盖。 */
-  const lastSelectedCardIdRef = useRef("");
-  useEffect(() => { if (selectedCardId) lastSelectedCardIdRef.current = selectedCardId; }, [selectedCardId]);
+   *  落盘得认「刚才那张卡」。账号一起记：换账号后不能把上一个账号的卡写进新账号的槽位。 */
+  const lastSelectionRef = useRef<{ userId: number; cardId: string } | null>(null);
+  useEffect(() => {
+    if (!selectedCardId || !user) return;
+    lastSelectionRef.current = { userId: user.id, cardId: selectedCardId };
+  }, [selectedCardId, user?.id]);
   /** 后处理页点「继续扫描」→ 回到工作台并自动开下一批；工作台消费后清掉，避免再次进入重复开扫。 */
   const [pendingContinueScan, setPendingContinueScan] = useState(false);
   // 安全 R35：离线用缓存卡进入时的工作台提示（版本 + 缓存时间），空串表示版本与服务器一致
@@ -127,7 +130,7 @@ function ScannerAppInner() {
   // 未登录/登录态过期时不写：否则会把 userId 改成 null，崩溃后同一账号也恢复不了。
   useEffect(() => {
     // 返回卡片列表时 selectedCardId 已清空，但面板卸载清理刚归档的批次要归到刚才那张卡上。
-    const targetCardId = selectedCardId || lastSelectedCardIdRef.current;
+    const targetCardId = resolvePersistCardId(selectedCardId, lastSelectionRef.current, user?.id);
     if (!targetCardId || !user) return;
     writePostprocessSessions(targetCardId, postSessions, user.id);
     // 只有在后处理页才记「活动卡」；老师主动回到工作台后崩溃，重载应回工作台，
@@ -196,7 +199,8 @@ function ScannerAppInner() {
           clearActivePostprocess(user?.id);
           setSelectedCardId("");
           setSelectedCardTitle("");
-          setPostSessions([]);
+          // 不清 postSessions：面板卸载清理紧接着会归档当前批次，先清空会让落盘只剩这一批；
+          // 选另一张卡时会被它自己的恢复列表整体替换。
           setPage("select");
         }}
         autoStartScan={pendingContinueScan}

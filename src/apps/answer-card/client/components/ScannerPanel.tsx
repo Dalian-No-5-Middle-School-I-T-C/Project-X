@@ -34,6 +34,7 @@ import {
   ControlRow,
   Field,
   Input,
+  notify,
   SegmentedControl,
   Select,
   SelectContent,
@@ -234,7 +235,11 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
       const sid = sessionIdRef.current;
       if (!sid) return;
       if (!completedRef.current) {
-        void authFetch(`/api/scanner/scan/${sid}/cancel`, { method: "POST" }).catch(() => undefined);
+        // 停不下来必须让老师知道：设备可能还在送纸，界面却已经没有这批卷的入口。
+        void authFetch(`/api/scanner/scan/${sid}/cancel`, { method: "POST" }).catch((error) => {
+          console.error("[scanner] 离开面板时停止扫描失败", error);
+          notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
+        });
       }
       const pageCount = pagesRef.current.length;
       if (pageCount > 0) onBatchArchivedRef.current?.(sid, pageCount);

@@ -26,8 +26,21 @@ function readJson<T>(key: string): T | null {
   }
 }
 
-function writeJson(key: string, value: unknown): void {
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore quota/private mode */ }
+let warnedWriteFailure = false;
+
+function writeJson(key: string, value: unknown): boolean {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch {
+    // 恢复标记只是导航记忆：失败时不影响本次操作，但要留下一次痕迹，
+    // 否则现场只会看到「崩溃后怎么没回到原处」而没有任何线索。
+    if (!warnedWriteFailure) {
+      warnedWriteFailure = true;
+      console.warn("[scanner] 本机恢复标记写入失败（配额已满或存储被禁用），崩溃后可能无法自动回到上次位置");
+    }
+    return false;
+  }
 }
 
 export function readPostprocessSessions(cardId: string, userId?: number | null): PostprocessSessionRef[] {
@@ -47,6 +60,20 @@ export function writePostprocessSessions(cardId: string, sessions: PostprocessSe
 /** 扫描机常多人共用：会话列表按「账号 + 卡」存，否则后一个人打开同一张卡会把前一个人的恢复入口顶掉。 */
 function sessionsKey(cardId: string, userId?: number | null): string {
   return `${SESSIONS_PREFIX}/${typeof userId === "number" ? userId : "anon"}/${encodeURIComponent(cardId)}`;
+}
+
+/**
+ * 落盘该记到哪张卡上：有当前选择就用它；选择已被清空（返回卡片列表）时用「刚才那张卡」，
+ * 但必须同一个账号——否则上一个账号的卡会被写进新账号的槽位，覆盖人家自己的恢复列表。
+ */
+export function resolvePersistCardId(
+  selectedCardId: string,
+  last: { userId: number; cardId: string } | null,
+  userId?: number | null,
+): string {
+  if (selectedCardId) return selectedCardId;
+  if (!last || userId == null || last.userId !== userId) return "";
+  return last.cardId;
 }
 
 /**

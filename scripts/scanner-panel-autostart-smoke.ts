@@ -62,6 +62,8 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
     scans.push(JSON.parse(String(init?.body)));
     return Response.json({ sessionId: "scan-autostart" });
   }
+  // 面板卸载时会取消后台扫描（离开 = 不停设备是不允许的），这里同样要接住。
+  if (/\/scan\/[^/]+\/cancel$/.test(url)) return Response.json({ ok: true });
   throw new Error(`Uncovered autostart request: ${url}`);
 });
 

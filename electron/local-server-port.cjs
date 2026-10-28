@@ -8,10 +8,14 @@ const net = require("node:net");
 
 const PORT_LADDER_STEPS = 9;
 
-function isPortFree(port) {
+function isPortFree(port, onUnavailable) {
   return new Promise((resolve) => {
     const probe = net.createServer();
-    probe.once("error", () => resolve(false));
+    probe.once("error", (error) => {
+      // 只报「不可用」会把 EACCES、EMFILE 这类原因一起吞掉，现场就查不到为什么整段阶梯都失败。
+      if (typeof onUnavailable === "function") onUnavailable(error && error.code ? error.code : "unknown");
+      resolve(false);
+    });
     probe.once("listening", () => probe.close(() => resolve(true)));
     probe.listen(port, "127.0.0.1");
   });
@@ -26,8 +30,7 @@ async function pickLocalPort(preferredPort, log) {
   const report = typeof log === "function" ? log : () => {};
   for (let step = 0; step <= PORT_LADDER_STEPS; step += 1) {
     const port = preferredPort + step;
-    if (await isPortFree(port)) return port;
-    report(`Port ${port} is unavailable; trying the next candidate.`);
+    if (await isPortFree(port, (code) => report(`Port ${port} is unavailable (${code}); trying the next candidate.`))) return port;
   }
   return 0;
 }

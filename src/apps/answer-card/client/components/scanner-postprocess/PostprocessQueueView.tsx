@@ -225,11 +225,14 @@ function useCorrectionBundle(channel: PostprocessChannel, url: string | null, wi
 /** 只取当前页原图：考号面板只需要学号页，没必要把整卷大图都解码进内存。 */
 function useSinglePageImage(channel: PostprocessChannel, document: CorrectionDocument | null, sourceId: string | null) {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [tick, setTick] = useState(0);
   const urlRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (urlRef.current) { URL.revokeObjectURL(urlRef.current); urlRef.current = null; }
     setImageUrl(null);
+    setError("");
     if (!document || !sourceId) return;
     const page = document.pages.find(item => item.sourceId === sourceId);
     if (!page) return;
@@ -242,12 +245,13 @@ function useSinglePageImage(channel: PostprocessChannel, document: CorrectionDoc
         if (!alive) { URL.revokeObjectURL(blob); return; }
         urlRef.current = blob;
         setImageUrl(blob);
-      } catch {
-        /* 图片失败时仍可用表格改分，不阻塞整页 */
+      } catch (err) {
+        // 图片失败仍可用表格改分，但必须说清楚「这一页没显示出来」，否则老师会对着空白确认考号。
+        if (alive) setError(err instanceof Error ? err.message : "原图加载失败");
       }
     })();
     return () => { alive = false; };
-  }, [channel, document, sourceId]);
+  }, [channel, document, sourceId, tick]);
 
   useEffect(() => () => {
     if (urlRef.current) URL.revokeObjectURL(urlRef.current);
@@ -255,7 +259,8 @@ function useSinglePageImage(channel: PostprocessChannel, document: CorrectionDoc
   }, []);
 
   // 每次渲染返回新对象会让下游的滚屏 effect 跟着每次按键重跑，把老师滚开的视图又拉回去。
-  return useMemo(() => (imageUrl ? { [sourceId ?? ""]: imageUrl } : {}), [imageUrl, sourceId]);
+  const images = useMemo(() => (imageUrl ? { [sourceId ?? ""]: imageUrl } : {}), [imageUrl, sourceId]);
+  return { images, error, reload: () => setTick(current => current + 1) };
 }
 
 function PanelShell({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
@@ -299,7 +304,7 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
   const cropRef = useRef<HTMLDivElement>(null);
   const digitPageIndex = useMemo(() => (document ? document.pages.findIndex(page => correctionCells(page.layout).some(cell => cell.type === "student_digit")) : -1), [document]);
   const digitPage = document && digitPageIndex >= 0 ? document.pages[digitPageIndex] : null;
-  const images = useSinglePageImage(channel, document, digitPage?.sourceId ?? null);
+  const { images, error: imageError, reload: reloadImage } = useSinglePageImage(channel, document, digitPage?.sourceId ?? null);
   const digitCells = useMemo(() => (document ? document.pages.flatMap(page => correctionCells(page.layout)).filter(cell => cell.type === "student_digit") : []), [document]);
   const cellOwner = useMemo(() => {
     const map = new Map<string, string>();
@@ -470,6 +475,12 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
           <div ref={cropRef} className="min-h-[220px] w-full overflow-auto rounded-md bg-muted p-3">
             <CorrectionCanvas document={document} pageIndex={digitPageIndex} edit={edit} images={images} zoom={3} rotation={rotation} busy={saving} onToggle={toggleCell} />
           </div>
+          {imageError && (
+            <div role="status" className="flex flex-wrap items-center gap-2 text-xs text-warning-foreground">
+              <span>原图没加载出来（{imageError}）：可以先按右侧表格改分。</span>
+              <Button variant="ghost" size="sm" onClick={reloadImage}>重试加载原图</Button>
+            </div>
+          )}
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-3">
           <label className="flex flex-col gap-1.5 text-sm">

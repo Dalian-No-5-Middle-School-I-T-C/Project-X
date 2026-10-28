@@ -31,7 +31,7 @@ const {
 } = await import("../src/apps/answer-card/client/lib/correctionDraft");
 const {
   clearActivePostprocess, clearPostprocessView, readActivePostprocess, readPostprocessSessions,
-  readPostprocessView, writeActivePostprocess, writePostprocessSessions, writePostprocessView,
+  readPostprocessView, resolvePersistCardId, writeActivePostprocess, writePostprocessSessions, writePostprocessView,
 } = await import("../src/apps/answer-card/client/lib/postprocessResume");
 import type { CorrectionDocument, CorrectionEdit } from "../src/shared/scanCorrection";
 
@@ -124,6 +124,13 @@ function testPostprocessResume(): void {
   assert.equal(readPostprocessView(cardId, 7), null, "正常离开后清掉停留位置");
   assert.ok(readPostprocessView(cardId, 8), "清自己的停留位置不影响别人");
   clearPostprocessView(cardId, 8);
+
+  // 返回卡片列表后落盘认「刚才那张卡」，但只限同一账号，避免把上一个账号的卡写进新账号槽位。
+  assert.equal(resolvePersistCardId("card-1", { userId: 7, cardId: "card-0" }, 7), "card-1", "有当前选择就用当前选择");
+  assert.equal(resolvePersistCardId("", { userId: 7, cardId: "card-0" }, 7), "card-0", "选择已清空时用刚才那张卡");
+  assert.equal(resolvePersistCardId("", { userId: 7, cardId: "card-0" }, 8), "", "换账号不能认上一个账号的卡");
+  assert.equal(resolvePersistCardId("", null, 7), "", "没有历史选择时不写");
+  assert.equal(resolvePersistCardId("", { userId: 7, cardId: "card-0" }, null), "", "未登录不写");
   console.log("  ✓ 后处理续接：会话列表 / 活动卡 / 停留视图 / 正常离开清理");
 }
 

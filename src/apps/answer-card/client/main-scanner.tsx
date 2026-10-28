@@ -6,7 +6,7 @@ import { ScannerApp } from "./ScannerApp";
 import { AuthProvider } from "./auth/AuthContext";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { reportRendererProblem, ScannerNotice } from "./components/ScannerNotice";
-import { TooltipProvider } from "./components/ui/v2";
+import { Toaster, TooltipProvider } from "./components/ui/v2";
 // 唯一样式入口（与 main.tsx 一致，层序由 app.css 内部保证）
 import "./theme/app.css";
 
@@ -52,5 +52,7 @@ createRoot(document.getElementById("root")!).render(
     </ErrorBoundary>
     {/* 通知卡挂在边界外：界面整体降级时，诊断与恢复提示仍然显示得出来 */}
     <ScannerNotice />
+    {/* 扫描端组件里大量 notify.* 反馈（保存成绩、删除记录、停不下来等）需要有自己的容器 */}
+    <Toaster />
   </React.StrictMode>
 );

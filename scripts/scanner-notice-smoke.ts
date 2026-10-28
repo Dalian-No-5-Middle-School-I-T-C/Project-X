@@ -65,4 +65,13 @@ const mainSource = readFileSync("electron/main.cjs", "utf8");
 assert(mainSource.includes("projectx:renderer-recovered"), "electron/main.cjs 必须派发同一个事件名");
 assert(!mainSource.includes("style.cssText"), "主进程不再注入内联样式的 DOM，提示卡由 React 渲染");
 
+// ⑤ 扫描端入口要挂通知容器：组件里的 notify.* 没有 Toaster 时全是沉默的
+const { Toaster, notify } = await import("../src/apps/answer-card/client/components/ui/v2");
+const scannerEntry = readFileSync("src/apps/answer-card/client/main-scanner.tsx", "utf8");
+assert(scannerEntry.includes("<Toaster />"), "扫描端入口必须渲染 Toaster，否则保存/删除/停止失败的提示都看不到");
+assert(typeof Toaster === "function" || typeof Toaster === "object", "Toaster 组件要能从 v2 桶文件拿到");
+for (const level of ["success", "error", "warning", "info"] as const) {
+  assert(typeof notify[level] === "function", `notify.${level} 必须可用`);
+}
+
 console.log("PASS scanner-notice");
