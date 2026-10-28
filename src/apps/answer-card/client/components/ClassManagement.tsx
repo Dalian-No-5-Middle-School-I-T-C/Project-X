@@ -445,7 +445,7 @@ export function ClassManagement() {
   }
 
   async function removeStudent(studentId: number, name: string) {
-    if (!selectedClassId || !confirm(`将「${name}」移出班级？移出后，该生历次考试按剩余在读班级统计。`)) return;
+    if (!selectedClassId || !confirm(`将「${name}」移出班级？如有剩余在读班级，该生历次考试改按剩余班级统计。`)) return;
     setBusy(true);
     try {
       await fetchJson(`/api/classes/${selectedClassId}/students/${studentId}`, { method: "DELETE" });

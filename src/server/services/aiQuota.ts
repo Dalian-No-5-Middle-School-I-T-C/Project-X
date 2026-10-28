@@ -169,7 +169,7 @@ export function evaluateAiQuota(
     return {
       ok: false,
       reason: "maxTokensPerUserDay",
-      message: "AI 用量已达今日上限，请联系管理员调整配额。",
+      message: "AI 用量已达 24 小时上限，请联系管理员调整配额。",
       retryAfterSeconds: 24 * 3600,
     };
   }
