@@ -188,7 +188,7 @@ function makeReservation(
   let registered = false;
   const id = ++reservationSeq;
   const ensure = async (target: number, attempt: number): Promise<boolean> => {
-    const run = quotaQueue.then(async (): Promise<boolean | "retry"> => {
+    const run = quotaQueue.then(async (): Promise<boolean | "retry" | "retry-later"> => {
       if (released) return false;
       if (held >= target) return true;
       if (held >= limitBytes) return false;
@@ -198,10 +198,10 @@ function makeReservation(
       const minimum = target - held;
       const available = MAX_FEEDBACK_STORAGE_BYTES - used - reservedBytes;
       if (available < minimum) {
-        // 先到的请求优先：后到者直接让位；最早的请求短暂等待后到者释放后重试。
+        // 先到的请求优先：后到者等得更久，让最早请求先尝试；最早请求超时失败后，
+        // 后到者仍有时间接手，避免「先到者其实也装不下」时两个一起失败。
         const hasEarlier = [...activeReservations].some((other) => other < id);
-        if (hasEarlier) throw new FeedbackStorageQuotaError();
-        return "retry";
+        return hasEarlier ? "retry-later" : "retry";
       }
       const desired = Math.max(minimum, chunkedReservationStep());
       const delta = Math.min(desired, available, limitBytes - held);
@@ -216,8 +216,9 @@ function makeReservation(
     });
     quotaQueue = run.then(() => undefined, () => undefined);
     const result = await run;
-    if (result === "retry") {
-      if (attempt >= 20) throw new FeedbackStorageQuotaError();
+    if (result === "retry" || result === "retry-later") {
+      const maxAttempts = result === "retry-later" ? 40 : 20;
+      if (attempt >= maxAttempts) throw new FeedbackStorageQuotaError();
       await new Promise((resolve) => setTimeout(resolve, 50));
       return ensure(target, attempt + 1);
     }
