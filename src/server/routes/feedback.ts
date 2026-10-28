@@ -59,6 +59,7 @@ const MAX_MIME = 150;
 const dataRoot = resolveAnswerCardDataDir();
 const feedbackRoot = path.join(dataRoot, "feedback");
 const feedbackTmpDir = path.join(feedbackRoot, "_tmp");
+const feedbackTrashDir = path.join(feedbackRoot, "_trash");
 const feedbackRootPrefix = `${path.resolve(feedbackRoot)}${path.sep}`;
 
 // 启动时同步清掉上次中断留下的临时上传件：此刻还没有本进程的上传，不存在误删在途文件的窗口。
@@ -72,6 +73,59 @@ try {
 const pendingOrphanDirs = new Set<string>();
 let orphanSweepDone = false;
 let orphanSweep: Promise<void> | null = null;
+let trashReconcile: Promise<void> | null = null;
+let trashReconciled = false;
+const activeStagedDirs = new Set<string>();
+
+/**
+ * 删除反馈时附件目录先移到 `_trash`，数据库成功删除后再清理。
+ * 这里处理崩溃/失败遗留：记录还在就移回原位，记录已经没了就删掉。
+ */
+async function reconcileFeedbackTrashOnce(): Promise<void> {
+  if (trashReconciled) return;
+  if (!trashReconcile) {
+    trashReconcile = (async () => {
+      try {
+        let entries: Dirent[];
+        try {
+          entries = await readdir(feedbackTrashDir, { withFileTypes: true });
+        } catch (err: any) {
+          if (err?.code === "ENOENT") {
+            trashReconciled = true;
+            return;
+          }
+          throw err;
+        }
+        let failed = false;
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const staged = path.join(feedbackTrashDir, entry.name);
+          if (activeStagedDirs.has(staged)) continue; // 本进程里有删除正在进行，不抢它的目录
+          const original = path.join(feedbackRoot, entry.name);
+          try {
+            const row = await getMysqlDb().get<{ id: number }>(
+              "SELECT id FROM feedback_attachments WHERE stored_path LIKE ? LIMIT 1",
+              `feedback/${entry.name}/%`
+            );
+            if (row) {
+              await rename(staged, original);
+              console.log(`[feedback] 已恢复暂存的附件目录: ${entry.name}`);
+            } else {
+              await rm(staged, { recursive: true, force: true });
+            }
+          } catch (err) {
+            failed = true;
+            console.error("[feedback] 暂存附件目录核对失败:", entry.name, err);
+          }
+        }
+        if (!failed) trashReconciled = true;
+      } finally {
+        trashReconcile = null;
+      }
+    })();
+  }
+  await trashReconcile;
+}
 
 async function retryPendingOrphanDirs(): Promise<void> {
   for (const dir of [...pendingOrphanDirs]) {
@@ -87,6 +141,7 @@ async function retryPendingOrphanDirs(): Promise<void> {
  * 只删超过 10 分钟的目录，避免删掉另一个并发请求刚建好、事务尚未提交的目录。
  */
 async function sweepFeedbackOrphansOnce(): Promise<void> {
+  await reconcileFeedbackTrashOnce();
   await retryPendingOrphanDirs();
   if (orphanSweepDone) return;
   if (!orphanSweep) {
@@ -105,7 +160,7 @@ async function sweepFeedbackOrphansOnce(): Promise<void> {
           entries = [];
         }
         for (const entry of entries) {
-          if (!entry.isDirectory() || entry.name === "_tmp") continue;
+          if (!entry.isDirectory() || entry.name === "_tmp" || entry.name === "_trash") continue;
           const dir = path.join(feedbackRoot, entry.name);
           if (referenced.has(dir)) continue;
           try {
@@ -283,6 +338,56 @@ function resolveStoredPath(relative: string): string | null {
   if (!relative || path.isAbsolute(relative)) return null;
   const abs = path.resolve(dataRoot, relative);
   return abs.startsWith(feedbackRootPrefix) ? abs : null;
+}
+
+type StagedAttachmentDir = { original: string; staged: string };
+
+/** 把附件目录原子移动到 `_trash`：数据库删除成功后才真正清理，失败可以移回。 */
+async function stageAttachmentDirs(dirs: string[]): Promise<StagedAttachmentDir[]> {
+  await mkdir(feedbackTrashDir, { recursive: true });
+  const staged: StagedAttachmentDir[] = [];
+  try {
+    for (const dir of dirs) {
+      const target = path.join(feedbackTrashDir, path.basename(dir));
+      await rename(dir, target);
+      activeStagedDirs.add(target);
+      staged.push({ original: dir, staged: target });
+    }
+  } catch (err) {
+    await restoreStagedDirs(staged);
+    throw err;
+  }
+  return staged;
+}
+
+/** 数据库删除失败时把暂存目录移回原位；返回是否全部恢复。 */
+async function restoreStagedDirs(staged: StagedAttachmentDir[]): Promise<boolean> {
+  let ok = true;
+  for (const entry of [...staged].reverse()) {
+    try {
+      await rename(entry.staged, entry.original);
+    } catch (err) {
+      ok = false;
+      trashReconciled = false;
+      console.error("[feedback] 暂存附件目录恢复失败，后续请求会重试:", entry.staged, err);
+    } finally {
+      activeStagedDirs.delete(entry.staged);
+    }
+  }
+  return ok;
+}
+
+async function removeStagedDirs(staged: StagedAttachmentDir[]): Promise<void> {
+  for (const entry of staged) {
+    try {
+      await rm(entry.staged, { recursive: true, force: true });
+    } catch (err) {
+      pendingOrphanDirs.add(entry.staged);
+      console.error("[feedback] 暂存附件清理失败，已排队重试:", entry.staged, err);
+    } finally {
+      activeStagedDirs.delete(entry.staged);
+    }
+  }
 }
 
 /** 按请求登记的路径清理临时文件；Windows 上偶发占用时重试，仍删不掉就继续按占盘计数。 */
@@ -790,6 +895,7 @@ router.delete("/:id", requireAdmin, async (req, res) => {
   try {
     const id = parsePositiveId(req.params.id);
     if (!id) return res.status(400).json({ ok: false, error: "无效的反馈 ID" });
+    await reconcileFeedbackTrashOnce();
     const db = getMysqlDb();
     const existing = await db.get<{ id: number }>("SELECT id FROM feedback_reports WHERE id = ?", id);
     if (!existing) return res.status(404).json({ ok: false, error: "反馈不存在" });
@@ -810,29 +916,39 @@ router.delete("/:id", requireAdmin, async (req, res) => {
       }
       dirs.add(path.dirname(absPath));
     }
-    // 先清文件再删库：清理失败时保留反馈，管理员可以重试；反过来会留下无法再定位的孤儿文件。
-    for (const dir of dirs) {
-      if (!dir.startsWith(feedbackRootPrefix)) {
-        return res.status(500).json({
-          ok: false,
-          code: "FEEDBACK_ATTACHMENT_PATH_INVALID",
-          error: "附件路径异常，未删除反馈，请稍后重试",
-        });
-      }
-      try {
-        await rm(dir, { recursive: true, force: true });
-      } catch (err) {
-        console.error("[feedback] 附件清理失败:", err);
-        return res.status(500).json({
-          ok: false,
-          code: "FEEDBACK_ATTACHMENT_CLEANUP_FAILED",
-          error: "附件文件清理失败，反馈未删除，请重试",
-        });
-      }
+    // 附件目录先原子移入 _trash：数据库删除成功后再清理；数据库失败则移回，
+    // 既不会留下指向空文件的记录，也不会留下无法定位的孤儿文件。
+    let staged: StagedAttachmentDir[];
+    try {
+      staged = await stageAttachmentDirs([...dirs]);
+    } catch (err) {
+      console.error("[feedback] 附件目录暂存失败:", err);
+      return res.status(500).json({
+        ok: false,
+        code: "FEEDBACK_ATTACHMENT_STAGE_FAILED",
+        error: "附件文件暂存失败，反馈未删除，请重试",
+      });
     }
 
-    const result = await db.run("DELETE FROM feedback_reports WHERE id = ?", id);
-    if (result.changes === 0) return res.status(404).json({ ok: false, error: "反馈不存在" });
+    let result;
+    try {
+      result = await db.run("DELETE FROM feedback_reports WHERE id = ?", id);
+    } catch (err) {
+      console.error("[feedback] 删除反馈失败，正在恢复附件:", err);
+      const restored = await restoreStagedDirs(staged);
+      return res.status(500).json({
+        ok: false,
+        code: "FEEDBACK_DELETE_FAILED",
+        error: restored
+          ? "删除反馈失败，附件已恢复，请重试"
+          : "删除反馈失败，附件已暂存并会继续恢复，请稍后重试",
+      });
+    }
+    if (result.changes === 0) {
+      await removeStagedDirs(staged);
+      return res.status(404).json({ ok: false, error: "反馈不存在" });
+    }
+    await removeStagedDirs(staged);
     res.json({ ok: true, message: "反馈已删除" });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });

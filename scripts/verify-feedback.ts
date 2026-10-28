@@ -423,10 +423,14 @@ async function main(): Promise<void> {
   })).status === 404, "删除后附件不可下载");
   const feedbackRoot = path.join(process.env.ANSWER_CARD_DATA_DIR!, "feedback");
   const tempDir = path.join(feedbackRoot, "_tmp");
+  const trashDir = path.join(feedbackRoot, "_trash");
   const leftDirs = existsSync(feedbackRoot)
-    ? readdirSync(feedbackRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() && entry.name !== "_tmp")
+    ? readdirSync(feedbackRoot, { withFileTypes: true }).filter(
+        (entry) => entry.isDirectory() && entry.name !== "_tmp" && entry.name !== "_trash"
+      )
     : [];
   ok(leftDirs.length === 0, "删除反馈后附件目录已清理");
+  ok(!existsSync(trashDir) || readdirSync(trashDir).length === 0, "删除后暂存目录为空");
 
   section("6.1 chunked 分块预留与断连清理");
   const quotaRoot = path.join(tmpDir, "quota-unit");
@@ -630,6 +634,46 @@ async function main(): Promise<void> {
   ok((await call("DELETE", `/${Number(filled.json?.data?.id)}`, adminToken)).status === 200, "清理填满容量反馈");
   ok((await call("DELETE", `/${Number(textOnly.json?.data?.id)}`, adminToken)).status === 200, "清理纯文本反馈");
   ok((await call("DELETE", `/${Number(textChunked.json?.data?.id)}`, adminToken)).status === 200, "清理 chunked 纯文本反馈");
+
+  // 数据库删除失败时，已暂存的附件目录必须移回，不能留下指向空文件的记录。
+  const restoreForm = new FormData();
+  restoreForm.set("title", "删除失败恢复");
+  restoreForm.set("content", "正文");
+  restoreForm.append("files", new Blob(["restore-me"], { type: "text/plain" }), "restore.txt");
+  const restoreReport = await upload(restoreForm, adminToken);
+  ok(restoreReport.status === 201, "准备删除失败恢复测试");
+  const restoreId = Number(restoreReport.json?.data?.id);
+  const restoreAttachment = (await call("GET", "?limit=1", adminToken)).json?.data?.[0]?.attachments?.[0];
+
+  const adapter = getMysqlDb();
+  const adapterRun = (adapter as any).run;
+  const originalRun = adapterRun.bind(adapter);
+  let injectedDeleteFailure = false;
+  (adapter as any).run = async (sql: string, ...args: any[]) => {
+    if (!injectedDeleteFailure && /DELETE\s+FROM\s+feedback_reports/i.test(sql)) {
+      injectedDeleteFailure = true;
+      throw new Error("forced feedback delete failure");
+    }
+    return originalRun(sql, ...args);
+  };
+  let failedDelete: { status: number; json: any };
+  try {
+    failedDelete = await call("DELETE", `/${restoreId}`, adminToken);
+  } finally {
+    (adapter as any).run = adapterRun;
+  }
+  ok(failedDelete.status === 500 && failedDelete.json?.code === "FEEDBACK_DELETE_FAILED",
+    "数据库删除失败时返回 500");
+  const keptReport = (await call("GET", "?limit=1", adminToken)).json?.data?.[0];
+  ok(keptReport?.id === restoreId && keptReport?.attachments?.length === 1,
+    "数据库删除失败保留反馈与附件元数据");
+  const restoredDownload = await fetch(`${base}/${restoreId}/attachments/${restoreAttachment?.id}`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  ok(restoredDownload.status === 200 && (await restoredDownload.text()) === "restore-me",
+    "数据库删除失败后附件文件已恢复");
+  ok(!existsSync(trashDir) || readdirSync(trashDir).length === 0, "数据库删除失败后暂存目录已清空");
+  ok((await call("DELETE", `/${restoreId}`, adminToken)).status === 200, "附件恢复后可再次删除");
 
   const fieldsForm = new FormData();
   fieldsForm.set("title", "字段过多");
