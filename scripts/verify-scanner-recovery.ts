@@ -1,11 +1,14 @@
 /**
  * 扫描端闪退恢复的本机状态回归：
  *  - 异常卷订正草稿只在页 revision 完全一致时恢复，保存/离开后清掉；
- *  - 后处理会话列表与停留位置可跨重载恢复，正常离开时清掉停留位置。
+ *  - 后处理会话列表与停留位置可跨重载恢复，正常离开时清掉停留位置；
+ *  - 内嵌服务端端口按固定阶梯选，页面 origin 稳定，本机那些恢复数据下次才读得回来。
  *
  * 运行：npx tsx scripts/verify-scanner-recovery.ts
  */
 import assert from "node:assert/strict";
+import net from "node:net";
+import { createRequire } from "node:module";
 
 class MemoryStorage {
   private map = new Map<string, string>();
@@ -107,6 +110,56 @@ function testPostprocessResume(): void {
   console.log("  ✓ 后处理续接：会话列表 / 活动卡 / 停留视图 / 正常离开清理");
 }
 
+const requireCjs = createRequire(import.meta.url);
+const { PORT_LADDER_STEPS, isPortFree, pickLocalPort } = requireCjs("../electron/local-server-port.cjs") as {
+  PORT_LADDER_STEPS: number;
+  isPortFree: (port: number) => Promise<boolean>;
+  pickLocalPort: (preferredPort: number, log?: (message: string) => void) => Promise<number>;
+};
+
+function occupy(port: number): Promise<net.Server> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.once("listening", () => resolve(server));
+    server.listen(port, "127.0.0.1");
+  });
+}
+
+/** 找一段连续空端口，别让 CI 机器上碰巧占用的端口把这条回归带崩。 */
+async function findFreeRun(length: number, start = 25000): Promise<number> {
+  for (let base = start; base < start + 4000; base += length + 1) {
+    let free = true;
+    for (let offset = 0; offset < length && free; offset += 1) free = await isPortFree(base + offset);
+    if (free) return base;
+  }
+  throw new Error(`找不到 ${length} 个连续空端口`);
+}
+
+async function testStableOriginPort(): Promise<void> {
+  const ladderSize = PORT_LADDER_STEPS + 1;
+  const base = await findFreeRun(ladderSize);
+  const held: net.Server[] = [];
+  try {
+    assert.equal(await isPortFree(base), true, "空端口要判成可用");
+    held.push(await occupy(base), await occupy(base + 1));
+    assert.equal(await isPortFree(base), false, "已被占用的端口要判成不可用");
+
+    const notices: string[] = [];
+    const chosen = await pickLocalPort(base, message => notices.push(message));
+    assert.equal(chosen, base + 2, "首选端口被占时沿固定阶梯往下走，不是直接交给系统随机分配");
+    assert.equal(notices.length, 2, "每个被跳过的端口都要留一条日志，现场才查得到为什么换了端口");
+    assert.equal(await pickLocalPort(base), chosen, "同样的占用情况每次落在同一个端口，页面 origin 才稳定");
+
+    for (let offset = 2; offset < ladderSize; offset += 1) held.push(await occupy(base + offset));
+    assert.equal(await pickLocalPort(base), 0, "整段阶梯都被占才回退到系统分配");
+  } finally {
+    await Promise.all(held.map(server => new Promise<void>(resolve => server.close(() => resolve()))));
+  }
+  console.log("  ✓ 内嵌服务端口：固定阶梯 / origin 稳定 / 整段被占才随机");
+}
+
 testCorrectionDraft();
 testPostprocessResume();
+await testStableOriginPort();
 console.log("PASS scanner-recovery");

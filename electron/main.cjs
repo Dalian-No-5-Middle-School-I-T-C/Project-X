@@ -19,6 +19,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
+const { PORT_LADDER_STEPS, pickLocalPort } = require("./local-server-port.cjs");
 
 // ── v1.6.1: Electron now only packages the scanner build.
 // Teacher/student features are deployed via the web build (dist/web/).
@@ -169,6 +170,11 @@ function configureAppIdentity() {
   }
 }
 
+/**
+ * 内嵌服务端的端口即页面 origin，而订正草稿与崩溃恢复标记都存在 localStorage（按 origin 隔离）：
+ * 一旦回退到系统随机端口，上一次留在本机的草稿和恢复位置就全读不到，恢复会静默变成空白。
+ * 端口阶梯与探测见 local-server-port.cjs；整段被占时才交给系统分配，并把代价写进日志。
+ */
 async function startLocalServer() {
   const appRoot = getAppRoot();
   const serverBundle = path.join(appRoot, "dist", "server", "index.mjs");
@@ -185,12 +191,25 @@ async function startLocalServer() {
 
   try {
     const serverModule = await import(pathToFileURL(serverBundle).href);
-    const preferredPort = Number(process.env.PROJECTX_ELECTRON_PORT || 5174);
+    // 环境变量拼错时不要带着 NaN 去探测端口：那会一路落到系统随机端口，本机草稿也就跟着读不到
+    const parsedPort = Number(process.env.PROJECTX_ELECTRON_PORT || 5174);
+    const preferredPort = Number.isInteger(parsedPort) && parsedPort > 0 ? parsedPort : 5174;
+    const chosenPort = await pickLocalPort(preferredPort, (message) => {
+      console.warn(`[Electron] ${message}`);
+      appendLog("WARN", `[Electron] ${message}`);
+    });
+    if (chosenPort === 0) {
+      const msg = `Ports ${preferredPort}..${preferredPort + PORT_LADDER_STEPS} are all unavailable; falling back to a system-assigned port. ` +
+        "本机草稿与恢复标记按端口隔离，这次可能读不到上一次留下的内容。";
+      console.warn(`[Electron] ${msg}`);
+      appendLog("WARN", `[Electron] ${msg}`);
+    }
     try {
-      server = await serverModule.startServer(preferredPort);
+      server = await serverModule.startServer(chosenPort);
     } catch (error) {
       if (error && (error.code === "EADDRINUSE" || error.code === "EACCES")) {
-        const msg = `Port ${preferredPort} is unavailable (${error.code}); falling back to a random port.`;
+        // 探测与真正监听之间被别的进程抢走：仍要起来，开不了机比换 origin 更糟
+        const msg = `Port ${chosenPort} was taken between probe and listen (${error.code}); falling back to a system-assigned port.`;
         console.warn(`[Electron] ${msg}`);
         appendLog("WARN", `[Electron] ${msg}`);
         server = await serverModule.startServer(0);

@@ -32,7 +32,8 @@ export interface PostprocessQueueViewProps {
   scans: ScanMeta[];
   /** 按该组所属会话的扫描时页数画缺页对照，不能用后来拉到的新卡页数。 */
   layoutPageCountFor: (sessionId: string) => number;
-  /** 从扫描结果点开的异常：把指针定位到该组，而不是永远从队首开始 */
+  /** 从扫描结果点开的异常：把指针定位到该组，而不是永远从队首开始。
+   *  这是一次性的定位请求，不要把 onCurrentChange 上报的项回灌进来，否则两边会互相拉着跳。 */
   focus?: { sessionId: string; groupId: string } | null;
   /** 当前停留的队列项变化：父页面用它持久化崩溃恢复位置，而不是只记最初打开的那组。 */
   onCurrentChange?: (sessionId: string, groupId: string) => void;
@@ -57,7 +58,12 @@ const kindTone = (kind: PostprocessQueueItem["kind"]): "danger" | "warning" | "n
 );
 
 export function PostprocessQueueView({ queue, channel, examIdForSession, scans, layoutPageCountFor, focus, onCurrentChange, onResolved, onJumpToCorrection, onDelete, onPreviewDiscard }: PostprocessQueueViewProps) {
-  const [cursor, setCursor] = useState(0);
+  // 带着定位目标挂载时首帧就落到它：等 focus 的 effect 再跳，首帧上报的会是第 1 条，
+  // 父页面按上报值写恢复标记，崩溃恢复的位置会被覆盖成队首。
+  const [cursor, setCursor] = useState(() => {
+    const index = focus ? queue.findIndex(item => item.sessionId === focus.sessionId && item.groupId === focus.groupId) : -1;
+    return index >= 0 ? index : 0;
+  });
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
   const [resolved, setResolved] = useState<Set<string>>(new Set());
   const [fixTarget, setFixTarget] = useState<{ sessionId: string; groupId: string } | null>(null);

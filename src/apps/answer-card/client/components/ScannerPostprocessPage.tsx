@@ -40,6 +40,9 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   const [active, setActive] = useState<PostprocessGroup | null>(null);
   const [highlight, setHighlight] = useState<SubjectiveQuestionNumber | null>(null);
   const [focusIssue, setFocusIssue] = useState<{ sessionId: string; groupId: string } | null>(null);
+  /** 队列视图当前停在哪个组：只用于崩溃恢复标记，不参与 focus 回灌，
+   *  否则子组件上报 → 父页面改 focus → 子组件再跳 cursor，两边会一直对抖。 */
+  const [queueCurrent, setQueueCurrent] = useState<{ sessionId: string; groupId: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [savingAll, setSavingAll] = useState(false);
   const [error, setError] = useState("");
@@ -137,11 +140,8 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
   const queue = useMemo(() => buildPostprocessQueue(groups), [groups]);
 
   const handleQueueCurrent = useCallback((sessionId: string, groupId: string) => {
-    const group = groups.find(entry => entry.sessionId === sessionId && entry.groupId === groupId);
-    if (!group) return;
-    setActive(group);
-    setFocusIssue({ sessionId, groupId });
-  }, [groups]);
+    setQueueCurrent({ sessionId, groupId });
+  }, []);
 
   // 闪退重载后回到上次停留的卷/视图；组已不存在时静默忽略，仍停在结果页。
   useEffect(() => {
@@ -157,11 +157,12 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
     setResumedFromCrash(true);
   }, [groups, cardId]);
 
-  // 记录当前停留位置：只在打开具体卷时写，正常返回结果页不会把旧组写回去。
+  // 记录当前停留位置：只在打开具体卷或停在队列某一条时写，正常返回结果页不会把旧组写回去。
+  const resumeTarget = view === "queue" ? queueCurrent : active;
   useEffect(() => {
-    if (!active) return;
-    writePostprocessView(cardId, { view, sessionId: active.sessionId, groupId: active.groupId });
-  }, [cardId, view, active]);
+    if (!resumeTarget) return;
+    writePostprocessView(cardId, { view, sessionId: resumeTarget.sessionId, groupId: resumeTarget.groupId });
+  }, [cardId, view, resumeTarget]);
   const issueGroups = useMemo(() => new Set(queue.map(item => `${item.sessionId}/${item.groupId}`)).size, [queue]);
   const uploaded = useMemo(() => Object.values(batches).flatMap(b => b.results).filter(r => r.saved).length, [batches]);
 

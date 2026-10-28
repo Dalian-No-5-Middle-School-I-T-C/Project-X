@@ -6,12 +6,13 @@
 - **闪退/白屏恢复**：渲染进程崩溃后 5 分钟内最多自动重载 2 次，并注入「界面已自动恢复」提示；界面无响应时提供「继续等待 / 重新加载界面」。全局未捕获错误改成可关闭的诊断卡，不再整页白屏覆盖。
 - **异常卷订正草稿**：改分/考号格选与未落格的手输考号即时写本机草稿，页面 revision 与页数完全一致才恢复；保存成功或回到原值即清除。同一时间只解码当前页原卷，翻页时回收旧 blob，避免多页 300DPI 大图把渲染进程顶到 OOM。
 - **回到上次处理**：按答题卡记住扫描会话列表、活动卡与停留的组；闪退重载后自动回到扫描后处理页，正常返回工作台/卡片列表时清掉停留位置。工作台新增「查看扫描后处理（N 批）」入口。
+- **恢复位置与端口稳定**：恢复停在异常队列中间某条时直接落到那一条；此前队列上报的「当前项」会被写回定位请求，恢复非队首项时两边来回拉扯，React 报 `Maximum update depth exceeded`。本机服务端 5174 被占时沿 5174–5183 固定阶梯选端口，不再每次交给系统随机分配，页面 origin 不变，本机草稿与恢复标记下次仍读得到。
 - **继续扫描**：完成或中断后可直接「继续扫描」，沿用当前数据源与 DPI/色彩/纸型设置立即新建下一批；批次仍汇总在同一张答题卡的扫描后处理页，可一起核对保存。
 - **上传进度卡**：位置改为主区域右上角，避开 340px 侧栏按钮；支持收起为一行状态。
 - **成绩分析原卡预览**：`/api/scanner/exam/:examId/student/:studentId/scans` 同时读取扫描端 `twain_scan_records` 与旧导入 `scan_records`，扫描端原卷走 `scan-image`；此前只查旧导入表，扫描端扫出的卷预览为空。
 - **考试管理批量删除答题卡**：勾选考试后可「删除选中答题卡」，删除答题卡并解除考试关联，考试与成绩保留，复用统一删除确认与引用冲突处理。
 - **文案整理（#356）**：清理面向师生的技术黑话、数据库字段名/环境变量名、裸 SQL、冗长免责声明与「请停手」「知晓代价」等口吻；技术细节收进「技术细节」或日志，初始密码、自定义公式等说明与实现对齐。
-- **验证**：`typecheck`、`build`、`build:scanner` 通过；`verify:scanner-postprocess-ui`、`verify:scanner-panel-session`（含继续扫描）、`verify:scanner-recovery`、`verify:permission-scope`（含扫描端原卷预览）、`verify:core-logic`、`verify:scan-correction`、`verify:p1-integrity`、`verify:progress-score-rate`、`verify:security-critical` 均通过。未实跑 MariaDB、真机扫描仪与 MSI 首次安装；等现场日志再对点根因。
+- **验证**：`typecheck`、`build`、`build:scanner` 通过；`verify:scanner-postprocess-ui`（含「恢复停在队列中间某条」与「带定位目标挂载首帧即目标项」）、`verify:scanner-panel-session`（含继续扫描）、`verify:scanner-recovery`（含内嵌服务端口阶梯，已接入 CI）、`verify:permission-scope`（含扫描端原卷预览）、`verify:core-logic`、`verify:scan-correction`、`verify:p1-integrity`、`verify:progress-score-rate`、`verify:security-critical` 均通过。未实跑 MariaDB、真机扫描仪与 MSI 首次安装；等现场日志再对点根因。
 
 ## 2026-10-26：扫描端防护恢复与 Service Worker 注册拦截
 

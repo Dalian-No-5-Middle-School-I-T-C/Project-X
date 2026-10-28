@@ -513,6 +513,33 @@ try {
   assert.equal(uploads[uploads.length - 1].name, "扫描_20002", "补传任务对应保留下来的那份卷");
   assert.equal(uploads.filter(item => item.localSessionId === "scan-3" && item.pages[0]?.groupId === "1").length, 1, "保留份只上传一次");
 
+  // ── 崩溃恢复停在队列中间那一条：定位请求不能被队列的上报改写成队首 ──
+  await act(async () => { root3.unmount(); });
+  const resumeFlags = { allClean, secondGroupResolved };
+  allClean = false; secondGroupResolved = false;
+  const viewKey = `projectx-postprocess-view/v1/${encodeURIComponent(card.id)}`;
+  localStorage.removeItem(viewKey);
+  // scan-1 的队列是 [考号问题 组 1, 存疑 组 0]；停在第二条才是「恢复中间那一条」
+  localStorage.setItem(viewKey, JSON.stringify({ view: "queue", sessionId: "scan-1", groupId: "0", at: Date.now() }));
+  const resumeHost = document.createElement("div");
+  document.body.appendChild(resumeHost);
+  root3 = createRoot(resumeHost);
+  await act(async () => {
+    root3!.render(createElement(TooltipProvider, null,
+      createElement(ScannerPostprocessPage, {
+        cardId: card.id, cardTitle: card.title, sessions: [{ sessionId: "scan-1", pageCount: 1 }], onBack: () => {},
+      })));
+  });
+  await settle();
+  assert.match(resumeHost.textContent ?? "", /第 2 \/ 2 条/,
+    `恢复要停在崩溃前那一条，不是队首（实际 ${resumeHost.textContent?.match(/第 \d+ \/ \d+ 条/)?.[0] ?? "没有条数"}）`);
+  assert.match(resumeHost.textContent ?? "", /已恢复上次停留的卷/, "恢复要当场告诉老师停在了哪一张");
+  const resumedMarker = JSON.parse(localStorage.getItem(viewKey) ?? "null") as { view: string; sessionId: string; groupId: string } | null;
+  assert.deepEqual(resumedMarker && { view: resumedMarker.view, sessionId: resumedMarker.sessionId, groupId: resumedMarker.groupId },
+    { view: "queue", sessionId: "scan-1", groupId: "0" }, "恢复标记不能被队列首帧的上报改写回队首");
+  // root3 交给下一段卸载（那里本来就先 unmount 再清恢复标记）
+  allClean = resumeFlags.allClean; secondGroupResolved = resumeFlags.secondGroupResolved;
+
   // ── 远端卡 404：本机卡也没有时，页面仍能返回，而不是停在没有按钮的失败态 ──
   await act(async () => { root3.unmount(); });
   localStorage.removeItem(`projectx-postprocess-view/v1/${encodeURIComponent(card.id)}`);
@@ -664,8 +691,26 @@ try {
     await setInput("2000");
     assert(!studentHost.textContent?.includes("本机草稿保存失败"), "恢复写入后失败提示要消失");
     await act(async () => { root7!.unmount(); });
+
+    // 崩溃恢复带着定位目标挂载：首帧就得停在那一条。先报队首的话，页面会把恢复标记改写成第 1 条，
+    // 而 focus 又跟着回报值变，两边会一直对抖（第 2 条永远恢复不出来）。
+    const focusHost = document.createElement("div");
+    document.body.append(focusHost);
+    root7 = createRoot(focusHost);
+    const focusChanges: string[] = [];
+    await act(async () => root7!.render(createElement(TooltipProvider, null, createElement(PostprocessQueueView, {
+      channel: studentChannel, queue: queueItems, scans: [], examIdForSession: () => null,
+      layoutPageCountFor: () => 1, focus: { sessionId: "a", groupId: "2" },
+      onCurrentChange: (sessionId: string, groupId: string) => focusChanges.push(`${sessionId}/${groupId}`),
+      onResolved: () => {}, onPreviewDiscard: () => {}, onDelete: async () => {}, onJumpToCorrection: () => {},
+    }))));
+    await settle();
+    assert.deepEqual(focusChanges, ["a/2"], "带定位目标挂载时首帧上报的就是目标项，不是队首");
+    assert(focusHost.textContent?.includes("第 2 / 2 条"), `队列直接停在恢复目标那一条（实际 ${focusHost.textContent?.match(/第 \d+ \/ \d+ 条/)?.[0]}）`);
+    await act(async () => { root7!.unmount(); });
     root7 = null;
     studentHost.remove();
+    focusHost.remove();
   }
 
   await clickText("去改这题");assert(jumped);
