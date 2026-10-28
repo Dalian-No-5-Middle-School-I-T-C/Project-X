@@ -785,6 +785,22 @@ async function main(): Promise<void> {
       && Number(preflightForeign.body?.outOfScopeExamCount) === referencedCount,
     `无归属关系的教师预检只得到范围外数量，拿不到考试名单（实际 ${JSON.stringify(preflightForeign.body).slice(0, 140)}）`
   );
+  // 最危险的分支：没有任何考试引用的卡，预检必须命中只读分支返回，而不是直接删卡。
+  const orphanCardId = "PERMORPHAN001";
+  db.prepare(
+    `INSERT INTO answer_cards (id, title, subject, subject_label, exam_date, paper_size, orientation, student_fields, student_number_digits, sided, layout_version, created_by)
+     VALUES (?, '无引用卡', 'math', '数学', '2026-09-01', 'A4', 'portrait', '{}', 4, 'single', 1, ?)`
+  ).run(orphanCardId, adminId);
+  const orphanPreflight = await json(`/api/cards/${orphanCardId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${tokenA}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ preflight: true })
+  });
+  ok(orphanPreflight.status === 200 && orphanPreflight.body?.preflight === true
+    && Number(orphanPreflight.body?.referencedExamCount) === 0,
+  `无引用卡的预检也走只读分支（实际 ${orphanPreflight.status} ${JSON.stringify(orphanPreflight.body).slice(0, 120)}）`);
+  ok(Boolean(await new CardRepository().findById(orphanCardId)), "预检请求不能把无引用卡直接删掉");
+  await json(`/api/cards/${orphanCardId}`, { method: "DELETE", headers: { Authorization: `Bearer ${tokenA}` } });
   const blockedNames = await json(`/api/cards/${cardId}`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${tokenB}`, "Content-Type": "application/json" },
