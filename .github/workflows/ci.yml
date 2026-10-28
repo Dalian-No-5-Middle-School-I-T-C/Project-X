@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    # 栈式 PR：#366 以 #364 的分支为 base 时也要跑 CI，合并后这行可以删掉。
+    branches: [main, fix/scanner-ui-320-359-360-361]
 
 jobs:
   typecheck-and-test:
