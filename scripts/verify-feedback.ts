@@ -203,7 +203,9 @@ async function main(): Promise<void> {
   async function upload(form: FormData, token?: string) {
     const response = await fetch(base, {
       method: "POST",
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       body: form,
     });
     let json: any = null;
@@ -255,6 +257,37 @@ async function main(): Promise<void> {
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      },
+    }, (response) => {
+      let raw = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { raw += chunk; });
+      response.on("end", () => {
+        let json: any = null;
+        try { json = JSON.parse(raw); } catch { /* empty */ }
+        settle({ status: response.statusCode ?? 0, json });
+      });
+    });
+    request.on("error", (error: NodeJS.ErrnoException) => {
+      settle({ status: 0, json: null, error: error.code ?? "ERROR" });
+    });
+    return { request, done };
+  }
+
+  /** 声明了 Content-Length 但可以慢慢发的 multipart（模拟只声明、不急着发文件的客户端）。 */
+  function openDeclaredUpload(token: string, boundary: string, contentLength: number) {
+    let settle!: (result: { status: number; json: any; error?: string }) => void;
+    const done = new Promise<{ status: number; json: any; error?: string }>((resolve) => { settle = resolve; });
+    const url = new URL(base);
+    const request = http.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": String(contentLength),
       },
     }, (response) => {
       let raw = "";
@@ -438,10 +471,12 @@ async function main(): Promise<void> {
   mkdirSync(quotaTmp, { recursive: true });
   const step = feedbackStorage.chunkedReservationStep();
   ok(step > 0 && step < feedbackStorage.MAX_FEEDBACK_STORAGE_BYTES, "chunked 预留步长小于总配额");
-  const unitReservation = await feedbackStorage.reserveRemainingFeedbackStorage(quotaRoot, quotaTmp, 10 * 1024 * 1024);
-  ok(unitReservation.bytes === step, "chunked 初始只预留一步，不锁死剩余配额");
-  await unitReservation.grow(step);
-  ok(unitReservation.bytes === step * 2, "chunked 可按接收进度追加预留");
+  const unitReservation = feedbackStorage.createFeedbackStorageReservation(quotaRoot, quotaTmp, 10 * 1024 * 1024);
+  ok(unitReservation.bytes === 0, "新请求初始不占附件配额");
+  await unitReservation.ensureBytes(step);
+  ok(unitReservation.bytes === step, "首个文件字节到达后才开始预留");
+  await unitReservation.ensureBytes(step * 2);
+  ok(unitReservation.bytes === step * 2, "可按累计目标追加预留");
   unitReservation.release();
 
   // 慢速 chunked 在途时，声明长度的上传仍应被准入（旧实现会把剩余配额整块占走）。
@@ -468,6 +503,31 @@ async function main(): Promise<void> {
   ok(slowRes.status === 201, "慢速 chunked 上传完成");
   ok((await call("DELETE", `/${Number(declaredRes.json?.data?.id)}`, adminToken)).status === 200, "清理并发测试反馈");
   ok((await call("DELETE", `/${Number(slowRes.json?.data?.id)}`, adminToken)).status === 200, "清理慢速测试反馈");
+
+  // 声明了 Content-Length、但还没发文件数据的请求：只占一步预留，不能锁死剩余配额。
+  const slowDeclaredBoundary = `----fbdslow${Date.now()}`;
+  const slowDeclaredHead = [
+    `--${slowDeclaredBoundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n慢速声明长度\r\n`,
+    `--${slowDeclaredBoundary}\r\nContent-Disposition: form-data; name="content"\r\n\r\n正文\r\n`,
+    `--${slowDeclaredBoundary}\r\nContent-Disposition: form-data; name="files"; filename="slow-declared.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+  ].join("");
+  const slowDeclaredTotal = Buffer.byteLength(slowDeclaredHead) + 800 * 1024 + 64;
+  const slowDeclared = openDeclaredUpload(adminToken, slowDeclaredBoundary, slowDeclaredTotal);
+  slowDeclared.request.write(slowDeclaredHead);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  const declaredConcurrentForm = new FormData();
+  declaredConcurrentForm.set("title", "声明长度并发");
+  declaredConcurrentForm.set("content", "正文");
+  declaredConcurrentForm.append("files", new Blob([new Uint8Array(600 * 1024)]), "declared-concurrent.bin");
+  const declaredConcurrent = await upload(declaredConcurrentForm, adminToken);
+  ok(declaredConcurrent.status === 201, "慢速声明长度请求只占一步，不锁死剩余配额");
+
+  slowDeclared.request.destroy();
+  ok(await waitFor(() => !existsSync(tempDir) || readdirSync(tempDir).length === 0), "销毁慢速声明长度请求后临时文件已清理");
+  // 断连兜底最多等 1 秒才释放预留；给后续容量用例留出余量。
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  ok((await call("DELETE", `/${Number(declaredConcurrent.json?.data?.id)}`, adminToken)).status === 200, "清理声明长度并发测试反馈");
 
   // 超过一步的 chunked 上传会继续追加预留。
   const growBoundary = `----fbgrow${Date.now()}`;
@@ -510,7 +570,8 @@ async function main(): Promise<void> {
   fifteen.set("title", "15 个附件");
   fifteen.set("content", "正文");
   for (let i = 0; i < 15; i += 1) fifteen.append("files", new Blob([`f${i}`]), `f${i}.txt`);
-  ok((await upload(fifteen, adminToken)).status === 201, "最多 15 个附件可提交");
+  const fifteenRes = await upload(fifteen, adminToken);
+  ok(fifteenRes.status === 201, "最多 15 个附件可提交");
   const fifteenReport = (await call("GET", "?limit=1", adminToken)).json?.data?.[0];
   ok(fifteenReport?.attachments?.length === 15, "15 个附件全部入库");
 
@@ -528,7 +589,8 @@ async function main(): Promise<void> {
   ok(orphanRes.status === 413 && orphanRes.json?.code === "FEEDBACK_STORAGE_QUOTA_EXCEEDED",
     "孤儿临时文件也计入聚合容量");
   rmSync(orphanPath, { force: true });
-  ok(readdirSync(tempDir).length === 0, "孤儿临时文件清理后不留痕迹");
+  ok(await waitFor(() => !existsSync(tempDir) || readdirSync(tempDir).length === 0), "孤儿临时文件清理后不留痕迹");
+  await new Promise((resolve) => setTimeout(resolve, 200));
 
   const sixteen = new FormData();
   sixteen.set("title", "16 个附件");
@@ -550,6 +612,8 @@ async function main(): Promise<void> {
   ok(statuses[0] === 201 && statuses[1] === 413, "并发上传只放行一个，容量核算串行");
   const quotaRejected = concurrent.find((result) => result.status === 413);
   ok(quotaRejected?.json?.code === "FEEDBACK_STORAGE_QUOTA_EXCEEDED", "容量超限返回明确错误码");
+  ok(await waitFor(() => !existsSync(tempDir) || readdirSync(tempDir).length === 0), "并发拒绝后临时文件已清理");
+  await new Promise((resolve) => setTimeout(resolve, 200));
 
   const overQuota = new FormData();
   overQuota.set("title", "超容量附件");
@@ -557,7 +621,8 @@ async function main(): Promise<void> {
   overQuota.append("files", new Blob([new Uint8Array(1024 * 1024 + 1)]), "big.bin");
   const over = await upload(overQuota, adminToken);
   ok(over.status === 413 && over.json?.code === "FEEDBACK_STORAGE_QUOTA_EXCEEDED", "聚合容量超限被拒绝");
-  ok(!existsSync(tempDir) || readdirSync(tempDir).length === 0, "容量拒绝后没有遗留临时文件");
+  ok(await waitFor(() => !existsSync(tempDir) || readdirSync(tempDir).length === 0), "容量拒绝后没有遗留临时文件");
+  await new Promise((resolve) => setTimeout(resolve, 200));
 
   // 接近上限、但实际装得下的 chunked 上传：追加预留不能因为「多要一步」而误拒。
   const edgeBoundary = `----fbbedge${Date.now()}`;

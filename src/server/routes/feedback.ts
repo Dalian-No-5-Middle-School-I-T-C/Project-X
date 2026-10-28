@@ -14,8 +14,9 @@
 import { Router, type Request, type RequestHandler, type Response } from "express";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
-import { readdirSync, unlinkSync, type Dirent } from "node:fs";
+import { createWriteStream, mkdirSync, readdirSync, unlinkSync, type Dirent } from "node:fs";
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { Transform } from "node:stream";
 import path from "node:path";
 import { authMiddleware, requirePermission, requireRole } from "../middleware/auth";
 import { PERMISSIONS, roleHasPermission } from "../auth/permissions";
@@ -26,10 +27,8 @@ import { requestUploadBudget, isUploadAlreadyRejected } from "../lib/uploadBudge
 import {
   FeedbackStorageQuotaError,
   FeedbackStorageUnavailableError,
-  chunkedReservationStep,
+  createFeedbackStorageReservation,
   markFeedbackTempFileLeaked,
-  reserveFeedbackStorage,
-  reserveRemainingFeedbackStorage,
   settleFeedbackStorage,
   type FeedbackStorageReservation,
 } from "../lib/feedbackStorage";
@@ -68,11 +67,12 @@ const feedbackRootPrefix = `${path.resolve(feedbackRoot)}${path.sep}`;
 
 // 启动时同步清掉上次中断留下的临时上传件：此刻还没有本进程的上传，不存在误删在途文件的窗口。
 try {
+  mkdirSync(feedbackTmpDir, { recursive: true });
   for (const entry of readdirSync(feedbackTmpDir, { withFileTypes: true })) {
     if (!entry.isFile()) continue;
     try { unlinkSync(path.join(feedbackTmpDir, entry.name)); } catch { /* 留给下一次清理 */ }
   }
-} catch { /* 目录还不存在 */ }
+} catch { /* 目录不可用；真正上传时会再报错 */ }
 
 const pendingOrphanDirs = new Set<string>();
 let orphanSweepDone = false;
@@ -183,10 +183,10 @@ async function sweepFeedbackOrphansOnce(): Promise<void> {
 
 type FeedbackRequest = Express.Request & {
   feedbackReservation?: FeedbackStorageReservation;
-  /** multer 在 filename 阶段逐个登记，失败/断连时按这份清单清理（req.files 可能还没赋值）。 */
+  /** multer 存储引擎逐个登记临时文件，失败/断连时按这份清单清理（req.files 可能还没赋值）。 */
   feedbackTempPaths?: string[];
-  /** 已经遇到文件 part：在此之前收到的只是文本字段，不占用附件配额。 */
-  feedbackHasFiles?: boolean;
+  /** 本次请求累计已写入的附件字节数（文本字段不算）。 */
+  feedbackFileBytes?: number;
   /** multer 回调已经给出结果：此后由路由或错误处理负责清理，断连兜底不再介入。 */
   feedbackUploadFinished?: boolean;
   feedbackFinalize?: Promise<void>;
@@ -424,33 +424,63 @@ function finalizeFeedbackUpload(req: FeedbackRequest): Promise<void> {
   return req.feedbackFinalize;
 }
 
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: async (_req, _file, cb) => {
-      try {
-        await mkdir(feedbackTmpDir, { recursive: true });
-        cb(null, feedbackTmpDir);
-      } catch (err) {
-        cb(err as Error, "");
-      }
-    },
-    filename: (req, _file, cb) => {
-      const name = `fb_${randomUUID()}`;
-      const state = req as FeedbackRequest;
-      (state.feedbackTempPaths ??= []).push(path.join(feedbackTmpDir, name));
-      cb(null, name);
-    },
-  }),
-  // 配额已满时仍允许解析纯文本表单；只有真的带文件才拒绝（此时还没有写入任何文件）。
-  fileFilter: (req, _file, cb) => {
+/** 按文件字节流式预留的 multer 存储：文本字段不占附件配额，文件写入受配额背压。 */
+const feedbackStorageEngine: multer.StorageEngine = {
+  _handleFile(req, file, cb) {
     const state = req as FeedbackRequest;
-    state.feedbackHasFiles = true;
-    if (!state.feedbackReservation) {
-      cb(new FeedbackStorageQuotaError());
-      return;
-    }
-    cb(null, true);
+    const reservation = state.feedbackReservation;
+    const filename = `fb_${randomUUID()}`;
+    const filePath = path.join(feedbackTmpDir, filename);
+    (state.feedbackTempPaths ??= []).push(filePath);
+    const out = createWriteStream(filePath);
+    let size = 0;
+    let finished = false;
+    let transform: Transform;
+    const fail = (err: Error): void => {
+      if (finished) return;
+      finished = true;
+      file.stream.unpipe(transform);
+      out.destroy();
+      cb(err);
+    };
+    transform = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        if (finished) { callback(); return; }
+        size += chunk.length;
+        state.feedbackFileBytes = (state.feedbackFileBytes ?? 0) + chunk.length;
+        const total = state.feedbackFileBytes;
+        const held = reservation?.bytes ?? 0;
+        if (!reservation || total > reservation.limit) {
+          callback(new FeedbackStorageQuotaError());
+          return;
+        }
+        if (total <= held) { callback(null, chunk); return; }
+        reservation.ensureBytes(total)
+          .then((covered) => {
+            if (finished) { callback(); return; }
+            if (!covered) { callback(new FeedbackStorageQuotaError()); return; }
+            callback(null, chunk);
+          })
+          .catch((err) => callback(err as Error));
+      },
+    });
+    transform.on("error", fail);
+    out.on("error", fail);
+    file.stream.on("error", fail);
+    out.on("finish", () => {
+      if (finished) return;
+      finished = true;
+      cb(null, { destination: feedbackTmpDir, filename, path: filePath, size });
+    });
+    file.stream.pipe(transform).pipe(out);
   },
+  _removeFile(_req, file, cb) {
+    rm((file as Express.Multer.File).path, { force: true }).then(() => cb(null), (err) => cb(err));
+  },
+};
+
+const upload = multer({
+  storage: feedbackStorageEngine,
   limits: {
     fileSize: MAX_FEEDBACK_ATTACHMENT_BYTES,
     files: MAX_FEEDBACK_ATTACHMENTS,
@@ -465,7 +495,7 @@ const attachmentBudget = requestUploadBudget({
   label: "问题反馈附件上传",
 });
 
-/** JSON 请求直接放行；multipart 先预留容量、走上传统计与 multer，再交给路由处理。 */
+/** JSON 请求直接放行；multipart 先走上传统计与 multer，再交给路由处理。 */
 const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
   if (!req.is("multipart/form-data")) {
     next();
@@ -473,44 +503,24 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
   }
   const state = req as FeedbackRequest;
   state.feedbackTempPaths = [];
-  state.feedbackHasFiles = false;
   state.feedbackUploadFinished = false;
+  state.feedbackFileBytes = 0;
   void purgeStaleTmpUploads(feedbackTmpDir)
     .catch(() => {})
     .then(async () => {
       await sweepFeedbackOrphansOnce();
-      const declared = Number(req.headers["content-length"]);
-      const hasDeclaredLength = Number.isFinite(declared) && declared > 0;
-      let reservation: FeedbackStorageReservation | null = null;
-      // 优先按整包 Content-Length 预留；装不下时降级为按文件字节渐进预留，
-      // 这样配额接近上限时纯文本反馈仍能提交，带文件的请求也不会先把整包写进 _tmp。
-      let progressive = !hasDeclaredLength;
-      if (hasDeclaredLength) {
-        try {
-          reservation = await reserveFeedbackStorage(feedbackRoot, feedbackTmpDir, declared);
-        } catch (err) {
-          if (!(err instanceof FeedbackStorageQuotaError)) throw err;
-          progressive = true;
-        }
-      }
-      if (progressive) {
-        try {
-          reservation = await reserveRemainingFeedbackStorage(
-            feedbackRoot,
-            feedbackTmpDir,
-            hasDeclaredLength ? Math.min(MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES, declared) : MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES
-          );
-        } catch (err) {
-          if (!(err instanceof FeedbackStorageQuotaError)) throw err;
-          // 附件配额已满：不预留；纯文本仍可提交，带文件会在 fileFilter 处回 413。
-          reservation = null;
-        }
-      }
+      // 初始不占额度：只有真的写到文件字节才在存储引擎里申请预留，
+      // 纯文本反馈、只声明长度不传文件的慢请求都不会锁住附件配额。
+      const reservation = createFeedbackStorageReservation(
+        feedbackRoot,
+        feedbackTmpDir,
+        MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES
+      );
       if (res.destroyed || req.destroyed) {
-        reservation?.release();
+        reservation.release();
         return;
       }
-      state.feedbackReservation = reservation ?? undefined;
+      state.feedbackReservation = reservation;
       // 断连兜底：multer 通常会在断流时自行回滚并回调，回调里会先清理再释放；
       // 这里只处理「回调始终没来」的情况，且不再进入路由后才触发。
       res.once("close", () => {
@@ -518,65 +528,9 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
         const timer = setTimeout(() => {
           if (state.feedbackUploadFinished) return;
           void finalizeFeedbackUpload(state);
-        }, 5000);
+        }, 1000);
         timer.unref();
       });
-
-      if (progressive && reservation) {
-        const step = chunkedReservationStep();
-        let received = 0;
-        let growth: Promise<unknown> | null = null;
-        let streamRejected = false;
-        let growthStalled = false;
-        const rejectStream = (err?: unknown) => {
-          streamRejected = true;
-          if (isUploadAlreadyRejected(req, res)) return;
-          if (err instanceof FeedbackStorageUnavailableError) {
-            res.status(500).json({ ok: false, code: err.code, error: err.message });
-          } else {
-            res.status(413).json({
-              ok: false,
-              code: "FEEDBACK_STORAGE_QUOTA_EXCEEDED",
-              error: "反馈附件总容量已达上限，暂时无法上传附件",
-            });
-          }
-          res.once("finish", () => req.destroy());
-        };
-        req.on("data", (chunk: Buffer) => {
-          if (streamRejected || growth) return;
-          received += chunk.length;
-          // 第一个文件 part 之前收到的只是文本字段：它们有独立的字段上限，不占附件配额。
-          if (!state.feedbackHasFiles) return;
-          const held = reservation.bytes;
-          if (held >= reservation.limit) return; // 单请求上限交给 uploadBudget
-          const needCoverage = received > held;
-          if (!needCoverage) {
-            if (growthStalled || received <= held - step / 2) return;
-          }
-          req.pause();
-          growth = reservation
-            .grow(Math.max(0, received - held))
-            .then((grew) => {
-              growth = null;
-              if (streamRejected) return;
-              if (!grew) {
-                if (needCoverage) {
-                  rejectStream();
-                  return;
-                }
-                // 没有更多容量可加；在已有预留内继续接收，超出预留时再试。
-                growthStalled = true;
-              } else {
-                growthStalled = false;
-              }
-              req.resume();
-            })
-            .catch((err) => {
-              growth = null;
-              rejectStream(err);
-            });
-        });
-      }
 
       attachmentBudget(req, res, () => {
         upload.array("files", MAX_FEEDBACK_ATTACHMENTS)(req, res, async (error) => {
@@ -589,6 +543,10 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
           if (isUploadAlreadyRejected(req, res)) return;
           if (error instanceof FeedbackStorageQuotaError) {
             res.status(413).json({ ok: false, code: error.code, error: error.message });
+            return;
+          }
+          if (error instanceof FeedbackStorageUnavailableError) {
+            res.status(500).json({ ok: false, code: error.code, error: error.message });
             return;
           }
           if (error instanceof multer.MulterError) {

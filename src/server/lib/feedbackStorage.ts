@@ -2,12 +2,10 @@
  * 反馈附件聚合容量（#357）。
  *
  * 单次请求的 15 × 100 MiB 只是「一次」的上限：管理员可以反复提交，每次都永久占盘。
- * 这里按 `data/answer-card/feedback/` 整个目录的实际占盘做聚合闸门（排除 `_tmp` 暂存），
- * 并在 multer 落临时文件之前按 Content-Length 预留容量；「测容量 → 移动/入库」串行执行，
- * 避免两个并发上传各自看到旧容量后一起越界，也避免接近上限时先把 1.5 GiB 写进暂存盘。
- *
- * 无 Content-Length 的 chunked 请求没有可预知的体积，改为「分块步进预留」：先只占一小步，
- * 正文继续到达时暂停、追加预留后再继续，单个慢速连接不会把全部剩余配额一次性锁死。
+ * 这里按 `data/answer-card/feedback/` 整个目录的实际占盘做聚合闸门（排除 `_tmp` 暂存）。
+ * 每个请求初始预留为 0；multer 存储引擎在写入文件字节时按进度申请预留，文本字段不占配额，
+ * 文件写入受预留背压，声明了 Content-Length 也不会提前锁住整包额度。「测容量 → 移动/入库」
+ * 串行执行，避免两个并发上传各自看到旧容量后一起越界。
  *
  * 默认 8 GiB，可用 PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB 调整，天花板 100 GiB。
  */
@@ -69,9 +67,9 @@ export interface FeedbackStorageReservation {
   readonly bytes: number;
   /** 本请求最多可预留的字节数。 */
   readonly limit: number;
-  /** 仅 chunked 使用：至少追加这么多（有空间时多留一步）；返回是否真的增加了预留。
-   *  可用容量连 minimum 都不够时抛 FeedbackStorageQuotaError；minimum 为 0 且没有空间时返回 false。 */
-  grow(minimumAdditionalBytes: number): Promise<boolean>;
+  /** 保证预留至少覆盖到 totalBytes（并发文件共用同一请求时按累计目标幂等补齐）。
+   *  容量不够时抛 FeedbackStorageQuotaError；没有可追加容量但已覆盖时返回 false/true。 */
+  ensureBytes(totalBytes: number): Promise<boolean>;
   /** 幂等释放；必须在本请求的 _tmp 文件全部移走或删除之后调用。 */
   release(): void;
 }
@@ -171,18 +169,22 @@ function makeReservation(
   return {
     get bytes() { return held; },
     get limit() { return limitBytes; },
-    grow(minimumAdditionalBytes: number): Promise<boolean> {
-      const minimum = Math.max(0, Math.floor(minimumAdditionalBytes));
+    ensureBytes(totalBytes: number): Promise<boolean> {
+      const target = Math.max(0, Math.floor(totalBytes));
       const run = quotaQueue.then(async () => {
         if (released) return false;
-        const room = limitBytes - held;
-        if (room <= 0) return false;
-        const desired = Math.max(minimum, chunkedReservationStep());
+        if (held >= target) return true;
+        if (held >= limitBytes) return false;
         const used = await admissionUsage(feedbackRoot, tmpDir);
         if (released) return false;
+        if (held >= target) return true; // 并发文件已经把这个目标补上了
+        const minimum = target - held;
         const available = MAX_FEEDBACK_STORAGE_BYTES - used - reservedBytes;
-        if (available < minimum) throw new FeedbackStorageQuotaError();
-        const delta = Math.min(desired, available, room);
+        if (available < minimum) {
+          throw new FeedbackStorageQuotaError();
+        }
+        const desired = Math.max(minimum, chunkedReservationStep());
+        const delta = Math.min(desired, available, limitBytes - held);
         if (delta <= 0) return false;
         reservedBytes += delta;
         held += delta;
@@ -200,42 +202,13 @@ function makeReservation(
   };
 }
 
-/** 在 multer 写临时文件之前预留容量；返回的 release 必须幂等。 */
-export function reserveFeedbackStorage(
+/** 每次反馈请求的零预留：只有 multer 真正写文件字节时才申请预留，文本字段不占配额。 */
+export function createFeedbackStorageReservation(
   feedbackRoot: string,
   tmpDir: string,
-  bytes: number
-): Promise<FeedbackStorageReservation> {
-  const run = quotaQueue.then(async () => {
-    const used = await admissionUsage(feedbackRoot, tmpDir);
-    if (used + reservedBytes + bytes > MAX_FEEDBACK_STORAGE_BYTES) {
-      throw new FeedbackStorageQuotaError();
-    }
-    reservedBytes += bytes;
-    return makeReservation(feedbackRoot, tmpDir, bytes, bytes);
-  });
-  quotaQueue = run.then(() => undefined, () => undefined);
-  return run;
-}
-
-/** chunked / 无 Content-Length 上传：先按一步预留，正文到达时再分块追加（见 reservation.grow）。 */
-export function reserveRemainingFeedbackStorage(
-  feedbackRoot: string,
-  tmpDir: string,
-  maxBytes: number
-): Promise<FeedbackStorageReservation> {
-  const step = chunkedReservationStep();
-  const run = quotaQueue.then(async () => {
-    const used = await admissionUsage(feedbackRoot, tmpDir);
-    const free = MAX_FEEDBACK_STORAGE_BYTES - used - reservedBytes;
-    if (free <= 0) throw new FeedbackStorageQuotaError();
-    // 剩余容量不足一步时也只占一半，给并发请求留出准入空间。
-    const initial = Math.min(step, Math.max(1, Math.floor(free / 2)), maxBytes);
-    reservedBytes += initial;
-    return makeReservation(feedbackRoot, tmpDir, initial, maxBytes);
-  });
-  quotaQueue = run.then(() => undefined, () => undefined);
-  return run;
+  limitBytes: number
+): FeedbackStorageReservation {
+  return makeReservation(feedbackRoot, tmpDir, 0, limitBytes);
 }
 
 /** 上传完成/失败时把预留换成实际占用，再串行执行「测容量 → 移动/入库」。
