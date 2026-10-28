@@ -94,6 +94,10 @@ function testPostprocessResume(): void {
   writePostprocessSessions(cardId, sessions, 7);
   assert.deepEqual(readPostprocessSessions(cardId, 7), sessions, "会话列表按卡恢复");
   assert.deepEqual(readPostprocessSessions(cardId, 8), [], "换账号不恢复别人的会话列表");
+  // 扫描机多人共用：同一张卡被另一个账号打开过，也不能把前一个人的恢复入口顶掉。
+  writePostprocessSessions(cardId, [{ sessionId: "s9", pageCount: 1 }], 8);
+  assert.deepEqual(readPostprocessSessions(cardId, 7), sessions, "另一个账号写同一张卡不能顶掉我的会话列表");
+  assert.deepEqual(readPostprocessSessions(cardId, 8), [{ sessionId: "s9", pageCount: 1 }], "各自的列表互不覆盖");
 
   writeActivePostprocess(cardId, "高一语文", 7);
   const active = readActivePostprocess();

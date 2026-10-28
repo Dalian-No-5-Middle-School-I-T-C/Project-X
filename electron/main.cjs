@@ -541,14 +541,23 @@ configureAppIdentity();
 
 let chromiumBrotliClosed = false;
 let brotliRecoveryInFlight = false;
+// 恢复预算按 5 分钟滚动窗口计：修好之后不该因为「以前修过两次」就再也不能自愈，
+// 但短时间内反复断连仍要收口，避免窗口一直挂在坏状态里。
+const BROTLI_RECOVERY_WINDOW_MS = 5 * 60 * 1000;
+const BROTLI_RECOVERY_MAX_ATTEMPTS = 2;
+let brotliRecoveryWindowStart = 0;
 let brotliRecoveryAttempts = 0;
 async function failClosedChromiumBrotli(error) {
   if (chromiumBrotliClosed) return;
   const detail = error instanceof Error ? error.message : String(error);
   appendLog("ERROR", `[Electron] Brotli 解码拦截失效: ${detail}`);
   const contents = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
+  if (Date.now() - brotliRecoveryWindowStart > BROTLI_RECOVERY_WINDOW_MS) {
+    brotliRecoveryWindowStart = Date.now();
+    brotliRecoveryAttempts = 0;
+  }
   // 现场首次启动/长时间运行后偶发一次通道断开；先原地重装两次，避免直接把扫描端退出。
-  if (contents && !contents.isDestroyed() && brotliRecoveryAttempts < 2) {
+  if (contents && !contents.isDestroyed() && brotliRecoveryAttempts < BROTLI_RECOVERY_MAX_ATTEMPTS) {
     if (brotliRecoveryInFlight) return;
     brotliRecoveryInFlight = true;
     brotliRecoveryAttempts += 1;

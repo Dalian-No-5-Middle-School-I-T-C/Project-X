@@ -31,7 +31,7 @@ function writeJson(key: string, value: unknown): void {
 }
 
 export function readPostprocessSessions(cardId: string, userId?: number | null): PostprocessSessionRef[] {
-  const saved = readJson<{ at?: number; userId?: unknown; sessions?: unknown }>(`${SESSIONS_PREFIX}/${encodeURIComponent(cardId)}`);
+  const saved = readJson<{ at?: number; userId?: unknown; sessions?: unknown }>(sessionsKey(cardId, userId));
   if (!saved || typeof saved.at !== "number" || Date.now() - saved.at > MAX_AGE_MS || !Array.isArray(saved.sessions)) return [];
   if (userId != null && saved.userId !== userId) return [];
   return saved.sessions.filter((item): item is PostprocessSessionRef => Boolean(item)
@@ -41,7 +41,12 @@ export function readPostprocessSessions(cardId: string, userId?: number | null):
 
 export function writePostprocessSessions(cardId: string, sessions: PostprocessSessionRef[], userId?: number | null): void {
   if (!cardId) return;
-  writeJson(`${SESSIONS_PREFIX}/${encodeURIComponent(cardId)}`, { at: Date.now(), userId: typeof userId === "number" ? userId : null, sessions });
+  writeJson(sessionsKey(cardId, userId), { at: Date.now(), userId: typeof userId === "number" ? userId : null, sessions });
+}
+
+/** 扫描机常多人共用：会话列表按「账号 + 卡」存，否则后一个人打开同一张卡会把前一个人的恢复入口顶掉。 */
+function sessionsKey(cardId: string, userId?: number | null): string {
+  return `${SESSIONS_PREFIX}/${typeof userId === "number" ? userId : "anon"}/${encodeURIComponent(cardId)}`;
 }
 
 export function readActivePostprocess(): { cardId: string; cardTitle: string; userId: number | null; at: number } | null {
