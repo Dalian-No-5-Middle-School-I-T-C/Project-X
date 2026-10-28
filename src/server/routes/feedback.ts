@@ -130,6 +130,14 @@ async function reconcileFeedbackTrashOnce(): Promise<void> {
   await trashReconcile;
 }
 
+async function attachmentDirReferenced(dir: string): Promise<boolean> {
+  const row = await getMysqlDb().get<{ id: number }>(
+    "SELECT id FROM feedback_attachments WHERE stored_path LIKE ? LIMIT 1",
+    `feedback/${path.basename(dir)}/%`
+  );
+  return Boolean(row);
+}
+
 async function retryPendingOrphanDirs(): Promise<void> {
   for (const dir of [...pendingOrphanDirs]) {
     try {
@@ -143,6 +151,11 @@ async function retryPendingOrphanDirs(): Promise<void> {
     try {
       const info = await stat(dir);
       if (Date.now() - info.mtimeMs < ORPHAN_GRACE_MS) continue;
+      // 期间可能有并发上传的事务已经提交，删除前必须重新确认没有附件记录。
+      if (await attachmentDirReferenced(dir)) {
+        youngOrphanDirs.delete(dir);
+        continue;
+      }
       await rm(dir, { recursive: true, force: true });
       youngOrphanDirs.delete(dir);
       invalidateFeedbackStorageUsage();
@@ -151,8 +164,7 @@ async function retryPendingOrphanDirs(): Promise<void> {
         youngOrphanDirs.delete(dir);
         continue;
       }
-      youngOrphanDirs.delete(dir);
-      pendingOrphanDirs.add(dir);
+      // 查询或删除失败都留到下一次复查；下一次仍会重新确认引用关系，不能转入盲删集合。
     }
   }
 }
