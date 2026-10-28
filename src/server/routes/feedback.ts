@@ -213,7 +213,8 @@ async function sweepFeedbackOrphansOnce(): Promise<void> {
             await rm(dir, { recursive: true, force: true });
             invalidateFeedbackStorageUsage();
           } catch {
-            pendingOrphanDirs.add(dir);
+            // 读取/删除临时失败，回到年轻集合下一轮重新核对引用和宽限期，不直接盲删。
+            youngOrphanDirs.add(dir);
           }
         }
         orphanSweepDone = true;
