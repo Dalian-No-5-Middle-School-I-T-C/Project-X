@@ -144,7 +144,8 @@ async function leakedTempBytes(): Promise<number> {
 }
 
 /** 准入核算：永久占盘 + 超过宽限期的孤儿临时件 + 清理失败的临时件 + 其他请求的预留。
- *  活跃上传的 _tmp 由各自的预留覆盖，不能再按实际字节算一遍；宽限期大于请求超时。 */
+ *  在途 _tmp 由各自的预留覆盖，不论修改时间都不再按占盘加一次。
+ *  上传没有请求体超时，不能靠 10 分钟宽限期把慢请求当成孤儿。 */
 async function admissionUsage(feedbackRoot: string, tmpDir: string): Promise<number> {
   let total = await directoryBytes(feedbackRoot, tmpDir);
   total += await leakedTempBytes();

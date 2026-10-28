@@ -12,7 +12,7 @@
  *   4. 客户端环境信息白名单与服务端环境信息合并
  *   5. 标记处理后 resolved_at / resolved_by 的写入与撤销
  *   6. 附件 multipart 上传、下载权限、15 / 16 个上限与删除清理
- *   7. chunked 分块预留、慢速并发、断连临时文件清理
+ *   7. chunked 分块预留、慢速并发、断连临时文件清理、在途临时文件不被滞留清理删除
  *   8. 教师提交、自己的反馈 / 附件与越权拒绝
  */
 import assert from "node:assert/strict";
@@ -579,6 +579,97 @@ async function main(): Promise<void> {
   const afterAbort = await upload(afterAbortForm, adminToken);
   ok(afterAbort.status === 201, "断连后预留已释放，后续上传不受影响");
   ok((await call("DELETE", `/${Number(afterAbort.json?.data?.id)}`, adminToken)).status === 200, "清理断连测试反馈");
+
+  // 直接调用 purge 只能证明「传入 skip 集合会跳过」。这里走真实上传：
+  // 在途文件的 mtime 超过 1 小时后，另一个请求会触发清理；文件必须还在，提交后的内容也必须完整。
+  // 超过 10 分钟的在途文件仍由本请求预留覆盖，准入不能再按占盘加一次。
+  const holdBoundary = `----fbhold${Date.now()}`;
+  const holdPayload = Buffer.alloc(400 * 1024, 0x71);
+  const hold = openChunkedUpload(adminToken, holdBoundary);
+  const createdIds: number[] = [];
+  let holdEnded = false;
+  try {
+    hold.request.write([
+      `--${holdBoundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n在途清理保护\r\n`,
+      `--${holdBoundary}\r\nContent-Disposition: form-data; name="content"\r\n\r\n正文\r\n`,
+      `--${holdBoundary}\r\nContent-Disposition: form-data; name="files"; filename="hold.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+    ].join(""), "utf8");
+    if (!hold.request.write(holdPayload)) {
+      await new Promise((resolve) => hold.request.once("drain", resolve));
+    }
+    const holdReady = await waitFor(() => existsSync(tempDir) && readdirSync(tempDir).some((name) => {
+      try { return statSync(path.join(tempDir, name)).size >= holdPayload.length; } catch { return false; }
+    }));
+    ok(holdReady, "在途附件已写完待提交");
+    const holdName = readdirSync(tempDir).find((name) => {
+      try { return statSync(path.join(tempDir, name)).size >= holdPayload.length; } catch { return false; }
+    });
+    const holdPath = holdName ? path.join(tempDir, holdName) : "";
+    const ageUntilStable = async (when: Date): Promise<boolean> => {
+      if (!holdPath) return false;
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        utimesSync(holdPath, when, when);
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        try {
+          if (Math.abs(statSync(holdPath).mtimeMs - when.getTime()) < 2000) return true;
+        } catch { return false; }
+      }
+      return false;
+    };
+    ok(await ageUntilStable(new Date(Date.now() - 11 * 60_000)), "在途临时文件可拨到 10 分钟宽限期之外");
+
+    const duringGrace = new FormData();
+    duringGrace.set("title", "宽限期内的并发");
+    duringGrace.set("content", "正文");
+    duringGrace.append("files", new Blob([new Uint8Array(200 * 1024)]), "during-grace.bin");
+    const duringGraceRes = await upload(duringGrace, adminToken);
+    if (duringGraceRes.status === 201) createdIds.push(Number(duringGraceRes.json?.data?.id));
+    ok(duringGraceRes.status === 201, "在途附件超过 10 分钟仍只按预留计一次，并发上传不会被重复核算拒绝");
+
+    ok(await ageUntilStable(new Date(Date.now() - 2 * 60 * 60 * 1000)), "在途临时文件可拨到清理存活期之外");
+    const duringPurge = new FormData();
+    duringPurge.set("title", "触发滞留清理");
+    duringPurge.set("content", "正文");
+    duringPurge.append("files", new Blob(["probe"], { type: "text/plain" }), "probe.txt");
+    const duringPurgeRes = await upload(duringPurge, adminToken);
+    if (duringPurgeRes.status === 201) createdIds.push(Number(duringPurgeRes.json?.data?.id));
+    ok(duringPurgeRes.status === 201 && Boolean(holdPath) && existsSync(holdPath),
+      "其他上传触发的滞留清理不会删除仍在上传的临时文件");
+
+    hold.request.end(`\r\n--${holdBoundary}--\r\n`);
+    holdEnded = true;
+    const holdRes = await hold.done;
+    if (holdRes.status === 201) createdIds.push(Number(holdRes.json?.data?.id));
+    ok(holdRes.status === 201, "超过清理存活期的在途附件仍能提交");
+    const holdId = Number(holdRes.json?.data?.id);
+    const holdReport = (await call("GET", "?limit=20", adminToken)).json?.data?.find((row: { id: number }) => row.id === holdId);
+    const holdAttachment = holdReport?.attachments?.[0];
+    const holdDownload = await fetch(`${base}/${holdId}/attachments/${holdAttachment?.id}`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    const holdBytes = Buffer.from(await holdDownload.arrayBuffer());
+    ok(holdDownload.status === 200 && holdBytes.equals(holdPayload), "在途附件内容完整，没有因为临时文件被删而丢失");
+
+    const staleOrphan = path.join(tempDir, "stale-unregistered.bin");
+    writeFileSync(staleOrphan, Buffer.alloc(1024));
+    const purgeAge = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    utimesSync(staleOrphan, purgeAge, purgeAge);
+    const purgeTrigger = new FormData();
+    purgeTrigger.set("title", "清理真正的孤儿");
+    purgeTrigger.set("content", "正文");
+    const purgeTriggerRes = await upload(purgeTrigger, adminToken);
+    if (purgeTriggerRes.status === 201) createdIds.push(Number(purgeTriggerRes.json?.data?.id));
+    ok(purgeTriggerRes.status === 201 && !existsSync(staleOrphan), "没有在途登记的过期临时文件仍会被清理");
+  } finally {
+    if (!holdEnded) {
+      hold.request.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+    }
+    for (const id of createdIds) {
+      if (!Number.isFinite(id) || id <= 0) continue;
+      ok((await call("DELETE", `/${id}`, adminToken)).status === 200, `清理在途保护测试反馈 ${id}`);
+    }
+  }
 
   const fifteen = new FormData();
   fifteen.set("title", "15 个附件");
