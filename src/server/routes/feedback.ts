@@ -406,8 +406,19 @@ async function stageAttachmentDirs(dirs: string[]): Promise<StagedAttachmentDir[
       activeStagedDirs.add(target);
       try {
         await rename(dir, target);
-      } catch (err) {
+      } catch (err: any) {
         activeStagedDirs.delete(target);
+        if (err?.code === "ENOENT") {
+          // 附件目录已经丢了（还原数据库、数据盘丢文件等）：当作已清理，继续删库。
+          invalidateFeedbackStorageUsage();
+          const leftover = await stat(target).catch(() => null);
+          if (leftover?.isDirectory()) {
+            // _trash 里还留着同名暂存目录，纳入本次清理。
+            activeStagedDirs.add(target);
+            staged.push({ original: dir, staged: target });
+          }
+          continue;
+        }
         throw err;
       }
       staged.push({ original: dir, staged: target });

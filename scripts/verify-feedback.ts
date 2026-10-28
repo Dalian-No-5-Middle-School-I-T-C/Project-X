@@ -740,6 +740,25 @@ async function main(): Promise<void> {
   ok(!existsSync(trashDir) || readdirSync(trashDir).length === 0, "数据库删除失败后暂存目录已清空");
   ok((await call("DELETE", `/${restoreId}`, adminToken)).status === 200, "附件恢复后可再次删除");
 
+  // 目录已经被外部删掉、只剩元数据时，删除反馈必须继续成功。
+  const missingForm = new FormData();
+  missingForm.set("title", "附件目录丢失");
+  missingForm.set("content", "正文");
+  missingForm.append("files", new Blob(["gone"], { type: "text/plain" }), "gone.txt");
+  const missingReport = await upload(missingForm, adminToken);
+  ok(missingReport.status === 201, "准备附件目录丢失测试");
+  const missingId = Number(missingReport.json?.data?.id);
+  const missingRow = await getMysqlDb().get<{ stored_path: string }>(
+    "SELECT stored_path FROM feedback_attachments WHERE feedback_id = ?",
+    missingId
+  );
+  const missingDir = path.dirname(path.resolve(process.env.ANSWER_CARD_DATA_DIR!, missingRow!.stored_path));
+  rmSync(missingDir, { recursive: true, force: true });
+  const missingDelete = await call("DELETE", `/${missingId}`, adminToken);
+  ok(missingDelete.status === 200, "附件目录已丢失时仍可删除反馈");
+  ok(!((await call("GET", "?limit=200", adminToken)).json?.data ?? []).some((row: any) => row.id === missingId),
+    "目录丢失的反馈已从列表删除");
+
   // 模拟进程在「已移入 _trash、尚未删库」时退出：后续请求应把目录恢复回原位。
   const crashForm = new FormData();
   crashForm.set("title", "删除中断恢复");
