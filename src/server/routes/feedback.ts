@@ -406,16 +406,21 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
       if (!hasDeclaredLength && reservation) {
         const step = chunkedReservationStep();
         let received = 0;
-        let growth: Promise<void> | null = null;
+        let growth: Promise<unknown> | null = null;
         let streamRejected = false;
-        const rejectStream = () => {
+        let growthStalled = false;
+        const rejectStream = (err?: unknown) => {
           streamRejected = true;
           if (isUploadAlreadyRejected(req, res)) return;
-          res.status(413).json({
-            ok: false,
-            code: "FEEDBACK_STORAGE_QUOTA_EXCEEDED",
-            error: "反馈附件总容量已达上限，暂时无法上传附件",
-          });
+          if (err instanceof FeedbackStorageUnavailableError) {
+            res.status(500).json({ ok: false, code: err.code, error: err.message });
+          } else {
+            res.status(413).json({
+              ok: false,
+              code: "FEEDBACK_STORAGE_QUOTA_EXCEEDED",
+              error: "反馈附件总容量已达上限，暂时无法上传附件",
+            });
+          }
           res.once("finish", () => req.destroy());
         };
         req.on("data", (chunk: Buffer) => {
@@ -423,18 +428,31 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
           received += chunk.length;
           const held = reservation.bytes;
           if (held >= reservation.limit) return; // 单请求上限交给 uploadBudget
-          // 提前半步暂停正文并追加预留；在途期间最多多写当前这一块。
-          if (received <= held - step / 2) return;
+          const needCoverage = received > held;
+          if (!needCoverage) {
+            if (growthStalled || received <= held - step / 2) return;
+          }
           req.pause();
           growth = reservation
-            .grow(Math.max(step, received - held + step / 2))
-            .then(() => {
+            .grow(Math.max(0, received - held))
+            .then((grew) => {
               growth = null;
-              if (!streamRejected) req.resume();
+              if (streamRejected) return;
+              if (!grew) {
+                if (needCoverage) {
+                  rejectStream();
+                  return;
+                }
+                // 没有更多容量可加；在已有预留内继续接收，超出预留时再试。
+                growthStalled = true;
+              } else {
+                growthStalled = false;
+              }
+              req.resume();
             })
-            .catch(() => {
+            .catch((err) => {
               growth = null;
-              rejectStream();
+              rejectStream(err);
             });
         });
       }

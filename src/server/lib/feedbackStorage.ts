@@ -69,8 +69,9 @@ export interface FeedbackStorageReservation {
   readonly bytes: number;
   /** 本请求最多可预留的字节数。 */
   readonly limit: number;
-  /** 仅 chunked 使用：追加预留，容量不足时抛 FeedbackStorageQuotaError。 */
-  grow(additionalBytes: number): Promise<void>;
+  /** 仅 chunked 使用：至少追加这么多（有空间时多留一步）；返回是否真的增加了预留。
+   *  可用容量连 minimum 都不够时抛 FeedbackStorageQuotaError；minimum 为 0 且没有空间时返回 false。 */
+  grow(minimumAdditionalBytes: number): Promise<boolean>;
   /** 幂等释放；必须在本请求的 _tmp 文件全部移走或删除之后调用。 */
   release(): void;
 }
@@ -170,20 +171,22 @@ function makeReservation(
   return {
     get bytes() { return held; },
     get limit() { return limitBytes; },
-    grow(additionalBytes: number): Promise<void> {
-      const requested = Math.max(0, Math.floor(additionalBytes));
+    grow(minimumAdditionalBytes: number): Promise<boolean> {
+      const minimum = Math.max(0, Math.floor(minimumAdditionalBytes));
       const run = quotaQueue.then(async () => {
-        if (released) return;
-        const target = Math.min(limitBytes, held + requested);
-        const delta = target - held;
-        if (delta <= 0) return;
+        if (released) return false;
+        const room = limitBytes - held;
+        if (room <= 0) return false;
+        const desired = Math.max(minimum, chunkedReservationStep());
         const used = await admissionUsage(feedbackRoot, tmpDir);
-        if (released) return;
-        if (used + reservedBytes + delta > MAX_FEEDBACK_STORAGE_BYTES) {
-          throw new FeedbackStorageQuotaError();
-        }
+        if (released) return false;
+        const available = MAX_FEEDBACK_STORAGE_BYTES - used - reservedBytes;
+        if (available < minimum) throw new FeedbackStorageQuotaError();
+        const delta = Math.min(desired, available, room);
+        if (delta <= 0) return false;
         reservedBytes += delta;
-        held = target;
+        held += delta;
+        return true;
       });
       quotaQueue = run.then(() => undefined, () => undefined);
       return run;

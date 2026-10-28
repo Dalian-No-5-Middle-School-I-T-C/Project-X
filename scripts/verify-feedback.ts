@@ -541,6 +541,21 @@ async function main(): Promise<void> {
   ok(over.status === 413 && over.json?.code === "FEEDBACK_STORAGE_QUOTA_EXCEEDED", "聚合容量超限被拒绝");
   ok(!existsSync(tempDir) || readdirSync(tempDir).length === 0, "容量拒绝后没有遗留临时文件");
 
+  // 接近上限、但实际装得下的 chunked 上传：追加预留不能因为「多要一步」而误拒。
+  const edgeBoundary = `----fbbedge${Date.now()}`;
+  const edgeBody = Buffer.concat([
+    Buffer.from([
+      `--${edgeBoundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n边界 chunked\r\n`,
+      `--${edgeBoundary}\r\nContent-Disposition: form-data; name="content"\r\n\r\n正文\r\n`,
+      `--${edgeBoundary}\r\nContent-Disposition: form-data; name="files"; filename="edge.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+    ].join(""), "utf8"),
+    Buffer.alloc(280 * 1024, 0x64),
+    Buffer.from(`\r\n--${edgeBoundary}--\r\n`, "utf8"),
+  ]);
+  const edge = await chunkedUpload(adminToken, edgeBoundary, edgeBody);
+  ok(edge.status === 201, "chunked 实际装得下时不会被多余步长误拒");
+  ok((await call("DELETE", `/${Number(edge.json?.data?.id)}`, adminToken)).status === 200, "清理边界 chunked 测试反馈");
+
   const boundary = `----fbtest${Date.now()}`;
   const chunkedBody = Buffer.from([
     `--${boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n分块上传测试\r\n`,
