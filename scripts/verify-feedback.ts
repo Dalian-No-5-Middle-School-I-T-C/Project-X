@@ -91,6 +91,8 @@ const feedbackRouter = feedbackModule.default;
 const { withTimezone } = feedbackModule;
 const feedbackStorage = await import("../src/server/lib/feedbackStorage");
 const { purgeStaleTmpUploads } = await import("../src/apps/answer-card/server/paperQuota");
+const backupRouter = (await import("../src/server/routes/backup")).default;
+const { extractZipWithinBudget } = await import("../src/server/services/restoreZip");
 const express = (await import("express")).default;
 
 async function main(): Promise<void> {
@@ -183,6 +185,7 @@ async function main(): Promise<void> {
   const app = express();
   app.use(express.json({ limit: "64kb" }));
   app.use("/api/feedback", feedbackRouter);
+  if (!maria) app.use("/api/db", backupRouter);
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => server.once("listening", () => resolve()));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/feedback`;
@@ -881,6 +884,42 @@ async function main(): Promise<void> {
   ok(!((await call("GET", "?limit=200", adminToken)).json?.data ?? []).some((row: any) => row.id === concurrentId),
     "并发删除后反馈已从列表移除");
   ok(!existsSync(trashDir) || readdirSync(trashDir).length === 0, "并发删除后暂存目录为空");
+
+  // 反馈允许上传 .db 附件；系统备份不能按扩展名把它一并跳过。
+  if (!maria) {
+    const findFiles = (dir: string, predicate: (filePath: string) => boolean): string[] => {
+      if (!existsSync(dir)) return [];
+      const hits: string[] = [];
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) hits.push(...findFiles(full, predicate));
+        else if (entry.isFile() && predicate(full)) hits.push(full);
+      }
+      return hits;
+    };
+    const dbAttachmentForm = new FormData();
+    dbAttachmentForm.set("title", "数据库附件备份");
+    dbAttachmentForm.set("content", "正文");
+    dbAttachmentForm.append("files", new Blob(["feedback-db-payload"], { type: "application/octet-stream" }), "diagnostics.db");
+    const dbAttachmentReport = await upload(dbAttachmentForm, adminToken);
+    ok(dbAttachmentReport.status === 201, "准备 .db 附件备份测试");
+    const backupResponse = await fetch(`${new URL(base).origin}/api/db/backup`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    ok(backupResponse.status === 200, "系统备份接口成功");
+    const backupZip = Buffer.from(await backupResponse.arrayBuffer());
+    const extractDir = path.join(tmpDir, "backup-extract");
+    mkdirSync(extractDir, { recursive: true });
+    extractZipWithinBudget(backupZip, extractDir);
+    const feedbackDbFiles = findFiles(
+      path.join(extractDir, "data", "answer-card", "feedback"),
+      (filePath) => filePath.endsWith(".db")
+    );
+    ok(feedbackDbFiles.some((filePath) => readFileSync(filePath, "utf8") === "feedback-db-payload"),
+      "备份包含反馈目录下的 .db 附件");
+    ok((await call("DELETE", `/${Number(dbAttachmentReport.json?.data?.id)}`, adminToken)).status === 200,
+      "清理 .db 附件备份测试");
+  }
 
   // 模拟进程在「已移入 _trash、尚未删库」时退出：后续请求应把目录恢复回原位。
   const crashForm = new FormData();

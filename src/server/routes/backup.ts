@@ -46,6 +46,19 @@ function getScannerDbPath(): string {
   return resolveScannerDbPath();
 }
 
+/** 只跳过已经单独备份的系统数据库及其 sidecar，不能按扩展名误伤反馈附件。 */
+function isSeparatelyBackedUpDbFile(filePath: string, dbPaths: string[]): boolean {
+  const resolved = path.resolve(filePath);
+  const comparable = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  return dbPaths.some((dbPath) => {
+    const db = path.resolve(dbPath);
+    const dbComparable = process.platform === "win32" ? db.toLowerCase() : db;
+    return comparable === dbComparable
+      || comparable === `${dbComparable}-shm`
+      || comparable === `${dbComparable}-wal`;
+  });
+}
+
 /**
  * GET /api/db/backup
  * 导出所有数据为 ZIP 下载
@@ -108,14 +121,8 @@ router.get("/backup", async (_req: Request, res: Response) => {
     const dataDir = getDataDir();
     const dataBakDir = path.join(tmpDir, "data", "answer-card");
     if (existsSync(dataDir)) {
-      await copyDirectory(dataDir, dataBakDir, (filePath: string) => {
-        // 跳过 .db 文件（已单独备份）
-        const base = path.basename(filePath);
-        if (base.endsWith(".db") || base.endsWith(".db-shm") || base.endsWith(".db-wal")) {
-          return false;
-        }
-        return true;
-      });
+      const separatelyBackedUp = [getProjectXDbPath(), getScannerDbPath()];
+      await copyDirectory(dataDir, dataBakDir, (filePath: string) => !isSeparatelyBackedUpDbFile(filePath, separatelyBackedUp));
       const dirStat = await stat(dataBakDir);
       // 估算大小
       metadata.files.push({ name: "data/answer-card/", size: 0 });
@@ -446,10 +453,8 @@ async function backupMariadb(res: Response): Promise<void> {
     const dataDir = getDataDir();
     const dataBakDir = path.join(tmpDir, "data", "answer-card");
     if (existsSync(dataDir)) {
-      await copyDirectory(dataDir, dataBakDir, (filePath: string) => {
-        const base = path.basename(filePath);
-        return !(base.endsWith(".db") || base.endsWith(".db-shm") || base.endsWith(".db-wal"));
-      });
+      const separatelyBackedUp = [getProjectXDbPath(), getScannerDbPath()];
+      await copyDirectory(dataDir, dataBakDir, (filePath: string) => !isSeparatelyBackedUpDbFile(filePath, separatelyBackedUp));
     }
 
     // 元数据

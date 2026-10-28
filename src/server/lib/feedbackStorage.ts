@@ -269,32 +269,46 @@ export function createFeedbackStorageReservation(
 }
 
 /** 上传完成/失败时把预留换成实际占用，再串行执行「测容量 → 移动/入库」。
- *  成功时在文件移出 _tmp 之后释放预留；失败时保留预留，由调用方清理临时文件后再释放。 */
+ *  失败时在同一串行队列里先执行调用方的清理（删目录、清临时文件），再释放预留，
+ *  避免下一个并发请求同时看到残留目录和未释放的预留。 */
 export function settleFeedbackStorage<T>(
   feedbackRoot: string,
   reservation: FeedbackStorageReservation | null,
   incomingBytes: number,
-  task: () => Promise<T>
+  task: () => Promise<T>,
+  onError?: () => Promise<void>
 ): Promise<T> {
   if (incomingBytes <= 0) {
     reservation?.release();
     return task();
   }
   const run = quotaQueue.then(async () => {
-    // used 已包含本请求以及已经缓冲完成的并发请求的 _tmp 文件；再叠加 reservedBytes
-    // 会把同一批字节算两遍。串行队列保证前一个请求移动完成后，后一个才看到它的永久占用。
-    const used = await directoryBytes(feedbackRoot);
-    if (used > MAX_FEEDBACK_STORAGE_BYTES) {
-      throw new FeedbackStorageQuotaError();
+    try {
+      // used 已包含本请求以及已经缓冲完成的并发请求的 _tmp 文件；再叠加 reservedBytes
+      // 会把同一批字节算两遍。串行队列保证前一个请求移动完成后，后一个才看到它的永久占用。
+      const used = await directoryBytes(feedbackRoot);
+      if (used > MAX_FEEDBACK_STORAGE_BYTES) {
+        throw new FeedbackStorageQuotaError();
+      }
+      const result = await task();
+      const cached = usageCache.get(path.resolve(feedbackRoot));
+      if (cached) {
+        cached.bytes += incomingBytes;
+        cached.at = Date.now();
+      }
+      return result;
+    } catch (err) {
+      if (onError) {
+        try {
+          await onError();
+        } catch (cleanupErr) {
+          console.error("[feedback-storage] 结算失败后的清理也失败:", cleanupErr);
+        }
+      }
+      throw err;
+    } finally {
+      reservation?.release();
     }
-    const result = await task();
-    const cached = usageCache.get(path.resolve(feedbackRoot));
-    if (cached) {
-      cached.bytes += incomingBytes;
-      cached.at = Date.now();
-    }
-    reservation?.release();
-    return result;
   });
   quotaQueue = run.then(() => undefined, () => undefined);
   return run;

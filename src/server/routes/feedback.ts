@@ -255,6 +255,10 @@ type FeedbackRequest = Express.Request & {
   /** multer 回调已经给出结果：此后由路由或错误处理负责清理，断连兜底不再介入。 */
   feedbackUploadFinished?: boolean;
   feedbackFinalize?: Promise<void>;
+  feedbackFinalizeStarted?: boolean;
+  feedbackAborted?: boolean;
+  /** 每个 part 的写入流销毁器；失败/断连时统一收尾，避免迟到的 transform 再落盘。 */
+  feedbackAborters?: Array<() => void>;
 };
 
 type FeedbackRow = {
@@ -503,13 +507,18 @@ async function removeRegisteredTempFiles(req: FeedbackRequest): Promise<void> {
 
 /** 先清临时文件、再释放预留：任何还留在 _tmp 的年轻文件都必须有预留或泄漏登记在册。 */
 function finalizeFeedbackUpload(req: FeedbackRequest): Promise<void> {
-  if (!req.feedbackFinalize) {
-    req.feedbackFinalize = (async () => {
-      await removeRegisteredTempFiles(req);
-      for (const tempPath of req.feedbackTempPaths ?? []) unmarkActiveFeedbackTempFile(tempPath);
-      req.feedbackReservation?.release();
-    })();
-  }
+  if (req.feedbackFinalize) return req.feedbackFinalize;
+  if (req.feedbackFinalizeStarted) return Promise.resolve();
+  req.feedbackFinalizeStarted = true;
+  req.feedbackAborted = true;
+  req.feedbackFinalize = (async () => {
+    for (const abort of req.feedbackAborters ?? []) {
+      try { abort(); } catch { /* 已关闭的流 */ }
+    }
+    await removeRegisteredTempFiles(req);
+    for (const tempPath of req.feedbackTempPaths ?? []) unmarkActiveFeedbackTempFile(tempPath);
+    req.feedbackReservation?.release();
+  })();
   return req.feedbackFinalize;
 }
 
@@ -517,6 +526,10 @@ function finalizeFeedbackUpload(req: FeedbackRequest): Promise<void> {
 const feedbackStorageEngine: multer.StorageEngine = {
   _handleFile(req, file, cb) {
     const state = req as FeedbackRequest;
+    if (state.feedbackAborted) {
+      cb(new Error("上传已中止"));
+      return;
+    }
     const reservation = state.feedbackReservation;
     const filename = `fb_${randomUUID()}`;
     const filePath = path.join(feedbackTmpDir, filename);
@@ -532,10 +545,13 @@ const feedbackStorageEngine: multer.StorageEngine = {
       file.stream.unpipe(transform);
       out.destroy();
       cb(err);
+      // Multer 在错误时可能先 drain 剩余请求体才回调；这里主动收尾，避免慢客户端
+      // 把临时文件、活跃标记和预留一直锁到连接结束。
+      void finalizeFeedbackUpload(state);
     };
     transform = new Transform({
       transform(chunk: Buffer, _encoding, callback) {
-        if (finished) { callback(); return; }
+        if (finished || state.feedbackAborted) { callback(); return; }
         size += chunk.length;
         state.feedbackFileBytes = (state.feedbackFileBytes ?? 0) + chunk.length;
         const total = state.feedbackFileBytes;
@@ -553,6 +569,10 @@ const feedbackStorageEngine: multer.StorageEngine = {
           })
           .catch((err) => callback(err as Error));
       },
+    });
+    (state.feedbackAborters ??= []).push(() => {
+      try { transform.destroy(); } catch { /* 已关闭 */ }
+      try { out.destroy(); } catch { /* 已关闭 */ }
     });
     transform.on("error", fail);
     out.on("error", fail);
@@ -608,12 +628,10 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
     }
   }
   void purgeStaleTmpUploads(feedbackTmpDir, 60 * 60_000, activeFeedbackTempFiles())
-    .catch(() => {})
-    .then(async () => {
+    .catch(() => 0)
+    .then(async (removedStale) => {
+      if (removedStale > 0) invalidateFeedbackStorageUsage();
       await sweepFeedbackOrphansOnce();
-      // 上传前重新核对一次树外变化（管理员手工清理孤儿、删除暂存等），
-      // 同一次上传内部再复用缓存，避免每个预留步长都全量扫盘。
-      invalidateFeedbackStorageUsage();
       // 初始不占额度：只有真的写到文件字节才在存储引擎里申请预留，
       // 纯文本反馈、只声明长度不传文件的慢请求都不会锁住附件配额。
       const reservation = createFeedbackStorageReservation(
@@ -808,8 +826,17 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
     const finalDir = path.join(feedbackRoot, storageKey);
     const incomingBytes = files.reduce((sum, file) => sum + file.size, 0);
     let reportId: number;
-    try {
-      reportId = await settleFeedbackStorage(
+    const cleanupFailedSettle = async (): Promise<void> => {
+      try {
+        await rm(finalDir, { recursive: true, force: true });
+      } catch (cleanupErr) {
+        pendingOrphanDirs.add(finalDir);
+        console.error("[feedback] 附件清理失败，已排队重试:", cleanupErr);
+      }
+      invalidateFeedbackStorageUsage();
+      await finalizeFeedbackUpload(state);
+    };
+    reportId = await settleFeedbackStorage(
         feedbackRoot,
         reservation,
         incomingBytes,
@@ -856,19 +883,9 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
             }
             return id;
           });
-        }
+        },
+        cleanupFailedSettle
       );
-    } catch (err) {
-      try {
-        await rm(finalDir, { recursive: true, force: true });
-      } catch (cleanupErr) {
-        pendingOrphanDirs.add(finalDir);
-        invalidateFeedbackStorageUsage();
-        console.error("[feedback] 附件清理失败，已排队重试:", cleanupErr);
-      }
-      await finalizeFeedbackUpload(state);
-      throw err;
-    }
     for (const tempPath of state.feedbackTempPaths ?? []) unmarkActiveFeedbackTempFile(tempPath);
     res.status(201).json({ ok: true, data: { id: reportId } });
   } catch (err: any) {
