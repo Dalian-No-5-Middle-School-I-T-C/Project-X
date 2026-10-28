@@ -109,6 +109,7 @@ const leakedTempFiles = new Set<string>();
 
 export function markFeedbackTempFileLeaked(filePath: string): void {
   leakedTempFiles.add(path.resolve(filePath));
+  invalidateFeedbackStorageUsage();
 }
 
 async function leakedTempBytes(): Promise<number> {
@@ -157,6 +158,24 @@ async function admissionUsage(feedbackRoot: string, tmpDir: string): Promise<num
 
 let reservedBytes = 0;
 let quotaQueue: Promise<void> = Promise.resolve();
+let reservationSeq = 0;
+const activeReservations = new Set<number>();
+const USAGE_CACHE_TTL_MS = 15_000;
+const usageCache = new Map<string, { bytes: number; at: number }>();
+
+/** 删除、孤儿清理、泄漏登记等树外变更后清空缓存；下次申请预留重新扫描。 */
+export function invalidateFeedbackStorageUsage(): void {
+  usageCache.clear();
+}
+
+async function cachedAdmissionUsage(feedbackRoot: string, tmpDir: string): Promise<number> {
+  const key = path.resolve(feedbackRoot);
+  const cached = usageCache.get(key);
+  if (cached && Date.now() - cached.at < USAGE_CACHE_TTL_MS) return cached.bytes;
+  const bytes = await admissionUsage(feedbackRoot, tmpDir);
+  usageCache.set(key, { bytes, at: Date.now() });
+  return bytes;
+}
 
 function makeReservation(
   feedbackRoot: string,
@@ -166,36 +185,55 @@ function makeReservation(
 ): FeedbackStorageReservation {
   let held = initialBytes;
   let released = false;
+  let registered = false;
+  const id = ++reservationSeq;
+  const ensure = async (target: number, attempt: number): Promise<boolean> => {
+    const run = quotaQueue.then(async (): Promise<boolean | "retry"> => {
+      if (released) return false;
+      if (held >= target) return true;
+      if (held >= limitBytes) return false;
+      const used = await cachedAdmissionUsage(feedbackRoot, tmpDir);
+      if (released) return false;
+      if (held >= target) return true; // 并发文件已经把这个目标补上了
+      const minimum = target - held;
+      const available = MAX_FEEDBACK_STORAGE_BYTES - used - reservedBytes;
+      if (available < minimum) {
+        // 先到的请求优先：后到者直接让位；最早的请求短暂等待后到者释放后重试。
+        const hasEarlier = [...activeReservations].some((other) => other < id);
+        if (hasEarlier) throw new FeedbackStorageQuotaError();
+        return "retry";
+      }
+      const desired = Math.max(minimum, chunkedReservationStep());
+      const delta = Math.min(desired, available, limitBytes - held);
+      if (delta <= 0) return false;
+      reservedBytes += delta;
+      held += delta;
+      if (!registered) {
+        activeReservations.add(id);
+        registered = true;
+      }
+      return true;
+    });
+    quotaQueue = run.then(() => undefined, () => undefined);
+    const result = await run;
+    if (result === "retry") {
+      if (attempt >= 20) throw new FeedbackStorageQuotaError();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return ensure(target, attempt + 1);
+    }
+    return result;
+  };
   return {
     get bytes() { return held; },
     get limit() { return limitBytes; },
     ensureBytes(totalBytes: number): Promise<boolean> {
       const target = Math.max(0, Math.floor(totalBytes));
-      const run = quotaQueue.then(async () => {
-        if (released) return false;
-        if (held >= target) return true;
-        if (held >= limitBytes) return false;
-        const used = await admissionUsage(feedbackRoot, tmpDir);
-        if (released) return false;
-        if (held >= target) return true; // 并发文件已经把这个目标补上了
-        const minimum = target - held;
-        const available = MAX_FEEDBACK_STORAGE_BYTES - used - reservedBytes;
-        if (available < minimum) {
-          throw new FeedbackStorageQuotaError();
-        }
-        const desired = Math.max(minimum, chunkedReservationStep());
-        const delta = Math.min(desired, available, limitBytes - held);
-        if (delta <= 0) return false;
-        reservedBytes += delta;
-        held += delta;
-        return true;
-      });
-      quotaQueue = run.then(() => undefined, () => undefined);
-      return run;
+      return ensure(target, 0);
     },
     release() {
       if (released) return;
       released = true;
+      if (registered) activeReservations.delete(id);
       reservedBytes = Math.max(0, reservedBytes - held);
       held = 0;
     },
@@ -231,6 +269,11 @@ export function settleFeedbackStorage<T>(
       throw new FeedbackStorageQuotaError();
     }
     const result = await task();
+    const cached = usageCache.get(path.resolve(feedbackRoot));
+    if (cached) {
+      cached.bytes += incomingBytes;
+      cached.at = Date.now();
+    }
     reservation?.release();
     return result;
   });

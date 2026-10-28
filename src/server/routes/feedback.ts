@@ -28,6 +28,7 @@ import {
   FeedbackStorageQuotaError,
   FeedbackStorageUnavailableError,
   createFeedbackStorageReservation,
+  invalidateFeedbackStorageUsage,
   markFeedbackTempFileLeaked,
   settleFeedbackStorage,
   type FeedbackStorageReservation,
@@ -75,6 +76,8 @@ try {
 } catch { /* 目录不可用；真正上传时会再报错 */ }
 
 const pendingOrphanDirs = new Set<string>();
+const youngOrphanDirs = new Set<string>();
+const ORPHAN_GRACE_MS = 10 * 60_000;
 let orphanSweepDone = false;
 let orphanSweep: Promise<void> | null = null;
 let trashReconcile: Promise<void> | null = null;
@@ -111,6 +114,7 @@ async function reconcileFeedbackTrashOnce(): Promise<void> {
               console.log(`[feedback] 已恢复暂存的附件目录: ${entry.name}`);
             } else {
               await rm(staged, { recursive: true, force: true });
+              invalidateFeedbackStorageUsage();
             }
           } catch (err) {
             console.error("[feedback] 暂存附件目录核对失败:", entry.name, err);
@@ -131,7 +135,25 @@ async function retryPendingOrphanDirs(): Promise<void> {
     try {
       await rm(dir, { recursive: true, force: true });
       pendingOrphanDirs.delete(dir);
+      invalidateFeedbackStorageUsage();
     } catch { /* 保留到下一次上传再试 */ }
+  }
+  // 首次核对时因未满宽限期被跳过的目录，之后每次上传都复查一次；满 10 分钟再删。
+  for (const dir of [...youngOrphanDirs]) {
+    try {
+      const info = await stat(dir);
+      if (Date.now() - info.mtimeMs < ORPHAN_GRACE_MS) continue;
+      await rm(dir, { recursive: true, force: true });
+      youngOrphanDirs.delete(dir);
+      invalidateFeedbackStorageUsage();
+    } catch (err: any) {
+      if (err?.code === "ENOENT") {
+        youngOrphanDirs.delete(dir);
+        continue;
+      }
+      youngOrphanDirs.delete(dir);
+      pendingOrphanDirs.add(dir);
+    }
   }
 }
 
@@ -164,8 +186,12 @@ async function sweepFeedbackOrphansOnce(): Promise<void> {
           if (referenced.has(dir)) continue;
           try {
             const info = await stat(dir);
-            if (Date.now() - info.mtimeMs < 10 * 60_000) continue;
+            if (Date.now() - info.mtimeMs < ORPHAN_GRACE_MS) {
+              youngOrphanDirs.add(dir);
+              continue;
+            }
             await rm(dir, { recursive: true, force: true });
+            invalidateFeedbackStorageUsage();
           } catch {
             pendingOrphanDirs.add(dir);
           }
@@ -385,6 +411,7 @@ async function removeStagedDirs(staged: StagedAttachmentDir[]): Promise<void> {
   for (const entry of staged) {
     try {
       await rm(entry.staged, { recursive: true, force: true });
+      invalidateFeedbackStorageUsage();
     } catch (err) {
       pendingOrphanDirs.add(entry.staged);
       console.error("[feedback] 暂存附件清理失败，已排队重试:", entry.staged, err);
@@ -509,6 +536,9 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
     .catch(() => {})
     .then(async () => {
       await sweepFeedbackOrphansOnce();
+      // 上传前重新核对一次树外变化（管理员手工清理孤儿、删除暂存等），
+      // 同一次上传内部再复用缓存，避免每个预留步长都全量扫盘。
+      invalidateFeedbackStorageUsage();
       // 初始不占额度：只有真的写到文件字节才在存储引擎里申请预留，
       // 纯文本反馈、只声明长度不传文件的慢请求都不会锁住附件配额。
       const reservation = createFeedbackStorageReservation(
