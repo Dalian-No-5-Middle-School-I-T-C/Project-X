@@ -537,6 +537,16 @@ try {
   const resumedMarker = JSON.parse(localStorage.getItem(viewKey) ?? "null") as { view: string; sessionId: string; groupId: string } | null;
   assert.deepEqual(resumedMarker && { view: resumedMarker.view, sessionId: resumedMarker.sessionId, groupId: resumedMarker.groupId },
     { view: "queue", sessionId: "scan-1", groupId: "0" }, "恢复标记不能被队列首帧的上报改写回队首");
+  // 队列里翻到另一条、离开再回来：要停在刚才那一条，而不是最初定位的那条。
+  await act(async () => {
+    [...resumeHost.querySelectorAll("button")].find(node => node.textContent?.trim() === "下一条")!.click();
+  });
+  await settle();
+  assert.match(resumeHost.textContent ?? "", /第 1 \/ 2 条/, "下一条要翻到队首");
+  await clickText("扫描结果"); await settle();
+  await clickText("异常处理"); await settle();
+  assert.match(resumeHost.textContent ?? "", /第 1 \/ 2 条/,
+    `从别的视图回来要停在刚才那一条，不能跳回最初定位的那条（实际 ${resumeHost.textContent?.match(/第 \d+ \/ \d+ 条/)?.[0] ?? "没有条数"}）`);
   // root3 交给下一段卸载（那里本来就先 unmount 再清恢复标记）
   allClean = resumeFlags.allClean; secondGroupResolved = resumeFlags.secondGroupResolved;
 
@@ -697,6 +707,21 @@ try {
     await setInput("2000");
     assert(!studentHost.textContent?.includes("本机草稿保存失败"), "恢复写入后失败提示要消失");
     await act(async () => { root7!.unmount(); });
+
+    // 考号面板与订正页共用同一个草稿键：只输了一半考号、没动格选时，
+    // 打开订正页不能把这份草稿当成空草稿删掉，否则切回考号面板就丢了。
+    const { readCorrectionDraft } = await import("../src/apps/answer-card/client/lib/correctionDraft");
+    const { PostprocessCorrectionView: CorrectionViewProbe } = await import("../src/apps/answer-card/client/components/scanner-postprocess/PostprocessCorrectionView");
+    const typedDraftHost = document.createElement("div");
+    document.body.append(typedDraftHost);
+    const typedDraftRoot = createRoot(typedDraftHost);
+    await act(async () => typedDraftRoot.render(createElement(TooltipProvider, null, createElement(CorrectionViewProbe, {
+      channel: studentChannel, sessionId: "a", groupId: "2", draftOnly: false, onSaved: () => {},
+    }))));
+    await settle();
+    assert.equal(readCorrectionDraft(card.id, "a", "2")?.typed, "2000", "打开订正页不能删掉考号面板的半截草稿");
+    await act(async () => { typedDraftRoot.unmount(); });
+    typedDraftHost.remove();
 
     // 崩溃恢复带着定位目标挂载：首帧就得停在那一条。先报队首的话，页面会把恢复标记改写成第 1 条，
     // 而 focus 又跟着回报值变，两边会一直对抖（第 2 条永远恢复不出来）。

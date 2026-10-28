@@ -167,6 +167,12 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
     if (!resumeTarget) return;
     writePostprocessView(cardId, { view, sessionId: resumeTarget.sessionId, groupId: resumeTarget.groupId }, userId);
   }, [cardId, view, resumeTarget]);
+
+  // 定位请求是一次性的：离开队列视图后就过期了，再回来应停在刚才那一条（queueCurrent），
+  // 而不是最初点开的那条。
+  useEffect(() => {
+    if (view !== "queue") setFocusIssue(null);
+  }, [view]);
   const issueGroups = useMemo(() => new Set(queue.map(item => `${item.sessionId}/${item.groupId}`)).size, [queue]);
   const uploaded = useMemo(() => Object.values(batches).flatMap(b => b.results).filter(r => r.saved).length, [batches]);
 
@@ -405,7 +411,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           examIdForSession={sessionId => metas[sessionId]?.examId ?? null}
           scans={scans}
           layoutPageCountFor={sessionId => sessionLayouts[sessionId]?.pageCount ?? 0}
-          focus={focusIssue}
+          focus={focusIssue ?? queueCurrent}
           onCurrentChange={handleQueueCurrent}
           onResolved={syncAfterFix}
           onPreviewDiscard={(sessionId, groupId) => rememberPreviewDiscard(cardId, sessionId, groupId)}

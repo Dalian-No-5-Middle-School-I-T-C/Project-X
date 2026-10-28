@@ -260,13 +260,18 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
   // 由加载阶段 decide 是否恢复；保存成功后由 save() 清掉。
   useEffect(() => {
     if (!document || busy || locked || edits.length !== document.pages.length) return;
+    // 考号面板和这里共用同一个草稿键：老师手输的考号（含主动清空的空串）不能因为
+    // 「这个编辑器没有格选改动」就被当成空草稿删掉，否则切回考号面板就丢了。
+    const existing = readCorrectionDraft(document.card.id, sessionId, groupId);
+    const carriedTyped = existing && draftMatchesDocument(existing, document) ? existing.typed : undefined;
     if (!dirty) {
+      if (carriedTyped !== undefined) return;
       clearCorrectionDraft(document.card.id, sessionId, groupId);
       setDraftRestored(false);
       setDraftPersisted(null);
       return;
     }
-    setDraftPersisted(writeCorrectionDraft(document.card.id, sessionId, groupId, document, edits));
+    setDraftPersisted(writeCorrectionDraft(document.card.id, sessionId, groupId, document, edits, carriedTyped));
   }, [document, edits, dirty, busy, locked, sessionId, groupId]);
 
   const missing = document?.pages.some(p => !p.recognition.geometry) ?? false;
