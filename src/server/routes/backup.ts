@@ -12,7 +12,7 @@ import { extractZipFileWithinBudget, RestoreZipError } from "../services/restore
 import { MAX_RESTORE_ZIP_TOTAL_BYTES } from "../../shared/restoreZipLimits";
 import { activeFeedbackTempFiles, beginFeedbackMaintenance, invalidateFeedbackStorageUsage, withFeedbackMutationLock } from "../lib/feedbackStorage";
 // 备份要在数据库快照前收敛 `feedback/_trash`，与反馈删除共用同一份核对逻辑。
-import { reconcileFeedbackTrashLocked } from "./feedback";
+import { reconcileFeedbackTrashLocked, resetFeedbackRuntimeStateAfterRestore } from "./feedback";
 import { sanitizeOpsMessage } from "../lib/opsErrorMessage";
 import { PERMISSIONS } from "../auth/permissions";
 import { closeDatabase, getDatabase, getMysqlDb, getMariadbConfig, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, detectDialect, ensureDefaultAdmin, removeBootstrapAdminFile } from "../db";
@@ -419,6 +419,8 @@ async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
         // 复制新 data
         await copyDirectory(bakDataDir, dataDir, () => true);
       }
+      // 备份不含 feedback/_tmp：替换数据树后让反馈模块按新目录重新初始化。
+      resetFeedbackRuntimeStateAfterRestore();
 
       // 在锁内失效：放开锁之前新基线已经生效，后到的上传不会读到恢复前的占盘。
       invalidateFeedbackStorageUsage();
@@ -717,6 +719,8 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
           }
           await copyDirectory(bakDataDir, dataDir, () => true);
         }
+        // 备份不含 feedback/_tmp：替换数据树后让反馈模块按新目录重新初始化。
+        resetFeedbackRuntimeStateAfterRestore();
 
         // 与 SQLite 还原分支同口径（#185 + R01）：还原出来的库可能带着另一台机器的
         // 引导态口令，本机 bootstrap-admin.txt 会对不上而把管理员锁死。这里主动清理并

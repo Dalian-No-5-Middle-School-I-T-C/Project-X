@@ -104,6 +104,17 @@ let orphanSweep: Promise<void> | null = null;
 let trashReconcile: Promise<boolean> | null = null;
 const activeStagedDirs = new Set<string>();
 
+/** 恢复备份替换 data/answer-card 后调用：`_tmp` 不在备份里，进程内「已就绪」等状态
+ *  必须按新目录树重建，否则后续附件上传会一直写不存在的临时目录。 */
+export function resetFeedbackRuntimeStateAfterRestore(): void {
+  feedbackTmpReady = false;
+  orphanSweepDone = false;
+  orphanSweep = null;
+  trashReconcile = null;
+  pendingOrphanDirs.clear();
+  youngOrphanDirs.clear();
+}
+
 /**
  * 删除反馈时附件目录先移到 `_trash`，数据库成功删除后再清理。
  * 这里处理崩溃/失败遗留：记录还在就移回原位，记录已经没了就删掉。

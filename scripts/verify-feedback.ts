@@ -1310,6 +1310,23 @@ async function main(): Promise<void> {
     }
   }
 
+  // 恢复会换掉整个 data 树（备份不含 _tmp）：重置后下一次附件上传必须重建 _tmp。
+  section("6.4 恢复后重建附件临时目录");
+  {
+    rmSync(tempDir, { recursive: true, force: true });
+    ok(!existsSync(tempDir), "模拟恢复后 _tmp 不存在");
+    feedbackModule.resetFeedbackRuntimeStateAfterRestore();
+    const afterRestoreForm = new FormData();
+    afterRestoreForm.set("title", "恢复后附件");
+    afterRestoreForm.set("content", "正文");
+    afterRestoreForm.append("files", new Blob(["after-restore"], { type: "text/plain" }), "after.txt");
+    const afterRestore = await upload(afterRestoreForm, adminToken);
+    ok(afterRestore.status === 201 && existsSync(tempDir), "恢复后附件上传会重建 _tmp");
+    if (afterRestore.status === 201) {
+      await call("DELETE", `/${Number(afterRestore.json?.data?.id)}`, adminToken);
+    }
+  }
+
   server.close();
 }
 
