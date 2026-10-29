@@ -34,6 +34,7 @@ import {
   markFeedbackTempFileLeaked,
   settleFeedbackStorage,
   unmarkActiveFeedbackTempFile,
+  withFeedbackMutationLock,
   type FeedbackStorageReservation,
 } from "../lib/feedbackStorage";
 import { purgeStaleTmpUploads } from "../../apps/answer-card/server/paperQuota";
@@ -255,7 +256,6 @@ type FeedbackRequest = Express.Request & {
   /** multer 回调已经给出结果：此后由路由或错误处理负责清理，断连兜底不再介入。 */
   feedbackUploadFinished?: boolean;
   feedbackFinalize?: Promise<void>;
-  feedbackFinalizeStarted?: boolean;
   feedbackAborted?: boolean;
   /** 每个 part 的写入流销毁器；失败/断连时统一收尾，避免迟到的 transform 再落盘。 */
   feedbackAborters?: Array<() => void>;
@@ -508,18 +508,35 @@ async function removeRegisteredTempFiles(req: FeedbackRequest): Promise<void> {
 /** 先清临时文件、再释放预留：任何还留在 _tmp 的年轻文件都必须有预留或泄漏登记在册。 */
 function finalizeFeedbackUpload(req: FeedbackRequest): Promise<void> {
   if (req.feedbackFinalize) return req.feedbackFinalize;
-  if (req.feedbackFinalizeStarted) return Promise.resolve();
-  req.feedbackFinalizeStarted = true;
   req.feedbackAborted = true;
-  req.feedbackFinalize = (async () => {
-    for (const abort of req.feedbackAborters ?? []) {
-      try { abort(); } catch { /* 已关闭的流 */ }
+  let resolveFinalize!: () => void;
+  // 先同步挂上 Promise 再执行收尾：abort 途中同伴的 _handleFile 回调可能立刻触发 multer
+  // 错误处理并再次调用本函数，没有这份同步占位就会开第二条收尾链。
+  const finalize = new Promise<void>((resolve) => { resolveFinalize = resolve; });
+  req.feedbackFinalize = finalize;
+  void (async () => {
+    try {
+      for (const abort of req.feedbackAborters ?? []) {
+        try { abort(); } catch { /* 已关闭的流 */ }
+      }
+      await removeRegisteredTempFiles(req);
+      for (const tempPath of req.feedbackTempPaths ?? []) unmarkActiveFeedbackTempFile(tempPath);
+    } finally {
+      req.feedbackReservation?.release();
+      resolveFinalize();
     }
-    await removeRegisteredTempFiles(req);
-    for (const tempPath of req.feedbackTempPaths ?? []) unmarkActiveFeedbackTempFile(tempPath);
-    req.feedbackReservation?.release();
   })();
-  return req.feedbackFinalize;
+  return finalize;
+}
+
+/** 临时目录不可用时只拦真正带文件的上传；纯文本反馈不依赖附件目录。 */
+class FeedbackTmpUnavailableError extends Error {
+  readonly code = "FEEDBACK_ATTACHMENT_UNAVAILABLE";
+
+  constructor() {
+    super("附件服务暂时不可用，请稍后重试；也可以先提交不带附件的反馈");
+    this.name = "FeedbackTmpUnavailableError";
+  }
 }
 
 /** 按文件字节流式预留的 multer 存储：文本字段不占附件配额，文件写入受配额背压。 */
@@ -530,6 +547,16 @@ const feedbackStorageEngine: multer.StorageEngine = {
       cb(new Error("上传已中止"));
       return;
     }
+    if (!feedbackTmpReady) {
+      try {
+        prepareFeedbackTmpDir();
+        feedbackTmpReady = true;
+      } catch (err) {
+        console.error("[feedback] 临时目录不可用，拒绝带附件的上传:", err);
+        cb(new FeedbackTmpUnavailableError());
+        return;
+      }
+    }
     const reservation = state.feedbackReservation;
     const filename = `fb_${randomUUID()}`;
     const filePath = path.join(feedbackTmpDir, filename);
@@ -539,15 +566,15 @@ const feedbackStorageEngine: multer.StorageEngine = {
     let size = 0;
     let finished = false;
     let transform: Transform;
-    const fail = (err: Error): void => {
+    const fail = (err: Error, finalize = true): void => {
       if (finished) return;
       finished = true;
-      file.stream.unpipe(transform);
+      try { file.stream.unpipe(transform); } catch { /* 已关闭的流 */ }
       out.destroy();
       cb(err);
       // Multer 在错误时可能先 drain 剩余请求体才回调；这里主动收尾，避免慢客户端
       // 把临时文件、活跃标记和预留一直锁到连接结束。
-      void finalizeFeedbackUpload(state);
+      if (finalize) void finalizeFeedbackUpload(state);
     };
     transform = new Transform({
       transform(chunk: Buffer, _encoding, callback) {
@@ -571,8 +598,9 @@ const feedbackStorageEngine: multer.StorageEngine = {
       },
     });
     (state.feedbackAborters ??= []).push(() => {
-      try { transform.destroy(); } catch { /* 已关闭 */ }
-      try { out.destroy(); } catch { /* 已关闭 */ }
+      // 每个 part 的 _handleFile 回调都必须恰好执行一次，同伴流只 destroy 不回调会让
+      // Multer 的 pendingWrites 永远不归零，错误响应发不出去、请求一直挂着。
+      fail(new Error("上传已中止"), false);
     });
     transform.on("error", fail);
     out.on("error", fail);
@@ -585,7 +613,9 @@ const feedbackStorageEngine: multer.StorageEngine = {
     file.stream.pipe(transform).pipe(out);
   },
   _removeFile(_req, file, cb) {
-    rm((file as Express.Multer.File).path, { force: true }).then(() => cb(null), (err) => cb(err));
+    const filePath = (file as Express.Multer.File).path;
+    if (!filePath) { cb(null); return; }
+    rm(filePath, { force: true }).then(() => cb(null), (err) => cb(err));
   },
 };
 
@@ -620,11 +650,9 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
       prepareFeedbackTmpDir();
       feedbackTmpReady = true;
     } catch (err) {
-      console.error("[feedback] 临时目录仍不可用，拒绝本次附件上传:", err);
-      if (!res.headersSent && !res.destroyed && !req.destroyed) {
-        res.status(503).json({ ok: false, error: "反馈附件临时目录暂时不可用，请稍后重试" });
-      }
-      return;
+      // 纯文本反馈不写 _tmp，不能因为附件目录故障把它一起拒掉；
+      // 真正带文件的请求由存储引擎在 _handleFile 里返回 503。
+      console.error("[feedback] 临时目录仍不可用，本次请求只有带附件时才会被拒绝:", err);
     }
   }
   void purgeStaleTmpUploads(feedbackTmpDir, 60 * 60_000, activeFeedbackTempFiles())
@@ -666,6 +694,10 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
           if (isUploadAlreadyRejected(req, res)) return;
           if (error instanceof FeedbackStorageQuotaError) {
             res.status(413).json({ ok: false, code: error.code, error: error.message });
+            return;
+          }
+          if (error instanceof FeedbackTmpUnavailableError) {
+            res.status(503).json({ ok: false, code: error.code, error: error.message });
             return;
           }
           if (error instanceof FeedbackStorageUnavailableError) {
@@ -836,7 +868,8 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
       invalidateFeedbackStorageUsage();
       await finalizeFeedbackUpload(state);
     };
-    reportId = await settleFeedbackStorage(
+    reportId = await withFeedbackMutationLock(() =>
+      settleFeedbackStorage(
         feedbackRoot,
         reservation,
         incomingBytes,
@@ -885,7 +918,8 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
           });
         },
         cleanupFailedSettle
-      );
+      )
+    );
     for (const tempPath of state.feedbackTempPaths ?? []) unmarkActiveFeedbackTempFile(tempPath);
     res.status(201).json({ ok: true, data: { id: reportId } });
   } catch (err: any) {
@@ -1000,63 +1034,65 @@ router.delete("/:id", requireAdmin, async (req, res) => {
     await enqueueFeedbackDelete(id, async () => {
       try {
         await reconcileFeedbackTrashOnce();
-        const db = getMysqlDb();
-        const existing = await db.get<{ id: number }>("SELECT id FROM feedback_reports WHERE id = ?", id);
-        if (!existing) return res.status(404).json({ ok: false, error: "反馈不存在" });
+        // 与备份共用同一把锁：备份在数据库快照与附件目录复制之间不允许删除提交，
+        // 否则备份会保留附件记录却缺少文件。
+        await withFeedbackMutationLock(async () => {
+          const db = getMysqlDb();
+          const existing = await db.get<{ id: number }>("SELECT id FROM feedback_reports WHERE id = ?", id);
+          if (!existing) return res.status(404).json({ ok: false, error: "反馈不存在" });
 
-        const attachments = await db.all<{ stored_path: string }>(
-          "SELECT stored_path FROM feedback_attachments WHERE feedback_id = ?",
-          id
-        );
-        const dirs = new Set<string>();
-        for (const attachment of attachments) {
-          const absPath = resolveStoredPath(attachment.stored_path);
-          if (!absPath) {
+          const attachments = await db.all<{ stored_path: string }>(
+            "SELECT stored_path FROM feedback_attachments WHERE feedback_id = ?",
+            id
+          );
+          const dirs = new Set<string>();
+          for (const attachment of attachments) {
+            const absPath = resolveStoredPath(attachment.stored_path);
+            if (!absPath) {
+              return res.status(500).json({
+                ok: false,
+                code: "FEEDBACK_ATTACHMENT_PATH_INVALID",
+                error: "删除反馈失败，请稍后重试",
+              });
+            }
+            dirs.add(path.dirname(absPath));
+          }
+          // 附件目录先原子移入 _trash：数据库删除成功后再清理；数据库失败则移回，
+          // 既不会留下指向空文件的记录，也不会留下无法定位的孤儿文件。
+          let staged: StagedAttachmentDir[];
+          try {
+            staged = await stageAttachmentDirs([...dirs]);
+          } catch (err) {
+            if (err instanceof FeedbackDeleteInProgressError) {
+              return res.status(409).json({ ok: false, code: err.code, error: err.message });
+            }
+            console.error("[feedback] 附件目录暂存失败:", err);
             return res.status(500).json({
               ok: false,
-              code: "FEEDBACK_ATTACHMENT_PATH_INVALID",
-              error: "附件路径异常，未删除反馈，请稍后重试",
+              code: "FEEDBACK_ATTACHMENT_STAGE_FAILED",
+              error: "删除反馈失败，请稍后重试",
             });
           }
-          dirs.add(path.dirname(absPath));
-        }
-        // 附件目录先原子移入 _trash：数据库删除成功后再清理；数据库失败则移回，
-        // 既不会留下指向空文件的记录，也不会留下无法定位的孤儿文件。
-        let staged: StagedAttachmentDir[];
-        try {
-          staged = await stageAttachmentDirs([...dirs]);
-        } catch (err) {
-          if (err instanceof FeedbackDeleteInProgressError) {
-            return res.status(409).json({ ok: false, code: err.code, error: err.message });
-          }
-          console.error("[feedback] 附件目录暂存失败:", err);
-          return res.status(500).json({
-            ok: false,
-            code: "FEEDBACK_ATTACHMENT_STAGE_FAILED",
-            error: "附件文件暂存失败，反馈未删除，请重试",
-          });
-        }
 
-        let result;
-        try {
-          result = await db.run("DELETE FROM feedback_reports WHERE id = ?", id);
-        } catch (err) {
-          console.error("[feedback] 删除反馈失败，正在恢复附件:", err);
-          const restored = await restoreStagedDirs(staged);
-          return res.status(500).json({
-            ok: false,
-            code: "FEEDBACK_DELETE_FAILED",
-            error: restored
-              ? "删除反馈失败，附件已恢复，请重试"
-              : "删除反馈失败，附件已暂存并会继续恢复，请稍后重试",
-          });
-        }
-        if (result.changes === 0) {
+          let result;
+          try {
+            result = await db.run("DELETE FROM feedback_reports WHERE id = ?", id);
+          } catch (err) {
+            console.error("[feedback] 删除反馈失败，正在恢复附件:", err);
+            await restoreStagedDirs(staged);
+            return res.status(500).json({
+              ok: false,
+              code: "FEEDBACK_DELETE_FAILED",
+              error: "删除反馈失败，请稍后重试",
+            });
+          }
+          if (result.changes === 0) {
+            await removeStagedDirs(staged);
+            return res.status(404).json({ ok: false, error: "反馈不存在" });
+          }
           await removeStagedDirs(staged);
-          return res.status(404).json({ ok: false, error: "反馈不存在" });
-        }
-        await removeStagedDirs(staged);
-        res.json({ ok: true, message: "反馈已删除" });
+          res.json({ ok: true, message: "反馈已删除" });
+        });
       } catch (err: any) {
         if (!res.headersSent) res.status(500).json({ ok: false, error: err.message });
       }

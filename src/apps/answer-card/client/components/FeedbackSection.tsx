@@ -476,12 +476,12 @@ export function FeedbackSection({ mode = "admin" }: { mode?: "admin" | "mine" })
             </div>
           )}
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <span className="text-xs text-muted-foreground">
-              {attachments.length > 0
-                ? "附件较大时上传需要一些时间，请勿关闭页面。"
-                : "自动附带：当前页面、浏览器与操作系统、屏幕信息、版本号、服务端运行环境"}
-            </span>
-            <Button type="submit" variant="primary" size="sm" loading={submitting}>
+            {totalAttachmentBytes > 5 * 1024 * 1024 && (
+              <span className="text-xs text-muted-foreground">
+                上传需要一些时间，请勿关闭页面。
+              </span>
+            )}
+            <Button type="submit" variant="primary" size="sm" loading={submitting} className="ml-auto">
               {submitting ? "提交中..." : "提交反馈"}
             </Button>
           </div>

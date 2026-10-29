@@ -91,8 +91,9 @@ const feedbackRouter = feedbackModule.default;
 const { withTimezone } = feedbackModule;
 const feedbackStorage = await import("../src/server/lib/feedbackStorage");
 const { purgeStaleTmpUploads } = await import("../src/apps/answer-card/server/paperQuota");
-const backupRouter = (await import("../src/server/routes/backup")).default;
-const { extractZipWithinBudget } = await import("../src/server/services/restoreZip");
+const backupModule = await import("../src/server/routes/backup");
+const backupRouter = backupModule.default;
+const { extractZipWithinBudget, extractZipFileWithinBudget } = await import("../src/server/services/restoreZip");
 const express = (await import("express")).default;
 
 async function main(): Promise<void> {
@@ -903,9 +904,29 @@ async function main(): Promise<void> {
     dbAttachmentForm.append("files", new Blob(["feedback-db-payload"], { type: "application/octet-stream" }), "diagnostics.db");
     const dbAttachmentReport = await upload(dbAttachmentForm, adminToken);
     ok(dbAttachmentReport.status === 201, "准备 .db 附件备份测试");
-    const backupResponse = await fetch(`${new URL(base).origin}/api/db/backup`, {
+
+    // 备份必须在数据库快照与附件目录复制之间独占反馈变更：期间删除 / 提交都要排队。
+    const lockVictimForm = new FormData();
+    lockVictimForm.set("title", "锁等待删除");
+    lockVictimForm.set("content", "正文");
+    const lockVictim = await upload(lockVictimForm, adminToken);
+    let releaseFeedbackLock!: () => void;
+    const feedbackLockHeld = feedbackStorage.withFeedbackMutationLock(
+      () => new Promise<void>((resolve) => { releaseFeedbackLock = resolve; })
+    );
+    let backupSettled = false;
+    let deleteSettled = false;
+    const blockedBackup = fetch(`${new URL(base).origin}/api/db/backup`, {
       headers: { Authorization: `Bearer ${adminToken}` },
-    });
+    }).then((resp) => { backupSettled = true; return resp; });
+    const blockedDelete = call("DELETE", `/${Number(lockVictim.json?.data?.id)}`, adminToken)
+      .then((resp) => { deleteSettled = true; return resp; });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    ok(!backupSettled && !deleteSettled, "备份与删除等待同一把反馈变更锁，不在快照与附件复制之间穿插");
+    releaseFeedbackLock();
+    await feedbackLockHeld;
+    const backupResponse = await blockedBackup;
+    ok((await blockedDelete).status === 200, "锁释放后删除正常完成");
     ok(backupResponse.status === 200, "系统备份接口成功");
     const backupZip = Buffer.from(await backupResponse.arrayBuffer());
     const extractDir = path.join(tmpDir, "backup-extract");
@@ -917,8 +938,24 @@ async function main(): Promise<void> {
     );
     ok(feedbackDbFiles.some((filePath) => readFileSync(filePath, "utf8") === "feedback-db-payload"),
       "备份包含反馈目录下的 .db 附件");
+    const streamingZipPath = path.join(tmpDir, "backup-streaming.zip");
+    writeFileSync(streamingZipPath, backupZip);
+    const streamingExtractDir = path.join(tmpDir, "backup-streaming-extract");
+    await extractZipFileWithinBudget(streamingZipPath, streamingExtractDir);
+    const streamedDbFiles = findFiles(
+      path.join(streamingExtractDir, "data", "answer-card", "feedback"),
+      (filePath) => filePath.endsWith(".db")
+    );
+    ok(streamedDbFiles.some((filePath) => readFileSync(filePath, "utf8") === "feedback-db-payload"),
+      "流式恢复路径完整解出备份中的 .db 附件");
     ok((await call("DELETE", `/${Number(dbAttachmentReport.json?.data?.id)}`, adminToken)).status === 200,
       "清理 .db 附件备份测试");
+    const restoreLimits = await import("../src/shared/restoreZipLimits");
+    ok(restoreLimits.MAX_RESTORE_ZIP_TOTAL_BYTES >= 6144 * 1024 * 1024 + feedbackStorage.MAX_FEEDBACK_STORAGE_BYTES,
+      "恢复累计预算覆盖基础数据 + 当前反馈附件配额");
+    ok(backupModule.RESTORE_ZIP_UPLOAD_LIMIT_BYTES >= restoreLimits.MAX_RESTORE_ZIP_TOTAL_BYTES
+      && backupModule.RESTORE_ZIP_UPLOAD_LIMIT_BYTES > 128 * 1024 * 1024,
+      "恢复上传上限跟随解压预算，合法备份不再被 128MiB 截断");
   }
 
   // 模拟进程在「已移入 _trash、尚未删库」时退出：后续请求应把目录恢复回原位。
@@ -1004,6 +1041,53 @@ async function main(): Promise<void> {
   );
   ok(snapshot?.user_id == null && snapshot?.username === "fb_teacher" && snapshot?.display_name === "反馈测试教师",
     "删除提交人账号后保留正文与账号快照");
+
+  // 附件临时目录不可用时：纯文字反馈仍能入库，只有真正带附件才返回 503。
+  // 用一个指向坏数据目录的新路由实例模拟「启动清扫失败」，不影响上面已用过的实例。
+  const brokenRoot = path.join(tmpDir, "broken-data");
+  mkdirSync(path.join(brokenRoot, "feedback"), { recursive: true });
+  writeFileSync(path.join(brokenRoot, "feedback", "_tmp"), "not-a-directory");
+  const previousDataDir = process.env.ANSWER_CARD_DATA_DIR;
+  process.env.ANSWER_CARD_DATA_DIR = brokenRoot;
+  const brokenRouter = (await import(
+    new URL("../src/server/routes/feedback.ts?broken-tmp=1", import.meta.url).href
+  )).default;
+  const brokenApp = express();
+  brokenApp.use("/api/feedback", brokenRouter);
+  const brokenServer = http.createServer(brokenApp);
+  await new Promise<void>((resolve) => brokenServer.listen(0, "127.0.0.1", resolve));
+  const brokenBase = `http://127.0.0.1:${(brokenServer.address() as AddressInfo).port}/api/feedback`;
+  try {
+    const brokenTextForm = new FormData();
+    brokenTextForm.set("title", "临时目录故障纯文本");
+    brokenTextForm.set("content", "正文");
+    const brokenText = await fetch(brokenBase, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: brokenTextForm,
+    });
+    ok(brokenText.status === 201, "附件临时目录不可用时纯文字反馈仍可提交");
+    if (brokenText.status === 201) {
+      const brokenTextBody = await brokenText.json() as { data?: { id?: number } };
+      await db.run("DELETE FROM feedback_reports WHERE id = ?", Number(brokenTextBody.data?.id));
+    }
+    const brokenFileForm = new FormData();
+    brokenFileForm.set("title", "临时目录故障带附件");
+    brokenFileForm.set("content", "正文");
+    brokenFileForm.append("files", new Blob(["x"], { type: "text/plain" }), "x.txt");
+    const brokenFile = await fetch(brokenBase, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: brokenFileForm,
+    });
+    const brokenFileBody = await brokenFile.json() as { code?: string };
+    ok(brokenFile.status === 503 && brokenFileBody.code === "FEEDBACK_ATTACHMENT_UNAVAILABLE",
+      "附件临时目录不可用时带附件的上传返回 503");
+  } finally {
+    await new Promise<void>((resolve) => brokenServer.close(() => resolve()));
+    process.env.ANSWER_CARD_DATA_DIR = previousDataDir;
+    rmSync(brokenRoot, { recursive: true, force: true });
+  }
 
   server.close();
 }

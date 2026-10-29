@@ -1,9 +1,9 @@
 /**
  * 备份恢复 ZIP 的解压预算（安全 R43）——**默认值 + 环境变量覆盖 + 安全天花板**三档决定。
  *
- * 为什么需要预算而不是只看上传体积：上传侧的 128 MiB 限制只约束**压缩后**的字节数，
- * 而 ZIP 的解压体积由条目自己声明。一个 128 MiB 的高压缩比包可以声明数百 GB 的解压产物，
- * 服务端会照单全收地写进临时目录（磁盘打满），或在 `entry.getData()` 一次性分配时把进程撑爆。
+ * 为什么需要预算而不是只看上传体积：上传侧只约束**压缩后**的字节数（且恢复接口已改为
+ * 流式落盘，上限跟随这里的累计预算），而 ZIP 的解压体积由条目自己声明。一个高压缩比包
+ * 可以声明数百 GB 的解压产物，服务端会照单全收地写进临时目录（磁盘打满）。
  * 因此解压必须有自己的三道闸：条目数、单条解压后体积、累计解压后体积。
  * 第四档 `maxCompressionRatio` 不管正常条目，它管的是「头部把解压后体积声明成 0」的谎报条目：
  * 解压库按声明封顶，声明为 0 就等于不封顶，所以这类条目只能按压缩负载的最坏展开来预估体积。
@@ -17,7 +17,14 @@
  * 单位约定：体积类环境变量按 **MiB** 给（`..._MIB`），数量类按个数给；对外仍以字节/个数导出。
  */
 
+import { resolveFeedbackStorageMib } from "./feedbackLimits";
+
 const MEBIBYTE = 1024 * 1024;
+
+/** 基础数据（库文件 + 原卷 / 答案页）的默认解压预算，与反馈附件配额分开计。 */
+const BASE_STORAGE_TOTAL_MIB = 6144;
+/** 与 LIMIT_DEFS 里的天花板保持一致：默认总量 = 基础数据 + 反馈附件配额后仍不得超过它。 */
+const MAX_TOTAL_CEILING_MIB = 32768;
 
 export type RestoreZipLimitKey =
   | "maxZipEntries" | "maxEntryUncompressedBytes" | "maxTotalUncompressedBytes" | "maxCompressionRatio";
@@ -39,8 +46,9 @@ const LIMIT_DEFS: Array<{
   { key: "maxZipEntries", env: "PROJECTX_RESTORE_ZIP_MAX_ENTRIES", unit: "count", default: 20000, ceiling: 100000 },
   // 单条解压后体积：projectx.db 在长期运行的学校可以涨到几百 MiB，给到 1 GiB 起步。
   { key: "maxEntryUncompressedBytes", env: "PROJECTX_RESTORE_ZIP_MAX_ENTRY_MIB", unit: "MiB", default: 1024, ceiling: 8192 },
-  // 累计解压后体积：6 GiB = 单条上限的 6 倍余量，覆盖「库文件 + 几万张原卷图」的真实备份。
-  { key: "maxTotalUncompressedBytes", env: "PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB", unit: "MiB", default: 6144, ceiling: 32768 },
+  // 累计解压后体积：默认 = 基础数据 6 GiB + 反馈附件配额（默认 8 GiB）。备份会把反馈附件
+  // 一起打包，恢复侧必须能装下自己导出的合法备份；调大反馈配额时这里也要同步放宽。
+  { key: "maxTotalUncompressedBytes", env: "PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB", unit: "MiB", default: BASE_STORAGE_TOTAL_MIB, ceiling: MAX_TOTAL_CEILING_MIB },
   // 最坏展开比：只用于「头部声明解压后 0 字节」的条目——那是解压炸弹的谎报签名（此时库自身的
   // 按声明封顶等于没封顶）。上界取 DEFLATE 的物理极值，所以这项只能收紧、不能放宽。
   { key: "maxCompressionRatio", env: "PROJECTX_RESTORE_ZIP_MAX_RATIO", unit: "ratio", default: DEFLATE_WORST_RATIO, ceiling: DEFLATE_WORST_RATIO },
@@ -48,14 +56,34 @@ const LIMIT_DEFS: Array<{
 
 export const RESTORE_ZIP_ENV_VARS = LIMIT_DEFS.map((def) => def.env);
 
-function defaultLimits(): RestoreZipLimits {
+/** 默认累计预算跟随反馈附件配额：备份会打包反馈附件，恢复必须装得下自己的备份。 */
+function resolveDefaultTotalMib(env: Record<string, string | undefined>): { mib: number; notices: string[] } {
+  const feedback = resolveFeedbackStorageMib(env);
+  const wanted = BASE_STORAGE_TOTAL_MIB + feedback.mib;
+  if (wanted > MAX_TOTAL_CEILING_MIB) {
+    return {
+      mib: MAX_TOTAL_CEILING_MIB,
+      notices: [
+        `反馈附件配额 ${feedback.mib} MiB 超出恢复默认预留，累计解压预算按安全天花板 ${MAX_TOTAL_CEILING_MIB} MiB 处理；`
+        + "备份若仍然更大，需要同时调高 PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB（上限 32768）",
+      ],
+    };
+  }
+  return { mib: wanted, notices: [] };
+}
+
+function defaultLimits(env: Record<string, string | undefined>): { limits: RestoreZipLimits; notices: string[] } {
+  const total = resolveDefaultTotalMib(env);
   const limits = {} as RestoreZipLimits;
-  for (const def of LIMIT_DEFS) limits[def.key] = def.unit === "MiB" ? def.default * MEBIBYTE : def.default;
-  return limits;
+  for (const def of LIMIT_DEFS) {
+    const fallback = def.key === "maxTotalUncompressedBytes" ? total.mib : def.default;
+    limits[def.key] = def.unit === "MiB" ? fallback * MEBIBYTE : fallback;
+  }
+  return { limits, notices: total.notices };
 }
 
 /** 未配置时的默认预算（文档、界面提示与测试都用它做基准）。 */
-export const DEFAULT_RESTORE_ZIP_LIMITS: RestoreZipLimits = defaultLimits();
+export const DEFAULT_RESTORE_ZIP_LIMITS: RestoreZipLimits = defaultLimits(readProcessEnv()).limits;
 
 export interface ResolvedRestoreZipLimits {
   limits: RestoreZipLimits;
@@ -73,12 +101,14 @@ function unitLabel(unit: "MiB" | "count" | "ratio", value: number): string {
 }
 
 export function resolveRestoreZipLimits(env: Record<string, string | undefined> = {}): ResolvedRestoreZipLimits {
-  const limits = defaultLimits();
-  const notices: string[] = [];
+  const base = defaultLimits(env);
+  const limits = base.limits;
+  const notices: string[] = [...base.notices];
   for (const def of LIMIT_DEFS) {
     const raw = env[def.env];
     if (raw === undefined || String(raw).trim() === "") continue;
-    const label = `${def.env}=${unitLabel(def.unit, def.default)}`;
+    const fallback = def.unit === "MiB" ? Math.round(limits[def.key] / MEBIBYTE) : limits[def.key];
+    const label = `${def.env}=${unitLabel(def.unit, fallback)}`;
     const parsed = Number(String(raw).trim());
     if (!Number.isFinite(parsed) || parsed < 1) {
       notices.push(`${def.env}="${raw}" 不是 ≥1 的数，按默认值 ${label} 处理`);

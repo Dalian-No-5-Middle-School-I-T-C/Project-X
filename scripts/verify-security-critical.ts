@@ -60,6 +60,8 @@ for (const key of [
   "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST",
   // R01 逃生阀：宿主机若已设置该变量会污染随机口令断言，测试内自行显式设置/清除
   "PROJECTX_ADMIN_PASSWORD",
+  // 恢复默认累计预算跟随反馈附件配额，宿主机变量同样会污染默认档位断言
+  "PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB",
   ...uploadEnvVarsClearedHere,
   ...reviewPoolEnvVarsClearedHere,
   ...restoreZipEnvVarsClearedHere,
@@ -868,8 +870,9 @@ async function main(): Promise<void> {
       && RESTORE_ZIP_ENV_VARS.every((name) => !(name in process.env)),
       "脚本清理的 PROJECTX_RESTORE_ZIP_* 名单与解压预算表逐一对应，宿主机变量不会渗入默认预算断言");
     check(MAX_RESTORE_ZIP_ENTRIES === DEFAULT_RESTORE_ZIP_LIMITS.maxZipEntries && MAX_RESTORE_ZIP_ENTRIES === 20000
-      && MAX_RESTORE_ZIP_ENTRY_BYTES === 1024 * 1024 * 1024 && MAX_RESTORE_ZIP_TOTAL_BYTES === 6144 * 1024 * 1024,
-      "未配置时按默认解压预算生效（2 万条目 / 单条 1GiB / 累计 6GiB），上传侧 128MiB 不再是唯一的闸");
+      && MAX_RESTORE_ZIP_ENTRY_BYTES === 1024 * 1024 * 1024
+      && MAX_RESTORE_ZIP_TOTAL_BYTES === (6144 + 8192) * 1024 * 1024,
+      "未配置时按默认解压预算生效（2 万条目 / 单条 1GiB / 累计 6GiB 基础数据 + 8GiB 反馈附件），上传侧不再受 128MiB 全量缓冲限制");
     check(resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_ENTRIES: "100" }).limits.maxZipEntries === 100
       && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB: "abc" }).limits.maxTotalUncompressedBytes
         === DEFAULT_RESTORE_ZIP_LIMITS.maxTotalUncompressedBytes
@@ -884,11 +887,12 @@ async function main(): Promise<void> {
       && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_RATIO: "999999" }).limits.maxCompressionRatio === 1032
       && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_RATIO: "999999" }).notices[0].includes("天花板"),
       "最坏展开比同样三档：可收紧、设 0 与非法值不会关掉预估、超天花板被夹紧（1032:1 是 DEFLATE 的物理上界，放宽没有意义）");
-    check(describeRestoreZipLimits().includes("≤20000") && describeRestoreZipLimits().includes("6144MiB")
+    check(describeRestoreZipLimits().includes("≤20000") && describeRestoreZipLimits().includes("14336MiB")
       && describeRestoreZipLimits().includes("1032"),
       "解压预算与最坏展开比进入启动摘要");
     const {
-      classifyEntryName, resolveEntryDest, checkEntryBudget, worstCaseEntryBytes, extractZipWithinBudget, RestoreZipError
+      classifyEntryName, resolveEntryDest, checkEntryBudget, worstCaseEntryBytes,
+      extractZipWithinBudget, extractZipFileWithinBudget, RestoreZipError
     } = await import("../src/server/services/restoreZip");
     const { sanitizeOpsMessage, containsHostPath } = await import("../src/server/lib/opsErrorMessage");
     const AdmZip = (await import("adm-zip")).default;
@@ -933,6 +937,19 @@ async function main(): Promise<void> {
       && !existsSync(path.join(tempDir, "r43esc.png")),
       "含 .. 越界条目的备份被 400 整体拒绝，而不是跳过该条目后继续恢复出半成品");
     check(rejectStatus(() => resolveEntryDest(r43Dir, "C:\\Windows\\x.db")) === 400, "盘符绝对路径条目被拒绝");
+    const streamingZip = path.join(tempDir, "r43-streaming.zip");
+    const streamingDir = path.join(tempDir, "r43-streaming");
+    writeFileSync(streamingZip, goodZip.toBuffer());
+    const streamingStatus = await extractZipFileWithinBudget(streamingZip, streamingDir)
+      .then(() => 0, (err) => err instanceof RestoreZipError ? err.status : -1);
+    check(streamingStatus === 0 && existsSync(path.join(streamingDir, "data", "answer-card", "papers", "p1.png")),
+      "恢复接口的流式解压逐条写盘，正常备份不再受 128MiB 全量缓冲限制");
+    const streamingSlip = path.join(tempDir, "r43-streaming-slip.zip");
+    writeFileSync(streamingSlip, slipBody);
+    const streamingSlipStatus = await extractZipFileWithinBudget(streamingSlip, path.join(tempDir, "r43-streaming-slip-out"))
+      .then(() => 0, (err) => err instanceof RestoreZipError ? err.status : -1);
+    check(streamingSlipStatus === 400 && !existsSync(path.join(tempDir, "r43esc.png")),
+      "流式解压同样整体拒绝越界条目，而不是跳过后续写出半成品");
     check(rejectStatus(() => checkEntryBudget({ entries: 0, bytes: 0 }, MAX_RESTORE_ZIP_ENTRIES + 1, 0, 0)) === 413
       && rejectStatus(() => checkEntryBudget({ entries: 0, bytes: 0 }, 1, MAX_RESTORE_ZIP_ENTRY_BYTES + 1, 0)) === 413
       && rejectStatus(() => checkEntryBudget(

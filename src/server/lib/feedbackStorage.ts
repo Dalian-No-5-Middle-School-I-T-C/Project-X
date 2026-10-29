@@ -11,29 +11,28 @@
  */
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
+import { resolveFeedbackStorageMib } from "../../shared/feedbackLimits";
 
 const MEBIBYTE = 1024 * 1024;
-const DEFAULT_TOTAL_MIB = 8192;
-const MAX_TOTAL_MIB = 102400;
 const MIN_CHUNKED_STEP_BYTES = 256 * 1024;
 const MAX_CHUNKED_STEP_BYTES = 8 * MEBIBYTE;
 
-function resolveTotalBytes(): number {
-  const raw = Number(process.env.PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB);
-  if (!Number.isFinite(raw) || raw < 1) {
-    if (process.env.PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB !== undefined) {
-      console.warn(`[feedback-storage] PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB 非法，按默认 ${DEFAULT_TOTAL_MIB} MiB 处理`);
-    }
-    return DEFAULT_TOTAL_MIB * MEBIBYTE;
-  }
-  if (raw > MAX_TOTAL_MIB) {
-    console.warn(`[feedback-storage] PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB=${raw} 超过天花板 ${MAX_TOTAL_MIB}，已夹紧`);
-    return MAX_TOTAL_MIB * MEBIBYTE;
-  }
-  return Math.round(raw * MEBIBYTE);
-}
+const resolvedStorage = resolveFeedbackStorageMib(process.env);
+for (const notice of resolvedStorage.notices) console.warn(`[feedback-storage] ${notice}`);
 
-export const MAX_FEEDBACK_STORAGE_BYTES = resolveTotalBytes();
+export const MAX_FEEDBACK_STORAGE_BYTES = resolvedStorage.mib * MEBIBYTE;
+
+let feedbackMutationTail: Promise<void> = Promise.resolve();
+
+/**
+ * 备份与反馈附件变更互斥：备份在数据库快照与附件目录复制之间不允许提交或删除反馈，
+ * 否则备份可能保留附件记录却缺少文件（删除已提交）或多出未入快照的文件。
+ */
+export function withFeedbackMutationLock<T>(work: () => Promise<T>): Promise<T> {
+  const run = feedbackMutationTail.then(work, work);
+  feedbackMutationTail = run.then(() => undefined, () => undefined);
+  return run;
+}
 
 /** chunked 每次追加预留的步长：约为总配额的 1/32，最小 256 KiB、最大 8 MiB。 */
 export function chunkedReservationStep(): number {

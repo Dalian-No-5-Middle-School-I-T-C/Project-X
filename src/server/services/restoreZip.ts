@@ -1,6 +1,7 @@
 import AdmZip from "adm-zip";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createWriteStream, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { open as openZip, type Entry } from "yauzl";
 
 import {
   MAX_RESTORE_ZIP_ENTRIES,
@@ -81,26 +82,34 @@ export interface BudgetState {
  * `declaredBytes` 取 ZIP 头部声明的解压后体积——先用它拦下「声明就超限」的条目，
  * 避免为它分配内存；`actualBytes` 是真正读出来的字节数，头部撒谎时也拦得住。
  */
+function entryCountError(entryCount: number): RestoreZipError {
+  return new RestoreZipError(
+    `备份条目数 ${entryCount} 超过解压预算 ${MAX_RESTORE_ZIP_ENTRIES} 条（${describeRestoreZipLimits()}）`,
+    413,
+  );
+}
+
+function entrySizeError(bytes: number): RestoreZipError {
+  return new RestoreZipError(
+    `备份内存在解压后体积 ${formatBytes(bytes)} 的单个文件，超过解压预算 ${formatBytes(MAX_RESTORE_ZIP_ENTRY_BYTES)}`,
+    413,
+  );
+}
+
+function totalSizeError(): RestoreZipError {
+  return new RestoreZipError(
+    `备份累计解压体积将超过解压预算 ${formatBytes(MAX_RESTORE_ZIP_TOTAL_BYTES)}`,
+    413,
+  );
+}
+
 export function checkEntryBudget(state: BudgetState, entryCount: number, declaredBytes: number, actualBytes: number): void {
-  if (entryCount > MAX_RESTORE_ZIP_ENTRIES) {
-    throw new RestoreZipError(
-      `备份条目数 ${entryCount} 超过解压预算 ${MAX_RESTORE_ZIP_ENTRIES} 条（${describeRestoreZipLimits()}）`,
-      413,
-    );
-  }
+  if (entryCount > MAX_RESTORE_ZIP_ENTRIES) throw entryCountError(entryCount);
   if (Number.isFinite(declaredBytes) && declaredBytes > MAX_RESTORE_ZIP_ENTRY_BYTES) {
-    throw new RestoreZipError(
-      `备份内存在解压后体积 ${formatBytes(declaredBytes)} 的单个文件，超过解压预算 ${formatBytes(MAX_RESTORE_ZIP_ENTRY_BYTES)}`,
-      413,
-    );
+    throw entrySizeError(declaredBytes);
   }
   const counted = Number.isFinite(actualBytes) && actualBytes > 0 ? actualBytes : Math.max(0, declaredBytes);
-  if (counted > MAX_RESTORE_ZIP_ENTRY_BYTES) {
-    throw new RestoreZipError(
-      `备份内存在解压后体积 ${formatBytes(counted)} 的单个文件，超过解压预算 ${formatBytes(MAX_RESTORE_ZIP_ENTRY_BYTES)}`,
-      413,
-    );
-  }
+  if (counted > MAX_RESTORE_ZIP_ENTRY_BYTES) throw entrySizeError(counted);
   if (state.bytes + counted > MAX_RESTORE_ZIP_TOTAL_BYTES) {
     throw new RestoreZipError(
       `备份累计解压体积将超过解压预算 ${formatBytes(MAX_RESTORE_ZIP_TOTAL_BYTES)}（已解出 ${formatBytes(state.bytes)}）`,
@@ -182,6 +191,117 @@ export function extractZipWithinBudget(zipBuffer: Buffer, destDir: string): void
     checkEntryBudget(state, index + 1, declared, data.byteLength);
     mkdirSync(path.dirname(destPath), { recursive: true });
     writeFileSync(destPath, data);
+  });
+}
+
+/**
+ * 从磁盘上的 ZIP 文件流式解压（恢复接口用）。
+ *
+ * 上传侧不再把整个 ZIP 读进内存，解压侧同样逐条目写盘：单条与累计体积按**实际流入字节**
+ * 计数，谎报声明为 0 的条目也无法先展开成 GB 级 Buffer。条目名与三道预算与
+ * `extractZipWithinBudget` 同源（`resolveEntryDest` / 同名错误文案）。
+ */
+export function extractZipFileWithinBudget(zipPath: string, destDir: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    openZip(zipPath, { lazyEntries: true, autoClose: true }, (openErr, zipfile) => {
+      if (openErr || !zipfile) {
+        reject(new RestoreZipError("备份文件解析失败：ZIP 结构损坏或格式不受支持", 400));
+        return;
+      }
+      let entryCount = 0;
+      let totalBytes = 0;
+      let finished = false;
+      const fail = (error: unknown): void => {
+        if (finished) return;
+        finished = true;
+        try { zipfile.close(); } catch { /* 已关闭 */ }
+        reject(error);
+      };
+      const nextEntry = (): void => {
+        if (!finished) zipfile.readEntry();
+      };
+
+      zipfile.on("error", () => fail(new RestoreZipError("备份文件解析失败：ZIP 结构损坏或格式不受支持", 400)));
+      zipfile.on("end", () => {
+        if (finished) return;
+        finished = true;
+        resolve();
+      });
+      zipfile.on("entry", (entry: Entry) => {
+        if (finished) return;
+        entryCount += 1;
+        if (entryCount > MAX_RESTORE_ZIP_ENTRIES) { fail(entryCountError(entryCount)); return; }
+        const declared = Number(entry.uncompressedSize ?? 0);
+        if (declared > MAX_RESTORE_ZIP_ENTRY_BYTES) { fail(entrySizeError(declared)); return; }
+        if (totalBytes + declared > MAX_RESTORE_ZIP_TOTAL_BYTES) { fail(totalSizeError()); return; }
+
+        let destPath: string;
+        try {
+          destPath = resolveEntryDest(destDir, entry.fileName);
+        } catch (err) {
+          fail(err);
+          return;
+        }
+        if (/[\\/]$/.test(entry.fileName)) {
+          try {
+            mkdirSync(destPath, { recursive: true });
+          } catch (err) {
+            fail(err);
+            return;
+          }
+          nextEntry();
+          return;
+        }
+
+        zipfile.openReadStream(entry, (streamErr, stream) => {
+          if (finished) { stream?.destroy(); return; }
+          if (streamErr || !stream) {
+            fail(new RestoreZipError(
+              `备份内文件 ${path.posix.basename(entry.fileName.replace(/\\/g, "/"))} 解压失败（数据损坏或加密）`,
+              400,
+            ));
+            return;
+          }
+          let entryDone = false;
+          let entryBytes = 0;
+          let out: ReturnType<typeof createWriteStream>;
+          try {
+            mkdirSync(path.dirname(destPath), { recursive: true });
+            out = createWriteStream(destPath);
+          } catch (err) {
+            stream.destroy();
+            fail(err);
+            return;
+          }
+          const entryFail = (error: unknown): void => {
+            if (entryDone) return;
+            entryDone = true;
+            stream.destroy();
+            out.destroy();
+            fail(error);
+          };
+          stream.on("data", (chunk: Buffer) => {
+            if (entryDone) return;
+            entryBytes += chunk.length;
+            totalBytes += chunk.length;
+            if (entryBytes > MAX_RESTORE_ZIP_ENTRY_BYTES) entryFail(entrySizeError(entryBytes));
+            else if (totalBytes > MAX_RESTORE_ZIP_TOTAL_BYTES) entryFail(totalSizeError());
+          });
+          stream.on("error", () => entryFail(new RestoreZipError(
+            `备份内文件 ${path.posix.basename(entry.fileName.replace(/\\/g, "/"))} 解压失败（数据损坏或加密）`,
+            400,
+          )));
+          out.on("error", (err) => entryFail(err));
+          out.on("finish", () => {
+            if (entryDone) return;
+            entryDone = true;
+            nextEntry();
+          });
+          stream.pipe(out);
+        });
+      });
+      zipfile.readEntry();
+    });
   });
 }
 
