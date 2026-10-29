@@ -925,6 +925,7 @@ async function main(): Promise<void> {
 
   // 反馈允许上传 .db 附件；系统备份不能按扩展名把它一并跳过。
   if (!maria) {
+    const { default: AdmZip } = await import("adm-zip");
     const findFiles = (dir: string, predicate: (filePath: string) => boolean): string[] => {
       if (!existsSync(dir)) return [];
       const hits: string[] = [];
@@ -966,6 +967,9 @@ async function main(): Promise<void> {
     ok((await blockedDelete).status === 200, "锁释放后删除正常完成");
     ok(backupResponse.status === 200, "系统备份接口成功");
     const backupZip = Buffer.from(await backupResponse.arrayBuffer());
+    const backupEntryNames = new AdmZip(backupZip).getEntries().map((entry) => entry.entryName);
+    ok(backupEntryNames.every((name) => !name.endsWith("/")),
+      "备份 ZIP 只写文件条目，目录不再额外占用恢复条目预算");
     const extractDir = path.join(tmpDir, "backup-extract");
     mkdirSync(extractDir, { recursive: true });
     extractZipWithinBudget(backupZip, extractDir);
@@ -1036,7 +1040,6 @@ async function main(): Promise<void> {
     ok((await call("DELETE", `/${stagedId}`, adminToken)).status === 200, "清理暂存目录备份测试");
 
     // 恢复发现仍有在传附件时直接 409，且不能把已解压的备份留在临时目录。
-    const { default: AdmZip } = await import("adm-zip");
     const probeZip = new AdmZip();
     probeZip.addFile("metadata.json", Buffer.from(JSON.stringify({
       version: 1, format: "projectx-backup", generatedAt: new Date().toISOString(), files: [],

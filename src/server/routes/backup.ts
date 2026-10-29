@@ -35,7 +35,7 @@ router.use(requirePermission(PERMISSIONS.USER_MANAGE));
 const MEBIBYTE = 1024 * 1024;
 export const RESTORE_ZIP_UPLOAD_LIMIT_BYTES = MAX_RESTORE_ZIP_TOTAL_BYTES + 64 * MEBIBYTE;
 
-type RestoreRequest = Request & { restoreZipPath?: string };
+type RestoreRequest = Request & { restoreZipPath?: string; releaseRestoreGuard?: () => void };
 
 // 同一时间只允许一个恢复任务：每个请求最多保留一份备份 ZIP + 一份解压树，
 // 并发恢复会在临时盘上叠加多份十几 GiB 的副本。
@@ -57,11 +57,16 @@ const receiveRestoreZip: RequestHandler = (req, res, next) => {
     return;
   }
   restoreInProgress = true;
-  res.once("close", () => { restoreInProgress = false; });
+  const state = req as RestoreRequest;
+  let handedOff = false;
+  const releaseGuard = (): void => { restoreInProgress = false; };
+  state.releaseRestoreGuard = releaseGuard;
+  // 只在上传阶段兜底释放：交出请求后由路由在恢复任务结束时释放，
+  // 否则客户端在解压 / 导入中途断开会让下一份恢复与仍在运行的任务并行。
+  res.once("close", () => { if (!handedOff) releaseGuard(); });
 
   const target = path.join(os.tmpdir(), `projectx-restore-upload-${crypto.randomUUID()}.zip`);
   const cleanup = (): void => { void rm(target, { force: true }).catch(() => undefined); };
-  const state = req as RestoreRequest;
   const out = createWriteStream(target);
   let received = 0;
   let settled = false;
@@ -89,6 +94,7 @@ const receiveRestoreZip: RequestHandler = (req, res, next) => {
   out.on("finish", () => {
     if (settled) return;
     settled = true;
+    handedOff = true;
     state.restoreZipPath = target;
     next();
   });
@@ -260,7 +266,7 @@ router.get("/backup", async (_req: Request, res: Response) => {
 
     // 添加 data 目录
     if (existsSync(dataBakDir)) {
-      archive.directory(dataBakDir, "data/answer-card");
+      await addFilesToArchive(archive, dataBakDir, "data/answer-card");
     }
 
     await archive.finalize();
@@ -281,6 +287,14 @@ router.get("/backup", async (_req: Request, res: Response) => {
  * 导入 ZIP 恢复数据（raw binary upload，不走 multipart）
  */
 router.post("/restore", receiveRestoreZip, async (req, res) => {
+  try {
+    await restoreUploadedZip(req, res);
+  } finally {
+    (req as RestoreRequest).releaseRestoreGuard?.();
+  }
+});
+
+async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
   const zipPath = (req as RestoreRequest).restoreZipPath;
   if (!zipPath) {
     res.status(400).json({ message: "请上传 .zip 备份文件（需以 application/zip Content-Type 发送）" });
@@ -426,7 +440,7 @@ router.post("/restore", receiveRestoreZip, async (req, res) => {
     // 附件树已被替换（或可能被部分移动），用量基线必须重扫。
     invalidateFeedbackStorageUsage();
   }
-});
+}
 
 /**
  * POST /api/db/import-demo
@@ -614,7 +628,7 @@ async function backupMariadb(res: Response): Promise<void> {
     archive.file(path.join(tmpDir, "metadata.json"), { name: "metadata.json" });
     archive.file(dumpFile, { name: "dump.sql" });
     if (existsSync(dataBakDir)) {
-      archive.directory(dataBakDir, "data/answer-card");
+      await addFilesToArchive(archive, dataBakDir, "data/answer-card");
     }
     await archive.finalize();
 
@@ -738,6 +752,20 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
   } finally {
     // 缺 dump.sql 的 400 与解压失败路径同样不能留下解压目录。
     await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
+  }
+}
+
+/**
+ * 只把文件加入 ZIP：目录条目会额外占用恢复侧的条目预算，而解压会自行创建父目录。
+ * 这样反馈附件数上限才真正等于备份里的反馈条目数。
+ */
+async function addFilesToArchive(archive: ZipArchive, dir: string, dest: string): Promise<void> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    const name = `${dest}/${entry.name}`;
+    if (entry.isDirectory()) await addFilesToArchive(archive, full, name);
+    else if (entry.isFile()) archive.file(full, { name });
   }
 }
 

@@ -907,11 +907,11 @@ async function main(): Promise<void> {
     const {
       DEFAULT_FEEDBACK_ATTACHMENT_FILES, MAX_FEEDBACK_ATTACHMENT_FILES, resolveFeedbackAttachmentFileLimit,
     } = await import("../src/shared/feedbackLimits");
-    check(DEFAULT_FEEDBACK_ATTACHMENT_FILES === 8000 && MAX_FEEDBACK_ATTACHMENT_FILES === 15000
+    check(DEFAULT_FEEDBACK_ATTACHMENT_FILES === 8000 && MAX_FEEDBACK_ATTACHMENT_FILES === 12000
       && resolveFeedbackAttachmentFileLimit({}).files === 8000
       && resolveFeedbackAttachmentFileLimit({ PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES: "200" }).files === 200
       && resolveFeedbackAttachmentFileLimit({ PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES: "0" }).files === 8000
-      && resolveFeedbackAttachmentFileLimit({ PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES: "999999" }).files === 15000,
+      && resolveFeedbackAttachmentFileLimit({ PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES: "999999" }).files === 12000,
       "附件总数上限三档：默认 8000、可收紧、非法值回落、超天花板夹紧（保证备份条目不超出恢复预算）");
     const {
       classifyEntryName, resolveEntryDest, checkEntryBudget, worstCaseEntryBytes,

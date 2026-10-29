@@ -12,10 +12,10 @@ export const MAX_FEEDBACK_STORAGE_MIB = 102400;
 /**
  * 附件总文件数上限。备份把每个附件作为一个 ZIP 条目，恢复侧默认条目预算是 2 万条；
  * 只按字节配额限制时，大量空文件/极小文件仍会把条目数推过恢复预算，导致合法备份无法恢复。
- * 默认 8000 条（约 533 次满 15 附件提交），留出原卷、库文件等条目的余量。
+ * 默认 8000 条（约 533 次满 15 附件提交）、天花板 12000 条，给原卷与库文件留出条目余量。
  */
 export const DEFAULT_FEEDBACK_ATTACHMENT_FILES = 8000;
-export const MAX_FEEDBACK_ATTACHMENT_FILES = 15000;
+export const MAX_FEEDBACK_ATTACHMENT_FILES = 12000;
 
 export function resolveFeedbackAttachmentFileLimit(
   env: Record<string, string | undefined> = {}

@@ -222,7 +222,8 @@ async function retryPendingOrphanDirs(): Promise<void> {
  * 只删超过 10 分钟的目录，避免删掉另一个并发请求刚建好、事务尚未提交的目录。
  */
 async function sweepFeedbackOrphansOnce(): Promise<void> {
-  await reconcileFeedbackTrashOnce();
+  // 调用方持有反馈变更锁：孤儿回收会按数据库判断后 rm 目录，必须与恢复 / 删除互斥。
+  await reconcileFeedbackTrashLocked();
   await retryPendingOrphanDirs();
   if (orphanSweepDone) return;
   if (!orphanSweep) {
@@ -720,7 +721,9 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
     .catch(() => 0)
     .then(async (removedStale) => {
       if (removedStale > 0) invalidateFeedbackStorageUsage();
-      await sweepFeedbackOrphansOnce();
+      // 孤儿回收与恢复 / 删除共用变更锁：否则恢复期间它会按旧库判断，
+      // 把刚恢复出来、数据库中仍有记录的附件目录删掉。
+      await withFeedbackMutationLock(() => sweepFeedbackOrphansOnce());
       // 初始不占额度：只有真的写到文件字节才在存储引擎里申请预留，
       // 纯文本反馈、只声明长度不传文件的慢请求都不会锁住附件配额。
       const reservation = createFeedbackStorageReservation(
