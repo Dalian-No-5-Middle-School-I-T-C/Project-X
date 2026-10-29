@@ -485,6 +485,32 @@ async function main(): Promise<void> {
   ok(unitReservation.bytes === step * 2, "可按累计目标追加预留");
   unitReservation.release();
 
+  // 两个请求都占了一部分配额、又都还想继续追加时，后到者必须先让出，不能靠
+  // 更长的重试反超最早请求（旧实现给后到者 40 次、最早请求 20 次）。
+  const fairRoot = path.join(tmpDir, "quota-fair");
+  const fairTmp = path.join(fairRoot, "_tmp");
+  mkdirSync(fairTmp, { recursive: true });
+  const fairTotal = feedbackStorage.MAX_FEEDBACK_STORAGE_BYTES;
+  const fairTarget = [
+    Math.floor(fairTotal * 0.3),
+    Math.floor(fairTotal * 0.45),
+    Math.floor(fairTotal * 0.7),
+  ];
+  const olderReservation = feedbackStorage.createFeedbackStorageReservation(fairRoot, fairTmp, fairTotal);
+  const newerReservation = feedbackStorage.createFeedbackStorageReservation(fairRoot, fairTmp, fairTotal);
+  for (const target of fairTarget.slice(0, 2)) {
+    await olderReservation.ensureBytes(target);
+    await newerReservation.ensureBytes(target);
+  }
+  const olderWait = olderReservation.ensureBytes(fairTarget[2])
+    .then(() => "ok", (err) => err instanceof feedbackStorage.FeedbackStorageQuotaError ? "quota" : "other");
+  const newerWait = newerReservation.ensureBytes(fairTarget[2])
+    .then(() => "ok", (err) => err instanceof feedbackStorage.FeedbackStorageQuotaError ? "quota" : "other");
+  ok((await newerWait) === "quota", "后到请求在容量不足时先放弃并让出已占字节");
+  newerReservation.release();
+  ok((await olderWait) === "ok", "最早请求在后到者让出后获得剩余容量");
+  olderReservation.release();
+
   const purgeDir = path.join(tmpDir, "purge-unit");
   mkdirSync(purgeDir, { recursive: true });
   const staleTempPath = path.join(purgeDir, "stale.bin");

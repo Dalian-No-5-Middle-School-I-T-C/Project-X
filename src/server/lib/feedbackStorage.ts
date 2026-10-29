@@ -226,10 +226,11 @@ function makeReservation(
 ): FeedbackStorageReservation {
   let held = initialBytes;
   let released = false;
-  let registered = false;
   const id = ++reservationSeq;
+  // 从创建时就算排队：即使还没写入第一个字节，更早的请求也保有优先权。
+  activeReservations.add(id);
   const ensure = async (target: number, attempt: number): Promise<boolean> => {
-    const run = quotaQueue.then(async (): Promise<boolean | "retry" | "retry-later"> => {
+    const run = quotaQueue.then(async (): Promise<boolean | "yield" | "persist"> => {
       if (released) return false;
       if (held >= target) return true;
       if (held >= limitBytes) return false;
@@ -239,26 +240,22 @@ function makeReservation(
       const minimum = target - held;
       const available = MAX_FEEDBACK_STORAGE_BYTES - used - reservedBytes;
       if (available < minimum) {
-        // 先到的请求优先：后到者等得更久，让最早请求先尝试；最早请求超时失败后，
-        // 后到者仍有时间接手，避免「先到者其实也装不下」时两个一起失败。
+        // 先到先得：后到者看到更早的排队请求时只等短时间就放弃，把已占字节让给
+        // 最早请求；最早请求等得更久，避免后到者靠更长的重试反超。
         const hasEarlier = [...activeReservations].some((other) => other < id);
-        return hasEarlier ? "retry-later" : "retry";
+        return hasEarlier ? "yield" : "persist";
       }
       const desired = Math.max(minimum, chunkedReservationStep());
       const delta = Math.min(desired, available, limitBytes - held);
       if (delta <= 0) return false;
       reservedBytes += delta;
       held += delta;
-      if (!registered) {
-        activeReservations.add(id);
-        registered = true;
-      }
       return true;
     });
     quotaQueue = run.then(() => undefined, () => undefined);
     const result = await run;
-    if (result === "retry" || result === "retry-later") {
-      const maxAttempts = result === "retry-later" ? 40 : 20;
+    if (result === "yield" || result === "persist") {
+      const maxAttempts = result === "persist" ? 40 : 20;
       if (attempt >= maxAttempts) throw new FeedbackStorageQuotaError();
       await new Promise((resolve) => setTimeout(resolve, 50));
       return ensure(target, attempt + 1);
@@ -275,7 +272,7 @@ function makeReservation(
     release() {
       if (released) return;
       released = true;
-      if (registered) activeReservations.delete(id);
+      activeReservations.delete(id);
       reservedBytes = Math.max(0, reservedBytes - held);
       held = 0;
     },
