@@ -850,6 +850,41 @@ async function main(): Promise<void> {
   ok(!existsSync(trashDir) || readdirSync(trashDir).length === 0, "数据库删除失败后暂存目录已清空");
   ok((await call("DELETE", `/${restoreId}`, adminToken)).status === 200, "附件恢复后可再次删除");
 
+  // 全零字节附件的请求不占容量，但同样会创建目录 / 写库；写库失败时必须清掉目录。
+  const zeroForm = new FormData();
+  zeroForm.set("title", "零字节附件写库失败");
+  zeroForm.set("content", "正文");
+  zeroForm.append("files", new Blob([], { type: "text/plain" }), "empty.txt");
+  const dirsBeforeZero = new Set(
+    existsSync(feedbackRoot)
+      ? readdirSync(feedbackRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() && !entry.name.startsWith("_")).map((entry) => entry.name)
+      : []
+  );
+  const zeroAdapter = getMysqlDb();
+  const zeroRun = (zeroAdapter as any).run;
+  const originalZeroRun = zeroRun.bind(zeroAdapter);
+  let injectedZeroFailure = false;
+  (zeroAdapter as any).run = async (sql: string, ...args: any[]) => {
+    if (!injectedZeroFailure && /INSERT\s+INTO\s+feedback_reports/i.test(sql)) {
+      injectedZeroFailure = true;
+      throw new Error("forced zero-byte insert failure");
+    }
+    return originalZeroRun(sql, ...args);
+  };
+  let zeroResult: { status: number; json: any };
+  try {
+    zeroResult = await upload(zeroForm, adminToken);
+  } finally {
+    (zeroAdapter as any).run = zeroRun;
+  }
+  ok(zeroResult.status === 500, "零字节附件写库失败返回 500");
+  ok(injectedZeroFailure, "零字节附件失败用例确实注入了写库错误");
+  const zeroLeftovers = existsSync(feedbackRoot)
+    ? readdirSync(feedbackRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && !entry.name.startsWith("_") && !dirsBeforeZero.has(entry.name))
+    : [];
+  ok(zeroLeftovers.length === 0, "零字节附件写库失败后没有留下无元数据的附件目录");
+
   // 目录已经被外部删掉、只剩元数据时，删除反馈必须继续成功。
   const missingForm = new FormData();
   missingForm.set("title", "附件目录丢失");
@@ -1027,6 +1062,53 @@ async function main(): Promise<void> {
       name.startsWith("projectx-restore-") && !name.startsWith("projectx-restore-upload-") && !tmpBefore.has(name)
     );
     ok(leakedRestoreDirs.length === 0, "409 退出后不残留已解压的恢复临时目录");
+
+    // 结构校验失败（缺 projectx.db）的 400 也要清掉解压目录。
+    const incompleteZip = new AdmZip();
+    incompleteZip.addFile("metadata.json", Buffer.from(JSON.stringify({
+      version: 1, format: "projectx-backup", generatedAt: new Date().toISOString(), files: [],
+    })));
+    const beforeIncomplete = new Set(readdirSync(tmpdir()));
+    const rejectedIncomplete = await fetch(`${new URL(base).origin}/api/db/restore`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}`, "Content-Type": "application/zip" },
+      body: incompleteZip.toBuffer(),
+    });
+    ok(rejectedIncomplete.status === 400, "缺少 projectx.db 的备份被 400 拒绝");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    ok(readdirSync(tmpdir()).filter((name) =>
+      name.startsWith("projectx-restore-") && !name.startsWith("projectx-restore-upload-") && !beforeIncomplete.has(name)
+    ).length === 0, "结构校验失败不残留解压目录");
+
+    // 并发恢复：第一个请求还在传包时，第二个直接 409；第一个断开后闸门释放。
+    const slowRestore = http.request({
+      host: "127.0.0.1",
+      port: Number(new URL(base).port),
+      path: "/api/db/restore",
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        "Content-Type": "application/zip",
+        "Content-Length": 4096,
+      },
+    });
+    slowRestore.on("error", () => undefined);
+    slowRestore.write(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const concurrentRestore = await fetch(`${new URL(base).origin}/api/db/restore`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}`, "Content-Type": "application/zip" },
+      body: probeZip.toBuffer(),
+    });
+    ok(concurrentRestore.status === 409, "已有恢复任务在传包时，第二个恢复请求返回 409");
+    slowRestore.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const afterSlowRestore = await fetch(`${new URL(base).origin}/api/db/restore`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}`, "Content-Type": "application/zip" },
+      body: Buffer.from("not-a-zip"),
+    });
+    ok(afterSlowRestore.status === 400, "前一个恢复断开后闸门释放，后续请求正常进入校验");
   }
 
   // 模拟进程在「已移入 _trash、尚未删库」时退出：后续请求应把目录恢复回原位。

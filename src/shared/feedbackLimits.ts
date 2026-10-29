@@ -10,6 +10,37 @@ export const DEFAULT_FEEDBACK_STORAGE_MIB = 8192;
 export const MAX_FEEDBACK_STORAGE_MIB = 102400;
 
 /**
+ * 附件总文件数上限。备份把每个附件作为一个 ZIP 条目，恢复侧默认条目预算是 2 万条；
+ * 只按字节配额限制时，大量空文件/极小文件仍会把条目数推过恢复预算，导致合法备份无法恢复。
+ * 默认 8000 条（约 533 次满 15 附件提交），留出原卷、库文件等条目的余量。
+ */
+export const DEFAULT_FEEDBACK_ATTACHMENT_FILES = 8000;
+export const MAX_FEEDBACK_ATTACHMENT_FILES = 15000;
+
+export function resolveFeedbackAttachmentFileLimit(
+  env: Record<string, string | undefined> = {}
+): { files: number; notices: string[] } {
+  const raw = env.PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES;
+  if (raw === undefined || String(raw).trim() === "") {
+    return { files: DEFAULT_FEEDBACK_ATTACHMENT_FILES, notices: [] };
+  }
+  const parsed = Number(String(raw).trim());
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return {
+      files: DEFAULT_FEEDBACK_ATTACHMENT_FILES,
+      notices: [`PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES="${raw}" 不是 ≥1 的数，按默认 ${DEFAULT_FEEDBACK_ATTACHMENT_FILES} 条处理`],
+    };
+  }
+  if (parsed > MAX_FEEDBACK_ATTACHMENT_FILES) {
+    return {
+      files: MAX_FEEDBACK_ATTACHMENT_FILES,
+      notices: [`PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES=${raw} 超过天花板 ${MAX_FEEDBACK_ATTACHMENT_FILES}，已夹紧`],
+    };
+  }
+  return { files: Math.floor(parsed), notices: [] };
+}
+
+/**
  * 解析聚合容量（纯函数，便于服务端与恢复预算共用）。
  * 备份会把反馈附件一起打包，恢复侧的解压总量必须能覆盖这份配额。
  */

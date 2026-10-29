@@ -37,6 +37,10 @@ export const RESTORE_ZIP_UPLOAD_LIMIT_BYTES = MAX_RESTORE_ZIP_TOTAL_BYTES + 64 *
 
 type RestoreRequest = Request & { restoreZipPath?: string };
 
+// 同一时间只允许一个恢复任务：每个请求最多保留一份备份 ZIP + 一份解压树，
+// 并发恢复会在临时盘上叠加多份十几 GiB 的副本。
+let restoreInProgress = false;
+
 const receiveRestoreZip: RequestHandler = (req, res, next) => {
   if (!req.is("application/zip")) {
     res.status(400).json({ message: "请上传 .zip 备份文件（需以 application/zip Content-Type 发送）" });
@@ -48,6 +52,12 @@ const receiveRestoreZip: RequestHandler = (req, res, next) => {
     res.status(413).json({ message: limitMessage });
     return;
   }
+  if (restoreInProgress) {
+    res.status(409).json({ message: "已有备份恢复任务正在进行，请稍后重试" });
+    return;
+  }
+  restoreInProgress = true;
+  res.once("close", () => { restoreInProgress = false; });
 
   const target = path.join(os.tmpdir(), `projectx-restore-upload-${crypto.randomUUID()}.zip`);
   const cleanup = (): void => { void rm(target, { force: true }).catch(() => undefined); };
@@ -174,7 +184,10 @@ router.get("/backup", async (_req: Request, res: Response) => {
     await withFeedbackMutationLock(async () => {
       // 先把 _trash 收敛到与数据库一致：仍存在的记录移回原位，已删记录的残骸清掉，
       // 之后只复制正式附件目录，不会把删除残骸或悬空目录带进备份。
-      await reconcileFeedbackTrashLocked();
+      if (!(await reconcileFeedbackTrashLocked())) {
+        // 暂存目录没能与数据库对齐时直接中止：此时导出会留下指向缺失附件的元数据。
+        throw new Error("反馈暂存目录核对失败，已中止备份");
+      }
 
       // 1. 备份 projectx.db（通过 VACUUM INTO 创建干净的副本）
       if (existsSync(projectxDbPath)) {
@@ -407,6 +420,8 @@ router.post("/restore", receiveRestoreZip, async (req, res) => {
     await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     respondOpsFailure(res, error, "导入失败");
   } finally {
+    // 校验失败（缺 metadata / projectx.db）、维护闸门 409 与异常路径都要清掉解压目录。
+    await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     endMaintenance?.();
     // 附件树已被替换（或可能被部分移动），用量基线必须重扫。
     invalidateFeedbackStorageUsage();
@@ -543,7 +558,10 @@ async function backupMariadb(res: Response): Promise<void> {
     // mysqldump 与附件目录复制必须处于同一反馈视图：期间不允许提交或删除反馈，
     // 否则 dump 里的附件记录可能在目录复制前被删除，备份成功却缺少文件。
     await withFeedbackMutationLock(async () => {
-      await reconcileFeedbackTrashLocked();
+      if (!(await reconcileFeedbackTrashLocked())) {
+        // 暂存目录没能与数据库对齐时直接中止：此时导出会留下指向缺失附件的元数据。
+        throw new Error("反馈暂存目录核对失败，已中止备份");
+      }
       try {
         await execFileAsync("mysqldump", args, { timeout: 300_000 });
       } catch (err: any) {
@@ -717,6 +735,9 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
     console.error("[Restore] MariaDB import failed:", error);
     await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     respondOpsFailure(res, error, "导入失败");
+  } finally {
+    // 缺 dump.sql 的 400 与解压失败路径同样不能留下解压目录。
+    await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
   }
 }
 

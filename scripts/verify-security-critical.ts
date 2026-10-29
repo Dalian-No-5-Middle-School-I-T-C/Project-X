@@ -62,6 +62,7 @@ for (const key of [
   "PROJECTX_ADMIN_PASSWORD",
   // 恢复默认累计预算跟随反馈附件配额，宿主机变量同样会污染默认档位断言
   "PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB",
+  "PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES",
   ...uploadEnvVarsClearedHere,
   ...reviewPoolEnvVarsClearedHere,
   ...restoreZipEnvVarsClearedHere,
@@ -903,6 +904,15 @@ async function main(): Promise<void> {
     check(describeRestoreZipLimits().includes("≤20000") && describeRestoreZipLimits().includes("14336MiB")
       && describeRestoreZipLimits().includes("1032"),
       "解压预算与最坏展开比进入启动摘要");
+    const {
+      DEFAULT_FEEDBACK_ATTACHMENT_FILES, MAX_FEEDBACK_ATTACHMENT_FILES, resolveFeedbackAttachmentFileLimit,
+    } = await import("../src/shared/feedbackLimits");
+    check(DEFAULT_FEEDBACK_ATTACHMENT_FILES === 8000 && MAX_FEEDBACK_ATTACHMENT_FILES === 15000
+      && resolveFeedbackAttachmentFileLimit({}).files === 8000
+      && resolveFeedbackAttachmentFileLimit({ PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES: "200" }).files === 200
+      && resolveFeedbackAttachmentFileLimit({ PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES: "0" }).files === 8000
+      && resolveFeedbackAttachmentFileLimit({ PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES: "999999" }).files === 15000,
+      "附件总数上限三档：默认 8000、可收紧、非法值回落、超天花板夹紧（保证备份条目不超出恢复预算）");
     const {
       classifyEntryName, resolveEntryDest, checkEntryBudget, worstCaseEntryBytes,
       extractZipWithinBudget, extractZipFileWithinBudget, RestoreZipError

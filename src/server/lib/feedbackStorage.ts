@@ -11,7 +11,7 @@
  */
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { resolveFeedbackStorageMib } from "../../shared/feedbackLimits";
+import { resolveFeedbackAttachmentFileLimit, resolveFeedbackStorageMib } from "../../shared/feedbackLimits";
 
 const MEBIBYTE = 1024 * 1024;
 const MIN_CHUNKED_STEP_BYTES = 256 * 1024;
@@ -19,8 +19,12 @@ const MAX_CHUNKED_STEP_BYTES = 8 * MEBIBYTE;
 
 const resolvedStorage = resolveFeedbackStorageMib(process.env);
 for (const notice of resolvedStorage.notices) console.warn(`[feedback-storage] ${notice}`);
+const resolvedFileLimit = resolveFeedbackAttachmentFileLimit(process.env);
+for (const notice of resolvedFileLimit.notices) console.warn(`[feedback-storage] ${notice}`);
 
 export const MAX_FEEDBACK_STORAGE_BYTES = resolvedStorage.mib * MEBIBYTE;
+/** 附件总数上限：与恢复侧的条目预算对齐，避免合法备份条目数超出解压预算。 */
+export const MAX_FEEDBACK_ATTACHMENT_FILES = resolvedFileLimit.files;
 
 let feedbackMaintenanceDepth = 0;
 
@@ -299,7 +303,18 @@ export function settleFeedbackStorage<T>(
 ): Promise<T> {
   if (incomingBytes <= 0) {
     reservation?.release();
-    return task();
+    // 纯文本与「全零字节附件」都不占容量，但同样可能创建附件目录 / 写库：
+    // 失败时也要走 onError 清理，不能把没有元数据的目录留在磁盘上。
+    return task().catch(async (err) => {
+      if (onError) {
+        try {
+          await onError();
+        } catch (cleanupErr) {
+          console.error("[feedback-storage] 结算失败后的清理也失败:", cleanupErr);
+        }
+      }
+      throw err;
+    });
   }
   const run = quotaQueue.then(async () => {
     try {

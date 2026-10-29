@@ -27,6 +27,7 @@ import { requestUploadBudget, isUploadAlreadyRejected } from "../lib/uploadBudge
 import {
   FeedbackStorageQuotaError,
   FeedbackStorageUnavailableError,
+  MAX_FEEDBACK_ATTACHMENT_FILES,
   activeFeedbackTempFiles,
   createFeedbackStorageReservation,
   invalidateFeedbackStorageUsage,
@@ -100,7 +101,7 @@ const youngOrphanDirs = new Set<string>();
 const ORPHAN_GRACE_MS = 10 * 60_000;
 let orphanSweepDone = false;
 let orphanSweep: Promise<void> | null = null;
-let trashReconcile: Promise<void> | null = null;
+let trashReconcile: Promise<boolean> | null = null;
 const activeStagedDirs = new Set<string>();
 
 /**
@@ -110,15 +111,16 @@ const activeStagedDirs = new Set<string>();
  * **调用方必须已持有反馈变更锁**：备份要在数据库快照前调它，保证 `_trash` 与快照里的
  * 附件行处于同一视图；普通请求走下面的 `reconcileFeedbackTrashOnce` 自动加锁。
  */
-export async function reconcileFeedbackTrashLocked(): Promise<void> {
+export async function reconcileFeedbackTrashLocked(): Promise<boolean> {
   if (!trashReconcile) {
-    trashReconcile = (async () => {
+    trashReconcile = (async (): Promise<boolean> => {
+      let ok = true;
       try {
         let entries: Dirent[];
         try {
           entries = await readdir(feedbackTrashDir, { withFileTypes: true });
         } catch (err: any) {
-          if (err?.code === "ENOENT") return;
+          if (err?.code === "ENOENT") return true;
           throw err;
         }
         for (const entry of entries) {
@@ -139,17 +141,20 @@ export async function reconcileFeedbackTrashLocked(): Promise<void> {
               invalidateFeedbackStorageUsage();
             }
           } catch (err) {
+            ok = false;
             console.error("[feedback] 暂存附件目录核对失败:", entry.name, err);
           }
         }
       } catch (err) {
+        ok = false;
         console.error("[feedback] 暂存附件目录核对失败:", err);
       } finally {
         trashReconcile = null;
       }
+      return ok;
     })();
   }
-  await trashReconcile;
+  return trashReconcile;
 }
 
 /** 请求入口：`_trash` 通常是空的，只有确实存在暂存目录时才进变更锁，
@@ -568,6 +573,16 @@ class FeedbackMaintenanceError extends Error {
   }
 }
 
+/** 附件总数上限：备份按条目打包，超出恢复侧条目预算的备份将无法恢复。 */
+class FeedbackAttachmentCountError extends Error {
+  readonly code = "FEEDBACK_ATTACHMENT_COUNT_EXCEEDED";
+
+  constructor() {
+    super(`反馈附件总数已达上限（${MAX_FEEDBACK_ATTACHMENT_FILES} 个），请先删除不再需要的反馈后再上传`);
+    this.name = "FeedbackAttachmentCountError";
+  }
+}
+
 /** 按文件字节流式预留的 multer 存储：文本字段不占附件配额，文件写入受配额背压。
  *  导出供回归验证直接驱动 `_handleFile`，核对中止时每个 part 的完成回调恰好执行一次。 */
 export const feedbackStorageEngine: multer.StorageEngine = {
@@ -924,6 +939,16 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
         reservation,
         incomingBytes,
         async () => {
+          if (files.length > 0) {
+            // 与备份恢复的条目预算对齐：只卡字节配额时，大量空文件/极小文件仍会让
+            // 合法备份的 ZIP 条目数超过解压预算。上传与删除共用变更锁，计数与入库之间不会被插队。
+            const countRow = await getMysqlDb().get<{ n: number | string }>(
+              "SELECT COUNT(*) AS n FROM feedback_attachments"
+            );
+            if (Number(countRow?.n ?? 0) + files.length > MAX_FEEDBACK_ATTACHMENT_FILES) {
+              throw new FeedbackAttachmentCountError();
+            }
+          }
           const stored: Array<{ filename: string; storedPath: string; mime: string | null; sizeBytes: number }> = [];
           if (files.length > 0) await mkdir(finalDir, { recursive: true });
           for (let index = 0; index < files.length; index += 1) {
@@ -975,6 +1000,12 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
   } catch (err: any) {
     await finalizeFeedbackUpload(state);
     if (err instanceof FeedbackStorageQuotaError) {
+      if (!res.headersSent) {
+        res.status(413).json({ ok: false, code: err.code, error: err.message });
+      }
+      return;
+    }
+    if (err instanceof FeedbackAttachmentCountError) {
       if (!res.headersSent) {
         res.status(413).json({ ok: false, code: err.code, error: err.message });
       }
