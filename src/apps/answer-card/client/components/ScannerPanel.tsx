@@ -244,7 +244,12 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
       if (!sid) return;
       if (!completedRef.current) {
         // 停不下来必须让老师知道：设备可能还在送纸，界面却已经没有这批卷的入口。
-        void authFetch(`/api/scanner/scan/${sid}/cancel`, { method: "POST" }).catch((error) => {
+        void authFetch(`/api/scanner/scan/${sid}/cancel`, { method: "POST" }).then((response) => {
+          // authFetch 只在网络失败时拒绝；401/500 仍是正常 Response，不看 ok 就会静默放走还在送纸的设备。
+          if (!response.ok) {
+            notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
+          }
+        }, (error: unknown) => {
           console.error("[scanner] 离开面板时停止扫描失败", error);
           notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
         });

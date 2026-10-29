@@ -51,6 +51,7 @@ const snapshotRequests: string[] = [];
 const cancelRequests: string[] = [];
 /** 让下一次答题卡版本请求挂起，模拟「点开始扫描后立刻离开」的在途窗口。 */
 let holdNextCard = false;
+let cancelHttpStatus = 200;
 let releaseHeldCard: (() => void) | null = null;
 const archivedBatches: string[] = [];
 const startedSessions: string[] = [];
@@ -72,7 +73,10 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   const url = String(input);
   if (url.includes("/api/cards/")) { cardRequests++; if (holdNextCard) { holdNextCard = false; await new Promise<void>(resolve => { releaseHeldCard = resolve; }); } await cardReady; return Response.json(card); }
   if (url.endsWith("/sources")) return Response.json({ sources: [], code: "NO_SOURCES" });
-  if (/\/scan\/scan-\d+\/cancel$/.test(url)) { cancelRequests.push(url); return Response.json({ ok: true }); }
+  if (/\/scan\/scan-\d+\/cancel$/.test(url)) {
+    cancelRequests.push(url);
+    return Response.json({ ok: cancelHttpStatus < 400 }, { status: cancelHttpStatus });
+  }
   if (url.endsWith("/scan")) {
     scans.push(JSON.parse(String(init?.body)));
     return Response.json({ sessionId: `scan-${scans.length}` });
@@ -388,6 +392,47 @@ try {
     "扫描中离开面板要终止后台扫描，不能让设备继续送纸");
   assert(archivedBatches.slice(archivedBeforeLeave).includes(`${midScanSession}/1`),
     "已扫出的页面要交给后处理页，离开面板不等于丢掉这一批");
+
+  // 离开面板时取消接口返回 401/500：authFetch 不会抛，必须看 response.ok 才提示，并且已扫页面仍交接。
+  const { notify } = await import("../src/apps/answer-card/client/components/ui/v2/toaster");
+  const stopWarnings: string[] = [];
+  const originalNotifyError = notify.error;
+  notify.error = ((message: unknown) => {
+    stopWarnings.push(String(message));
+    return "toast";
+  }) as typeof notify.error;
+  try {
+    for (const status of [401, 500]) {
+      stopWarnings.length = 0;
+      cancelHttpStatus = status;
+      const stopHost = document.createElement("div");
+      document.body.append(stopHost);
+      const stopRoot = createRoot(stopHost);
+      await act(async () => { stopRoot.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id,
+        onBatchArchived: (sid: string, pageCount: number) => { archivedBatches.push(`${sid}/${pageCount}`); },
+      }))); });
+      await settle();
+      await act(async () => {
+        stopHost.querySelectorAll("button").forEach((node) => {
+          if (node.textContent?.trim() === "开始扫描") node.click();
+        });
+      });
+      await settle();
+      const stopSession = `scan-${scans.length}`;
+      await act(async () => { streams.at(-1)?.emit({ type: "page_done", recordId: "stop-page", pageNum: 1, side: "front" }); });
+      await settle();
+      const archivedBeforeStop = archivedBatches.length;
+      await act(async () => { stopRoot.unmount(); });
+      await settle();
+      assert.equal(stopWarnings.length, 1, `取消接口 HTTP ${status} 要提示未能确认扫描仪已停止`);
+      assert.match(stopWarnings[0] ?? "", /未能确认扫描仪已停止/);
+      assert(archivedBatches.slice(archivedBeforeStop).includes(`${stopSession}/1`),
+        `HTTP ${status} 时已扫页面仍交给后处理，不因为停止失败就丢掉`);
+    }
+  } finally {
+    notify.error = originalNotifyError;
+    cancelHttpStatus = 200;
+  }
 
   // 启动请求还在路上就离开：晚到的响应不能再建会话、也不能再开进度流（否则设备继续送纸却没人看）。
   const lateHost = document.createElement("div");
