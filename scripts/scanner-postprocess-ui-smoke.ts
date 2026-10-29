@@ -696,6 +696,53 @@ try {
   await clickNode(scoreCell());await settle();
   assert.equal(scoreCell()!.getAttribute("aria-pressed"), pressedBefore, "再点一次回到原状态");
 
+  // 其他上传任务的进度会让父组件反复渲染。搜索不能被新的 request 函数取消。
+  const React = await import("react");
+  const { ParticipantLookupField } = await import("../src/apps/answer-card/client/components/ParticipantLookupField");
+  const lookupUrls: string[] = [];
+  function ProgressParent() {
+    const [tick, setTick] = React.useState(0);
+    React.useEffect(() => {
+      const timer = setInterval(() => setTick((value) => value + 1), 100);
+      return () => clearInterval(timer);
+    }, []);
+    return createElement("div", null,
+      createElement("span", { "data-progress-tick": String(tick) }),
+      createElement(ParticipantLookupField, {
+        scope: { type: "uploadSession", sessionId: "sess-progress" },
+        request: async (url: string) => {
+          lookupUrls.push(url);
+          return Response.json({ ok: true, students: [{ id: 1, name: "张三", student_number: "10001" }] });
+        },
+        onPick: () => {},
+      }),
+    );
+  }
+  const lookupHost = document.createElement("div");
+  document.body.append(lookupHost);
+  const lookupRoot = createRoot(lookupHost);
+  await act(async () => { lookupRoot.render(createElement(ProgressParent)); });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+  const lookupInput = lookupHost.querySelector("input");
+  assert.ok(lookupInput, "姓名搜索框已挂上");
+  const setInput = (value: string) => {
+    const proto = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+    proto?.set?.call(lookupInput, value);
+    lookupInput?.dispatchEvent(new window.Event("input", { bubbles: true }));
+    lookupInput?.dispatchEvent(new window.Event("change", { bubbles: true }));
+  };
+  await act(async () => { setInput("张三"); });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1200)); });
+  assert.equal(lookupUrls.length, 1, "进度持续更新时姓名搜索仍只发出一次");
+  assert.match(lookupUrls[0] ?? "", /sess-progress/);
+  assert.match(lookupHost.textContent ?? "", /10001/, "搜索完成后候选保持可选，不被下一帧进度清掉");
+  await act(async () => { setInput("李四"); });
+  assert.doesNotMatch(lookupHost.textContent ?? "", /10001/, "查询词变化时立刻清掉上一轮候选");
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
+  assert.equal(lookupUrls.length, 2, "查询词变化后重新搜索");
+  assert.match(lookupUrls[1] ?? "", new RegExp(encodeURIComponent("李四")));
+  await act(async () => { lookupRoot.unmount(); });
+
   console.log("PASS scanner-postprocess-ui-smoke");
 } catch (error) {
   failure = error;

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Input } from "./ui/v2";
 
 export type ParticipantLookupStudent = {
@@ -37,10 +37,16 @@ export function ParticipantLookupField({
   const scopeKey = scope
     ? (scope.type === "exam" ? `exam:${scope.examId}` : `upload:${scope.sessionId}`)
     : null;
+  // 上传进度会让父组件每次渲染都新建 scope 对象和 request 函数。
+  // 搜索只跟作用域标识和查询词走，回调用 ref 读最新的，避免防抖被反复取消。
+  const requestRef = useRef(request);
+  requestRef.current = request;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
 
   useEffect(() => {
     const keyword = lookup.trim();
-    if (!scope || !scopeKey || keyword.length < 2) {
+    if (!scopeRef.current || !scopeKey || keyword.length < 2) {
       setRoster([]);
       return;
     }
@@ -48,10 +54,11 @@ export function ParticipantLookupField({
     setRoster([]);
     let alive = true;
     const timer = setTimeout(() => {
+      const activeScope = scopeRef.current;
+      if (!alive || !activeScope) return;
       void (async () => {
-        setRoster([]);
         try {
-          const response = await request(participantSearchUrl(scope, keyword));
+          const response = await requestRef.current(participantSearchUrl(activeScope, keyword));
           const data = await response.json();
           if (!alive) return;
           if (response.ok) setRoster((data.students ?? []) as ParticipantLookupStudent[]);
@@ -65,7 +72,7 @@ export function ParticipantLookupField({
       alive = false;
       clearTimeout(timer);
     };
-  }, [lookup, scope, scopeKey, request]);
+  }, [lookup, scopeKey]);
 
   if (!scope) return null;
 
