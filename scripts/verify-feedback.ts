@@ -18,6 +18,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
@@ -1087,6 +1088,45 @@ async function main(): Promise<void> {
     await new Promise<void>((resolve) => brokenServer.close(() => resolve()));
     process.env.ANSWER_CARD_DATA_DIR = previousDataDir;
     rmSync(brokenRoot, { recursive: true, force: true });
+  }
+
+  // 评审复现：多附件里一个 part 失败后，收尾会中止同伴 part。中止只 destroy 流而不回调，
+  // Multer 的 pendingWrites 就永远不归零、错误响应发不出去；这里直接验证每个 part 的回调
+  // 在中止后恰好执行一次（旧实现下两个 part 都不会回调）。
+  section("6.2 中止在途附件时每个 part 的完成回调恰好执行一次");
+  {
+    const engine = feedbackModule.feedbackStorageEngine;
+    const stalledReservation = {
+      bytes: 0,
+      limit: 10 * 1024 * 1024,
+      // 一直挂起：两个 part 都停在等待预留的 transform 里，out 不会 finish。
+      ensureBytes: () => new Promise<boolean>(() => undefined),
+      release: () => undefined,
+    };
+    const engineReq: any = {
+      feedbackReservation: stalledReservation,
+      feedbackTempPaths: [],
+      feedbackAborters: [],
+      feedbackFileBytes: 0,
+    };
+    const makePart = (): any => {
+      const stream = new PassThrough();
+      stream.end(Buffer.alloc(64 * 1024, 0x61));
+      return { stream, originalname: "part.bin", mimetype: "application/octet-stream" };
+    };
+    const calls: Array<{ part: number; err: unknown }> = [];
+    engine._handleFile!(engineReq, makePart(), (err: unknown) => calls.push({ part: 1, err }));
+    engine._handleFile!(engineReq, makePart(), (err: unknown) => calls.push({ part: 2, err }));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    ok(calls.length === 0, "两个 part 都还在等待配额预留");
+    for (const abort of engineReq.feedbackAborters as Array<() => void>) abort();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    ok(calls.length === 2 && calls.every((call) => call.err instanceof Error),
+      "中止在途 part 后每个 _handleFile 回调恰好报告一次错误，Multer 的 pendingWrites 可以归零");
+    for (const tempPath of engineReq.feedbackTempPaths as string[]) {
+      feedbackStorage.unmarkActiveFeedbackTempFile(tempPath);
+      rmSync(tempPath, { force: true });
+    }
   }
 
   server.close();

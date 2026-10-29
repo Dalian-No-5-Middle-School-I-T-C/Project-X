@@ -539,8 +539,9 @@ class FeedbackTmpUnavailableError extends Error {
   }
 }
 
-/** 按文件字节流式预留的 multer 存储：文本字段不占附件配额，文件写入受配额背压。 */
-const feedbackStorageEngine: multer.StorageEngine = {
+/** 按文件字节流式预留的 multer 存储：文本字段不占附件配额，文件写入受配额背压。
+ *  导出供回归验证直接驱动 `_handleFile`，核对中止时每个 part 的完成回调恰好执行一次。 */
+export const feedbackStorageEngine: multer.StorageEngine = {
   _handleFile(req, file, cb) {
     const state = req as FeedbackRequest;
     if (state.feedbackAborted) {
