@@ -861,21 +861,22 @@ async function main(): Promise<void> {
       : []
   );
   const zeroAdapter = getMysqlDb();
-  const zeroRun = (zeroAdapter as any).run;
-  const originalZeroRun = zeroRun.bind(zeroAdapter);
+  const zeroTransaction = (zeroAdapter as any).transaction;
   let injectedZeroFailure = false;
-  (zeroAdapter as any).run = async (sql: string, ...args: any[]) => {
-    if (!injectedZeroFailure && /INSERT\s+INTO\s+feedback_reports/i.test(sql)) {
+  // 上传的入库走 `db.transaction(...)`；MariaDB 的事务对象不是 adapter 本体，
+  // 所以直接包住 transaction 方法，两种方言都能命中。
+  (zeroAdapter as any).transaction = async (...args: any[]) => {
+    if (!injectedZeroFailure) {
       injectedZeroFailure = true;
-      throw new Error("forced zero-byte insert failure");
+      throw new Error("forced zero-byte transaction failure");
     }
-    return originalZeroRun(sql, ...args);
+    return zeroTransaction.apply(zeroAdapter, args);
   };
   let zeroResult: { status: number; json: any };
   try {
     zeroResult = await upload(zeroForm, adminToken);
   } finally {
-    (zeroAdapter as any).run = zeroRun;
+    (zeroAdapter as any).transaction = zeroTransaction;
   }
   ok(zeroResult.status === 500, "零字节附件写库失败返回 500");
   ok(injectedZeroFailure, "零字节附件失败用例确实注入了写库错误");
