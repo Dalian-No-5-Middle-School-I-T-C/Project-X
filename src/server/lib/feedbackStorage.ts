@@ -22,6 +22,26 @@ for (const notice of resolvedStorage.notices) console.warn(`[feedback-storage] $
 
 export const MAX_FEEDBACK_STORAGE_BYTES = resolvedStorage.mib * MEBIBYTE;
 
+let feedbackMaintenanceDepth = 0;
+
+/**
+ * 恢复备份期间关闭新的 multipart 上传：恢复会替换整个 data 目录，正在写入的 `_tmp`
+ * 不能被连同旧目录一起移走。返回幂等释放函数，调用方必须在 finally 里释放。
+ */
+export function beginFeedbackMaintenance(): () => void {
+  feedbackMaintenanceDepth += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    feedbackMaintenanceDepth = Math.max(0, feedbackMaintenanceDepth - 1);
+  };
+}
+
+export function isFeedbackMaintenanceActive(): boolean {
+  return feedbackMaintenanceDepth > 0;
+}
+
 let feedbackMutationTail: Promise<void> = Promise.resolve();
 
 /**

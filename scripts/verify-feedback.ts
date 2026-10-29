@@ -1170,6 +1170,30 @@ async function main(): Promise<void> {
     }
   }
 
+  // 恢复备份期间的维护闸门：新的 multipart 反馈直接 503，结束后恢复提交。
+  section("6.3 恢复维护闸门");
+  {
+    const releaseMaintenance = feedbackStorage.beginFeedbackMaintenance();
+    try {
+      const maintenanceForm = new FormData();
+      maintenanceForm.set("title", "维护期间反馈");
+      maintenanceForm.set("content", "正文");
+      const blocked = await upload(maintenanceForm, adminToken);
+      ok(blocked.status === 503 && blocked.json?.code === "FEEDBACK_MAINTENANCE",
+        "恢复维护期间新的 multipart 反馈返回 503");
+    } finally {
+      releaseMaintenance();
+    }
+    const resumedForm = new FormData();
+    resumedForm.set("title", "维护结束后的反馈");
+    resumedForm.set("content", "正文");
+    const resumed = await upload(resumedForm, adminToken);
+    ok(resumed.status === 201, "维护结束后反馈恢复提交");
+    if (resumed.status === 201) {
+      await call("DELETE", `/${Number(resumed.json?.data?.id)}`, adminToken);
+    }
+  }
+
   server.close();
 }
 

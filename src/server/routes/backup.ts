@@ -10,7 +10,7 @@ import crypto from "node:crypto";
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { extractZipFileWithinBudget, RestoreZipError } from "../services/restoreZip";
 import { MAX_RESTORE_ZIP_TOTAL_BYTES } from "../../shared/restoreZipLimits";
-import { invalidateFeedbackStorageUsage, withFeedbackMutationLock } from "../lib/feedbackStorage";
+import { activeFeedbackTempFiles, beginFeedbackMaintenance, invalidateFeedbackStorageUsage, withFeedbackMutationLock } from "../lib/feedbackStorage";
 // 备份要在数据库快照前收敛 `feedback/_trash`，与反馈删除共用同一份核对逻辑。
 import { reconcileFeedbackTrashLocked } from "./feedback";
 import { sanitizeOpsMessage } from "../lib/opsErrorMessage";
@@ -285,6 +285,7 @@ router.post("/restore", receiveRestoreZip, async (req, res) => {
   }
 
   const tmpDir = path.join(os.tmpdir(), `projectx-restore-${crypto.randomUUID()}`);
+  let endMaintenance: (() => void) | null = null;
   try {
     await mkdir(tmpDir, { recursive: true });
 
@@ -308,6 +309,12 @@ router.post("/restore", receiveRestoreZip, async (req, res) => {
 
     // 恢复会替换数据库与 data/answer-card（含 feedback/）：与反馈提交 / 删除共用同一把锁，
     // 避免并发上传把附件写进即将被移走的目录，或删除在恢复中途改动附件树。
+    // 同时关闭新的 multipart 上传；已经在写 _tmp 的请求等它结束后再恢复。
+    endMaintenance = beginFeedbackMaintenance();
+    if (activeFeedbackTempFiles().size > 0) {
+      res.status(409).json({ message: "有反馈附件正在上传，请稍后重试恢复" });
+      return;
+    }
     await withFeedbackMutationLock(async () => {
       // 1. 备份当前数据
       const backupSuffix = Date.now();
@@ -399,6 +406,7 @@ router.post("/restore", receiveRestoreZip, async (req, res) => {
     await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     respondOpsFailure(res, error, "导入失败");
   } finally {
+    endMaintenance?.();
     // 附件树已被替换（或可能被部分移动），用量基线必须重扫。
     invalidateFeedbackStorageUsage();
   }
@@ -637,9 +645,16 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
     // 使用 mysql 客户端导入；dump.sql 逐块送入 stdin，不再先把整份 SQL 读进内存。
     const { execFile } = await import("node:child_process");
 
+    let endMaintenance: (() => void) | null = null;
     try {
       // 导入数据库与替换 data 目录同样与反馈写操作互斥：否则并发提交可能在 SQL 导入后
       // 再写入附件行，随后其目录被 moveDir 移走，留下指向缺失文件的元数据。
+      // 同时关闭新的 multipart 上传；已经在写 _tmp 的请求等它结束后再恢复。
+      endMaintenance = beginFeedbackMaintenance();
+      if (activeFeedbackTempFiles().size > 0) {
+        res.status(409).json({ message: "有反馈附件正在上传，请稍后重试恢复" });
+        return;
+      }
       await withFeedbackMutationLock(async () => {
         // 将 dump.sql 通过 stdin 传给 mysql（使用参数数组，避免 shell 命令注入）
         await new Promise<void>((resolve, reject) => {
@@ -692,6 +707,7 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
       // mysql 客户端的报错自带 dump 文件绝对路径与 `user@host`，只进日志（安全 R25）
       respondOpsFailure(res, err, "数据库导入失败，请查看服务端日志中的 [Restore] 记录");
     } finally {
+      endMaintenance?.();
       // 附件树可能已被部分替换，缓存基线一律重扫。
       invalidateFeedbackStorageUsage();
     }

@@ -30,6 +30,7 @@ import {
   activeFeedbackTempFiles,
   createFeedbackStorageReservation,
   invalidateFeedbackStorageUsage,
+  isFeedbackMaintenanceActive,
   markActiveFeedbackTempFile,
   markFeedbackTempFileLeaked,
   settleFeedbackStorage,
@@ -557,6 +558,16 @@ class FeedbackTmpUnavailableError extends Error {
   }
 }
 
+/** 恢复备份等维护操作期间拒绝新的上传，避免附件写进即将被替换的数据目录。 */
+class FeedbackMaintenanceError extends Error {
+  readonly code = "FEEDBACK_MAINTENANCE";
+
+  constructor() {
+    super("系统正在恢复备份，暂时无法提交反馈，请稍后重试");
+    this.name = "FeedbackMaintenanceError";
+  }
+}
+
 /** 按文件字节流式预留的 multer 存储：文本字段不占附件配额，文件写入受配额背压。
  *  导出供回归验证直接驱动 `_handleFile`，核对中止时每个 part 的完成回调恰好执行一次。 */
 export const feedbackStorageEngine: multer.StorageEngine = {
@@ -564,6 +575,10 @@ export const feedbackStorageEngine: multer.StorageEngine = {
     const state = req as FeedbackRequest;
     if (state.feedbackAborted) {
       cb(new Error("上传已中止"));
+      return;
+    }
+    if (isFeedbackMaintenanceActive()) {
+      cb(new FeedbackMaintenanceError());
       return;
     }
     if (!feedbackTmpReady) {
@@ -581,6 +596,13 @@ export const feedbackStorageEngine: multer.StorageEngine = {
     const filePath = path.join(feedbackTmpDir, filename);
     (state.feedbackTempPaths ??= []).push(filePath);
     markActiveFeedbackTempFile(filePath);
+    // 登记后复查维护状态：恢复在「入口放行 → 登记临时路径」之间开始时，
+    // 这一步会看到闸门并放弃写入，恢复侧的 active 检查也能看到这份登记。
+    if (isFeedbackMaintenanceActive()) {
+      cb(new FeedbackMaintenanceError());
+      void finalizeFeedbackUpload(state);
+      return;
+    }
     const out = createWriteStream(filePath);
     let size = 0;
     let finished = false;
@@ -660,6 +682,11 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
     next();
     return;
   }
+  if (isFeedbackMaintenanceActive()) {
+    const maintenance = new FeedbackMaintenanceError();
+    res.status(503).json({ ok: false, code: maintenance.code, error: maintenance.message });
+    return;
+  }
   const state = req as FeedbackRequest;
   state.feedbackTempPaths = [];
   state.feedbackUploadFinished = false;
@@ -716,6 +743,10 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
             return;
           }
           if (error instanceof FeedbackTmpUnavailableError) {
+            res.status(503).json({ ok: false, code: error.code, error: error.message });
+            return;
+          }
+          if (error instanceof FeedbackMaintenanceError) {
             res.status(503).json({ ok: false, code: error.code, error: error.message });
             return;
           }
