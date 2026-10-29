@@ -312,6 +312,7 @@ router.post("/restore", receiveRestoreZip, async (req, res) => {
     // 同时关闭新的 multipart 上传；已经在写 _tmp 的请求等它结束后再恢复。
     endMaintenance = beginFeedbackMaintenance();
     if (activeFeedbackTempFiles().size > 0) {
+      await cleanupDir(tmpDir);
       res.status(409).json({ message: "有反馈附件正在上传，请稍后重试恢复" });
       return;
     }
@@ -652,6 +653,7 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
       // 同时关闭新的 multipart 上传；已经在写 _tmp 的请求等它结束后再恢复。
       endMaintenance = beginFeedbackMaintenance();
       if (activeFeedbackTempFiles().size > 0) {
+        await cleanupDir(tmpDir);
         res.status(409).json({ message: "有反馈附件正在上传，请稍后重试恢复" });
         return;
       }

@@ -998,6 +998,35 @@ async function main(): Promise<void> {
     ok(!existsSync(residueDir), "没有记录的 _trash 残骸在备份前被清掉");
     rmSync(halfUpload, { force: true });
     ok((await call("DELETE", `/${stagedId}`, adminToken)).status === 200, "清理暂存目录备份测试");
+
+    // 恢复发现仍有在传附件时直接 409，且不能把已解压的备份留在临时目录。
+    const { default: AdmZip } = await import("adm-zip");
+    const probeZip = new AdmZip();
+    probeZip.addFile("metadata.json", Buffer.from(JSON.stringify({
+      version: 1, format: "projectx-backup", generatedAt: new Date().toISOString(), files: [],
+    })));
+    probeZip.addFile("projectx.db", Buffer.from("not-a-real-db"));
+    const activeTempPath = path.join(feedbackRoot, "_tmp", "restore-probe.tmp");
+    writeFileSync(activeTempPath, "active");
+    feedbackStorage.markActiveFeedbackTempFile(activeTempPath);
+    const tmpBefore = new Set(readdirSync(tmpdir()));
+    let restoreBlocked: any;
+    try {
+      restoreBlocked = await fetch(`${new URL(base).origin}/api/db/restore`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${adminToken}`, "Content-Type": "application/zip" },
+        body: probeZip.toBuffer(),
+      });
+    } finally {
+      feedbackStorage.unmarkActiveFeedbackTempFile(activeTempPath);
+      rmSync(activeTempPath, { force: true });
+    }
+    ok(restoreBlocked.status === 409, "仍有在传附件时恢复请求被 409 拒绝");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const leakedRestoreDirs = readdirSync(tmpdir()).filter((name) =>
+      name.startsWith("projectx-restore-") && !name.startsWith("projectx-restore-upload-") && !tmpBefore.has(name)
+    );
+    ok(leakedRestoreDirs.length === 0, "409 退出后不残留已解压的恢复临时目录");
   }
 
   // 模拟进程在「已移入 _trash、尚未删库」时退出：后续请求应把目录恢复回原位。
