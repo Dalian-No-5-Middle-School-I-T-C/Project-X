@@ -14,7 +14,7 @@ export type ParticipantSearchScope =
 
 function participantSearchUrl(scope: ParticipantSearchScope, keyword: string): string {
   const q = encodeURIComponent(keyword);
-  if (scope.type === "exam") return `/api/exams/${scope.examId}/participant-search?q=${q}`;
+  if (scope.type === "exam") return `/api/exams/${scope.examId}/participant-search?q=${q}&scope=roster`;
   return `/api/scanner/upload/sessions/${encodeURIComponent(scope.sessionId)}/participant-search?q=${q}`;
 }
 
@@ -44,6 +44,8 @@ export function ParticipantLookupField({
       setRoster([]);
       return;
     }
+    // 新关键字的防抖期间先清掉上一轮结果，避免点到与当前输入无关的学生。
+    setRoster([]);
     let alive = true;
     const timer = setTimeout(() => {
       void (async () => {

@@ -18,6 +18,7 @@ import {
   isExamParticipant,
   listMissingParticipants,
   listParticipants,
+  searchExamParticipantRoster,
   searchStudentsForExam,
   setExplicitParticipants,
 } from "../src/server/services/examParticipants";
@@ -82,6 +83,19 @@ async function main(): Promise<void> {
   ok(noClass.length === 0, "无可见班级时返回空结果");
   const schoolWide = await searchStudentsForExam(db, 1, "2410", null);
   ok(schoolWide.length === 3, `全校范围（null）保持原有行为 (实际 ${schoolWide.length})`);
+
+  section("应考快照搜索 — 调班后仍按冻结名单，不按现班级");
+  await db.run("INSERT INTO classes (id, name, grade_id) VALUES (2, '二班', NULL)");
+  await db.run("DELETE FROM class_students WHERE class_id = 1 AND student_id = 1");
+  await db.run("INSERT INTO class_students (class_id, student_id) VALUES (2, 1), (1, 5)");
+  const currentClass = await searchStudentsForExam(db, 1, "2410", [1]);
+  ok(currentClass.map((s) => s.student_number).join(",") === "24102,24105",
+    `现班级搜索不再包含已调走的 24101，并出现后加入的 24105（实际 ${currentClass.map((s) => s.student_number).join(",")}）`);
+  const frozen = await searchExamParticipantRoster(db, 1, "2410");
+  ok(frozen.map((s) => s.student_number).join(",") === "24101,24102",
+    `冻结名单仍是开考时的 24101/24102，不含后来加入现班的 24105（实际 ${frozen.map((s) => s.student_number).join(",")}）`);
+  await db.run("DELETE FROM class_students WHERE student_id IN (1, 5)");
+  await db.run("INSERT INTO class_students (class_id, student_id) VALUES (1, 1)");
 
   section("显式名单整体替换 — roster A/B 改为 explicit B/C");
   const explicitCount = await setExplicitParticipants(db, 1, [2, 5]);

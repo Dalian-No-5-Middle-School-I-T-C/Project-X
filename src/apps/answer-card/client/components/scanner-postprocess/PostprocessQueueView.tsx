@@ -299,7 +299,7 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
   }, [examId, channel]);
 
   const digits = value.trim();
-  // 只有应考名单本身读成功才敢说「不在名单」。联想接口忽略 examId，且 LIMIT 20，不能当名单。
+  // 只有应考名单本身读成功才敢说「不在名单」。联想最多 20 条，不能当完整名单。
   const notInRoster = rosterKnown && rosterNumbers !== null && /^\d+$/.test(digits) && digits.length >= 2 && !rosterNumbers.has(digits);
   const complete = digitsFromCells !== null;
   // 屏幕上显示的号必须与格选一致：位数不对或含非数字时打字没落到格上，此时不能提交
