@@ -50,6 +50,10 @@ const LIMIT_DEFS: Array<{
 
 export const PAPER_STORAGE_ENV_VARS = LIMIT_DEFS.map((def) => def.env);
 
+/** 原卷目录累计容量的安全天花板（MiB），供恢复预算等跨模块对齐时复用同一来源。 */
+export const MAX_PAPER_STORAGE_TOTAL_CEILING_MIB =
+  LIMIT_DEFS.find((def) => def.key === "maxPaperBytesTotal")!.ceiling;
+
 function defaultLimits(): PaperStorageLimits {
   const limits = {} as PaperStorageLimits;
   for (const def of LIMIT_DEFS) limits[def.key] = def.unit === "MiB" ? def.default * MEBIBYTE : def.default;

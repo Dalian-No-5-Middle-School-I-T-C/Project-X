@@ -1019,8 +1019,9 @@ async function main(): Promise<void> {
     ok((await call("DELETE", `/${Number(dbAttachmentReport.json?.data?.id)}`, adminToken)).status === 200,
       "清理 .db 附件备份测试");
     const restoreLimits = await import("../src/shared/restoreZipLimits");
-    ok(restoreLimits.MAX_RESTORE_ZIP_TOTAL_BYTES >= 6144 * 1024 * 1024 + feedbackStorage.MAX_FEEDBACK_STORAGE_BYTES,
-      "恢复累计预算覆盖基础数据 + 当前反馈附件配额");
+    const paperLimits = await import("../src/shared/paperStorageLimits");
+    ok(restoreLimits.MAX_RESTORE_ZIP_TOTAL_BYTES >= paperLimits.MAX_PAPER_BYTES_TOTAL + feedbackStorage.MAX_FEEDBACK_STORAGE_BYTES,
+      "恢复累计预算覆盖原卷配额 + 当前反馈附件配额");
     ok(backupModule.RESTORE_ZIP_UPLOAD_LIMIT_BYTES >= restoreLimits.MAX_RESTORE_ZIP_TOTAL_BYTES
       && backupModule.RESTORE_ZIP_UPLOAD_LIMIT_BYTES > 128 * 1024 * 1024,
       "恢复上传上限跟随解压预算，合法备份不再被 128MiB 截断");
