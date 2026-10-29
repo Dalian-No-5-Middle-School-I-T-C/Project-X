@@ -1,6 +1,7 @@
 import AdmZip from "adm-zip";
-import { createWriteStream, mkdirSync, writeFileSync } from "node:fs";
+import { createWriteStream, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { crc32 } from "node:zlib";
 import { open as openZip, type Entry } from "yauzl";
 
 import {
@@ -264,6 +265,7 @@ export function extractZipFileWithinBudget(zipPath: string, destDir: string): Pr
           }
           let entryDone = false;
           let entryBytes = 0;
+          let checksum = 0;
           let out: ReturnType<typeof createWriteStream>;
           try {
             mkdirSync(path.dirname(destPath), { recursive: true });
@@ -282,8 +284,10 @@ export function extractZipFileWithinBudget(zipPath: string, destDir: string): Pr
           };
           stream.on("data", (chunk: Buffer) => {
             if (entryDone) return;
-            entryBytes += chunk.length;
-            totalBytes += chunk.length;
+            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            checksum = crc32(buf, checksum);
+            entryBytes += buf.length;
+            totalBytes += buf.length;
             if (entryBytes > MAX_RESTORE_ZIP_ENTRY_BYTES) entryFail(entrySizeError(entryBytes));
             else if (totalBytes > MAX_RESTORE_ZIP_TOTAL_BYTES) entryFail(totalSizeError());
           });
@@ -294,6 +298,16 @@ export function extractZipFileWithinBudget(zipPath: string, destDir: string): Pr
           out.on("error", (err) => entryFail(err));
           out.on("finish", () => {
             if (entryDone) return;
+            // yauzl 的 openReadStream 不核对 CRC。inflate 成功且长度不变时，坏数据会写进恢复目录。
+            if ((checksum >>> 0) !== (entry.crc32 >>> 0)) {
+              entryDone = true;
+              try { unlinkSync(destPath); } catch { /* 写出失败时文件可能还没出现 */ }
+              fail(new RestoreZipError(
+                `备份内文件 ${path.posix.basename(entry.fileName.replace(/\\/g, "/"))} 校验失败（内容与 CRC 不一致）`,
+                400,
+              ));
+              return;
+            }
             entryDone = true;
             nextEntry();
           });

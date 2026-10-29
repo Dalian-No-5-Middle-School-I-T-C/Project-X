@@ -16,14 +16,30 @@ export function withAnswerCardDataMutationLock<T>(work: () => Promise<T>): Promi
 }
 
 /** 放在 multer 之前：整个上传（含临时文件写入）与备份 / 恢复 / 删除串行，结束时释放。 */
-export function holdAnswerCardDataMutationLock(_req: Request, res: Response, next: NextFunction): void {
+export function holdAnswerCardDataMutationLock(req: Request, res: Response, next: NextFunction): void {
+  // 入队前就记下断连。排到锁之后才监听 close 时，等待期间的 close 已经发生，
+  // next() 之后没有任何事件能释放这把锁。
+  let disconnected = req.destroyed || res.destroyed;
+  const onAborted = (): void => { disconnected = true; };
+  const onResponseClose = (): void => {
+    if (!res.writableEnded) disconnected = true;
+  };
+  req.on("aborted", onAborted);
+  res.on("close", onResponseClose);
+
   void withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => {
     let released = false;
     const release = (): void => {
       if (released) return;
       released = true;
+      req.off("aborted", onAborted);
+      res.off("close", onResponseClose);
       resolve();
     };
+    if (disconnected || req.destroyed || res.destroyed) {
+      release();
+      return;
+    }
     res.once("finish", release);
     res.once("close", release);
     next();

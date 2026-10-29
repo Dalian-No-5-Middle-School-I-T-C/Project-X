@@ -94,10 +94,109 @@ const feedbackStorage = await import("../src/server/lib/feedbackStorage");
 const { purgeStaleTmpUploads } = await import("../src/apps/answer-card/server/paperQuota");
 const backupModule = await import("../src/server/routes/backup");
 const backupRouter = backupModule.default;
-const { extractZipWithinBudget, extractZipFileWithinBudget } = await import("../src/server/services/restoreZip");
+const { extractZipWithinBudget, extractZipFileWithinBudget, RestoreZipError } = await import("../src/server/services/restoreZip");
 const express = (await import("express")).default;
+const { crc32, deflateRawSync } = await import("node:zlib");
+const { holdAnswerCardDataMutationLock, withAnswerCardDataMutationLock } = await import("../src/server/lib/answerCardDataLock");
+
+/** 最小 ZIP：method 0 为 STORED，8 为 DEFLATE。CRC 写进本地头和中央目录。 */
+function buildZip(name: string, data: Buffer, method: 0 | 8, storedCrc = crc32(data) >>> 0): Buffer {
+  const payload = method === 8 ? deflateRawSync(data) : data;
+  const nameBuf = Buffer.from(name);
+  const local = Buffer.alloc(30 + nameBuf.length + payload.length);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(method, 8);
+  local.writeUInt32LE(storedCrc, 14);
+  local.writeUInt32LE(payload.length, 18);
+  local.writeUInt32LE(data.length, 22);
+  local.writeUInt16LE(nameBuf.length, 26);
+  nameBuf.copy(local, 30);
+  payload.copy(local, 30 + nameBuf.length);
+  const central = Buffer.alloc(46 + nameBuf.length);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(method, 10);
+  central.writeUInt32LE(storedCrc, 16);
+  central.writeUInt32LE(payload.length, 20);
+  central.writeUInt32LE(data.length, 24);
+  central.writeUInt16LE(nameBuf.length, 28);
+  central.writeUInt32LE(0, 42);
+  nameBuf.copy(central, 46);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(1, 8);
+  eocd.writeUInt16LE(1, 10);
+  eocd.writeUInt32LE(central.length, 12);
+  eocd.writeUInt32LE(local.length, 16);
+  return Buffer.concat([local, central, eocd]);
+}
+
+async function rejectExtract(zip: Buffer, label: string): Promise<void> {
+  const dir = mkdtempSync(path.join(tmpdir(), "feedback-crc-"));
+  const zipPath = path.join(dir, "bad.zip");
+  const outDir = path.join(dir, "out");
+  mkdirSync(outDir);
+  writeFileSync(zipPath, zip);
+  let memoryStatus = 0;
+  try {
+    extractZipWithinBudget(zip, outDir);
+  } catch (err) {
+    memoryStatus = err instanceof RestoreZipError ? err.status : -1;
+  }
+  const streamingStatus = await extractZipFileWithinBudget(zipPath, outDir)
+    .then(() => 0, (err) => err instanceof RestoreZipError ? err.status : -1);
+  const leaked = readdirSync(outDir);
+  ok(memoryStatus === 400, `${label}：全量解压拒绝（${memoryStatus}）`);
+  ok(streamingStatus === 400, `${label}：流式解压拒绝（${streamingStatus}）`);
+  ok(leaked.length === 0, `${label}：拒绝后不留下损坏文件（${leaked.join(",") || "无"}）`);
+  rmSync(dir, { recursive: true, force: true });
+}
+
+async function checkLockSurvivesQueuedDisconnect(): Promise<void> {
+  section("上传排队期间断连必须放开数据锁");
+  let releaseHeld: (() => void) | undefined;
+  const held = withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => { releaseHeld = resolve; }));
+  const app = express();
+  let entered = 0;
+  app.post("/upload", holdAnswerCardDataMutationLock, (_req, res) => {
+    entered += 1;
+    res.end("ok");
+  });
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const destroyed = await new Promise<boolean>((resolve, reject) => {
+    const req = http.request({ hostname: "127.0.0.1", port, path: "/upload", method: "POST" }, () => {
+      reject(new Error("断连请求不该得到业务响应"));
+    });
+    req.on("error", () => resolve(req.destroyed));
+    req.write("partial");
+    setTimeout(() => req.destroy(), 30);
+  });
+  ok(destroyed, "排队中的上传请求已销毁");
+  releaseHeld?.();
+  await held;
+  const next = await Promise.race([
+    withAnswerCardDataMutationLock(async () => "acquired" as const),
+    new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 400)),
+  ]);
+  ok(entered === 0, `断连请求不能在拿到锁后进入上传处理（entered=${entered}）`);
+  ok(next === "acquired", `下一个请求必须能取得锁（${next}）`);
+  await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+}
 
 async function main(): Promise<void> {
+  await checkLockSurvivesQueuedDisconnect();
+  section("损坏 ZIP 的 CRC");
+  const plain = Buffer.from("answer-file-bytes");
+  const stored = buildZip("note.txt", plain, 0);
+  const flipped = Buffer.from(stored);
+  flipped[30 + Buffer.from("note.txt").length] ^= 0x01;
+  await rejectExtract(flipped, "STORED 翻转一个 bit 但保留原 CRC");
+  const deflated = buildZip("note.txt", plain, 8, (crc32(plain) + 1) >>> 0);
+  await rejectExtract(deflated, "DEFLATE 负载完好但 CRC 被改掉");
   if (!maria) {
     assert.equal(detectDialect(), "sqlite", "默认回归必须在临时 SQLite 上运行：config.yml remote 配置未被隔离");
     initializeDatabase();
