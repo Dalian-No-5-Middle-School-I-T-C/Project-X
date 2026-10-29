@@ -626,6 +626,22 @@ async function main() {
   const delExam = await jsonFetch(base, `/api/exams/${examId}`, { method: "DELETE" }, adminToken);
   ok(delExam.status === 200 && !existsSync(answerKeyDir(examId)), "删除考试 → 答案页文件目录一并清理（机密原图不滞留磁盘）");
 
+  // 反馈分支占用 v66/v67。已记下这两个版本号的库，答案直发必须仍以 v68 补列。
+  section("G. 迁移号避开反馈 v66/v67");
+  sqlite.exec("ALTER TABLE exams DROP COLUMN answer_key_mode");
+  sqlite.prepare("DELETE FROM schema_migrations WHERE version = 68").run();
+  sqlite.prepare("INSERT OR REPLACE INTO schema_migrations (version, name) VALUES (66, 'feedback-reports')").run();
+  sqlite.prepare("INSERT OR REPLACE INTO schema_migrations (version, name) VALUES (67, 'feedback-attachments')").run();
+  const { runMigrations } = await import("../src/server/db/migrations");
+  runMigrations(sqlite);
+  const examColumns = sqlite.prepare("PRAGMA table_info(exams)").all() as Array<{ name: string }>;
+  ok(examColumns.some((column) => column.name === "answer_key_mode"),
+    "v66 已被反馈迁移占用时，答案直发仍以 v68 补上 answer_key_mode");
+  const feedbackVersion = sqlite.prepare("SELECT name FROM schema_migrations WHERE version = 66").get() as { name: string } | undefined;
+  ok(feedbackVersion?.name === "feedback-reports", "已执行的 v66 保持反馈迁移的名字，不被答案直发覆盖");
+  const answerKeyVersion = sqlite.prepare("SELECT name FROM schema_migrations WHERE version = 68").get() as { name: string } | undefined;
+  ok(answerKeyVersion?.name === "exam-answer-key-mode", "答案直发登记为 v68 exam-answer-key-mode");
+
   console.log(`\n通过 ${passed} 项，失败 ${failed} 项`);
   await new Promise<void>((resolve) => server.close(() => resolve()));
   closeDatabase();

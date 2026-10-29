@@ -56,22 +56,22 @@ async function main(): Promise<void> {
     await db.exec("ALTER TABLE exams DROP COLUMN answer_key_mode");
     await db.run("DELETE FROM schema_migrations WHERE version = 51");
     await db.run("DELETE FROM schema_migrations WHERE version = 63");
-    // answer_key_mode 由 v66 补列（本支最初记作 64，合 main 后顺延），删的是自己那一号。
-    await db.run("DELETE FROM schema_migrations WHERE version = 66");
+    // answer_key_mode 由 v68 补列。v66/v67 留给反馈迁移，删的是自己那一号。
+    await db.run("DELETE FROM schema_migrations WHERE version = 68");
     await initMariadbSchema();
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'identity_mode'"));
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'warnings_json'"),
       "已有库升级必须补上告警列，不能只靠新装建表");
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_records LIKE 'identity_json'"));
     assert.ok(await db.get("SHOW COLUMNS FROM exams LIKE 'answer_key_mode'"),
-      "已有库升级必须补上答案展示模式列（v66），不能只靠新装建表");
+      "已有库升级必须补上答案展示模式列（v68），不能只靠新装建表");
     const migrations = await db.all<{ version: number; name: string }>(
       "SELECT version, name FROM schema_migrations ORDER BY version",
     );
     assert.ok(migrations.some((row) => row.version === 49), "Scanner receipts migration must be applied");
     assert.ok(migrations.some((row) => row.version === 53), "WeChat grade-release subscription migration must be applied");
     assert.ok(migrations.some((row) => row.version === 54), "Exam original-paper + answer-key migration must be applied");
-    assert.ok(migrations.some((row) => row.version === 66), "Answer-key display mode migration must be applied");
+    assert.ok(migrations.some((row) => row.version === 68 && row.name === "exam-answer-key-mode"), "Answer-key display mode migration must be applied as v68");
     assert.ok(await db.get("SHOW COLUMNS FROM scanner_submissions LIKE 'exam_id'"));
     assert.ok(await db.get("SHOW COLUMNS FROM answer_block_crops LIKE 'claimed_by'"));
     await initMariadbSchema();

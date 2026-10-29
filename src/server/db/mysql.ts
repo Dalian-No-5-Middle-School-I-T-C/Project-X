@@ -1171,10 +1171,11 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE answer_overrides MODIFY question_number DOUBLE",
   ] });
 
-  // v66: 「本次正确答案」展示模式（与 SQLite v66 对齐；本支最初占 64，合 main 后顺延）。
+  // v68: 「本次正确答案」展示模式（与 SQLite v68 对齐）。
+  // v66/v67 留给反馈表（#358），避免两支合并后按版本号互相跳过。
   // text=学生看逐题文字答案（v54 行为），file=学生看教师上传的答案原文件。
   // 默认 'text'：已有库升级后行为不变，由教师在答案配置面板显式切换。
-  mariadbMigrations.push({ version: 66, name: "exam-answer-key-mode", sqls: [
+  mariadbMigrations.push({ version: 68, name: "exam-answer-key-mode", sqls: [
     "ALTER TABLE exams ADD COLUMN answer_key_mode VARCHAR(16) NOT NULL DEFAULT 'text'",
   ] });
 
