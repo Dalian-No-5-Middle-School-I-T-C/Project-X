@@ -105,9 +105,11 @@ const activeStagedDirs = new Set<string>();
 /**
  * 删除反馈时附件目录先移到 `_trash`，数据库成功删除后再清理。
  * 这里处理崩溃/失败遗留：记录还在就移回原位，记录已经没了就删掉。
- * 每次请求都核对一次（目录通常为空，readdir 成本很低），不依赖进程重启。
+ *
+ * **调用方必须已持有反馈变更锁**：备份要在数据库快照前调它，保证 `_trash` 与快照里的
+ * 附件行处于同一视图；普通请求走下面的 `reconcileFeedbackTrashOnce` 自动加锁。
  */
-async function reconcileFeedbackTrashOnce(): Promise<void> {
+export async function reconcileFeedbackTrashLocked(): Promise<void> {
   if (!trashReconcile) {
     trashReconcile = (async () => {
       try {
@@ -147,6 +149,22 @@ async function reconcileFeedbackTrashOnce(): Promise<void> {
     })();
   }
   await trashReconcile;
+}
+
+/** 请求入口：`_trash` 通常是空的，只有确实存在暂存目录时才进变更锁，
+ *  避免每个反馈请求都排到备份后面。 */
+async function reconcileFeedbackTrashOnce(): Promise<void> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(feedbackTrashDir, { withFileTypes: true });
+  } catch (err: any) {
+    if (err?.code === "ENOENT") return;
+    // 请求入口的核对失败不能把业务请求一起打断：记日志，留给下一次请求或备份再试。
+    console.error("[feedback] 暂存附件目录核对失败:", err);
+    return;
+  }
+  if (entries.length === 0) return;
+  await withFeedbackMutationLock(reconcileFeedbackTrashLocked);
 }
 
 async function attachmentDirReferenced(dir: string): Promise<boolean> {

@@ -879,6 +879,19 @@ async function main(): Promise<void> {
       && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_ENTRY_MIB: "999999" }).limits.maxEntryUncompressedBytes
         === 8192 * 1024 * 1024,
       "解压预算可收紧、非法值回落默认、超天花板被夹紧（一个拼错的数字关不掉保护）");
+    const wideFeedback = resolveRestoreZipLimits({ PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB: "102400" });
+    check(wideFeedback.limits.maxTotalUncompressedBytes === (6144 + 102400) * 1024 * 1024
+      && wideFeedback.notices.every((notice) => !notice.includes("天花板")),
+      "反馈配额调到天花板时恢复累计预算同步放宽，不再夹在更低的天花板上");
+    const miBOverride = resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB: "20000" });
+    check(miBOverride.limits.maxTotalUncompressedBytes === 20000 * 1024 * 1024
+      && miBOverride.notices.some((notice) => notice.includes("20000 MiB"))
+      && miBOverride.notices.every((notice) => !notice.includes("20971520000")),
+      "覆盖日志按 MiB 打印生效值，不再把字节数当成 MiB");
+    const clampedTotal = resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB: "999999" });
+    check(clampedTotal.limits.maxTotalUncompressedBytes === (6144 + 102400) * 1024 * 1024
+      && clampedTotal.notices.some((notice) => notice.includes(`${6144 + 102400} MiB`)),
+      "累计预算的超天花板夹紧值与反馈配额天花板一致（6144 + 102400 MiB）");
     check(MAX_RESTORE_ZIP_RATIO === DEFAULT_RESTORE_ZIP_LIMITS.maxCompressionRatio
       && MAX_RESTORE_ZIP_RATIO === 1032
       && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_RATIO: "8" }).limits.maxCompressionRatio === 8

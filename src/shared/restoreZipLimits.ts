@@ -17,14 +17,14 @@
  * 单位约定：体积类环境变量按 **MiB** 给（`..._MIB`），数量类按个数给；对外仍以字节/个数导出。
  */
 
-import { resolveFeedbackStorageMib } from "./feedbackLimits";
+import { MAX_FEEDBACK_STORAGE_MIB, resolveFeedbackStorageMib } from "./feedbackLimits";
 
 const MEBIBYTE = 1024 * 1024;
 
 /** 基础数据（库文件 + 原卷 / 答案页）的默认解压预算，与反馈附件配额分开计。 */
 const BASE_STORAGE_TOTAL_MIB = 6144;
-/** 与 LIMIT_DEFS 里的天花板保持一致：默认总量 = 基础数据 + 反馈附件配额后仍不得超过它。 */
-const MAX_TOTAL_CEILING_MIB = 32768;
+/** 累计解压预算的天花板必须罩住反馈附件配额的天花板，否则合法备份可能无法恢复。 */
+const MAX_TOTAL_CEILING_MIB = BASE_STORAGE_TOTAL_MIB + MAX_FEEDBACK_STORAGE_MIB;
 
 export type RestoreZipLimitKey =
   | "maxZipEntries" | "maxEntryUncompressedBytes" | "maxTotalUncompressedBytes" | "maxCompressionRatio";
@@ -47,7 +47,7 @@ const LIMIT_DEFS: Array<{
   // 单条解压后体积：projectx.db 在长期运行的学校可以涨到几百 MiB，给到 1 GiB 起步。
   { key: "maxEntryUncompressedBytes", env: "PROJECTX_RESTORE_ZIP_MAX_ENTRY_MIB", unit: "MiB", default: 1024, ceiling: 8192 },
   // 累计解压后体积：默认 = 基础数据 6 GiB + 反馈附件配额（默认 8 GiB）。备份会把反馈附件
-  // 一起打包，恢复侧必须能装下自己导出的合法备份；调大反馈配额时这里也要同步放宽。
+  // 一起打包，恢复侧必须能装下自己导出的合法备份，天花板同样跟随反馈配额天花板。
   { key: "maxTotalUncompressedBytes", env: "PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB", unit: "MiB", default: BASE_STORAGE_TOTAL_MIB, ceiling: MAX_TOTAL_CEILING_MIB },
   // 最坏展开比：只用于「头部声明解压后 0 字节」的条目——那是解压炸弹的谎报签名（此时库自身的
   // 按声明封顶等于没封顶）。上界取 DEFLATE 的物理极值，所以这项只能收紧、不能放宽。
@@ -56,20 +56,11 @@ const LIMIT_DEFS: Array<{
 
 export const RESTORE_ZIP_ENV_VARS = LIMIT_DEFS.map((def) => def.env);
 
-/** 默认累计预算跟随反馈附件配额：备份会打包反馈附件，恢复必须装得下自己的备份。 */
+/** 默认累计预算跟随反馈附件配额：备份会打包反馈附件，恢复必须装得下自己的备份。
+ *  反馈配额本身有天花板（`MAX_FEEDBACK_STORAGE_MIB`），这里无需再夹紧。 */
 function resolveDefaultTotalMib(env: Record<string, string | undefined>): { mib: number; notices: string[] } {
   const feedback = resolveFeedbackStorageMib(env);
-  const wanted = BASE_STORAGE_TOTAL_MIB + feedback.mib;
-  if (wanted > MAX_TOTAL_CEILING_MIB) {
-    return {
-      mib: MAX_TOTAL_CEILING_MIB,
-      notices: [
-        `反馈附件配额 ${feedback.mib} MiB 超出恢复默认预留，累计解压预算按安全天花板 ${MAX_TOTAL_CEILING_MIB} MiB 处理；`
-        + "备份若仍然更大，需要同时调高 PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB（上限 32768）",
-      ],
-    };
-  }
-  return { mib: wanted, notices: [] };
+  return { mib: BASE_STORAGE_TOTAL_MIB + feedback.mib, notices: [] };
 }
 
 function defaultLimits(env: Record<string, string | undefined>): { limits: RestoreZipLimits; notices: string[] } {
@@ -122,7 +113,8 @@ export function resolveRestoreZipLimits(env: Record<string, string | undefined> 
       continue;
     }
     limits[def.key] = def.unit === "MiB" ? Math.round(valueInUnit) : Math.floor(valueInUnit);
-    notices.push(`${def.key} 由 ${def.env} 覆盖为 ${unitLabel(def.unit, limits[def.key])}`);
+    const effective = def.unit === "MiB" ? Math.round(limits[def.key] / MEBIBYTE) : limits[def.key];
+    notices.push(`${def.key} 由 ${def.env} 覆盖为 ${unitLabel(def.unit, effective)}`);
   }
   return { limits, notices };
 }

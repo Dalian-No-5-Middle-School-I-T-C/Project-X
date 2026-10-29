@@ -957,6 +957,47 @@ async function main(): Promise<void> {
     ok(backupModule.RESTORE_ZIP_UPLOAD_LIMIT_BYTES >= restoreLimits.MAX_RESTORE_ZIP_TOTAL_BYTES
       && backupModule.RESTORE_ZIP_UPLOAD_LIMIT_BYTES > 128 * 1024 * 1024,
       "恢复上传上限跟随解压预算，合法备份不再被 128MiB 截断");
+
+    // 备份前先收敛 _trash：仍存在的记录移回原位，已删记录的残骸清掉且不进 ZIP。
+    const stagedForm = new FormData();
+    stagedForm.set("title", "暂存目录收敛备份");
+    stagedForm.set("content", "正文");
+    stagedForm.append("files", new Blob(["staged-me"], { type: "text/plain" }), "staged.txt");
+    const stagedReport = await upload(stagedForm, adminToken);
+    ok(stagedReport.status === 201, "准备暂存目录收敛备份测试");
+    const stagedId = Number(stagedReport.json?.data?.id);
+    const stagedRow = await db.get<{ stored_path: string }>(
+      "SELECT stored_path FROM feedback_attachments WHERE feedback_id = ?",
+      stagedId
+    );
+    const stagedDir = path.dirname(path.resolve(process.env.ANSWER_CARD_DATA_DIR!, stagedRow!.stored_path));
+    mkdirSync(trashDir, { recursive: true });
+    renameSync(stagedDir, path.join(trashDir, path.basename(stagedDir)));
+    const residueDir = path.join(trashDir, "residue-without-row");
+    mkdirSync(residueDir, { recursive: true });
+    writeFileSync(path.join(residueDir, "0.txt"), "residue");
+    mkdirSync(path.join(feedbackRoot, "_tmp"), { recursive: true });
+    const halfUpload = path.join(feedbackRoot, "_tmp", "half-upload.bin");
+    writeFileSync(halfUpload, "half");
+
+    const trashBackup = await fetch(`${new URL(base).origin}/api/db/backup`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    ok(trashBackup.status === 200, "暂存目录存在时备份接口仍成功");
+    const trashZip = Buffer.from(await trashBackup.arrayBuffer());
+    const trashExtractDir = path.join(tmpDir, "backup-trash-extract");
+    mkdirSync(trashExtractDir, { recursive: true });
+    extractZipWithinBudget(trashZip, trashExtractDir);
+    const extractedFeedback = path.join(trashExtractDir, "data", "answer-card", "feedback");
+    const stagedCopied = path.join(extractedFeedback, path.basename(stagedDir), "0.txt");
+    ok(existsSync(stagedDir), "仍存在的暂存附件在备份前移回原位");
+    ok(existsSync(stagedCopied) && readFileSync(stagedCopied, "utf8") === "staged-me",
+      "备份包含移回原位的暂存附件");
+    ok(!existsSync(path.join(extractedFeedback, "_trash")) && !existsSync(path.join(extractedFeedback, "_tmp")),
+      "备份不包含 _tmp / _trash");
+    ok(!existsSync(residueDir), "没有记录的 _trash 残骸在备份前被清掉");
+    rmSync(halfUpload, { force: true });
+    ok((await call("DELETE", `/${stagedId}`, adminToken)).status === 200, "清理暂存目录备份测试");
   }
 
   // 模拟进程在「已移入 _trash、尚未删库」时退出：后续请求应把目录恢复回原位。
