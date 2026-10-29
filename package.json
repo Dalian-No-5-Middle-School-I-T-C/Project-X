@@ -32,7 +32,7 @@
     "native:runtime": "node scripts/stage-vc-runtime.cjs",
     "native:runtime:ia32": "node scripts/stage-vc-runtime.cjs ia32",
     "electron:install": "node node_modules/electron/install.js",
-    "electron:dev": "npm run build:scanner:full && npm run native:rebuild:electron && electron .",
+    "electron:dev": "npm run build:scanner:full && npm run native:rebuild:electron && npm run electron:install && electron .",
     "electron:pack": "npm run build:scanner:full && npm run native:rebuild:electron && npm run native:runtime && npm run electron:install && electron-builder --dir --x64 -c.electronDist=node_modules/electron/dist",
     "electron:pack:ia32": "npm run build:scanner:full && npm run native:rebuild:electron:ia32 && npm run native:sharp:ia32 && npm run native:runtime && electron-builder --dir --ia32",
     "electron:dist": "npm run build:scanner:full && npm run native:rebuild:electron && npm run native:runtime && npm run electron:install && electron-builder --win portable --x64 -c.electronDist=node_modules/electron/dist && npm run release:hash",

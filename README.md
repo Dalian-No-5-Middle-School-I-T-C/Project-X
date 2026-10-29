@@ -366,7 +366,7 @@ node scripts/hash-release-artifacts.cjs --check --root <产物目录>
 npm install --ignore-scripts
 ```
 
-> 使用 `--ignore-scripts` 跳过依赖安装脚本。Electron 43 起二进制不在 `npm install` 时下载，x64 打包命令会先执行 `electron:install`。安装后需手动重建原生模块：
+> 使用 `--ignore-scripts` 跳过依赖安装脚本。Electron 43 起二进制不在 `npm install` 时下载，`electron:dev` 与 x64 打包命令会先执行 `electron:install`。安装后需手动重建原生模块：
 > ```powershell
 > npm rebuild better-sqlite3
 > ```
