@@ -264,8 +264,10 @@ router.get("/backup", async (_req: Request, res: Response) => {
       archive.file(scannerBak, { name: "scanner.db" });
     }
 
-    // 添加 data 目录
+    // 添加 data 目录：只留一个数据根标记，恢复侧靠它判断备份是否包含 data/answer-card；
+    // 每个反馈 UUID 目录不再单独写条目，避免占用恢复条目预算。
     if (existsSync(dataBakDir)) {
+      archive.append(Buffer.alloc(0), { name: "data/answer-card/" });
       await addFilesToArchive(archive, dataBakDir, "data/answer-card");
     }
 
@@ -628,6 +630,7 @@ async function backupMariadb(res: Response): Promise<void> {
     archive.file(path.join(tmpDir, "metadata.json"), { name: "metadata.json" });
     archive.file(dumpFile, { name: "dump.sql" });
     if (existsSync(dataBakDir)) {
+      archive.append(Buffer.alloc(0), { name: "data/answer-card/" });
       await addFilesToArchive(archive, dataBakDir, "data/answer-card");
     }
     await archive.finalize();

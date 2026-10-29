@@ -968,8 +968,9 @@ async function main(): Promise<void> {
     ok(backupResponse.status === 200, "系统备份接口成功");
     const backupZip = Buffer.from(await backupResponse.arrayBuffer());
     const backupEntryNames = new AdmZip(backupZip).getEntries().map((entry) => entry.entryName);
-    ok(backupEntryNames.every((name) => !name.endsWith("/")),
-      "备份 ZIP 只写文件条目，目录不再额外占用恢复条目预算");
+    const directoryEntries = backupEntryNames.filter((name) => name.endsWith("/"));
+    ok(directoryEntries.length === 1 && directoryEntries[0] === "data/answer-card/",
+      "备份只保留数据根目录标记，不为每个反馈目录写条目");
     const extractDir = path.join(tmpDir, "backup-extract");
     mkdirSync(extractDir, { recursive: true });
     extractZipWithinBudget(backupZip, extractDir);
