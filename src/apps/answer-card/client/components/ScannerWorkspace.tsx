@@ -61,6 +61,8 @@ interface Props {
   onScansComplete?: (sessionId: string, pageCount: number) => void;
   /** 继续扫描前先归档当前会话：部分中断的批次离开面板后仍能在后处理页找到。 */
   onBatchArchived?: (sessionId: string, pageCount: number) => void;
+  onScanSessionStarted?: (sessionId: string) => void;
+  onScanSessionAbandoned?: (sessionId: string) => void;
   /** 从后处理页点「继续扫描」进入时自动开扫。 */
   autoStartScan?: boolean;
   onAutoStartConsumed?: () => void;
@@ -78,7 +80,7 @@ function isImageFile(file: File): boolean {
   return file.type.startsWith("image/") || /\.(png|jpe?g|bmp|webp|tiff?)$/i.test(file.name);
 }
 
-export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange, cardVersionNote, onScansComplete, onBatchArchived, autoStartScan, onAutoStartConsumed, postprocessBatchCount = 0, onOpenPostprocess }: Props) {
+export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange, cardVersionNote, onScansComplete, onBatchArchived, onScanSessionStarted, onScanSessionAbandoned, autoStartScan, onAutoStartConsumed, postprocessBatchCount = 0, onOpenPostprocess }: Props) {
   const [cfgOpen, setCfgOpen] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [status, setStatus] = useState("");
@@ -256,6 +258,8 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
                 autoStartScan={autoStartScan}
                 onAutoStartConsumed={onAutoStartConsumed}
                 onBatchArchived={onBatchArchived}
+                onScanSessionStarted={onScanSessionStarted}
+                onScanSessionAbandoned={onScanSessionAbandoned}
                 onScansComplete={(sid, pageCount) => {
                   // v2.5.1: 保持面板挂在 done 视图；v2.7.2: 同时上抛给 ScannerApp 自动跳后处理页
                   setStatus(`扫描完成：${pageCount} 张`);

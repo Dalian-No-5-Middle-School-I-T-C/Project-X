@@ -56,6 +56,10 @@ interface ScannerPanelProps {
   onScansComplete?: (sessionId: string, pageCount: number) => void;
   /** 继续扫描/重开前把当前会话交给后处理页：部分中断的批次不能因为离开面板就消失。 */
   onBatchArchived?: (sessionId: string, pageCount: number) => void;
+  /** 会话一创建就上报。渲染进程在扫描中崩溃时来不及走卸载清理，后处理页仍要找得到这一批。 */
+  onScanSessionStarted?: (sessionId: string) => void;
+  /** 还没扫出页面就取消或被新会话替换时，撤掉刚才的占位，避免恢复出空批次。 */
+  onScanSessionAbandoned?: (sessionId: string) => void;
   /** 从后处理页点「继续扫描」进入时自动开始下一批；消费后回调避免刷新重复触发。 */
   autoStartScan?: boolean;
   onAutoStartConsumed?: () => void;
@@ -108,7 +112,7 @@ function readStoredScanSettings(): Partial<StoredScanSettings> {
   }
 }
 
-export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoStartScan, onAutoStartConsumed, onClose }: ScannerPanelProps) {
+export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanSessionStarted, onScanSessionAbandoned, autoStartScan, onAutoStartConsumed, onClose }: ScannerPanelProps) {
   const storedSettings = useRef(readStoredScanSettings()).current;
   const [state, setState] = useState<ScannerState>("idle");
   const [sources, setSources] = useState<string[]>([]);
@@ -156,7 +160,11 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
   const sessionIdRef = useRef("");
   /** 卸载时才取的回调：卸载清理的闭包里读 props 会拿到第一次渲染的值。 */
   const onBatchArchivedRef = useRef(onBatchArchived);
+  const onScanSessionStartedRef = useRef(onScanSessionStarted);
+  const onScanSessionAbandonedRef = useRef(onScanSessionAbandoned);
   useEffect(() => { onBatchArchivedRef.current = onBatchArchived; }, [onBatchArchived]);
+  useEffect(() => { onScanSessionStartedRef.current = onScanSessionStarted; }, [onScanSessionStarted]);
+  useEffect(() => { onScanSessionAbandonedRef.current = onScanSessionAbandoned; }, [onScanSessionAbandoned]);
 
   // UI-5: SSE 断开重连状态
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -241,8 +249,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
           notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
         });
       }
-      const pageCount = pagesRef.current.length;
-      if (pageCount > 0) onBatchArchivedRef.current?.(sid, pageCount);
+      handoffCurrentSession();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -633,8 +640,18 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
     finally { resultsBusyRef.current = false; setResultsBusy(false); }
   }
 
+  /** 把当前会话交给后处理，或在还没有页面时撤掉占位。已正常结束的批次不撤。 */
+  function handoffCurrentSession() {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    const pageCount = pagesRef.current.length;
+    if (pageCount > 0) onBatchArchivedRef.current?.(sid, pageCount);
+    else if (!completedRef.current) onScanSessionAbandonedRef.current?.(sid);
+  }
+
   async function startScan() {
     const attempt = ++scanAttemptRef.current;
+    handoffCurrentSession();
     // 继续扫描/重开前先断开上一批的 SSE：旧批次在后台跑完时不能再把界面从新批次切走。
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
@@ -710,6 +727,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
         cardVersion: version, dpi, paperSize };
       sessionIdRef.current = data.sessionId;
       setSessionId(data.sessionId);
+      onScanSessionStartedRef.current?.(data.sessionId);
       setSessionLegacyIdentity(identityMode === "legacy");
       setLegacyIdentity(false);
       listenProgress(data.sessionId);
@@ -735,14 +753,13 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
     const sid = sessionIdRef.current;
     if (sid) {
       void authFetch(`/api/scanner/scan/${sid}/cancel`, { method: "POST" }).catch(() => undefined);
+      handoffCurrentSession();
     }
   }
 
   /** 把当前会话交给后处理页：继续扫描/开始新扫描离开面板后，部分中断的批次仍能回去处理。 */
   function archiveCurrentBatch() {
-    const sid = sessionIdRef.current;
-    const pageCount = pagesRef.current.length;
-    if (sid && pageCount > 0) onBatchArchived?.(sid, pageCount);
+    handoffCurrentSession();
   }
 
   /** 同一答题卡继续扫下一批：保留上一批结果，新批次完成后在「扫描后处理」里一起保存。 */

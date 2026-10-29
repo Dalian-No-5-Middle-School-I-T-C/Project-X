@@ -18,7 +18,7 @@ import { PostprocessResultsView } from "./scanner-postprocess/PostprocessResults
 import { PostprocessCorrectionView } from "./scanner-postprocess/PostprocessCorrectionView";
 import { PostprocessQueueView, type ScanMeta } from "./scanner-postprocess/PostprocessQueueView";
 import { getScannerMode, isRemoteServerConfigured } from "../lib/scannerMode";
-import { readPostprocessView, writePostprocessView } from "../lib/postprocessResume";
+import { clearPostprocessView, readPostprocessView, writePostprocessView } from "../lib/postprocessResume";
 
 type View = "results" | "correction" | "queue";
 
@@ -347,7 +347,11 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           ]}
         />
         {onContinueScan && (
-          <Button variant="primary" size="sm" icon={<Play size={15} />} onClick={onContinueScan}>
+          <Button variant="primary" size="sm" icon={<Play size={15} />} onClick={() => {
+            // 主动去扫下一批不是闪退。留下的停留位置会在新批次完成后被当成恢复入口，跳回旧卷。
+            clearPostprocessView(cardId, userId);
+            onContinueScan?.();
+          }}>
             继续扫描
           </Button>
         )}

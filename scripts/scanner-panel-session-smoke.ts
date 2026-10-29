@@ -53,6 +53,8 @@ const cancelRequests: string[] = [];
 let holdNextCard = false;
 let releaseHeldCard: (() => void) | null = null;
 const archivedBatches: string[] = [];
+const startedSessions: string[] = [];
+const abandonedSessions: string[] = [];
 const summaryRequests: string[] = [];
 const retryRequests: unknown[] = [];
 const correctionSaves: Array<{ pages: unknown[] }> = [];
@@ -135,7 +137,10 @@ function hasAction(label: string) {
 let panelMounted = true;
 try {
   await act(async () => { root.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id,
-    onBatchArchived: (sid: string, pageCount: number) => { archivedBatches.push(`${sid}/${pageCount}`); } }))); });
+    onBatchArchived: (sid: string, pageCount: number) => { archivedBatches.push(`${sid}/${pageCount}`); },
+    onScanSessionStarted: (sid: string) => { startedSessions.push(sid); },
+    onScanSessionAbandoned: (sid: string) => { abandonedSessions.push(sid); },
+  }))); });
   await settle();
   const checkbox = document.querySelector<HTMLButtonElement>('[role="checkbox"]');
   assert(checkbox, "Actual legacy-mode control is mounted");
@@ -148,6 +153,7 @@ try {
   assert.equal(scans.length, 0, "Cancelling during version loading prevents a late scan from starting");
   await click("开始扫描"); await settle();
   assert.equal(scans[0].identityMode, "legacy");
+  assert.deepEqual(startedSessions, ["scan-1"], "会话一创建就上报，不等扫描结束或卸载");
   assert.equal(streams.length, 1);
   // This handler was installed by the scan-start render, before the legacy
   // session state was committed. It must still upload with the session snapshot.

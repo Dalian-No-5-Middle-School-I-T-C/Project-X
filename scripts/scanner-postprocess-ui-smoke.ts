@@ -836,6 +836,31 @@ try {
   await clickNode(scoreCell());await settle();
   assert.equal(scoreCell()!.getAttribute("aria-pressed"), pressedBefore, "再点一次回到原状态");
 
+  const { writePostprocessView, readPostprocessView } = await import("../src/apps/answer-card/client/lib/postprocessResume");
+  hideCard = false;
+  writePostprocessView(card.id, { view: "queue", sessionId: "scan-1", groupId: "0" }, 7);
+  const continueHost = document.createElement("div");
+  document.body.appendChild(continueHost);
+  const continueRoot = createRoot(continueHost);
+  let continued = false;
+  await act(async () => {
+    continueRoot.render(createElement(TooltipProvider, null, createElement(ScannerPostprocessPage, {
+      cardId: card.id, cardTitle: card.title, userId: 7,
+      sessions: [{ sessionId: "scan-1", pageCount: 1 }],
+      onBack: () => {},
+      onContinueScan: () => { continued = true; },
+    })));
+  });
+  await settle();
+  assert.equal(readPostprocessView(card.id, 7)?.groupId, "0", "挂载后仍保留继续扫描前写入的停留位置");
+  const continueButton = [...continueHost.querySelectorAll("button")].find(el => el.textContent?.includes("继续扫描"));
+  assert.ok(continueButton, "后处理页提供继续扫描");
+  await act(async () => { continueButton!.click(); });
+  await settle();
+  assert.equal(continued, true, "继续扫描回调仍然发出");
+  assert.equal(readPostprocessView(card.id, 7), null, "继续扫描清掉停留位置，新批次完成时不再跳回旧卷");
+  await act(async () => { continueRoot.unmount(); });
+
   console.log("PASS scanner-postprocess-ui-smoke");
 } catch (error) {
   failure = error;

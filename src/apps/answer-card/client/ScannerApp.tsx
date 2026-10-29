@@ -47,6 +47,8 @@ function ScannerAppInner() {
   }, [selectedCardId, user?.id]);
   /** 后处理页点「继续扫描」→ 回到工作台并自动开下一批；工作台消费后清掉，避免再次进入重复开扫。 */
   const [pendingContinueScan, setPendingContinueScan] = useState(false);
+  /** 扫描会话已创建、结果页还没接管。崩溃重载要靠活动卡标记找回这一批，不能只等完成或卸载。 */
+  const [liveScanSessionId, setLiveScanSessionId] = useState<string | null>(null);
   // 安全 R35：离线用缓存卡进入时的工作台提示（版本 + 缓存时间），空串表示版本与服务器一致
   const [cardVersionNote, setCardVersionNote] = useState<string>("");
   // v2.1.0: 皮肤 = 风格维度（与明暗正交），同步策略与 web 端 App 保持一致。
@@ -135,9 +137,10 @@ function ScannerAppInner() {
     writePostprocessSessions(targetCardId, postSessions, user.id);
     // 只有在后处理页才记「活动卡」；老师主动回到工作台后崩溃，重载应回工作台，
     // 而不是被一个仅因存在历史会话就写回的标记拉回后处理。
-    if (selectedCardId && page === "postprocess" && postSessions.length) writeActivePostprocess(selectedCardId, selectedCardTitle, user.id);
+    const liveScan = liveScanSessionId !== null && postSessions.some((item) => item.sessionId === liveScanSessionId);
+    if (selectedCardId && postSessions.length && (page === "postprocess" || liveScan)) writeActivePostprocess(selectedCardId, selectedCardTitle, user.id);
     else clearActivePostprocess(user.id);
-  }, [selectedCardId, selectedCardTitle, postSessions, page, user?.id]);
+  }, [selectedCardId, selectedCardTitle, postSessions, page, user?.id, liveScanSessionId]);
 
   // 登出/会话过期时清掉工作台选择，避免下一个登录账号继承上一人的扫描会话。
   useEffect(() => {
@@ -182,6 +185,8 @@ function ScannerAppInner() {
         userId={user?.id ?? null}
         onBack={() => { clearActivePostprocess(user?.id); clearPostprocessView(selectedCardId, user?.id); setPage("workspace"); }}
         onContinueScan={() => {
+          clearPostprocessView(selectedCardId, user?.id);
+          setLiveScanSessionId(null);
           setPendingContinueScan(true);
           setPage("workspace");
         }}
@@ -205,10 +210,19 @@ function ScannerAppInner() {
         }}
         autoStartScan={pendingContinueScan}
         onAutoStartConsumed={() => setPendingContinueScan(false)}
+        onScanSessionStarted={(sid) => {
+          setLiveScanSessionId(sid);
+          setPostSessions(prev => prev.some(p => p.sessionId === sid) ? prev : [...prev, { sessionId: sid, pageCount: 0 }]);
+        }}
+        onScanSessionAbandoned={(sid) => {
+          setLiveScanSessionId(prev => prev === sid ? null : prev);
+          setPostSessions(prev => prev.filter(p => p.sessionId !== sid));
+        }}
         onBatchArchived={(sid, pageCount) => {
           setPostSessions(prev => [...prev.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }]);
         }}
         onScansComplete={(sid, pageCount) => {
+          setLiveScanSessionId(null);
           setPostSessions(prev => [...prev.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }]);
           setPage("postprocess");
         }}
