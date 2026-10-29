@@ -352,6 +352,7 @@ async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
   }
 
   if (!(await hasZipMagic(zipPath))) {
+    await rm(zipPath, { force: true }).catch(() => undefined);
     res.status(400).json({ message: "上传的文件不是有效的 ZIP 格式（缺少 PK 文件头）" });
     return;
   }
@@ -693,6 +694,7 @@ async function backupMariadb(res: Response): Promise<void> {
  */
 async function restoreMariadb(req: Request, res: Response, zipPath: string): Promise<void> {
   if (!(await hasZipMagic(zipPath))) {
+    await rm(zipPath, { force: true }).catch(() => undefined);
     res.status(400).json({ message: "不是有效的 ZIP 格式" });
     return;
   }

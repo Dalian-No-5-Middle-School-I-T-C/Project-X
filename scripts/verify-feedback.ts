@@ -1341,6 +1341,23 @@ async function main(): Promise<void> {
     }
   }
 
+  // 魔数校验失败时，上传阶段落盘的 ZIP 不能因为已经交接给路由就留在临时目录。
+  section("6.3.1 非 ZIP 恢复上传清理");
+  {
+    const beforeUploads = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("projectx-restore-upload-")));
+    const badZip = await fetch(`${new URL(base).origin}/api/db/restore`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}`, "Content-Type": "application/zip" },
+      body: Buffer.from("not a zip"),
+    });
+    ok(badZip.status === 400, "非 ZIP 的恢复上传返回 400");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const leftover = readdirSync(tmpdir()).filter((name) =>
+      name.startsWith("projectx-restore-upload-") && !beforeUploads.has(name)
+    );
+    ok(leftover.length === 0, "魔数校验失败不残留上传 ZIP");
+  }
+
   // 恢复会换掉整个 data 树（备份不含 _tmp）：重置后下一次附件上传必须重建 _tmp。
   section("6.4 恢复后重建附件临时目录");
   {
