@@ -209,7 +209,7 @@ async function main(): Promise<void> {
     // v54 原卷/答案：exams.show_original_paper 列 + 考试级答案表的复合主键与 UPSERT
     assert.ok(await db.get("SHOW COLUMNS FROM exams LIKE 'show_original_paper'"),
       "exams.show_original_paper 必须存在");
-    // v66 答案展示模式：默认必须是 text，否则老库升级后学生答案会凭空从文字变成一堆文件
+    // v68 答案展示模式：默认必须是 text，否则老库升级后学生答案会凭空从文字变成一堆文件
     const akModeColumn = await db.get<{ column_name: string; column_default: string | null }>(
       "SELECT COLUMN_NAME AS column_name, COLUMN_DEFAULT AS column_default FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'exams' AND COLUMN_NAME = 'answer_key_mode'",
     );

@@ -764,10 +764,10 @@ Project-X/
 | `GET` | `/api/analysis/exams/:id/score-table` | 成绩表格数据（年排/班排/名次变化/偏差值/Z值/百分位） |
 | `GET` | `/api/analysis/exams/:id/previous` | 上次同科考试对比（均分/及格率变化） |
 | `GET` | `/api/scores/me/semester-comparison` | 学生本学期 vs 上学期成绩对比 |
-| `GET` | `/api/scores/me/exams/:examId/paper` | 学生「原卷与答案解析」：返回 `answerKeyMode`（`text` / `file`）、`showOriginalPaper`、`pages[]`（原卷页 + 该页逐题文字）、`answers[]`、`answerFiles[]`（每项带 `fileUrl`）、`answerBlocks[]`。**闸门在后端**：未公布 / 未开放原卷且非直发模式 → 404；`text` 模式不下发 `answerFiles`，`file` 模式不下发任何逐题文字，客户端只按 `answerKeyMode` 排版 |  ← v2.7.1 + v66 |
+| `GET` | `/api/scores/me/exams/:examId/paper` | 学生「原卷与答案解析」：返回 `answerKeyMode`（`text` / `file`）、`showOriginalPaper`、`pages[]`（原卷页 + 该页逐题文字）、`answers[]`、`answerFiles[]`（每项带 `fileUrl`）、`answerBlocks[]`。**闸门在后端**：未公布 / 未开放原卷且非直发模式 → 404；`text` 模式不下发 `answerFiles`，`file` 模式不下发任何逐题文字，客户端只按 `answerKeyMode` 排版 |  ← v2.7.1 + v68 |
 | `GET` | `/api/scores/me/exams/:examId/paper/pages/:pageIndex/image` | 某张原卷页原图（仅 `show_original_paper=1` 时可取，否则 404） |  ← v54 |
-| `GET` | `/api/scores/me/exams/:examId/paper/answer-file/:pageIndex` | 教师上传的答案原文件本体（图片 / PDF / DOCX），文件名取库中登记值、`Content-Disposition` 对 DOCX 用 `attachment`；仅 `answer_key_mode='file'` 时开放。R30 媒体白名单已收录该路径 |  ← v66 |
-| `PATCH` | `/api/exams/:examId` | 新增可改列 `answerKeyMode`（`text` / `file`，其余值 400）。切换模式**不动任何数据**：`exam_answer_keys`（文字）与 `exam_answer_key_pages`（原文件）都原样保留，随时可切回 |  ← v66 |
+| `GET` | `/api/scores/me/exams/:examId/paper/answer-file/:pageIndex` | 教师上传的答案原文件本体（图片 / PDF / DOCX），文件名取库中登记值、`Content-Disposition` 对 DOCX 用 `attachment`；仅 `answer_key_mode='file'` 时开放。R30 媒体白名单已收录该路径 |  ← v68 |
+| `PATCH` | `/api/exams/:examId` | 新增可改列 `answerKeyMode`（`text` / `file`，其余值 400）。切换模式**不动任何数据**：`exam_answer_keys`（文字）与 `exam_answer_key_pages`（原文件）都原样保留，随时可切回 |  ← v68 |
 | `GET/PUT/DELETE` | `/api/export/templates/:slot` | 导出模板 CRUD |
 | `POST` | `/api/export/exams/:id/scores` | 按列配置导出 Excel |
 | `GET` | `/api/export/columns` | 导出列元数据 |

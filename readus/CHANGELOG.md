@@ -10,7 +10,7 @@
 - **新接口**：`GET /api/scores/me/exams/:examId/paper/answer-file/:pageIndex` —— 文件名一律取库中登记值（不接受请求里的名字），`Cache-Control: private, max-age=300`，DOCX 带 `Content-Disposition: attachment`；路径已加入 R30 媒体白名单（`mediaAllowlist.ts`），否则会绕过鉴权中间件或被日志脱敏误伤。
 - **教师端**：`ExamAnswerKeyPanel` 增加「答案展示方式」分段控件（即时 `PATCH`，失败回滚显示），直发模式下上传改带 `?ocr=0` 不再白跑识别、隐藏「重新识别」、未上传任何文件时给红字提醒；考试管理页对直发考试加「答案直发」标记（卡片与表格两种视图）。
 - **学生网页端**：`StudentExamPaper` 按模式渲染——图片内联，PDF / DOCX 给「打开 / 下载」两个动作（下载带 `download` 属性保留原文件名）；`text` 模式视图保持原样。合入 main 的「原卷旋转查看」后，右上角旋转同时作用于原卷页、**直发答案图片**与作答图块（扫描件歪放的可能性和原卷一样，不该只对原卷生效）。
-- **验证**：`npm run verify:exam-paper` **104 项全绿**（本次新增一组 v66 断言：两种模式各自的下发内容、闸门组合、越界/未登记页码、DOCX 附件头、未公布 404、双闸关闭时入口标记归 0）；`tsc --noEmit` 与 `vite build --mode web` 通过；`npm run verify:mariadb` 在本机一次性空实例（MariaDB 12.3.2 @13306）跑通 v66 升级路径与入口 SQL 两种模式的 `paper_visible`（18 节全 PASS）。界面用 `scripts/answer-key-mode-ui-server.ts` 起真实 HTTP + 真实字节（jpg / pdf / docx）服务，在浏览器里过了教师面板三态与学生端三态。
+- **验证**：号位改为 v68 后，`npm run verify:exam-paper` **110 项全绿 / 0 失败**（含「v66 已记成 feedback-reports 时仍由 v68 补列」，以及两种模式各自的下发内容、闸门组合、越界/未登记页码、DOCX 附件头、未公布 404、双闸关闭时入口标记归 0）；`npm run typecheck` 通过。更早在号位仍为 v66 时为 104 项，并在一次性空实例（MariaDB 12.3.2 @13306）跑通过升级路径；改到 v68 之后没有重跑 `verify:mariadb`。界面用 `scripts/answer-key-mode-ui-server.ts` 起真实 HTTP + 真实字节（jpg / pdf / docx）服务，在浏览器里过了教师面板三态与学生端三态。
 - **升级说明**：无新增环境变量、无新增配置项，列由两种方言的建表与 v68 迁移自动到位。**上线次序**：先发小程序新版本，再对具体考试打开直发——旧版本小程序不认识 `file`，会把直发考试显示成「老师尚未录入逐题答案」（详见 [原卷与逐题答案-使用说明](./原卷与逐题答案-使用说明.md) 第 4 节）。
 - **已知限制**：小程序真机未验（`wx.openDocument` 对 PDF / DOCX 的实际表现、转存菜单）；tesseract.js 端到端识别仍未跑。
 
