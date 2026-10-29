@@ -192,7 +192,9 @@ async function admissionUsage(feedbackRoot: string, tmpDir: string): Promise<num
 let reservedBytes = 0;
 let quotaQueue: Promise<void> = Promise.resolve();
 let reservationSeq = 0;
-const activeReservations = new Set<number>();
+type ReservationLedgerEntry = { held: number; target: number; released: boolean };
+const reservationLedger = new Map<number, ReservationLedgerEntry>();
+const waitingReservations = new Set<number>();
 const USAGE_CACHE_TTL_MS = 15_000;
 const usageCache = new Map<string, { bytes: number; at: number }>();
 
@@ -220,35 +222,48 @@ function makeReservation(
   let released = false;
   const id = ++reservationSeq;
   // 从创建时就算排队：即使还没写入第一个字节，更早的请求也保有优先权。
-  activeReservations.add(id);
+  const ledger = { held: initialBytes, target: initialBytes, released: false };
+  reservationLedger.set(id, ledger);
   const ensure = async (target: number, attempt: number): Promise<boolean> => {
     const run = quotaQueue.then(async (): Promise<boolean | "yield" | "persist"> => {
       if (released) return false;
-      if (held >= target) return true;
-      if (held >= limitBytes) return false;
+      ledger.target = Math.max(ledger.target, target);
+      if (held >= target) { waitingReservations.delete(id); return true; }
+      if (held >= limitBytes) { waitingReservations.delete(id); return false; }
       const used = await cachedAdmissionUsage(feedbackRoot, tmpDir);
       if (released) return false;
-      if (held >= target) return true; // 并发文件已经把这个目标补上了
+      if (held >= target) { waitingReservations.delete(id); return true; } // 并发文件已经把这个目标补上了
       const minimum = target - held;
       const available = MAX_FEEDBACK_STORAGE_BYTES - used - reservedBytes;
-      if (available < minimum) {
-        // 先到先得：后到者看到更早的排队请求时只等短时间就放弃，把已占字节让给
-        // 最早请求；最早请求等得更久，避免后到者靠更长的重试反超。
-        const hasEarlier = [...activeReservations].some((other) => other < id);
-        return hasEarlier ? "yield" : "persist";
+      // 先到先得：为更早请求尚未满足的目标预留容量，且更早请求正在等待时后到者不再增长。
+      const earlier = [...reservationLedger.entries()].filter(([otherId, entry]) => otherId < id && !entry.released);
+      const earlierWaiting = earlier.some(([otherId]) => waitingReservations.has(otherId));
+      const earlierNeed = earlier.reduce((sum, [, entry]) => sum + Math.max(0, entry.target - entry.held), 0);
+      const availableForMe = available - earlierNeed;
+      if (available < minimum || earlierWaiting || availableForMe < minimum) {
+        waitingReservations.add(id);
+        return earlier.length > 0 ? "yield" : "persist";
       }
       const desired = Math.max(minimum, chunkedReservationStep());
-      const delta = Math.min(desired, available, limitBytes - held);
-      if (delta <= 0) return false;
+      const delta = Math.min(desired, availableForMe, limitBytes - held);
+      if (delta <= 0) {
+        waitingReservations.add(id);
+        return earlier.length > 0 ? "yield" : "persist";
+      }
       reservedBytes += delta;
       held += delta;
+      ledger.held = held;
+      if (held >= target) waitingReservations.delete(id);
       return true;
     });
     quotaQueue = run.then(() => undefined, () => undefined);
     const result = await run;
     if (result === "yield" || result === "persist") {
       const maxAttempts = result === "persist" ? 40 : 20;
-      if (attempt >= maxAttempts) throw new FeedbackStorageQuotaError();
+      if (attempt >= maxAttempts) {
+        waitingReservations.delete(id);
+        throw new FeedbackStorageQuotaError();
+      }
       await new Promise((resolve) => setTimeout(resolve, 50));
       return ensure(target, attempt + 1);
     }
@@ -259,12 +274,15 @@ function makeReservation(
     get limit() { return limitBytes; },
     ensureBytes(totalBytes: number): Promise<boolean> {
       const target = Math.max(0, Math.floor(totalBytes));
+      ledger.target = Math.max(ledger.target, target);
       return ensure(target, 0);
     },
     release() {
       if (released) return;
       released = true;
-      activeReservations.delete(id);
+      ledger.released = true;
+      reservationLedger.delete(id);
+      waitingReservations.delete(id);
       reservedBytes = Math.max(0, reservedBytes - held);
       held = 0;
     },

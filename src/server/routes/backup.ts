@@ -9,7 +9,7 @@ import crypto from "node:crypto";
 
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { extractZipFileWithinBudget, RestoreZipError } from "../services/restoreZip";
-import { MAX_RESTORE_ZIP_TOTAL_BYTES } from "../../shared/restoreZipLimits";
+import { MAX_RESTORE_ZIP_ENTRIES, MAX_RESTORE_ZIP_TOTAL_BYTES } from "../../shared/restoreZipLimits";
 import { activeFeedbackTempFiles, beginFeedbackMaintenance, invalidateFeedbackStorageUsage, withFeedbackMutationLock } from "../lib/feedbackStorage";
 // 备份要在数据库快照前收敛 `feedback/_trash`，与反馈删除共用同一份核对逻辑。
 import { reconcileFeedbackTrashLocked, resetFeedbackRuntimeStateAfterRestore } from "./feedback";
@@ -280,6 +280,7 @@ router.get("/backup", async (_req: Request, res: Response) => {
 
     // 4. 写入 metadata
     await writeFile(path.join(tmpDir, "metadata.json"), JSON.stringify(metadata, null, 2));
+    await assertBackupEntryBudget(dataBakDir);
 
     // 5. 创建 ZIP（archiver v8 ESM: new ZipArchive）
     const archive = new ZipArchive({ zlib: { level: 6 } });
@@ -663,6 +664,7 @@ async function backupMariadb(res: Response): Promise<void> {
       ]
     };
     await writeFile(path.join(tmpDir, "metadata.json"), JSON.stringify(metadata, null, 2));
+    await assertBackupEntryBudget(dataBakDir);
 
     // 创建 ZIP 响应
     res.setHeader("Content-Type", "application/zip");
@@ -806,6 +808,30 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
     await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     // 交出请求后 ZIP 由恢复任务负责删除：客户端中途断开不会提前把文件删掉。
     await rm(zipPath, { force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * 备份条目预算前置校验：导出成功但恢复时被条目数拒绝的 ZIP 没有意义。
+ * 非反馈文件（原卷 / 答案页）没有独立的数量配额，只能在导出前按实际条目数兜底。
+ */
+async function countFilesInDir(dir: string): Promise<number> {
+  let total = 0;
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) total += await countFilesInDir(full);
+    else if (entry.isFile()) total += 1;
+  }
+  return total;
+}
+
+async function assertBackupEntryBudget(dataBakDir: string): Promise<void> {
+  const dataFiles = existsSync(dataBakDir) ? await countFilesInDir(dataBakDir) : 0;
+  const total = dataFiles + 8; // metadata / 数据库文件 / data 根目录标记
+  if (total > MAX_RESTORE_ZIP_ENTRIES) {
+    throw new Error(
+      `备份将包含 ${total} 个条目，超过恢复预算 ${MAX_RESTORE_ZIP_ENTRIES} 个；请先清理原卷、答案页或反馈附件后再导出`
+    );
   }
 }
 

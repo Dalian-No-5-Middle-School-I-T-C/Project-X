@@ -16,6 +16,13 @@ export const MAX_FEEDBACK_STORAGE_MIB = 102400;
  */
 export const DEFAULT_FEEDBACK_ATTACHMENT_FILES = 8000;
 export const MAX_FEEDBACK_ATTACHMENT_FILES = 12000;
+/** 备份中数据库、原卷、答案页等非反馈条目预留：反馈附件不能把恢复条目预算吃干。 */
+export const FEEDBACK_BACKUP_ENTRY_RESERVE = 4000;
+
+/** 反馈附件实际上限 = min(配置上限, 恢复条目预算 - 非反馈预留)，避免导出的备份超出解压预算。 */
+export function boundFeedbackAttachmentFiles(configuredFiles: number, restoreEntryLimit: number): number {
+  return Math.max(0, Math.min(configuredFiles, restoreEntryLimit - FEEDBACK_BACKUP_ENTRY_RESERVE));
+}
 
 export function resolveFeedbackAttachmentFileLimit(
   env: Record<string, string | undefined> = {}

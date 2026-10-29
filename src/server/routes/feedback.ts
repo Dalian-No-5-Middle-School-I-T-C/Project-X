@@ -44,7 +44,9 @@ import {
   MAX_FEEDBACK_ATTACHMENTS,
   MAX_FEEDBACK_ATTACHMENT_BYTES,
   MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES,
+  boundFeedbackAttachmentFiles,
 } from "../../shared/feedbackLimits";
+import { MAX_RESTORE_ZIP_ENTRIES } from "../../shared/restoreZipLimits";
 
 const router = Router();
 router.use(authMiddleware);
@@ -589,8 +591,8 @@ class FeedbackMaintenanceError extends Error {
 class FeedbackAttachmentCountError extends Error {
   readonly code = "FEEDBACK_ATTACHMENT_COUNT_EXCEEDED";
 
-  constructor() {
-    super(`反馈附件总数已达上限（${MAX_FEEDBACK_ATTACHMENT_FILES} 个），请先删除不再需要的反馈后再上传`);
+  constructor(limit: number) {
+    super(`反馈附件总数已达上限（${limit} 个），请先删除不再需要的反馈后再上传`);
     this.name = "FeedbackAttachmentCountError";
   }
 }
@@ -956,11 +958,12 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
           if (files.length > 0) {
             // 与备份恢复的条目预算对齐：只卡字节配额时，大量空文件/极小文件仍会让
             // 合法备份的 ZIP 条目数超过解压预算。上传与删除共用变更锁，计数与入库之间不会被插队。
+            const fileLimit = boundFeedbackAttachmentFiles(MAX_FEEDBACK_ATTACHMENT_FILES, MAX_RESTORE_ZIP_ENTRIES);
             const countRow = await getMysqlDb().get<{ n: number | string }>(
               "SELECT COUNT(*) AS n FROM feedback_attachments"
             );
-            if (Number(countRow?.n ?? 0) + files.length > MAX_FEEDBACK_ATTACHMENT_FILES) {
-              throw new FeedbackAttachmentCountError();
+            if (Number(countRow?.n ?? 0) + files.length > fileLimit) {
+              throw new FeedbackAttachmentCountError(fileLimit);
             }
           }
           const stored: Array<{ filename: string; storedPath: string; mime: string | null; sizeBytes: number }> = [];

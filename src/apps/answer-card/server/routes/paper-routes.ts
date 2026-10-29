@@ -3,7 +3,7 @@ import multer from "multer";
 import path from "node:path";
 import { existsSync, unlinkSync } from "node:fs";
 import { ensurePaperDir, paperDir, paperTmpDir, safeId } from "../storage";
-import { withAnswerCardDataMutationLock } from "../../../../server/lib/answerCardDataLock";
+import { holdAnswerCardDataMutationLock, withAnswerCardDataMutationLock } from "../../../../server/lib/answerCardDataLock";
 import {
   validatePaperFile,
   storePaperPageFile,
@@ -164,6 +164,7 @@ export function paperRoutes(): Router {
   // 安全 R14：任何失败路径（校验、转换、入库、请求中断）都不留无人引用的文件。
   router.post(
     "/api/cards/:cardId/paper",
+    holdAnswerCardDataMutationLock,
     requestUploadBudget({ maxTotalBytes: MAX_PAPER_REQUEST_BYTES, label: "原卷上传" }),
     (req: Request, res: Response, next) => {
       paperUpload.array("files", MAX_PAPER_FILES_PER_REQUEST)(req, res, (err) => {

@@ -15,7 +15,7 @@ import path from "node:path";
 import { existsSync, unlinkSync } from "node:fs";
 import type { Request, Response } from "express";
 import { getMysqlDb, buildUpsertSQL } from "../../../../server/db/mysql";
-import { withAnswerCardDataMutationLock } from "../../../../server/lib/answerCardDataLock";
+import { withAnswerCardDataMutationLock, holdAnswerCardDataMutationLock } from "../../../../server/lib/answerCardDataLock";
 import {
   ANSWER_KEY_EXTENSIONS,
   answerKeyBaseName,
@@ -241,7 +241,7 @@ export function examAnswerKeyRoutes(): Router {
 
   // POST /api/exams/:examId/answer-key/pages — 上传「本次正确答案」并可顺带 OCR
   // ?ocr=0 只入库不识别；识别结果作为草稿返回，不落库（教师确认后 PUT 保存）
-  router.post("/api/exams/:examId/answer-key/pages", requireExamAccess, (req, res, next) => {
+  router.post("/api/exams/:examId/answer-key/pages", requireExamAccess, holdAnswerCardDataMutationLock, (req, res, next) => {
     answerKeyUpload.array("files", MAX_ANSWER_KEY_PAGES)(req, res, (err) => {
       if (err) {
         // 安全（R14）：数量/体积越界时 multer 直接报错，已落盘的兄弟文件不会经过

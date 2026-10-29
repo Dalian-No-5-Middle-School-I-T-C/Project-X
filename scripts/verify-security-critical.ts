@@ -909,6 +909,7 @@ async function main(): Promise<void> {
       "解压预算与最坏展开比进入启动摘要");
     const {
       DEFAULT_FEEDBACK_ATTACHMENT_FILES, MAX_FEEDBACK_ATTACHMENT_FILES, resolveFeedbackAttachmentFileLimit,
+      boundFeedbackAttachmentFiles, FEEDBACK_BACKUP_ENTRY_RESERVE,
     } = await import("../src/shared/feedbackLimits");
     check(DEFAULT_FEEDBACK_ATTACHMENT_FILES === 8000 && MAX_FEEDBACK_ATTACHMENT_FILES === 12000
       && resolveFeedbackAttachmentFileLimit({}).files === 8000
@@ -916,6 +917,11 @@ async function main(): Promise<void> {
       && resolveFeedbackAttachmentFileLimit({ PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES: "0" }).files === 8000
       && resolveFeedbackAttachmentFileLimit({ PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES: "999999" }).files === 12000,
       "附件总数上限三档：默认 8000、可收紧、非法值回落、超天花板夹紧（保证备份条目不超出恢复预算）");
+    check(FEEDBACK_BACKUP_ENTRY_RESERVE === 4000
+      && boundFeedbackAttachmentFiles(8000, MAX_RESTORE_ZIP_ENTRIES) === 8000
+      && boundFeedbackAttachmentFiles(12000, 10000) === 6000
+      && boundFeedbackAttachmentFiles(12000, 3000) === 0,
+      "反馈附件上限同时受恢复条目预算约束：恢复条目调低时附件上限同步收紧");
     const {
       classifyEntryName, resolveEntryDest, checkEntryBudget, worstCaseEntryBytes,
       extractZipWithinBudget, extractZipFileWithinBudget, RestoreZipError
