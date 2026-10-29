@@ -3,6 +3,7 @@ import multer from "multer";
 import path from "node:path";
 import { existsSync, unlinkSync } from "node:fs";
 import { ensurePaperDir, paperDir, paperTmpDir, safeId } from "../storage";
+import { withAnswerCardDataMutationLock } from "../../../../server/lib/answerCardDataLock";
 import {
   validatePaperFile,
   storePaperPageFile,
@@ -422,30 +423,32 @@ export function paperRoutes(): Router {
   // DELETE /api/cards/:cardId/paper — 删除原卷（全部页）
   router.delete("/api/cards/:cardId/paper", async (req: Request, res: Response) => {
     try {
-      const cardId = String(req.params.cardId);
-      const dir = paperDir(cardId);
+      await withAnswerCardDataMutationLock(async () => {
+        const cardId = String(req.params.cardId);
+        const dir = paperDir(cardId);
 
-      // 删除 papers/<cardId> 目录下所有 original* 文件（含多页 original-N.*）
-      let entries: string[] = [];
-      try { entries = await readdir(dir); } catch {}
-      for (const e of entries) {
-        if (/^original(-\d+)?\.(jpg|jpeg|png|bmp|tiff|webp|pdf|docx)$/i.test(e)) {
-          try { unlinkSync(path.join(dir, e)); } catch {}
+        // 删除 papers/<cardId> 目录下所有 original* 文件（含多页 original-N.*）
+        let entries: string[] = [];
+        try { entries = await readdir(dir); } catch {}
+        for (const e of entries) {
+          if (/^original(-\d+)?\.(jpg|jpeg|png|bmp|tiff|webp|pdf|docx)$/i.test(e)) {
+            try { unlinkSync(path.join(dir, e)); } catch {}
+          }
         }
-      }
 
-      // 更新数据库标记
-      const db = getMysqlDb();
-      await db.run("DELETE FROM original_paper_pages WHERE card_id = ?", cardId);
-      await db.run(
-        "UPDATE answer_cards SET has_original_paper = 0, original_paper_filename = NULL, original_paper_path = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        cardId
-      );
-      // 安全（PR #312 评审 A2）：整卡删除此前**不作废**用量缓存——删掉的几十 MiB 原卷在 60 秒内
-      // 仍然算在总量里，管理员「删了腾地方」立刻再上传会被 413 拒绝。删除量无从增量推算，走重测。
-      invalidatePaperUsageCache();
+        // 更新数据库标记
+        const db = getMysqlDb();
+        await db.run("DELETE FROM original_paper_pages WHERE card_id = ?", cardId);
+        await db.run(
+          "UPDATE answer_cards SET has_original_paper = 0, original_paper_filename = NULL, original_paper_path = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          cardId
+        );
+        // 安全（PR #312 评审 A2）：整卡删除此前**不作废**用量缓存——删掉的几十 MiB 原卷在 60 秒内
+        // 仍然算在总量里，管理员「删了腾地方」立刻再上传会被 413 拒绝。删除量无从增量推算，走重测。
+        invalidatePaperUsageCache();
 
-      res.json({ success: true });
+        res.json({ success: true });
+      });
     } catch (err: any) {
       console.error("[paper] delete failed:", err);
       res.status(500).json({ error: err.message || "删除失败" });
@@ -455,31 +458,33 @@ export function paperRoutes(): Router {
   // DELETE /api/cards/:cardId/paper/page/:pageIndex — 删除单页
   router.delete("/api/cards/:cardId/paper/page/:pageIndex", async (req: Request, res: Response) => {
     try {
-      const cardId = String(req.params.cardId);
-      const pageIndex = Number(req.params.pageIndex);
-      const dir = paperDir(cardId);
-      const db = getMysqlDb();
-      const row = await db.get(
-        "SELECT filename FROM original_paper_pages WHERE card_id = ? AND page_index = ?",
-        cardId, pageIndex
-      ) as { filename: string } | undefined;
-      if (row) {
-        const baseName = pageIndex === 1 ? "original" : `original-${pageIndex}`;
-        for (const ext of [".docx", ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"]) {
-          const fp = path.join(dir, `${baseName}${ext}`);
-          if (existsSync(fp)) { try { unlinkSync(fp); } catch {} }
+      await withAnswerCardDataMutationLock(async () => {
+        const cardId = String(req.params.cardId);
+        const pageIndex = Number(req.params.pageIndex);
+        const dir = paperDir(cardId);
+        const db = getMysqlDb();
+        const row = await db.get(
+          "SELECT filename FROM original_paper_pages WHERE card_id = ? AND page_index = ?",
+          cardId, pageIndex
+        ) as { filename: string } | undefined;
+        if (row) {
+          const baseName = pageIndex === 1 ? "original" : `original-${pageIndex}`;
+          for (const ext of [".docx", ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"]) {
+            const fp = path.join(dir, `${baseName}${ext}`);
+            if (existsSync(fp)) { try { unlinkSync(fp); } catch {} }
+          }
+          await db.run("DELETE FROM original_paper_pages WHERE card_id = ? AND page_index = ?", cardId, pageIndex);
         }
-        await db.run("DELETE FROM original_paper_pages WHERE card_id = ? AND page_index = ?", cardId, pageIndex);
-      }
-      const remaining = await db.get("SELECT COUNT(*) AS c FROM original_paper_pages WHERE card_id = ?", cardId) as { c: number };
-      if (remaining.c === 0) {
-        await db.run(
-          "UPDATE answer_cards SET has_original_paper = 0, original_paper_filename = NULL, original_paper_path = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-          cardId
-        );
-      }
-      invalidatePaperUsageCache(); // 删除改变了磁盘占用：让下一次配额判定重新实测（安全 R10）
-      res.json({ success: true });
+        const remaining = await db.get("SELECT COUNT(*) AS c FROM original_paper_pages WHERE card_id = ?", cardId) as { c: number };
+        if (remaining.c === 0) {
+          await db.run(
+            "UPDATE answer_cards SET has_original_paper = 0, original_paper_filename = NULL, original_paper_path = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            cardId
+          );
+        }
+        invalidatePaperUsageCache(); // 删除改变了磁盘占用：让下一次配额判定重新实测（安全 R10）
+        res.json({ success: true });
+      });
     } catch (err: any) {
       console.error("[paper] delete page failed:", err);
       res.status(500).json({ error: err.message || "删除失败" });

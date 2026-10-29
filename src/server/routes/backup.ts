@@ -2,7 +2,7 @@ import { Router } from "express";
 import type { Request, RequestHandler, Response } from "express";
 import { ZipArchive } from "archiver";
 import { createReadStream, createWriteStream, existsSync, rmSync } from "node:fs";
-import { mkdir, open, readdir, copyFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, copyFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
@@ -80,7 +80,7 @@ const receiveRestoreZip: RequestHandler = (req, res, next) => {
     cleanup();
   };
 
-  res.once("close", cleanup);
+  res.once("close", () => { if (!handedOff) cleanup(); });
   req.on("data", (chunk: Buffer) => {
     received += chunk.length;
     if (received > RESTORE_ZIP_UPLOAD_LIMIT_BYTES) abortUpload(413, limitMessage);
@@ -100,6 +100,49 @@ const receiveRestoreZip: RequestHandler = (req, res, next) => {
   });
   req.pipe(out);
 };
+
+/**
+ * 先把备份里的 data 树复制到同卷暂存目录：复制失败（例如磁盘满）时数据库还没动，
+ * 直接中止恢复即可，不会出现「库已换、原卷 / 答案页 / 反馈附件缺失」。
+ */
+async function stageRestoredDataDir(bakDataDir: string, dataDir: string): Promise<string | null> {
+  if (!existsSync(bakDataDir)) return null;
+  const staging = path.join(path.dirname(dataDir), `answer-card.restore.${crypto.randomUUID()}`);
+  try {
+    await copyDirectory(bakDataDir, staging, () => true);
+    return staging;
+  } catch (err) {
+    await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+    throw err;
+  }
+}
+
+/** 库已经替换后用两次同卷 rename 换树；第二次失败时把旧树挪回去，避免只留下半套数据。 */
+async function swapRestoredDataDir(dataDir: string, staging: string | null, suffix: number): Promise<void> {
+  if (!staging) return;
+  const backupDir = path.join(path.dirname(dataDir), `answer-card.bak.${suffix}`);
+  const movedOld = existsSync(dataDir);
+  if (movedOld) await rename(dataDir, backupDir);
+  try {
+    await rename(staging, dataDir);
+  } catch (err) {
+    if (movedOld) {
+      try {
+        await rename(backupDir, dataDir);
+      } catch (restoreErr) {
+        console.error("[Restore] 换树失败后恢复旧数据目录也失败:", restoreErr);
+      }
+    }
+    throw err;
+  }
+}
+
+async function discardStagingDir(staging: string | null): Promise<void> {
+  if (!staging) return;
+  await rm(staging, { recursive: true, force: true }).catch((err) => {
+    console.warn("[Restore] 清理暂存数据目录失败:", err);
+  });
+}
 
 async function hasZipMagic(filePath: string): Promise<boolean> {
   const handle = await open(filePath, "r");
@@ -314,6 +357,9 @@ async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
   }
 
   const tmpDir = path.join(os.tmpdir(), `projectx-restore-${crypto.randomUUID()}`);
+  const dataDir = getDataDir();
+  const bakDataDir = path.join(tmpDir, "data", "answer-card");
+  let staging: string | null = null;
   let endMaintenance: (() => void) | null = null;
   try {
     await mkdir(tmpDir, { recursive: true });
@@ -336,6 +382,9 @@ async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    // 先把备份里的 data 树复制到同卷暂存目录；复制失败时数据库还没动，整体中止即可。
+    staging = await stageRestoredDataDir(bakDataDir, dataDir);
+
     // 恢复会替换数据库与 data/answer-card（含 feedback/）：与反馈提交 / 删除共用同一把锁，
     // 避免并发上传把附件写进即将被移走的目录，或删除在恢复中途改动附件树。
     // 同时关闭新的 multipart 上传；已经在写 _tmp 的请求等它结束后再恢复。
@@ -350,7 +399,6 @@ async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
       const backupSuffix = Date.now();
       const projectxDbPath = getProjectXDbPath();
       const scannerDbPath = getScannerDbPath();
-      const dataDir = getDataDir();
 
       // 备份现有 projectx.db
       if (existsSync(projectxDbPath)) {
@@ -408,17 +456,8 @@ async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
         await copyFile(scannerBak, scannerDbPath);
       }
 
-      // 恢复 data/answer-card/ 目录
-      const bakDataDir = path.join(tmpDir, "data", "answer-card");
-      if (existsSync(bakDataDir)) {
-        // 先备份当前 data
-        const dataBakDir = path.join(path.dirname(dataDir), `answer-card.bak.${backupSuffix}`);
-        if (existsSync(dataDir)) {
-          await moveDir(dataDir, dataBakDir);
-        }
-        // 复制新 data
-        await copyDirectory(bakDataDir, dataDir, () => true);
-      }
+      // 恢复 data/answer-card/ 目录：暂存树已在库替换前复制并校验，这里只做两次同卷 rename。
+      await swapRestoredDataDir(dataDir, staging, backupSuffix);
       // 备份不含 feedback/_tmp：替换数据树后让反馈模块按新目录重新初始化。
       resetFeedbackRuntimeStateAfterRestore();
 
@@ -440,6 +479,8 @@ async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
   } finally {
     // 校验失败（缺 metadata / projectx.db）、维护闸门 409 与异常路径都要清掉解压目录。
     await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
+    await discardStagingDir(staging);
+    await rm(zipPath, { force: true }).catch(() => undefined);
     endMaintenance?.();
     // 附件树已被替换（或可能被部分移动），用量基线必须重扫。
     invalidateFeedbackStorageUsage();
@@ -683,10 +724,17 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
     // 使用 mysql 客户端导入；dump.sql 逐块送入 stdin，不再先把整份 SQL 读进内存。
     const { execFile } = await import("node:child_process");
 
+    const dataDir = getDataDir();
+    const bakDataDir = path.join(tmpDir, "data", "answer-card");
+    let staging: string | null = null;
     let endMaintenance: (() => void) | null = null;
     try {
+      // 先把备份里的 data 树复制到同卷暂存目录：复制失败（磁盘满等）时 SQL 还没导入，
+      // 直接中止即可，不会出现「库已换、原卷 / 答案页 / 反馈附件缺失」。
+      staging = await stageRestoredDataDir(bakDataDir, dataDir);
+
       // 导入数据库与替换 data 目录同样与反馈写操作互斥：否则并发提交可能在 SQL 导入后
-      // 再写入附件行，随后其目录被 moveDir 移走，留下指向缺失文件的元数据。
+      // 再写入附件行，随后其目录被换走，留下指向缺失文件的元数据。
       // 同时关闭新的 multipart 上传；已经在写 _tmp 的请求等它结束后再恢复。
       endMaintenance = beginFeedbackMaintenance();
       if (activeFeedbackTempFiles().size > 0) {
@@ -710,15 +758,9 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
           input.pipe(child.stdin!);
         });
 
-        // 恢复磁盘资产（原卷 / 教师答案页）：备份里没有该目录时保持现状（兼容旧备份）
-        const bakDataDir = path.join(tmpDir, "data", "answer-card");
-        if (existsSync(bakDataDir)) {
-          const dataDir = getDataDir();
-          if (existsSync(dataDir)) {
-            await moveDir(dataDir, path.join(path.dirname(dataDir), `answer-card.bak.${Date.now()}`));
-          }
-          await copyDirectory(bakDataDir, dataDir, () => true);
-        }
+        // 恢复磁盘资产（原卷 / 教师答案页）：暂存树已在 SQL 导入前复制完成，
+        // 这里只做两次同卷 rename；备份里没有该目录时保持现状（兼容旧备份）。
+        await swapRestoredDataDir(dataDir, staging, Date.now());
         // 备份不含 feedback/_tmp：替换数据树后让反馈模块按新目录重新初始化。
         resetFeedbackRuntimeStateAfterRestore();
 
@@ -748,6 +790,7 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
       // mysql 客户端的报错自带 dump 文件绝对路径与 `user@host`，只进日志（安全 R25）
       respondOpsFailure(res, err, "数据库导入失败，请查看服务端日志中的 [Restore] 记录");
     } finally {
+      await discardStagingDir(staging);
       endMaintenance?.();
       // 附件树可能已被部分替换，缓存基线一律重扫。
       invalidateFeedbackStorageUsage();
@@ -759,6 +802,8 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
   } finally {
     // 缺 dump.sql 的 400 与解压失败路径同样不能留下解压目录。
     await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
+    // 交出请求后 ZIP 由恢复任务负责删除：客户端中途断开不会提前把文件删掉。
+    await rm(zipPath, { force: true }).catch(() => undefined);
   }
 }
 
@@ -795,20 +840,6 @@ async function copyDirectory(
     } else if (entry.isFile()) {
       await copyFile(srcPath, destPath);
     }
-  }
-}
-
-/**
- * 移动目录（重命名）
- */
-async function moveDir(src: string, dest: string): Promise<void> {
-  try {
-    await copyDirectory(src, dest, () => true);
-    await rm(src, { recursive: true, force: true });
-  } catch (err) {
-    // 移动失败：保留原目录，但向上抛错让调用方感知（恢复流程中 moveDir 失败应中止）
-    console.warn(`[Backup] moveDir 失败 (src=${src}, dest=${dest}):`, err);
-    throw err;
   }
 }
 

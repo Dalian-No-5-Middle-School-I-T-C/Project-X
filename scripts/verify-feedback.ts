@@ -511,6 +511,10 @@ async function main(): Promise<void> {
   ok((await olderWait) === "ok", "最早请求在后到者让出后获得剩余容量");
   olderReservation.release();
 
+  const dataLock = await import("../src/server/lib/answerCardDataLock");
+  ok(feedbackStorage.withFeedbackMutationLock === dataLock.withAnswerCardDataMutationLock,
+    "反馈、原卷 / 答案页删除与备份 / 恢复共用同一把数据锁");
+
   const purgeDir = path.join(tmpDir, "purge-unit");
   mkdirSync(purgeDir, { recursive: true });
   const staleTempPath = path.join(purgeDir, "stale.bin");

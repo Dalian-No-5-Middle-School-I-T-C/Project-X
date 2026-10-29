@@ -12,6 +12,7 @@
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { resolveFeedbackAttachmentFileLimit, resolveFeedbackStorageMib } from "../../shared/feedbackLimits";
+import { withAnswerCardDataMutationLock } from "./answerCardDataLock";
 
 const MEBIBYTE = 1024 * 1024;
 const MIN_CHUNKED_STEP_BYTES = 256 * 1024;
@@ -46,17 +47,8 @@ export function isFeedbackMaintenanceActive(): boolean {
   return feedbackMaintenanceDepth > 0;
 }
 
-let feedbackMutationTail: Promise<void> = Promise.resolve();
-
-/**
- * 备份与反馈附件变更互斥：备份在数据库快照与附件目录复制之间不允许提交或删除反馈，
- * 否则备份可能保留附件记录却缺少文件（删除已提交）或多出未入快照的文件。
- */
-export function withFeedbackMutationLock<T>(work: () => Promise<T>): Promise<T> {
-  const run = feedbackMutationTail.then(work, work);
-  feedbackMutationTail = run.then(() => undefined, () => undefined);
-  return run;
-}
+/** 保留旧名字给反馈路由使用；底层与原卷 / 答案页删除、备份 / 恢复共用同一把锁。 */
+export const withFeedbackMutationLock = withAnswerCardDataMutationLock;
 
 /** chunked 每次追加预留的步长：约为总配额的 1/32，最小 256 KiB、最大 8 MiB。 */
 export function chunkedReservationStep(): number {

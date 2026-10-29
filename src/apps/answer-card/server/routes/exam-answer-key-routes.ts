@@ -15,6 +15,7 @@ import path from "node:path";
 import { existsSync, unlinkSync } from "node:fs";
 import type { Request, Response } from "express";
 import { getMysqlDb, buildUpsertSQL } from "../../../../server/db/mysql";
+import { withAnswerCardDataMutationLock } from "../../../../server/lib/answerCardDataLock";
 import {
   ANSWER_KEY_EXTENSIONS,
   answerKeyBaseName,
@@ -433,28 +434,30 @@ export function examAnswerKeyRoutes(): Router {
   // DELETE /api/exams/:examId/answer-key/pages/:pageIndex — 删除答案页（同页所有扩展名残留一并清理）
   router.delete("/api/exams/:examId/answer-key/pages/:pageIndex", requireExamAccess, async (req: Request, res: Response) => {
     try {
-      if (invalidExamId(res, req.params.examId)) return;
-      const examId = Number(req.params.examId);
-      const pageIndex = normalizePageIndex(req.params.pageIndex, MAX_ANSWER_KEY_PAGES);
-      if (pageIndex === null) { res.status(400).json({ message: "无效的页码" }); return; }
+      await withAnswerCardDataMutationLock(async () => {
+        if (invalidExamId(res, req.params.examId)) return;
+        const examId = Number(req.params.examId);
+        const pageIndex = normalizePageIndex(req.params.pageIndex, MAX_ANSWER_KEY_PAGES);
+        if (pageIndex === null) { res.status(400).json({ message: "无效的页码" }); return; }
 
-      const db = getMysqlDb();
-      const row = await db.get(
-        "SELECT filename FROM exam_answer_key_pages WHERE exam_id = ? AND page_index = ?",
-        examId, pageIndex
-      ) as { filename: string } | undefined;
-      if (!row) { res.status(404).json({ message: "答案页不存在" }); return; }
+        const db = getMysqlDb();
+        const row = await db.get(
+          "SELECT filename FROM exam_answer_key_pages WHERE exam_id = ? AND page_index = ?",
+          examId, pageIndex
+        ) as { filename: string } | undefined;
+        if (!row) { res.status(404).json({ message: "答案页不存在" }); return; }
 
-      const dir = answerKeyDir(examId);
-      const baseName = answerKeyBaseName(pageIndex);
-      for (const ext of ANSWER_KEY_EXTENSIONS) {
-        const filePath = path.join(dir, `${baseName}${ext}`);
-        if (existsSync(filePath)) { try { unlinkSync(filePath); } catch {} }
-      }
-      await db.run("DELETE FROM exam_answer_key_pages WHERE exam_id = ? AND page_index = ?", examId, pageIndex);
-      // 注意：exam_answer_keys.page_index 存的是「原卷页码」（card 级资产，见答案配置面板），
-      // 与这里删除的「答案扫描页码」是两套坐标系，不能按同一数字联动清空。
-      res.json({ success: true, answerPages: await listAnswerKeyPages(examId, db) });
+        const dir = answerKeyDir(examId);
+        const baseName = answerKeyBaseName(pageIndex);
+        for (const ext of ANSWER_KEY_EXTENSIONS) {
+          const filePath = path.join(dir, `${baseName}${ext}`);
+          if (existsSync(filePath)) { try { unlinkSync(filePath); } catch {} }
+        }
+        await db.run("DELETE FROM exam_answer_key_pages WHERE exam_id = ? AND page_index = ?", examId, pageIndex);
+        // 注意：exam_answer_keys.page_index 存的是「原卷页码」（card 级资产，见答案配置面板），
+        // 与这里删除的「答案扫描页码」是两套坐标系，不能按同一数字联动清空。
+        res.json({ success: true, answerPages: await listAnswerKeyPages(examId, db) });
+      });
     } catch (err: any) {
       console.error("[answer-key] delete page failed:", err);
       res.status(500).json({ message: err.message || "答案页删除失败" });
