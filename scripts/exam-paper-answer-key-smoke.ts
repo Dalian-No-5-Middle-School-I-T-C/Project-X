@@ -18,7 +18,7 @@
  *
  * 运行：npm run verify:exam-paper
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -26,6 +26,24 @@ import { createServer, type Server } from "node:http";
 import bcrypt from "bcryptjs";
 import sharp from "sharp";
 
+// 先在一个带 remote config.yml 的目录里确认配置能被读到，再切到干净临时目录。
+// detectDialect 在导入数据库模块时就会看 cwd；漏掉这次 chdir 会连上业务库并可能轮换 admin 口令。
+const dirtyCwd = mkdtempSync(path.join(tmpdir(), "projectx-exam-paper-dirty-"));
+writeFileSync(path.join(dirtyCwd, "config.yml"), [
+  "database:",
+  "  mode: remote",
+  "  remote:",
+  "    host: 127.0.0.1",
+  "    port: 1",
+  "    database: must-not-touch",
+  "    user: nobody",
+  "    password: none",
+].join("\n"), "utf8");
+process.chdir(dirtyCwd);
+const { readDbConfig } = await import("../src/server/db/config");
+if (readDbConfig().mode !== "remote") {
+  throw new Error("隔离回归的 config.yml 必须能被解析为 remote");
+}
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-exam-paper-"));
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "verify.db");
 process.env.PROJECTX_TOKEN_DIR = path.join(tmpDir, "tokens");
@@ -34,6 +52,7 @@ process.env.ANSWER_CARD_DATA_DIR = path.join(tmpDir, "data");
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("PROJECTX_MARIADB_") || key.startsWith("PROJECTX_MYSQL_")) delete process.env[key];
 }
+process.chdir(tmpDir);
 
 let passed = 0, failed = 0;
 function ok(cond: boolean, label: string): void {
@@ -93,6 +112,10 @@ async function jsonFetch(base: string, url: string, init: RequestInit = {}, toke
 
 async function main() {
   console.log(`临时库: ${process.env.PROJECTX_DB_PATH}`);
+  const { detectDialect } = await import("../src/server/db/mysql");
+  if (detectDialect() !== "sqlite") {
+    throw new Error("默认回归必须在临时 SQLite 上运行：config.yml remote 配置未被隔离");
+  }
   const { initializeDatabase, ensureDefaultAdmin, getDatabase, closeDatabase } = await import("../src/server/db/index");
   const { createApp } = await import("../src/apps/answer-card/server/index");
   const { getMysqlDb } = await import("../src/server/db");
@@ -539,6 +562,29 @@ async function main() {
 
   const fileImageRes = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/answer-file/1`, { headers: { Authorization: `Bearer ${stuToken}` } });
   ok(fileImageRes.status === 200 && (fileImageRes.headers.get("content-type") ?? "").includes("image/jpeg"), "学生可取到答案图片字节");
+  {
+    const registeredName = fileRows[0]?.filename;
+    const registeredPath = registeredName ? path.join(answerKeyDir(modeExamId), registeredName) : "";
+    const orphanName = registeredName?.replace(/\.[^.]+$/, ".pdf");
+    const orphanPath = orphanName ? path.join(answerKeyDir(modeExamId), orphanName) : "";
+    if (registeredPath && orphanPath && existsSync(registeredPath) && orphanName !== registeredName) {
+      const registeredBytes = readFileSync(registeredPath);
+      unlinkSync(registeredPath);
+      writeFileSync(orphanPath, Buffer.from("%PDF-1.1 orphan answer"));
+      const orphanRes = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/answer-file/1`, { headers: { Authorization: `Bearer ${stuToken}` } });
+      const orphanBody = await orphanRes.text();
+      ok(orphanRes.status === 404 && !orphanBody.includes("%PDF"), "登记文件缺失时学生端不回退到其他扩展名的孤儿文件");
+      const orphanView = await modePaper();
+      const stillListed = ((orphanView.body?.answerFiles ?? []) as Array<{ pageIndex: number }>).some((row) => row.pageIndex === 1);
+      ok(!stillListed, "学生答案列表不把孤儿文件当成已登记的第 1 页");
+      writeFileSync(registeredPath, registeredBytes);
+      unlinkSync(orphanPath);
+      const restored = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/answer-file/1`, { headers: { Authorization: `Bearer ${stuToken}` } });
+      ok(restored.status === 200, "登记文件放回后学生端重新可取");
+    } else {
+      ok(false, "答案图片路径可用于孤儿回退回归");
+    }
+  }
   const fileDocxRes = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/answer-file/2`, { headers: { Authorization: `Bearer ${stuToken}` } });
   ok(fileDocxRes.status === 200 && String(fileDocxRes.headers.get("content-disposition") ?? "").includes("attachment"),
     "DOCX 以附件下发（浏览器/小程序都渲染不了内联 docx）");

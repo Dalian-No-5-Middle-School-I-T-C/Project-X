@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, Download, ExternalLink, FileText, Images, RefreshCw } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
+import { downloadBlob } from "../util/download";
 import { retryMediaTicketImage } from "../lib/mediaTicketRetry";
 import { RotatedCardImage, RotationButtons, type ImageRotation } from "./RotatedCardImage";
 import type { AnswerBlockCrop } from "../../../../shared/types";
@@ -138,6 +139,21 @@ function AnswerTable({ answers }: { answers: PaperAnswer[] }) {
  */
 function AnswerFileCard({ file, rotation }: { file: AnswerFile; rotation: ImageRotation }) {
   const url = mediaUrl(file.fileUrl);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState("");
+  async function saveFile() {
+    setDownloadError("");
+    setDownloading(true);
+    try {
+      // 跨源 API 时浏览器会忽略 <a download>，PDF 会把当前页导航走。
+      // 用带 cookie / Bearer 的 blob 下载，同源和跨源都落成本机文件。
+      await downloadBlob(file.fileUrl, file.filename);
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : "下载失败");
+    } finally {
+      setDownloading(false);
+    }
+  }
   return (
     <Card>
       <CardHeader>
@@ -159,12 +175,13 @@ function AnswerFileCard({ file, rotation }: { file: AnswerFile; rotation: ImageR
               <Button size="sm" variant="outline" asChild>
                 <a href={url} target="_blank" rel="noreferrer"><ExternalLink size={16} />打开</a>
               </Button>
-              <Button size="sm" variant="ghost" asChild>
-                <a href={url} download={file.filename}><Download size={16} />下载</a>
+              <Button size="sm" variant="ghost" type="button" disabled={downloading} onClick={() => void saveFile()}>
+                <Download size={16} />下载
               </Button>
             </span>
           </div>
         )}
+        {downloadError && <p className="m-0 text-sm text-destructive-fg">{downloadError}</p>}
       </CardContent>
     </Card>
   );

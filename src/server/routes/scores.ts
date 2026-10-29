@@ -532,7 +532,7 @@ router.get("/me/exams/:examId/paper", async (req: Request, res: Response) => {
     // 原卷页是答题卡级资产，只受「显示原卷」控制，与答案模式无关
     access.exam.showOriginalPaper ? listExamPaperPages(access.exam.card_id, db) : Promise.resolve([]),
     directFiles ? Promise.resolve([]) : listExamAnswerKeys(examId, db),
-    directFiles ? listAnswerKeyPages(examId, db) : Promise.resolve([]),
+    directFiles ? listAnswerKeyPages(examId, db, { exact: true }) : Promise.resolve([]),
     listAnswerBlockCropsForStudent(examId, req.user!.id, db),
   ]);
   const grouped = groupAnswersByPage(answers, paperPages.map((page) => page.pageIndex));
@@ -632,7 +632,7 @@ router.get("/me/exams/:examId/paper/answer-file/:pageIndex", async (req: Request
     res.status(404).json({ message: "答案文件不存在" });
     return;
   }
-  const resolved = resolveAnswerKeyPageFile(examId, pageIndex, filename);
+  const resolved = resolveAnswerKeyPageFile(examId, pageIndex, filename, { exact: true });
   if (!resolved) {
     res.status(404).json({ message: "答案文件不存在" });
     return;

@@ -181,11 +181,14 @@ export async function loadAnswerKeyPageFilename(
  * 若只按 ANSWER_KEY_EXTENSIONS 顺序探测，`.jpg` 会遮蔽已登记的 `answerkey.pdf`，
  * 导致列表/预览/重识别三处一起读到旧图（PR 审查 P2）。
  * 仅当登记文件在磁盘上不存在时（外部清理/历史脏数据）才回退到扩展名探测。
+ * 学生直发（`exact: true`）不回退：登记文件被删掉后，同名其他扩展名的失败上传残留
+ * 不能当作这一页的答案下发。
  */
 export function resolveAnswerKeyPageFile(
   examId: number | string,
   pageIndex: number,
-  preferredFilename?: string | null
+  preferredFilename?: string | null,
+  options?: { exact?: boolean }
 ): { filePath: string; filename: string; mimeType: string; isImage: boolean } | null {
   if (!Number.isInteger(pageIndex) || pageIndex < 1) return null;
   const dir = answerKeyDir(examId);
@@ -197,6 +200,7 @@ export function resolveAnswerKeyPageFile(
       return { filePath, filename, mimeType: getFileMime(filename), isImage: isImageFile(filename) };
     }
   }
+  if (options?.exact) return null;
 
   const baseName = answerKeyBaseName(Number(pageIndex));
   for (const ext of ANSWER_KEY_EXTENSIONS) {
@@ -233,7 +237,8 @@ export function purgeAnswerKeyPageSiblings(
 /** 答案页列表（按 DB 记录顺序，仅保留磁盘上存在的页） */
 export async function listAnswerKeyPages(
   examId: number,
-  db: DbAdapter = getMysqlDb()
+  db: DbAdapter = getMysqlDb(),
+  options?: { exact?: boolean }
 ): Promise<AnswerKeyPageRow[]> {
   const rows = await db.all(
     "SELECT page_index, filename FROM exam_answer_key_pages WHERE exam_id = ? ORDER BY page_index",
@@ -242,7 +247,7 @@ export async function listAnswerKeyPages(
   const pages: AnswerKeyPageRow[] = [];
   for (const row of rows) {
     const pageIndex = Number(row.page_index);
-    const resolved = resolveAnswerKeyPageFile(examId, pageIndex, row.filename);
+    const resolved = resolveAnswerKeyPageFile(examId, pageIndex, row.filename, options);
     if (!resolved) continue;
     pages.push({
       pageIndex,

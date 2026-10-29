@@ -13,7 +13,7 @@
  *
  * 说明：这是验收夹具，不是回归用例（断言在 exam-paper-answer-key-smoke.ts 与 verify-mariadb.ts）。
  */
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
@@ -23,6 +23,24 @@ import sharp from "sharp";
 const PORT = Number(process.env.PX_UI_PORT || 5178);
 const ADMIN_PASSWORD = "Ui-Answer-Key-2026";
 
+// 原工作目录若有 database.mode=remote 的 config.yml，detectDialect 会选 MariaDB，
+// 随后 ensureDefaultAdmin 可能改写业务库管理员口令。先确认陷阱配置可读，再切到无配置的临时目录。
+const dirtyCwd = mkdtempSync(path.join(tmpdir(), "projectx-answerkey-ui-dirty-"));
+writeFileSync(path.join(dirtyCwd, "config.yml"), [
+  "database:",
+  "  mode: remote",
+  "  remote:",
+  "    host: 127.0.0.1",
+  "    port: 1",
+  "    database: must-not-touch",
+  "    user: nobody",
+  "    password: none",
+].join("\n"), "utf8");
+process.chdir(dirtyCwd);
+const { readDbConfig } = await import("../src/server/db/config");
+if (readDbConfig().mode !== "remote") {
+  throw new Error("隔离回归的 config.yml 必须能被解析为 remote");
+}
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-answerkey-ui-"));
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "ui.db");
 process.env.PROJECTX_TOKEN_DIR = path.join(tmpDir, "tokens");
@@ -30,7 +48,12 @@ process.env.ANSWER_CARD_DATA_DIR = path.join(tmpDir, "data");
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("PROJECTX_MARIADB_") || key.startsWith("PROJECTX_MYSQL_")) delete process.env[key];
 }
+process.chdir(tmpDir);
 
+const { detectDialect } = await import("../src/server/db/mysql");
+if (detectDialect() !== "sqlite") {
+  throw new Error("验收夹具必须在临时 SQLite 上运行：config.yml remote 配置未被隔离");
+}
 const { initializeDatabase, ensureDefaultAdmin, getDatabase, getMysqlDb } = await import("../src/server/db/index");
 const { createApp } = await import("../src/apps/answer-card/server/index");
 
