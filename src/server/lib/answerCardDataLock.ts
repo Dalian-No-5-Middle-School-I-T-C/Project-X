@@ -19,7 +19,8 @@ export function withAnswerCardDataMutationLock<T>(work: () => Promise<T>): Promi
 export function holdAnswerCardDataMutationLock(req: Request, res: Response, next: NextFunction): void {
   // 入队前就记下断连。排到锁之后才监听 close 时，等待期间的 close 已经发生，
   // next() 之后没有任何事件能释放这把锁。
-  let disconnected = req.destroyed || res.destroyed;
+  // 注意：正常请求体读完后 req.destroyed 也会是 true，不能用它判断断连。
+  let disconnected = res.destroyed || req.socket?.destroyed === true;
   const onAborted = (): void => { disconnected = true; };
   const onResponseClose = (): void => {
     if (!res.writableEnded) disconnected = true;
@@ -36,7 +37,7 @@ export function holdAnswerCardDataMutationLock(req: Request, res: Response, next
       res.off("close", onResponseClose);
       resolve();
     };
-    if (disconnected || req.destroyed || res.destroyed) {
+    if (disconnected || res.destroyed) {
       release();
       return;
     }
