@@ -128,6 +128,23 @@ try {
   assert.equal((await request()).results[0].totalScore, 5, "Ignore stale JSON answer keys");
   await unlink(cardPath(card.id));
 
+  // 崩溃 / 停扫恢复：会话还没收尾时照旧 409（前端据此进入等待，不当成加载失败）；
+  // 取消的批次保留已扫页面，必须能重新读回，否则现场停扫后那一批再也打不开。
+  const stuck = await store.createSession(card.id, "崩溃恢复");
+  const stuckRecord = await createVerifiedRecord({ sessionId: stuck.id, cardId: card.id, pageNum: 1, imagePath: path.join(root, "stuck_0.png") });
+  // 学号刻意避开主夹具的 91001-91003：同学号跨会话会触发重复卷冲突（那是另一条业务规则）。
+  await store.updateScanOcrResult(stuckRecord.id, "91009", 1, "done");
+  await store.upsertRecognitionResult({ scanRecordId: stuckRecord.id,
+    objectiveJson: JSON.stringify([{ questionNumber: 1, selectedOptions: ["A"], confidence: 1 }]),
+    subjectiveJson: "[]", gradeStatus: "done" });
+  const stuckResponse = await fetch(`http://127.0.0.1:${address.port}/api/scanner/session/${stuck.id}/validate`, { method: "POST" });
+  assert.equal(stuckResponse.status, 409, "还没收尾的会话必须返回 409，前端据此进入等待");
+  await store.updateSessionStatus(stuck.id, "cancelled", "用户取消扫描");
+  const cancelledResponse = await fetch(`http://127.0.0.1:${address.port}/api/scanner/session/${stuck.id}/validate`, { method: "POST" });
+  assert.equal(cancelledResponse.status, 200, "取消的批次保留已扫页面，必须能重新读回");
+  const cancelledBatch = await cancelledResponse.json() as ScanBatchResponse;
+  assert.equal(cancelledBatch.results.length, 1, "取消批次也要返回已识别的卷");
+
   // Real bearer authentication on both route mounts; denials precede any mutation.
   const { authService } = await import("../src/server/services/AuthService");
   // Keep ephemeral login tokens in memory; never write the operator's token store.

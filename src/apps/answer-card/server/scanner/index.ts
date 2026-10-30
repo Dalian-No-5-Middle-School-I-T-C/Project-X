@@ -618,7 +618,9 @@ export function createScannerRouter(twainEnabled = true): Router {
   });
 
   async function sessionReadyForResults(sessionId: string, status: string): Promise<boolean> {
-    if (status === "completed") return true;
+    // 取消的批次同样保留已扫页面（#320 崩溃恢复要靠它把那一批读回来），
+    // 否则现场停扫后只能看到 409，已扫的卷再也打不开。
+    if (status === "completed" || status === "cancelled") return true;
     if (status !== "error") return false;
     const records = await listScanRecords(sessionId);
     return records.length > 0 && records.every(record => record.ocr_status !== "pending" && record.ocr_status !== "processing");

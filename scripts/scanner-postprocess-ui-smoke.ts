@@ -132,6 +132,10 @@ const batchFor = (sessionId: string): ScanBatchResponse => {
   };
 };
 let hideCard = false;
+/** 崩溃恢复夹具：这一批的服务端会话还没收尾，validate 先回 409，取消后才读出已扫页面。 */
+const busySessionId = "scan-busy";
+let busyCancelled = false;
+let busyCancels = 0;
 install("fetch", async (input: unknown, init?: RequestInit) => {
   const url = String(input);
   const method = init?.method ?? "GET";
@@ -139,8 +143,16 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
     return Response.json({ message: "答题卡不存在" }, { status: 404 });
   }
   if (url.includes("/api/cards/")) return Response.json(card);
+  if (url.endsWith(`/api/scanner/scan/${busySessionId}/cancel`)) {
+    busyCancelled = true;
+    busyCancels += 1;
+    return Response.json({ status: "cancelled", message: "扫描已取消" });
+  }
   const sessionMatch = url.match(/\/api\/scanner\/session\/([^/]+)\/(validate|results)/);
   if (sessionMatch) {
+    if (sessionMatch[1] === busySessionId && !busyCancelled) {
+      return Response.json({ message: "请等待扫描和识别全部完成" }, { status: 409 });
+    }
     // 仅本地模式的「保存成绩入库」= POST results（save 模式），与 validate 演算不是一条路
     if (method === "POST" && url.endsWith("/results")) {
       saveCalls.push(`${method} ${url}`);
@@ -155,7 +167,8 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
     const warnings_json = sessionId === "scan-1"
       ? JSON.stringify(["本批未识别到红笔分数，请检查彩色设置"])
       : null;
-    return Response.json({ session: { identity_mode: "strict", dpi: 300, paper_size: "A4", card_version, warnings_json }, records: [], examId });
+    const status = sessionId === busySessionId ? (busyCancelled ? "cancelled" : "scanning") : "completed";
+    return Response.json({ session: { identity_mode: "strict", dpi: 300, paper_size: "A4", card_version, warnings_json, status }, records: [], examId });
   }
   if (/\/api\/scanner\/card\/[^/]+\/scans$/.test(url)) {
     return Response.json([
@@ -860,6 +873,30 @@ try {
   assert.equal(continued, true, "继续扫描回调仍然发出");
   assert.equal(readPostprocessView(card.id, 7), null, "继续扫描清掉停留位置，新批次完成时不再跳回旧卷");
   await act(async () => { continueRoot.unmount(); });
+
+  // 崩溃恢复（#320 Codex P1）：上一批还没收尾时，后处理页不能停在「加载失败」，
+  // 要等它结束并给出停止入口；停扫后仍能读回已扫页面。
+  const busyHost = document.createElement("div");
+  document.body.appendChild(busyHost);
+  const busyRoot = createRoot(busyHost);
+  await act(async () => {
+    busyRoot.render(createElement(TooltipProvider, null, createElement(ScannerPostprocessPage, {
+      cardId: card.id, cardTitle: card.title, userId: 7,
+      sessions: [{ sessionId: busySessionId, pageCount: 0 }],
+      onBack: () => {},
+    })));
+  });
+  await settle(30);
+  assert(busyHost.textContent?.includes("上一批扫描还没有结束"), "未收尾的批次进入等待界面，而不是加载失败");
+  assert(!busyHost.textContent?.includes("加载失败"), "409 不能被渲染成加载失败页");
+  const stopWaitingButton = [...busyHost.querySelectorAll("button")].find(el => el.textContent?.includes("停止这一批"));
+  assert.ok(stopWaitingButton, "等待界面提供停止入口");
+  await act(async () => { stopWaitingButton!.click(); });
+  await settle(40);
+  assert.equal(busyCancels, 1, "停止这一批会调用取消接口");
+  assert.equal(busyCancelled, true, "取消接口成功后会话收尾");
+  assert(busyHost.textContent?.includes("扫描后处理"), "取消后按已收尾会话打开后处理");
+  await act(async () => { busyRoot.unmount(); });
 
   console.log("PASS scanner-postprocess-ui-smoke");
 } catch (error) {

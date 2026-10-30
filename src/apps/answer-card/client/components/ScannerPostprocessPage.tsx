@@ -13,7 +13,7 @@ import {
 } from "../../../../shared/scanPostprocess";
 import type { ScanBatchResponse, ScanBatchResult } from "../../../../shared/scanPages";
 import type { AnswerCard, SubjectiveQuestionNumber } from "../../../../shared/types";
-import { localChannel, loadSessionMeta, queueGroupUpload, type PostprocessChannel, type SessionMeta } from "./scanner-postprocess/postprocessChannel";
+import { localChannel, loadSessionMeta, PostprocessHttpError, queueGroupUpload, type PostprocessChannel, type SessionMeta } from "./scanner-postprocess/postprocessChannel";
 import { PostprocessResultsView } from "./scanner-postprocess/PostprocessResultsView";
 import { PostprocessCorrectionView } from "./scanner-postprocess/PostprocessCorrectionView";
 import { PostprocessQueueView, type ScanMeta } from "./scanner-postprocess/PostprocessQueueView";
@@ -50,6 +50,9 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   const [loading, setLoading] = useState(true);
   const [savingAll, setSavingAll] = useState(false);
   const [error, setError] = useState("");
+  /** 仍在扫描 / 识别、读不到结果的会话：崩溃重载后会走到这里，等它收尾而不是报加载失败。 */
+  const [waitingSessions, setWaitingSessions] = useState<string[]>([]);
+  const [stoppingWait, setStoppingWait] = useState(false);
   const [resumedFromCrash, setResumedFromCrash] = useState(false);
   /** 本页见过的异常组（sid/gid）：失败卷与冲突副本还没建过回执，订正后允许补传一次。
    *  识别成功的卷（含存疑卷）已在 reload 的首传里排队，不再建第二份回执。 */
@@ -76,10 +79,25 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
       const discarded = readPreviewDiscards(cardId);
       const nextBatches: Record<string, ScanBatchResponse> = {};
       const nextMetas: Record<string, SessionMeta> = {};
+      const stillRunning: string[] = [];
       for (const { sessionId } of sessions) {
-        const batch = omitPreviewDiscardedGroups(await channel.results(sessionId), discarded, sessionId);
-        nextBatches[sessionId] = batch;
-        nextMetas[sessionId] = await loadSessionMeta(sessionId);
+        try {
+          const batch = omitPreviewDiscardedGroups(await channel.results(sessionId), discarded, sessionId);
+          nextBatches[sessionId] = batch;
+          nextMetas[sessionId] = await loadSessionMeta(sessionId);
+        } catch (e) {
+          // 409 = 会话还没收尾（崩溃后仍在扫描 / 识别）。这不是加载失败：等它结束再进来，
+          // 否则现场只剩一个怎么也打不开的失败页，还没法停掉那台还在送纸的扫描仪。
+          if (e instanceof PostprocessHttpError && e.status === 409) { stillRunning.push(sessionId); continue; }
+          throw e;
+        }
+      }
+      setWaitingSessions(stillRunning);
+      if (stillRunning.length > 0) {
+        // 批次不完整时先不展示（组会缺卷）：把卡挂上，渲染等待界面并在收尾后重拉。
+        setLocalCard(loaded.local);
+        setRemoteCard(loaded.remote);
+        return { batches: {}, metas: {}, card: display };
       }
       // 记入学号、判分成功的卷（含仍带存疑标记的）都已随批上传，存疑状态随回执返回；
       // 失败组与冲突副本还没有学号或归属，服务端无处挂这份成绩，继续留在本机处理，
@@ -95,7 +113,10 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
         for (const review of next.reviewCards ?? []) abnormalSeen.current.add(`${review.sessionId}/${review.groupId}`);
       }
       writeIdSet(abnormalKey, abnormalSeen.current);
-      const queuedNow = ensureFirstUploads(cardId, display.id, nextBatches, nextMetas, isRemoteUploadOn(), queuedByPage.current);
+      // 老师中止的批次只允许显式「保存成绩」，不跟着首传自动补传。
+      const uploadable = Object.fromEntries(Object.entries(nextBatches)
+        .filter(([sid]) => nextMetas[sid]?.status !== "cancelled"));
+      const queuedNow = ensureFirstUploads(cardId, display.id, uploadable, nextMetas, isRemoteUploadOn(), queuedByPage.current);
       if (queuedNow > 0) notify.info(queuedNow === 1 ? "已加入上传队列，图片后台续传" : `已加入上传队列（${queuedNow} 份），图片后台续传`);
       setLocalCard(loaded.local);
       setRemoteCard(loaded.remote);
@@ -116,6 +137,31 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   }, [cardId, sessions, channel, abnormalKey, isRemoteUploadOn]);
 
   useEffect(() => { void reload(); }, [reload]);
+
+  // 等待中的会话：桥接进程还在送纸 / 识别时没人会来叫醒本页，定时重拉直到服务端收尾。
+  useEffect(() => {
+    if (waitingSessions.length === 0) return;
+    const timer = setTimeout(() => { void reload(); }, 3000);
+    return () => clearTimeout(timer);
+  }, [waitingSessions, reload]);
+
+  const stopWaitingScan = useCallback(async () => {
+    if (stoppingWait || waitingSessions.length === 0) return;
+    setStoppingWait(true);
+    try {
+      for (const sessionId of waitingSessions) {
+        const response = await channel.request(`/api/scanner/scan/${sessionId}/cancel`, { method: "POST" });
+        if (!response.ok) {
+          notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
+          return;
+        }
+      }
+      // 取消后服务端保留已扫页面，按收尾会话重新加载即可继续查看。
+      await reload();
+    } finally {
+      setStoppingWait(false);
+    }
+  }, [channel, reload, stoppingWait, waitingSessions]);
 
   const sessionLayouts = useMemo(() => {
     const localFingerprint = localCard ? cardFingerprint(localCard) : null;
@@ -311,6 +357,22 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   }
 
   if (loading && !card) return <div className="flex h-[100dvh] items-center justify-center bg-background"><Spinner size={24} /></div>;
+  if (waitingSessions.length > 0) {
+    return (
+      <div className="flex h-[100dvh] flex-col items-center justify-center gap-4 bg-background px-6 text-center">
+        <Spinner size={24} />
+        <div className="flex flex-col gap-1">
+          <p className="m-0 text-sm font-medium text-foreground">上一批扫描还没有结束</p>
+          <p className="m-0 text-sm text-muted-foreground">扫描仪仍在送纸或识别中，结束后会自动打开后处理。</p>
+          <p className="m-0 text-xs text-muted-foreground">停止这一批会保留已扫页面，可以在这里继续查看。</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" icon={<ArrowLeft size={16} />} onClick={onBack}>返回扫描</Button>
+          <Button onClick={() => void stopWaitingScan()} disabled={stoppingWait}>停止这一批</Button>
+        </div>
+      </div>
+    );
+  }
   if (!card) {
     return (
       <div className="flex h-[100dvh] flex-col items-center justify-center gap-3 bg-background px-6 text-sm text-destructive-fg">
