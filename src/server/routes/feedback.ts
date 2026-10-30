@@ -18,7 +18,7 @@ import { createWriteStream, mkdirSync, readdirSync, unlinkSync, type Dirent } fr
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { Transform } from "node:stream";
 import path from "node:path";
-import { authMiddleware, requirePermission, requireRole } from "../middleware/auth";
+import { authMiddleware, refreshRequestUser, requirePermission, requireRole } from "../middleware/auth";
 import { PERMISSIONS, roleHasPermission } from "../auth/permissions";
 import { getMysqlDb } from "../db";
 import { databaseTimestamp } from "../db/timestamp";
@@ -587,6 +587,16 @@ class FeedbackMaintenanceError extends Error {
   }
 }
 
+/** 等锁期间账号被恢复替换 / 降权：按失效会话处理，不写旧身份的报告。 */
+class FeedbackSessionStaleError extends Error {
+  readonly code = "FEEDBACK_SESSION_STALE";
+
+  constructor() {
+    super("账号权限已变更，请重新登录后再提交");
+    this.name = "FeedbackSessionStaleError";
+  }
+}
+
 /** 附件总数上限：备份按条目打包，超出恢复侧条目预算的备份将无法恢复。 */
 class FeedbackAttachmentCountError extends Error {
   readonly code = "FEEDBACK_ATTACHMENT_COUNT_EXCEEDED";
@@ -955,8 +965,10 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
       invalidateFeedbackStorageUsage();
       await finalizeFeedbackUpload(state);
     };
-    reportId = await withFeedbackMutationLock(() =>
-      settleFeedbackStorage(
+    reportId = await withFeedbackMutationLock(async () => {
+      // 等锁期间可能发生了恢复：按当前库重新加载账号，避免用旧角色 / 旧提交人身份写库。
+      if (!(await refreshRequestUser(req))) throw new FeedbackSessionStaleError();
+      return settleFeedbackStorage(
         feedbackRoot,
         reservation,
         incomingBytes,
@@ -1016,12 +1028,18 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
           });
         },
         cleanupFailedSettle
-      )
-    );
+      );
+    });
     for (const tempPath of state.feedbackTempPaths ?? []) unmarkActiveFeedbackTempFile(tempPath);
     res.status(201).json({ ok: true, data: { id: reportId } });
   } catch (err: any) {
     await finalizeFeedbackUpload(state);
+    if (err instanceof FeedbackSessionStaleError) {
+      if (!res.headersSent) {
+        res.status(401).json({ ok: false, code: err.code, error: err.message });
+      }
+      return;
+    }
     if (err instanceof FeedbackStorageQuotaError) {
       if (!res.headersSent) {
         res.status(413).json({ ok: false, code: err.code, error: err.message });

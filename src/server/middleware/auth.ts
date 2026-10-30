@@ -166,18 +166,24 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
  * 取得数据变更锁后刷新 `req.user`：恢复可能替换账号、角色与教师范围，
  * 不能用等待前挂载的旧快照做权限判断。账号已不存在时按失效令牌处理。
  */
+export async function refreshRequestUser(req: Request): Promise<boolean> {
+  if (!req.user) return false;
+  const current = await authService.getActiveUserById(req.user.id);
+  if (!current) return false;
+  attachUserSnapshot(req, current);
+  return true;
+}
+
 export async function refreshAuthenticatedUser(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!req.user) {
     next();
     return;
   }
   try {
-    const current = await authService.getActiveUserById(req.user.id);
-    if (!current) {
+    if (!(await refreshRequestUser(req))) {
       res.status(401).json({ message: "认证令牌无效或已过期" });
       return;
     }
-    attachUserSnapshot(req, current);
     next();
   } catch (err) {
     next(err as Error);
