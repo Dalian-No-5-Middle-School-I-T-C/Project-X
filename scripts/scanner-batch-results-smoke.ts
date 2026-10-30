@@ -153,6 +153,14 @@ try {
   const cancelledBatch = await cancelledResponse.json() as ScanBatchResponse;
   assert.equal(cancelledBatch.results.length, 1, "取消批次也要返回已识别的卷");
 
+  // error 是终态：0 页的失败会话必须能读回空结果，否则后处理页会一直 409 等待，
+  // 而「停止这一批」对终态会话不改变状态，页面永远出不来。
+  const emptyError = await store.createSession(card.id, "失败恢复");
+  await store.updateSessionStatus(emptyError.id, "error", "扫描仪启动失败");
+  const emptyErrorResponse = await fetch(`http://127.0.0.1:${address.port}/api/scanner/session/${emptyError.id}/validate`, { method: "POST" });
+  assert.equal(emptyErrorResponse.status, 200, "0 页的失败会话是终态，不能一直 409");
+  assert.equal(((await emptyErrorResponse.json()) as ScanBatchResponse).results.length, 0, "终态失败会话读回空批次");
+
   // Real bearer authentication on both route mounts; denials precede any mutation.
   const { authService } = await import("../src/server/services/AuthService");
   // Keep ephemeral login tokens in memory; never write the operator's token store.

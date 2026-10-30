@@ -150,7 +150,15 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
     setStoppingWait(true);
     try {
       for (const sessionId of waitingSessions) {
-        const response = await channel.request(`/api/scanner/scan/${sessionId}/cancel`, { method: "POST" });
+        let response: Response;
+        try {
+          response = await channel.request(`/api/scanner/scan/${sessionId}/cancel`, { method: "POST" });
+        } catch (error) {
+          // 网络失败时 authFetch 会拒绝；没有这层 catch 就只剩一条未处理的 rejection，设备照旧在送纸。
+          console.error("[scanner] 停止在途批次失败", error);
+          notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
+          return;
+        }
         if (!response.ok) {
           notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
           return;

@@ -629,7 +629,10 @@ export function createScannerRouter(twainEnabled = true): Router {
     if (status === "cancelled") return !isScanWorkerActive(sessionId);
     if (status !== "error") return false;
     const records = await listScanRecords(sessionId);
-    return records.length > 0 && records.every(record => record.ocr_status !== "pending" && record.ocr_status !== "processing");
+    // error 是终态，不会再有页面落进来：0 页的失败会话也要能读回空结果。
+    // 若这里要求至少有 1 条记录，后处理页会对这种会话一直 409 等待，
+    // 而「停止这一批」对终态会话不会改变任何状态，页面永远出不来。
+    return records.every(record => record.ocr_status !== "pending" && record.ocr_status !== "processing");
   }
 
   async function sessionResults(

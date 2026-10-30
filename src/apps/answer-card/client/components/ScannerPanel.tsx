@@ -774,7 +774,13 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
     // 通知后端终止 scanner-bridge.exe 子进程（不再只是关闭 SSE，否则 ADF 会继续送纸）
     const sid = sessionIdRef.current;
     if (sid) {
-      void authFetch(`/api/scanner/scan/${sid}/cancel`, { method: "POST" }).catch(() => undefined);
+      // authFetch 只在网络失败时拒绝，401/500 仍是正常 Response；不看 ok 就会在设备还在送纸时宣称已取消。
+      void authFetch(`/api/scanner/scan/${sid}/cancel`, { method: "POST" }).then((response) => {
+        if (!response.ok) notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
+      }, (error: unknown) => {
+        console.error("[scanner] 停止扫描失败", error);
+        notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
+      });
       handoffCurrentSession();
     }
   }
