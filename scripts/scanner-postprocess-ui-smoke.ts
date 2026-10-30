@@ -293,8 +293,8 @@ try {
   await clickText("删除");
   await settle();
   assert.deepEqual(deletes[0].body, { groupIds: ["1"], force: false }, "首次删除不得带 force");
-  assert.match(text(), /仍要删除/, "409 之后必须把代价讲明白");
-  await clickText("仍要删除");
+  assert.match(text(), /知晓代价，仍删除/, "409 之后必须把代价讲明白");
+  await clickText("知晓代价，仍删除");
   await settle();
   assert.deepEqual(deletes[1].body, { groupIds: ["1"], force: true }, "二次确认后带 force 重试");
 
@@ -305,8 +305,8 @@ try {
   await clickText("删除选中（1）");
   await clickText("删除");
   await settle();
-  assert.match(text(), /仍要删除/, "第二轮仍然先给出代价确认");
-  await clickText("仍要删除");
+  assert.match(text(), /知晓代价，仍删除/, "第二轮仍然先给出代价确认");
+  await clickText("知晓代价，仍删除");
   await settle();
   assert(!document.querySelector('[role="alertdialog"][data-state="open"]'), "强制删除失败后确认框必须关闭");
   assert.match(text(), /服务端删除失败（HTTP 500）/, "失败原因要显示在当前视图，不能躲在确认框背后");
