@@ -32,6 +32,7 @@ import { purgeStaleTmpUploads } from "../paperQuota";
 import { extractDocxText, extractPdfText, extractImageText } from "../paper-ocr";
 import { MAX_ANSWER_TEXT_LENGTH, MAX_QUESTION_NUMBER, parseAnswerKeyText } from "../answer-key-ocr";
 import { requireExamAccess } from "../middleware";
+import { refreshAuthenticatedUser } from "../../../../server/middleware/auth";
 
 /** 答案页上限：既是单批上传上限，也是单场考试的累计上限（页码查看/重识别/删除接口只认 1..该值） */
 const MAX_ANSWER_KEY_PAGES = 10;
@@ -241,7 +242,7 @@ export function examAnswerKeyRoutes(): Router {
 
   // POST /api/exams/:examId/answer-key/pages — 上传「本次正确答案」并可顺带 OCR
   // ?ocr=0 只入库不识别；识别结果作为草稿返回，不落库（教师确认后 PUT 保存）
-  router.post("/api/exams/:examId/answer-key/pages", holdAnswerCardDataMutationLock, requireExamAccess, (req, res, next) => {
+  router.post("/api/exams/:examId/answer-key/pages", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, requireExamAccess, (req, res, next) => {
     answerKeyUpload.array("files", MAX_ANSWER_KEY_PAGES)(req, res, (err) => {
       if (err) {
         // 安全（R14）：数量/体积越界时 multer 直接报错，已落盘的兄弟文件不会经过
@@ -432,7 +433,7 @@ export function examAnswerKeyRoutes(): Router {
   });
 
   // DELETE /api/exams/:examId/answer-key/pages/:pageIndex — 删除答案页（同页所有扩展名残留一并清理）
-  router.delete("/api/exams/:examId/answer-key/pages/:pageIndex", holdAnswerCardDataMutationLock, requireExamAccess, async (req: Request, res: Response) => {
+  router.delete("/api/exams/:examId/answer-key/pages/:pageIndex", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, requireExamAccess, async (req: Request, res: Response) => {
     try {
       if (invalidExamId(res, req.params.examId)) return;
       const examId = Number(req.params.examId);
