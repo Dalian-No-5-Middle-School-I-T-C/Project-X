@@ -97,7 +97,19 @@ function stageSqlitePrebuild() {
   fs.mkdirSync(downloads, { recursive: true });
   const name = `better-sqlite3-v${sqliteVersion}-electron-v${abi}-win32-ia32.tar.gz`;
   const archive = path.join(downloads, name);
-  const release = JSON.parse(execFileSync("curl", ["-fsSL", "--retry", "3", `https://api.github.com/repos/WiseLibs/better-sqlite3/releases/tags/v${sqliteVersion}`], { env, encoding: "utf8" }));
+  const releasePath = `repos/WiseLibs/better-sqlite3/releases/tags/v${sqliteVersion}`;
+  let releaseJson;
+  try {
+    releaseJson = execFileSync("curl", ["-fsSL", "--retry", "3", `https://api.github.com/${releasePath}`], { env, encoding: "utf8" });
+  } catch (error) {
+    // Authenticated GitHub CLI can avoid the public API's shared-IP rate limit.
+    try {
+      releaseJson = execFileSync("gh", ["api", releasePath], { env, encoding: "utf8" });
+    } catch {
+      throw error;
+    }
+  }
+  const release = JSON.parse(releaseJson);
   const asset = release.assets.find((a) => a.name === name);
   if (!asset || !/^sha256:[a-f0-9]{64}$/.test(asset.digest || "")) throw new Error(`Missing verified SQLite prebuild: ${name}`);
   if (!fs.existsSync(archive)) {
