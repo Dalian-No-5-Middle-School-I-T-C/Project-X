@@ -140,8 +140,16 @@ try {
   const stuckResponse = await fetch(`http://127.0.0.1:${address.port}/api/scanner/session/${stuck.id}/validate`, { method: "POST" });
   assert.equal(stuckResponse.status, 409, "还没收尾的会话必须返回 409，前端据此进入等待");
   await store.updateSessionStatus(stuck.id, "cancelled", "用户取消扫描");
+  // 取消接口先写 cancelled，worker 还在落页 / 识别：这时放行会读到半批，而且页面不会再刷新。
+  const { beginScanWorker, endScanWorker } = await import("../src/apps/answer-card/server/scanner/scanWorkers");
+  beginScanWorker(stuck.id);
+  const drainingResponse = await fetch(`http://127.0.0.1:${address.port}/api/scanner/session/${stuck.id}/validate`, { method: "POST" });
+  assert.equal(drainingResponse.status, 409, "取消但 worker 还没收尾时仍返回 409");
+  const drainingInfo = await (await fetch(`http://127.0.0.1:${address.port}/api/scanner/scan/${stuck.id}`)).json() as { workerActive?: boolean };
+  assert.equal(drainingInfo.workerActive, true, "会话仍在收尾时，面板交接要能看到 worker 未退出");
+  endScanWorker(stuck.id);
   const cancelledResponse = await fetch(`http://127.0.0.1:${address.port}/api/scanner/session/${stuck.id}/validate`, { method: "POST" });
-  assert.equal(cancelledResponse.status, 200, "取消的批次保留已扫页面，必须能重新读回");
+  assert.equal(cancelledResponse.status, 200, "取消的批次保留已扫页面，收尾后必须能重新读回");
   const cancelledBatch = await cancelledResponse.json() as ScanBatchResponse;
   assert.equal(cancelledBatch.results.length, 1, "取消批次也要返回已识别的卷");
 

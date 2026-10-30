@@ -18,6 +18,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { listSources, runScanSession, createScanSession, runOcrOnSession, getCardScansWithStudents } from "./scanner-service";
 import { cancelScan } from "./twain-bridge";
+import { isScanWorkerActive } from "./scanWorkers";
 import {
   listScanRecords,
   getScanRecordWithResult,
@@ -340,6 +341,8 @@ export function createScannerRouter(twainEnabled = true): Router {
       res.json({
         session,
         examId: exam?.id ?? null,
+        // 面板离开时据此判断「这一批还会不会有页落进来」：取消后 worker 还没收尾时不能撤占位。
+        workerActive: isScanWorkerActive(session.id),
         // 安全（R04）：不再回传服务端绝对路径；预览走 /api/scanner/scan-image/:recordId
         records: records.filter(r => scanPageAllowed(scope,
           scanRecordLayoutPage(card, r.page_num, r.side === "back" ? "back" : "front"))).map((r) => ({
@@ -620,7 +623,10 @@ export function createScannerRouter(twainEnabled = true): Router {
   async function sessionReadyForResults(sessionId: string, status: string): Promise<boolean> {
     // 取消的批次同样保留已扫页面（#320 崩溃恢复要靠它把那一批读回来），
     // 否则现场停扫后只能看到 409，已扫的卷再也打不开。
-    if (status === "completed" || status === "cancelled") return true;
+    // 但取消接口先把状态写成 cancelled，落页 / 识别还在后台跑：worker 没退出前
+    // 读到的会是不完整的一批，且后处理页不会再刷新，所以必须等它收尾。
+    if (status === "completed") return true;
+    if (status === "cancelled") return !isScanWorkerActive(sessionId);
     if (status !== "error") return false;
     const records = await listScanRecords(sessionId);
     return records.length > 0 && records.every(record => record.ocr_status !== "pending" && record.ocr_status !== "processing");

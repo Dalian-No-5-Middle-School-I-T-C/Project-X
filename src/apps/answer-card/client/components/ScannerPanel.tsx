@@ -655,15 +655,16 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
       return;
     }
     if (completedRef.current) return;
-    // SSE 不补发 page_done：晚连或重连时本地页数可能是 0，而服务端早就落了页。
-    // 直接撤占位会把已扫页面和它们的入口一起删掉，先问服务端记录数再决定。
+    // SSE 不补发 page_done：晚连或重连时本地页数可能是 0，而服务端早就落了页；
+    // 取消后 worker 也可能还在落页 / 识别。两种情况下撤占位都会把已扫页面和入口一起删掉：
+    // 先问服务端「有多少页、worker 是否还在跑」，只有确认没页且已收尾才撤。
     // 查询失败时保持现状（占位仍在 postSessions 里），留到下次进后处理页再核对。
     try {
       const response = await authFetch(`/api/scanner/scan/${encodeURIComponent(sid)}`);
       if (!response.ok) return;
-      const data = await response.json() as { records?: unknown };
+      const data = await response.json() as { records?: unknown; workerActive?: boolean };
       const serverPages = Array.isArray(data.records) ? data.records.length : 0;
-      if (serverPages > 0) onBatchArchivedRef.current?.(sid, serverPages);
+      if (serverPages > 0 || data.workerActive === true) onBatchArchivedRef.current?.(sid, serverPages);
       else onScanSessionAbandonedRef.current?.(sid);
     } catch (error) {
       console.warn("[scanner] 交接前核对会话记录失败，保留占位", error);
