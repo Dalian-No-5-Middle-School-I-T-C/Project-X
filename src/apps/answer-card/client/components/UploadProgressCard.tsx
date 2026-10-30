@@ -2,7 +2,7 @@ import { CardCorrectionButton } from "./CardCorrectionEditor";
 // v2.5.1: 右上角下弹上传进度卡（直扫/导入共用）。
 // 数据源 scannerUploadManager 单例；成功 3 秒自动收起，失败保留并可重试。
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { CheckCircle2, CloudUpload, PauseCircle, RefreshCw, X, XCircle } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronUp, CloudUpload, PauseCircle, RefreshCw, X, XCircle } from "lucide-react";
 import { Button, Input, Progress, Spinner } from "./ui/v2";
 import { ScanPreviewModal, type ScanPage } from "./ScanPreviewModal";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
@@ -28,6 +28,7 @@ export function UploadProgressCard() {
   const snap = useSyncExternalStore(scannerUploadManager.subscribe, scannerUploadManager.getState);
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   const [entered, setEntered] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
 
   // 入场下弹动画（挂载后下一帧过渡到位）
   useEffect(() => {
@@ -66,14 +67,31 @@ export function UploadProgressCard() {
 
   return (
     <div
-      className={`fixed right-4 top-14 z-50 flex max-h-[calc(100vh-5rem)] w-80 flex-col gap-2 overflow-y-auto transition-all duration-200 ${
+      className={`fixed z-50 flex max-h-[calc(100vh-5rem)] w-80 flex-col gap-2 overflow-y-auto transition-all duration-200 ${
         entered ? "translate-y-0 opacity-100" : "-translate-y-2 opacity-0"
       }`}
+      // 扫描工作台右侧有 340px 侧栏：进度卡贴在主区域右上角，避免盖住侧栏的
+      // 「图片去向 / 开始扫描 / 导入阅卷」等按钮。没有侧栏的页面沿用 1rem。
+      style={{ top: "calc(var(--px-page-header-h) + 0.5rem)", right: "var(--px-scanner-upload-right, 1rem)" }}
     >
-      <div className="flex justify-end pr-1">
+      <div className="flex items-center justify-end gap-2 pr-1">
         <ServerStatusIndicator />
+        <Button
+          variant="outline"
+          size="sm"
+          type="button"
+          className="h-7 bg-card px-2 text-xs shadow-1"
+          icon={collapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+          onClick={() => setCollapsed(value => !value)}
+        >
+          {collapsed ? `展开上传（${visible.length}）` : "收起上传"}
+        </Button>
       </div>
-      {visible.map((job) => (
+      {collapsed ? (
+        <div className="rounded-lg border border-info-border bg-card px-3 py-2 text-xs text-muted-foreground shadow-md">
+          上传任务 <span className="font-medium tabular-nums text-foreground">{visible.length}</span> 项正在后台处理
+        </div>
+      ) : visible.map((job) => (
         <UploadJobCard
           key={job.id}
           job={job}
