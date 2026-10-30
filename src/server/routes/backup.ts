@@ -63,11 +63,13 @@ const receiveRestoreZip: RequestHandler = (req, res, next) => {
   restoreInProgress = true;
   const state = req as RestoreRequest;
   let handedOff = false;
-  const releaseGuard = (): void => { restoreInProgress = false; };
+  let guardHeld = true;
+  const releaseGuard = (): void => {
+    if (!guardHeld) return;
+    guardHeld = false;
+    restoreInProgress = false;
+  };
   state.releaseRestoreGuard = releaseGuard;
-  // 只在上传阶段兜底释放：交出请求后由路由在恢复任务结束时释放，
-  // 否则客户端在解压 / 导入中途断开会让下一份恢复与仍在运行的任务并行。
-  res.once("close", () => { if (!handedOff) releaseGuard(); });
 
   const target = path.join(os.tmpdir(), `projectx-restore-upload-${crypto.randomUUID()}.zip`);
   const cleanup = (): void => { void rm(target, { force: true }).catch(() => undefined); };
@@ -82,9 +84,15 @@ const receiveRestoreZip: RequestHandler = (req, res, next) => {
     req.resume();
     if (!res.headersSent && !res.destroyed) res.status(status).json({ message });
     cleanup();
+    releaseGuard();
   };
 
-  res.once("close", () => { if (!handedOff) cleanup(); });
+  // 上传阶段一旦断连就中止并释放闸门：不能留给稍后的 finish 再调用 next()，
+  // 否则第二份恢复可能已经拿到闸门，第一份却又继续执行。
+  res.once("close", () => {
+    if (handedOff) return;
+    abortUpload(400, "上传中断，请重新选择备份文件");
+  });
   req.on("data", (chunk: Buffer) => {
     received += chunk.length;
     if (received > RESTORE_ZIP_UPLOAD_LIMIT_BYTES) abortUpload(413, limitMessage);
