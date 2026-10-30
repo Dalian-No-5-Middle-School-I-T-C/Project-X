@@ -36,6 +36,9 @@ function ScannerAppInner() {
   const [page, setPage] = useState<Page>("select");
   const [selectedCardId, setSelectedCardId] = useState<string>("");
   const [selectedCardTitle, setSelectedCardTitle] = useState<string>("");
+  // 面板卸载后的交接要查服务端页数，回调可能晚于换卡：晚到的旧批次只能落回原卡或卡片列表。
+  const currentCardIdRef = useRef("");
+  currentCardIdRef.current = selectedCardId;
   // v2.7.2：本卡已扫完的批次会话；返回工作台续扫后新批次累加进来，异常队列共用同一份
   const [postSessions, setPostSessions] = useState<Array<{ sessionId: string; pageCount: number }>>([]);
   /** 离开工作台时 selectedCardId 会先被清空，而扫描面板的卸载清理要等到提交阶段才归档；
@@ -219,6 +222,9 @@ function ScannerAppInner() {
           setPostSessions(prev => prev.filter(p => p.sessionId !== sid));
         }}
         onBatchArchived={(sid, pageCount) => {
+          // 已经切到另一张卡时，旧卡的晚到交接不能混进新卡的后处理列表。
+          const current = currentCardIdRef.current;
+          if (current && current !== selectedCardId) return;
           setPostSessions(prev => [...prev.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }]);
         }}
         onScansComplete={(sid, pageCount) => {
