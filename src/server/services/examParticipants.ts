@@ -59,6 +59,8 @@ export async function searchStudentsForExam(
 /**
  * 在单场考试的应考快照内搜索（扫描端 API Key 订正重复考号用）。
  * 只返回已冻结进 exam_participants 的学生，不枚举全校名册。
+ * 有效行与 listParticipants / isExamParticipant 相同：已有 explicit 时忽略残留 roster。
+ * 停用账号仍保留：快照是开考时的应考事实，不按当前 is_active 再剔一遍。
  */
 export async function searchExamParticipantRoster(
   db: DbAdapter,
@@ -73,7 +75,14 @@ export async function searchExamParticipantRoster(
     `SELECT u.id, u.name, u.student_number
      FROM exam_participants ep
      JOIN users u ON u.id = ep.student_id
-     WHERE ep.exam_id = ? AND u.role_id = ? AND u.is_active = 1
+     WHERE ep.exam_id = ? AND u.role_id = ?
+       AND (
+         ep.source = 'explicit'
+         OR NOT EXISTS (
+           SELECT 1 FROM exam_participants ep_exp
+           WHERE ep_exp.exam_id = ep.exam_id AND ep_exp.source = 'explicit'
+         )
+       )
        AND (u.student_number LIKE ? ESCAPE '!' OR u.name LIKE ? ESCAPE '!')
      ORDER BY u.student_number
      LIMIT 20`,

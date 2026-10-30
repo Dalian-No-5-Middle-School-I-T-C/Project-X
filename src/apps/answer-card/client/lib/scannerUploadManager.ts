@@ -1119,6 +1119,17 @@ if (j.cancelled) throw cancelledError(j);
       return jobFetch(job)(url, init);
     },
     startUpload,
+    /** 考试信息晚于入队到达时，只补上还不知道考试的本机会话任务。 */
+    assignLocalSessionExamId(localSessionId: string, examId: number): void {
+      let changed = false;
+      for (const job of jobs) {
+        if (job.localSessionId === localSessionId && job.examId == null) {
+          job.examId = examId;
+          changed = true;
+        }
+      }
+      if (changed) notify();
+    },
     hasGroupUpload,
     groupUploadBlock,
     abandonGroupUpload,

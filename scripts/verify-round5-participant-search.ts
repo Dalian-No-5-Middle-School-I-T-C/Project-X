@@ -38,7 +38,12 @@ async function main(): Promise<void> {
     CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, student_number TEXT, role_id INTEGER, is_active INTEGER DEFAULT 1);
     CREATE TABLE exams (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, class_id INTEGER, grade_id INTEGER);
     CREATE TABLE classes (id INTEGER PRIMARY KEY, name TEXT, grade_id INTEGER, archived_at DATETIME);
-    CREATE TABLE class_students (class_id INTEGER, student_id INTEGER);
+    CREATE TABLE grades (id INTEGER PRIMARY KEY, archived_at DATETIME);
+    CREATE TABLE class_students (class_id INTEGER, student_id INTEGER, joined_at TEXT);
+    CREATE TABLE exam_class_memberships (
+      exam_id INTEGER, student_id INTEGER, class_id INTEGER, joined_at TEXT,
+      PRIMARY KEY (exam_id, student_id, class_id)
+    );
     CREATE TABLE exam_participants (exam_id INTEGER, student_id INTEGER, source TEXT,
       PRIMARY KEY (exam_id, student_id));
     CREATE TABLE student_scores (exam_id INTEGER, student_id INTEGER,
@@ -94,6 +99,11 @@ async function main(): Promise<void> {
   const frozen = await searchExamParticipantRoster(db, 1, "2410");
   ok(frozen.map((s) => s.student_number).join(",") === "24101,24102",
     `冻结名单仍是开考时的 24101/24102，不含后来加入现班的 24105（实际 ${frozen.map((s) => s.student_number).join(",")}）`);
+  await db.run("INSERT INTO exam_participants (exam_id, student_id, source) VALUES (1, 4, 'roster')");
+  const withInactive = await searchExamParticipantRoster(db, 1, "2410");
+  ok(withInactive.map((s) => s.student_number).join(",") === "24101,24102,24103",
+    `冻结名单里的停用学生仍可按考号联想（实际 ${withInactive.map((s) => s.student_number).join(",")}）`);
+  await db.run("DELETE FROM exam_participants WHERE exam_id = 1 AND student_id = 4");
   await db.run("DELETE FROM class_students WHERE student_id IN (1, 5)");
   await db.run("INSERT INTO class_students (class_id, student_id) VALUES (1, 1)");
 
@@ -130,6 +140,9 @@ async function main(): Promise<void> {
   ok(mixedList.map((r) => r.student_id).join(",") === "2,5",
     `历史混合行只暴露 explicit B/C（实际 ${mixedList.map((r) => r.student_id).join(",")}）`);
   ok(!(await isExamParticipant(db, 1, 1)), "历史残留 roster A 不再绕过入库门控");
+  const mixedSearch = await searchExamParticipantRoster(db, 1, "2410");
+  ok(mixedSearch.map((s) => s.student_number).join(",") === "24102,24105",
+    `历史混合名单搜索只返回有效 explicit B/C（实际 ${mixedSearch.map((s) => s.student_number).join(",")}）`);
 
   console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   if (failed > 0) { console.error("失败项:\n" + failures.map((f) => "  - " + f).join("\n")); process.exit(1); }

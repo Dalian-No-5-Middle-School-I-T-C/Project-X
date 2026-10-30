@@ -143,6 +143,15 @@ const { scannerUploadManager } = await import("../src/apps/answer-card/client/li
 const { serverStatus } = await import("../src/apps/answer-card/client/lib/remoteServerStatus");
 const startUpload = scannerUploadManager.startUpload;
 scannerUploadManager.startUpload = input => { uploads.push(input); return `upload-${uploads.length}`; };
+const examAssignments: Array<{ localSessionId: string; examId: number }> = [];
+const assignExam = scannerUploadManager.assignLocalSessionExamId.bind(scannerUploadManager);
+scannerUploadManager.assignLocalSessionExamId = (localSessionId, examId) => {
+  examAssignments.push({ localSessionId, examId });
+  for (const input of uploads) {
+    if (input.localSessionId === localSessionId && input.examId == null) input.examId = examId;
+  }
+  assignExam(localSessionId, examId);
+};
 const root = createRoot(document.getElementById("root")!);
 async function settle() { await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); }); }
 async function click(label: string) {
@@ -418,11 +427,34 @@ try {
   assert(participantSearchUrls.some((entry) => entry.includes("/api/exams/12/participant-search")), "刷新后按新的考试搜索");
   assert(!participantSearchUrls.some((entry) => entry.includes("/api/exams/11/")), "不能再查上一场的名册");
 
+  metaBehavior = "hold";
+  snapshotExamId = 13;
+  includeRosterConflict = true;
+  const beforeHeldMeta = uploads.length;
+  const assignmentsBeforeHold = examAssignments.length;
+  await click("开始新扫描"); await settle();
+  await click("开始扫描"); await settle();
+  await act(async () => { streams.at(-1)!.done(); });
+  await settle();
+  assert.equal(uploads.length, beforeHeldMeta + 2, "考试信息一直不返回时，成功卷仍然先入队");
+  assert.equal(uploads.at(-1)?.examId ?? null, null, "迟到的考试信息不能提前写进上传任务");
+  assert(!document.body.textContent?.includes("汇总失败"), "考试信息未返回不能显示成汇总失败");
+  assert(hasAction("开始新扫描"), "汇总不能一直停在等待考试信息");
+  assert(!document.querySelector('[aria-label="搜索学生"]'), "考试信息未返回时不能沿用上一场名册");
+  releaseMetaHold?.();
+  await settle();
+  assert.equal(examAssignments.length, assignmentsBeforeHold + 1, "考试信息到达后补到已入队的任务");
+  assert.equal(examAssignments.at(-1)?.examId, 13);
+  assert.equal(uploads.at(-1)?.examId, 13, "补上的考试 ID 就是本场，而不是上一场");
+  assert(document.querySelector('[aria-label="搜索学生"]'), "考试信息到达后恢复姓名搜索");
+
   console.log("PASS scanner panel React/SSE: session metadata; partial view/correction/save; terminal replay and reconnect hydrate persisted pages; hydration retry, zero-page and next-session recovery");
 } finally {
   releaseCard();
   await act(async () => { root.unmount(); });
-  serverStatus.stop(); scannerUploadManager.startUpload = startUpload;
+  serverStatus.stop();
+  scannerUploadManager.startUpload = startUpload;
+  scannerUploadManager.assignLocalSessionExamId = assignExam;
   dom.window.close();
   for (const [name, descriptor] of globals) {
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);

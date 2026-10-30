@@ -415,6 +415,17 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     }
   }
 
+  async function readSessionExamId(sid: string): Promise<number | null> {
+    try {
+      const metaResponse = await authFetch(`/api/scanner/scan/${sid}`);
+      if (!metaResponse.ok) return null;
+      const meta = await metaResponse.json();
+      return typeof meta.examId === "number" ? meta.examId : null;
+    } catch {
+      return null;
+    }
+  }
+
   async function readResults(sid: string, save = false): Promise<ScanBatchResponse> {
     const remotePreview = !save && getScannerMode() === "remote";
     const res = await authFetch(`/api/scanner/session/${sid}/${remotePreview ? "results?previewOnly=1" : save ? "results" : "validate"}`, { method: remotePreview ? "GET" : "POST" });
@@ -457,20 +468,31 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       applyResults(data);
       // 姓名联想只服务重复卷。先丢掉上一场的考试，避免新请求慢或失败时仍按旧名册填考号。
       assignSessionExamId(null);
-      let resolvedExamId: number | null = examFromSnapshot ?? null;
-      if (examFromSnapshot === undefined) {
-        try {
-          const metaResponse = await authFetch(`/api/scanner/scan/${sid}`);
-          if (!metaResponse.ok) throw new Error(`读取考试信息失败（HTTP ${metaResponse.status}）`);
-          const meta = await metaResponse.json();
-          resolvedExamId = typeof meta.examId === "number" ? meta.examId : null;
-        } catch {
-          resolvedExamId = null;
+      const metaPromise = examFromSnapshot === undefined ? readSessionExamId(sid) : null;
+      let resolvedExamId: number | null = typeof examFromSnapshot === "number" ? examFromSnapshot : null;
+      if (metaPromise) {
+        // 已完成的读取走微任务，会先于下一拍定时器；卡住的读取不能挡住入队。
+        const pending = Symbol("session-exam-pending");
+        const winner = await Promise.race([
+          metaPromise,
+          new Promise<typeof pending>((resolve) => { setTimeout(() => resolve(pending), 0); }),
+        ]);
+        if (!current()) return;
+        if (winner !== pending) {
+          resolvedExamId = winner;
+          assignSessionExamId(resolvedExamId);
+        } else {
+          void metaPromise.then((id) => {
+            if (!current()) return;
+            assignSessionExamId(id);
+            if (id != null) scannerUploadManager.assignLocalSessionExamId(sid, id);
+          });
         }
+      } else if (current()) {
+        assignSessionExamId(resolvedExamId);
       }
       if (!current()) return;
-      assignSessionExamId(resolvedExamId);
-      // 远端模式：成绩汇总一完成即自动后台上传。联想元数据失败不能挡住这一步。
+      // 远端模式：成绩汇总一完成即自动后台上传。联想元数据失败或迟迟不回都不能挡住这一步。
       if (!partial && getScannerMode() === "remote" && isRemoteServerConfigured()) {
         queueSuccessfulUploads(data, sid, resolvedExamId);
       }
