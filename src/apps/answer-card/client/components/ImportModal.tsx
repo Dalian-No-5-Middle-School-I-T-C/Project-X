@@ -92,7 +92,7 @@ export function ImportModal({ title, csvType, onImport, onClose }: ImportModalPr
   }
 
   const hint = csvType === "student"
-    ? "格式：班级(几年几班),学号,姓名（可含表头）。账号自动生成 P+学号，密码=账号。"
+    ? "格式：班级(几年几班),学号,姓名（可含表头）。账号自动生成为 P+学号，初始密码由系统随机生成，可在「导出账密」中查看。"
     : "格式：科目,姓名（可含表头）。账号自动生成 T+6位随机数，密码为6位随机数字。";
 
   const placeholder = csvType === "student"

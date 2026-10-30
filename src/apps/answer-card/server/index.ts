@@ -977,7 +977,7 @@ export async function createApp(): Promise<express.Express> {
         const askedGradingFields = GRADING_SELF_SETTING_FIELDS.filter((field) => body[field] !== undefined);
         if (askedGradingFields.length > 0) {
           res.status(403).json({
-            message: `权限不足：修改阅卷设置需要 ${PERMISSIONS.GRADE_WRITE}`
+            message: "权限不足：修改阅卷设置需要阅卷管理权限。"
           });
           return;
         }
@@ -3201,7 +3201,7 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       await clearExplicitParticipants(db, examId);
-      res.json({ ok: true, message: "显式应考名单已清除（考试已回落年级/班级名册快照）" });
+      res.json({ ok: true, message: "应考名单已清除，已恢复为年级/班级名册。" });
     } catch (error) {
       next(error);
     }

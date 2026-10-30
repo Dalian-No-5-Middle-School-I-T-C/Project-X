@@ -546,8 +546,8 @@ async function assertDemoCardIdsFree(db: DbAdapter): Promise<void> {
   throw refuse(
     "DEMO_CARD_ID_CONFLICT",
     `演示答题卡号与 ${rows.length} 张真实答题卡冲突：${detail}。`
-    + `为避免把演示题块与演示答案写进真实卡（那会让真实考试按演示答案判分），本次导入已整单取消，未改动任何数据。`
-    + `请先删除或重建这些真实答题卡（重建会拿到新卡号），再导入演示数据。`,
+    + `为避免影响真实考试，本次导入已取消，未改动任何数据。`
+    + `请先更换演示卡号或处理冲突的真实答题卡后再导入。`,
     { cardIds: rows.map((r) => String(r.id)) }
   );
 }
@@ -576,17 +576,13 @@ async function assertDemoTeacherUsernamesAvailable(db: DbAdapter): Promise<void>
     ) as { id: number; name: string; is_demo: number | null } | undefined;
     if (!row || Number(row.is_demo) === 1) continue;
     taken.push(username);
-    details.push(
-      `${username}（id=${row.id}，名称「${row.name}」）不是演示账号：`
-      + `确认是历史版本中断导入留下的残留时，可显式认领 `
-      + `"UPDATE users SET is_demo = 1 WHERE id = ${row.id}"；是真实账号请先改名或删除`
-    );
+    details.push(`${username}（名称「${row.name}」）已被非演示账号占用，请先为该账号改名或删除；如确认是历史导入残留，请联系维护人员核实`);
   }
   if (taken.length === 0) return;
   throw refuse(
     "DEMO_TEACHER_USERNAME_TAKEN",
-    `用户名 ${taken.join("、")} 被非演示账号占用（该用户名是演示账号保留名）。`
-    + `本次导入已整单取消，未改动任何数据。${details.join("；")}。`,
+    `演示账号保留用户名 ${taken.join("、")} 已被占用。本次导入已取消，未改动任何数据。`
+    + `${details.join("；")}。`,
     { usernames: taken }
   );
 }
@@ -611,9 +607,8 @@ async function assertDemoImportConfirmed(db: DbAdapter, confirmed?: boolean): Pr
   if (realExams === 0 && realUsers === 0) return;
   throw refuse(
     "DEMO_IMPORT_REQUIRES_CONFIRMATION",
-    `当前库已有真实数据（${realExams} 场真实考试 / ${realUsers} 个真实账号）。`
-    + `演示数据会新增 16 个演示账号与十几场「演示-」前缀考试，且演示账号口令会写进本库。`
-    + `确认要在这样的库上导入请重试并带上确认串 ${DEMO_IMPORT_PRODUCTION_CONFIRM}。`,
+    `当前库已有真实数据（${realExams} 场考试、${realUsers} 个账号）。`
+    + `导入演示数据会新增演示账号和「演示-」前缀考试，且演示账号口令会写入本库。`,
     { confirm: DEMO_IMPORT_PRODUCTION_CONFIRM, realExams, realUsers }
   );
 }

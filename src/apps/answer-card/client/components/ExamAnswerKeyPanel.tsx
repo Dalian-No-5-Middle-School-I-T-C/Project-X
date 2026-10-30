@@ -215,7 +215,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
     // 没有这道守卫，一次加载失败后点「保存答案」就会以 answers:[] 清空该考试全部既有答案
     // （PR 审查 P1）。
     if (!data || loadError) {
-      setPanelError("答案配置尚未成功加载，无法保存（避免以空答案覆盖既有数据），请先重试加载");
+      setPanelError("答案尚未加载成功，请先重试加载再保存。");
       return;
     }
     const cleaned: Array<{ questionNumber: number; answerText: string; pageIndex: number | null }> = [];
@@ -266,7 +266,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
         <DialogHeader>
           <DialogTitle>原卷与答案解析 — {examName}</DialogTitle>
           <DialogDescription>
-            学生只有在成绩已公布且「显示原卷」开启时才能看到原卷与逐题答案。答案只存文字、不判对错。
+            开启「显示原卷」且成绩公布后，学生可查看原卷与逐题答案。答案仅作文本对照。
           </DialogDescription>
         </DialogHeader>
 
@@ -339,7 +339,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
 
               {/* 本次正确答案：上传 + OCR 草稿 */}
               <section className="flex flex-col gap-2">
-                <h4 className="m-0 text-base font-medium text-foreground">本次正确答案（上传后可 OCR 识别，识别结果为草稿）</h4>
+                <h4 className="m-0 text-base font-medium text-foreground">本次正确答案</h4>
                 <ControlRow
                   htmlFor="answer-key-ocr"
                   control={<Checkbox id="answer-key-ocr" checked={withOcr} onCheckedChange={(checked) => setWithOcr(checked === true)} />}
@@ -406,7 +406,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
                   </Button>
                 </div>
                 <p className="m-0 text-xs text-muted-foreground">
-                  「归属页」决定答案渲染在哪张原卷图片下方；留空则归到最后一页，不会丢答案。
+                  「归属页」决定答案显示在哪一页原卷下方；留空时显示在最后一页。
                 </p>
                 {rows.length === 0 ? (
                   <p className="m-0 py-4 text-center text-sm text-muted-foreground">还没有答案，可上传后 OCR，或点击「添加一题」手动录入。</p>

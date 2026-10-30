@@ -370,9 +370,11 @@ ok(
   && (await count("SELECT COUNT(*) AS n FROM grades WHERE is_demo = 1")) === snapshot6.demoGrades,
   "拒绝时零改动：用户/考试/答题卡计数不变，没有留下演示年级"
 );
+const refusal6Message = String(refusal6?.message ?? "");
 ok(
-  String(refusal6?.message ?? "").includes("UPDATE users SET is_demo = 1 WHERE id ="),
-  "错误信息给出显式认领语句（归属由人定性，不由程序推断）"
+  !refusal6Message.includes("UPDATE users")
+  && refusal6Message.includes("联系维护人员"),
+  "错误信息不再给出裸 SQL，改为联系维护人员核实归属"
 );
 
 // 人确认这是 v1.9.8 之前中断导入留下的残留 → 认领为演示账号后导入照旧完成，公开口令当场失效

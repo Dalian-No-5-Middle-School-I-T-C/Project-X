@@ -130,7 +130,7 @@ export function AssignedFormulaModal({ examId, examName, subject, onClose, onSav
 
               {formula?.type === "custom" && (
                 <p className="text-sm text-destructive-fg" role="alert">
-                  此考试保存了历史自定义表达式。该功能已因安全原因停用，历史配置和既有赋分不会被自动修改；请选择上方比例或线性预设后再保存。
+                  此考试保存过自定义公式，该功能已停用。历史配置和已有赋分不会改变；请选择上方的比例或线性预设后保存。
                 </p>
               )}
 

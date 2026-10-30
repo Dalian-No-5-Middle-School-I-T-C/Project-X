@@ -161,7 +161,7 @@ export function ReportBody({
           <p className="m-0 font-semibold">较上次考试{previousName ? `（${previousName}）` : ""}</p>
           <p className="m-0 mt-1 text-[#333]">
             得分率{scoreRateDelta == null
-              ? "—（缺少满分依据，不做进退步判定）"
+              ? "—"
               : scoreRateDelta > 0
                 ? `↑ +${scoreRateDelta} pp`
                 : scoreRateDelta < 0

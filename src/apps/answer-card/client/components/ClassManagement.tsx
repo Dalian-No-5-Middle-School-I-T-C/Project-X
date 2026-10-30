@@ -425,7 +425,7 @@ export function ClassManagement() {
 
   async function addStudent(studentId: number) {
     if (!selectedClassId) return;
-    if (!confirm("将该生加入本班？加入后该生历次考试将按加入后的在读班级统计。")) return;
+    if (!confirm("将该生加入本班？加入后，该生历次考试按本班统计。")) return;
     setBusy(true);
     try {
       await fetchJson(`/api/classes/${selectedClassId}/students`, {
@@ -445,7 +445,7 @@ export function ClassManagement() {
   }
 
   async function removeStudent(studentId: number, name: string) {
-    if (!selectedClassId || !confirm(`将「${name}」移出班级？移出后该生历次考试将改按其剩余在读班级统计；已无在读班级时保持原归属。`)) return;
+    if (!selectedClassId || !confirm(`将「${name}」移出班级？如有剩余在读班级，该生历次考试改按剩余班级统计。`)) return;
     setBusy(true);
     try {
       await fetchJson(`/api/classes/${selectedClassId}/students/${studentId}`, { method: "DELETE" });
@@ -927,7 +927,7 @@ export function ClassManagement() {
               </Select>
             </Field>
             <div className="flex flex-col gap-2">
-              <span className="text-xs text-muted-foreground">任课教师（按学科，从该学科教师中选择；班主任已含其本学科）</span>
+              <span className="text-xs text-muted-foreground">任课教师（按学科选择；班主任已包含本人学科）</span>
               {TEACHER_SUBJECTS.map((subject) => {
                 const assigned = classTeachers.assignments.filter((item) => item.subject === subject);
                 const options = teachers.filter((t) => t.subject === subject && t.id !== classTeachers.headTeacherId && !assigned.some((item) => item.teacherId === t.id));
@@ -1002,7 +1002,7 @@ export function ClassManagement() {
               <Input
                 value={newStudentNumber}
                 onChange={(e) => setNewStudentNumber(e.target.value)}
-                placeholder="学号（默认作为用户名和初始密码）"
+                placeholder="学号（账号为 P+学号，初始密码随机生成）"
                 disabled={busy}
               />
             </Field>
@@ -1042,7 +1042,7 @@ export function ClassManagement() {
               将 {moveTarget?.name}（{moveTarget?.student_number ?? moveTarget?.username}）迁移到：
             </p>
             <p className="text-sm text-muted-foreground">
-              迁移后该学生历次考试的班级归属与班级统计均按新班级计算，考号无需改动。
+              迁移后，该生历次考试的班级归属和统计按新班级计算，考号不变。
             </p>
             <Field label="年级">
               <Select

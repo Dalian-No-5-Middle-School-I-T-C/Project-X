@@ -37,7 +37,7 @@ export function makeGate(enforce: boolean, readPerm: string, writePerm: string) 
     }
     const required = req.method === "GET" || req.method === "HEAD" ? readPerm : writePerm;
     if (!roleHasPermission(req.user.role_id, required)) {
-      res.status(403).json({ message: `权限不足：缺少 ${required}` });
+      res.status(403).json({ message: "权限不足：当前账号没有执行此操作的权限。" });
       return;
     }
     next();
@@ -549,7 +549,7 @@ export function requirePermissionCompat(permission: string) {
       return;
     }
     if (!roleHasPermission(req.user.role_id, permission)) {
-      res.status(403).json({ message: `权限不足：缺少 ${permission}` });
+      res.status(403).json({ message: "权限不足：当前账号没有执行此操作的权限。" });
       return;
     }
     next();
@@ -799,11 +799,11 @@ export async function requireWholeExamGradingAccessForExam(
     return;
   }
   if (!(await isTeacherPermittedForWholeExam(req.user, examId, "can_grade"))) {
-    res.status(403).json({ message: "权限不足：改分/改答案需要本场考试的整卷阅卷授权（单题块授权请走题块网阅）" });
+    res.status(403).json({ message: "权限不足：需要本场考试的整卷阅卷授权。单题块阅卷请在题块网阅中操作。" });
     return;
   }
   if ((await reliesOnLegacyGradingFallback(req.user, examId)) && !(await hasExamOrganizationAffinity(req.user, examId))) {
-    res.status(403).json({ message: "权限不足：你与这场考试没有组织归属关系（未创建、未任教、也非该班班主任），不能修改整卷成绩或答案" });
+    res.status(403).json({ message: "权限不足：你与这场考试没有关联，不能修改整卷成绩或答案。" });
     return;
   }
   next();

@@ -114,7 +114,7 @@ function ScannerAppInner() {
             try { setSkin(localStorage.getItem("projectx-skin") || DEFAULT_SKIN); } catch { /* ignore */ }
             setShowOnboarding(false);
           }}
-          subtitle="请选择一套视觉风格后再进入登录；选定后将保存到本机并同步到账号偏好"
+          subtitle="请选择一套界面皮肤后再登录；选择会保存在本机并同步到账号。"
           footerNote="如需更改皮肤，可随时在登录页右上角的调色盘按钮切换；登录后也可在各页面顶栏右侧切换。"
         />
       );

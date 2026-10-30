@@ -212,7 +212,7 @@ function DistributionCard({ d, showTotalNote, bands, hasFullScore }: { d: Distri
     <section className="flex flex-col gap-2 rounded-lg border border-border-subtle bg-card p-4">
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="text-sm font-semibold text-foreground">{d.label} 分布</h3>
-        {hasFullScore ? <DifficultyBadge value={d.difficulty} bands={bands?.difficulty} /> : <span className="text-xs text-muted-foreground">难度系数 P：—（满分未知）</span>}
+        {hasFullScore ? <DifficultyBadge value={d.difficulty} bands={bands?.difficulty} /> : <span className="text-xs text-muted-foreground">难度系数 P：—（未设置满分）</span>}
         <DiscriminationBadge value={d.discrimination} bands={bands?.discrimination} sampleSize={n} />
         <span className="text-xs tabular-nums text-muted-foreground">
           样本 {n} · 均分 {formatScore(d.mean)} · 标准差 {formatScore(d.stdDev)}
@@ -223,7 +223,7 @@ function DistributionCard({ d, showTotalNote, bands, hasFullScore }: { d: Distri
       <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
         {hasFullScore
           ? <HistogramChart bins={d.bins} mean={d.mean} stdDev={d.stdDev} sampleSize={n} segmentSize={d.segmentSize} />
-          : <EmptyState size="sm" title="满分未知，暂无分数段分布" />}
+          : <EmptyState size="sm" title="未设置满分，暂无分数段分布" />}
         <QQChart qq={d.qq ?? []} />
       </div>
 
@@ -231,8 +231,8 @@ function DistributionCard({ d, showTotalNote, bands, hasFullScore }: { d: Distri
 
       <p className="mt-2 text-xs text-muted-foreground">
         {d.assignedAvailable
-          ? "已启用赋分：以上分布为赋分后总分。"
-          : (d.scope === "total" && showTotalNote ? "总分分布仅大考可用；本次为普通考试，已省略。" : "未启用赋分：以上为原始分分布。")}
+          ? "已启用赋分：以上为赋分后总分。"
+          : showTotalNote ? null : "以上为原始分分布。"}
       </p>
     </section>
   );
@@ -377,7 +377,7 @@ function NormalityTable({ normality }: { normality: NormalityResult }) {
           </TableBody>
         </Table>
       </TableWrap>
-      <p className="mt-1 text-xs text-muted-foreground">注：p≥0.05 视为不拒绝正态假设。</p>
+      <p className="mt-1 text-xs text-muted-foreground">p≥0.05 表示数据与正态分布没有明显差异。</p>
     </div>
   );
 }
