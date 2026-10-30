@@ -29,6 +29,8 @@ export interface PostprocessCorrectionViewProps {
   draftOnly?: boolean;
   /** 从异常队列「去改这题」带过来的题号：挂载后把该行滚进视野 */
   highlightQuestion?: SubjectiveQuestionNumber | null;
+  /** 本编辑器当前是否可见：隐藏期间考号面板可能改了共享草稿，重新显示时要先同步。 */
+  visible?: boolean;
   /** 放弃半成品续传成功后回调：调用方要清掉自己的「已入队」标记，否则改完不会再整卷上传 */
   onUploadAbandoned?: () => void;
   onSaved: () => void | Promise<void>;
@@ -66,12 +68,26 @@ function markLowConfidenceConfirmation<T extends { sourceId: string; selected: s
   });
 }
 
+/** 只比较格选内容本身：同一份草稿重新读出来是新数组，不能因此再写一遍。 */
+function sameEditContent(a: CorrectionEdit[], b: CorrectionEdit[]): boolean {
+  if (a.length !== b.length) return false;
+  const normalize = (list: CorrectionEdit[]) => [...list]
+    .map(edit => ({
+      sourceId: edit.sourceId,
+      revision: edit.revision,
+      selected: [...edit.selected].sort(),
+      touched: [...(edit.touched ?? [])].sort(),
+    }))
+    .sort((left, right) => left.sourceId.localeCompare(right.sourceId));
+  return JSON.stringify(normalize(a)) === JSON.stringify(normalize(b));
+}
+
 /** 卡面选项字母表：A..（optionCount） */
 function optionLetters(count: number | undefined): string[] {
   return Array.from({ length: Math.max(0, count ?? 0) }, (_, index) => String.fromCharCode(65 + index));
 }
 
-export function PostprocessCorrectionView({ channel, sessionId, groupId, initialSaved = false, draftOnly = false, highlightQuestion, onUploadAbandoned, onSaved }: PostprocessCorrectionViewProps) {
+export function PostprocessCorrectionView({ channel, sessionId, groupId, initialSaved = false, draftOnly = false, highlightQuestion, visible = true, onUploadAbandoned, onSaved }: PostprocessCorrectionViewProps) {
   const url = channel.correctionUrl(sessionId, groupId);
   const [document, setDocument] = useState<CorrectionDocument | null>(null);
   const [edits, setEdits] = useState<CorrectionEdit[]>([]);
@@ -94,6 +110,8 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
   const tableRef = useRef<HTMLDivElement>(null);
   /** 保存成功后要迁到新 revision 草稿上的半截考号（考号面板输入、本编辑器不提交）。 */
   const pendingTypedRef = useRef<string | undefined>(undefined);
+  /** 最近一次草稿写入是否失败：失败时本机没有新副本，重新显示不能拿旧草稿顶掉内存里的改动。 */
+  const draftWriteFailedRef = useRef(false);
   /** 本组件创建的原卷 blob URL；切卷/卸载时统一回收，避免多页大图把渲染进程撑爆。 */
   const blobUrlsRef = useRef<Set<string>>(new Set());
 
@@ -138,6 +156,20 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
     })();
     return () => { alive = false; };
   }, [url, channel, loadTick, sessionId, groupId]);
+
+  // 考号面板与这里共用同一份草稿。本编辑器隐藏期间（队列视图里点数字格改考号），
+  // 草稿会被另一边更新，而这里的 edits 还停在旧值；重新显示时先按草稿同步，
+  // 否则下一次写草稿和「保存修改」都会把考号改动覆盖回旧值（点格不产生 typed）。
+  useEffect(() => {
+    if (!visible || !document || draftWriteFailedRef.current) return;
+    const draft = readCorrectionDraft(document.card.id, sessionId, groupId);
+    if (!draft || !draftMatchesDocument(draft, document)) return;
+    if (sameEditContent(edits, draft.edits)) return;
+    setEdits(draft.edits);
+    setDraftRestored(true);
+    // 只在显示状态或文档变化时同步；编辑过程中不能拿草稿反顶本地状态。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, document, sessionId, groupId]);
 
   // 只按当前页取原图：一张 A4 300DPI 解码后约 35MB，整卷十几页同时留在内存里，
   // 异常卷一页页翻就可能把渲染进程顶到 OOM。切页时再取，离开时统一 revoke。
@@ -280,7 +312,9 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
       setDraftPersisted(null);
       return;
     }
-    setDraftPersisted(writeCorrectionDraft(document.card.id, sessionId, groupId, document, edits, carriedTyped));
+    const persisted = writeCorrectionDraft(document.card.id, sessionId, groupId, document, edits, carriedTyped);
+    draftWriteFailedRef.current = !persisted;
+    setDraftPersisted(persisted);
   }, [document, edits, dirty, busy, locked, sessionId, groupId]);
 
   const missing = document?.pages.some(p => !p.recognition.geometry) ?? false;

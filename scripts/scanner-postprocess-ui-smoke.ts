@@ -756,6 +756,51 @@ try {
     await act(async () => { typedDraftRoot.unmount(); });
     typedDraftHost.remove();
 
+    // 隐藏的订正页不能用旧 edits 覆盖考号面板刚点出的格选：重新显示时按共享草稿同步，
+    // 否则写草稿和「保存修改」都会把考号改动丢回旧值（点数字格不产生 typed）。
+    studentDocs.set("c", docFor("c"));
+    const cellDoc = studentDocs.get("c")!;
+    const cellPage = cellDoc.pages[0];
+    const digitCells = correctionCells(cellPage.layout).filter(cell => cell.type === "student_digit");
+    assert(digitCells.length > 0, "夹具需要有考号数字格");
+    const droppedCell = digitCells.find(cell => cellPage.selected.includes(cell.id)) ?? digitCells[0];
+    // 同列换一个数字格：既模拟考号面板点格，又保持考号完整（缺位数会让保存按钮因 errors 禁用）。
+    const replacementCell = digitCells.find(cell => cell.id !== droppedCell.id
+      && cell.digitIndex === droppedCell.digitIndex && !cellPage.selected.includes(cell.id))!;
+    assert(replacementCell, "同一列需要有可替换的数字格");
+    const cellHost = document.createElement("div");
+    document.body.append(cellHost);
+    const cellRoot = createRoot(cellHost);
+    const putBodies: Array<{ pages: CorrectionEdit[] }> = [];
+    const cellChannel = {
+      ...studentChannel,
+      request: async (url: string, init?: RequestInit) => {
+        if (init?.method === "PUT" && typeof init.body === "string") putBodies.push(JSON.parse(init.body) as { pages: CorrectionEdit[] });
+        return studentChannel.request(url, init);
+      },
+    };
+    const renderCellView = async (visible: boolean) => {
+      await act(async () => cellRoot.render(createElement(TooltipProvider, null, createElement(CorrectionViewProbe, {
+        channel: cellChannel, sessionId: "c", groupId: "3", draftOnly: false, visible, onSaved: () => {},
+      }))));
+      await settle();
+    };
+    await renderCellView(false);
+    writeCorrectionDraft(card.id, "c", "3", cellDoc, [{
+      sourceId: cellPage.sourceId, revision: cellPage.revision,
+      selected: [...cellPage.selected.filter(id => id !== droppedCell.id), replacementCell.id], touched: [],
+    }], null);
+    await renderCellView(true);
+    const mergedSave = [...cellHost.querySelectorAll("button")].find(node => node.textContent?.includes("保存修改"));
+    assert(mergedSave && !mergedSave.disabled, "重新显示订正页要合并考号面板的格选，保存按钮可用");
+    await act(async () => { mergedSave!.click(); });
+    await settle(40);
+    assert.equal(putBodies.length, 1, "保存要提交合并后的格选");
+    assert(!putBodies[0].pages[0].selected.includes(droppedCell.id), "保存不能把考号面板点掉的数字格又提上去");
+    assert(putBodies[0].pages[0].selected.includes(replacementCell.id), "保存要带上考号面板换上的数字格");
+    await act(async () => { cellRoot.unmount(); });
+    cellHost.remove();
+
     // 崩溃恢复带着定位目标挂载：首帧就得停在那一条。先报队首的话，页面会把恢复标记改写成第 1 条，
     // 而 focus 又跟着回报值变，两边会一直对抖（第 2 条永远恢复不出来）。
     const focusHost = document.createElement("div");
