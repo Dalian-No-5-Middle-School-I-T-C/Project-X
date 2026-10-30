@@ -15,7 +15,7 @@ import path from "node:path";
 import { existsSync, unlinkSync } from "node:fs";
 import type { Request, Response } from "express";
 import { getMysqlDb, buildUpsertSQL } from "../../../../server/db/mysql";
-import { holdAnswerCardDataMutationLock } from "../../../../server/lib/answerCardDataLock";
+import { holdAnswerCardDataMutationLock, releaseDataMutationLock } from "../../../../server/lib/answerCardDataLock";
 import {
   ANSWER_KEY_EXTENSIONS,
   answerKeyBaseName,
@@ -247,10 +247,13 @@ export function examAnswerKeyRoutes(): Router {
       if (err) {
         // 安全（R14）：数量/体积越界时 multer 直接报错，已落盘的兄弟文件不会经过
         // 下面带 `finally` 的处理函数——必须在这里清掉，否则越界重试会留下无人引用的副本。
-        const partial = (req.files as Express.Multer.File[] | undefined) ?? (req.file ? [req.file] : []);
+        const partial = ((req.files as Express.Multer.File[] | undefined) ?? (req.file ? [req.file] : []))
+          .filter(Boolean);
         for (const file of partial) {
           try { unlinkSync(file.path); } catch { /* multer 已回收或文件不存在 */ }
         }
+        // 断连时响应可能已被销毁、不会再走 res.end；清理完成后显式结算数据锁。
+        releaseDataMutationLock(req);
         res.status(400).json({ message: err.message || "答案文件上传失败" });
         return;
       }

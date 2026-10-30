@@ -21,7 +21,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
-import { createServer, type Server } from "node:http";
+import { createServer, request as httpRequest, type Server } from "node:http";
 
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-perm-scope-"));
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "verify.db");
@@ -713,6 +713,28 @@ async function main(): Promise<void> {
   ok(limits.describeReviewPoolLimits().includes("claimLockTimeoutMs=3000"), "锁预算进入启动摘要");
 
   console.log("\n== R06 删除答题卡不得改写/点名范围外考试（破坏性步骤，放在最后） ==");
+  // P1 回归：原卷上传中途断连时，multer 错误分支会跳过响应；数据锁必须在清理后释放，
+  // 否则下面第一个 DELETE 会永远排不到锁。
+  const dropBoundary = `----lockdrop${Date.now()}`;
+  await new Promise<void>((resolve) => {
+    const drop = httpRequest({
+      hostname: "127.0.0.1",
+      port: Number(new URL(base).port),
+      path: `/api/cards/${cardId}/paper`,
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${tokenA}`,
+        "Content-Type": `multipart/form-data; boundary=${dropBoundary}`,
+        "Content-Length": String(1024 * 1024),
+      },
+    }, (response) => { response.resume(); });
+    drop.on("error", () => resolve());
+    drop.write(`--${dropBoundary}\r\nContent-Disposition: form-data; name="files"; filename="drop.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`);
+    drop.write(Buffer.alloc(64 * 1024));
+    setTimeout(() => { drop.destroy(); resolve(); }, 100);
+  });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  ok(true, "原卷上传中途断连后继续执行后续取锁请求");
   const referencedCount = (db.prepare("SELECT COUNT(*) AS n FROM exams WHERE card_id = ?").get(cardId) as { n: number }).n;
   ok(referencedCount >= 2, `夹具自校验：本卡被多场考试引用（实际 ${referencedCount}）`);
   const blockedNames = await json(`/api/cards/${cardId}`, {

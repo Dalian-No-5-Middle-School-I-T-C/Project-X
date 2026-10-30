@@ -33,10 +33,12 @@ export function holdAnswerCardDataMutationLock(req: Request, res: Response, next
     const release = (): void => {
       if (released) return;
       released = true;
+      delete (req as LockRequest).releaseDataMutationLock;
       req.off("aborted", onAborted);
       res.off("close", onResponseClose);
       resolve();
     };
+    (req as LockRequest).releaseDataMutationLock = release;
     if (disconnected || res.destroyed) {
       release();
       return;
@@ -54,4 +56,11 @@ export function holdAnswerCardDataMutationLock(req: Request, res: Response, next
     };
     next();
   })).catch(next);
+}
+
+type LockRequest = Request & { releaseDataMutationLock?: () => void };
+
+/** 断连后跳过响应的终止分支必须显式调用：把锁的释放绑定到清理任务完成。 */
+export function releaseDataMutationLock(req: Request): void {
+  (req as LockRequest).releaseDataMutationLock?.();
 }
