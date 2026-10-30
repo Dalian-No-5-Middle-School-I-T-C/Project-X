@@ -1313,6 +1313,17 @@ export async function createApp(): Promise<express.Express> {
   const analysisGate = makeGate(enforceAuth, PERMISSIONS.GRADE_READ, PERMISSIONS.GRADE_READ);
   const scannerAuth = makeScannerAuth(enforceAuth);
   const cropGate = answerBlockCropGate(enforceAuth);
+  // 数据锁 + 恢复之后重新挂载的 req.user 可能已降权：按当前角色重跑写权限门。
+  const recheckWritePermission = (permission: string) =>
+    (req: express.Request, res: express.Response, next: express.NextFunction): void => {
+      if (!enforceAuth) { next(); return; }
+      if (!req.user) { res.status(401).json({ message: "未提供认证令牌" }); return; }
+      if (!roleHasPermission(req.user.role_id, permission)) {
+        res.status(403).json({ message: `权限不足：缺少 ${permission}` });
+        return;
+      }
+      next();
+    };
   app.use("/api/cards", cardGate);
   app.use("/api/exams", examGate);
   // v54: 考试级「本次正确答案」配置（挂在 examGate 之后，继承 EXAM_READ/EXAM_WRITE 再叠加数据范围校验）
@@ -2048,7 +2059,7 @@ export async function createApp(): Promise<express.Express> {
   // ── 答题卡导出/导入/删除 ──────────────────────────────
 
   // DELETE: 删除答题卡
-  app.delete("/api/cards/:cardId", holdAnswerCardDataMutationLock, async (req, res, next) => {
+  app.delete("/api/cards/:cardId", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const card = await cardRepo.findById(cardId);
@@ -2643,7 +2654,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.delete("/api/exams/:examId", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, requireExamAccess, async (req, res, next) => {
+  app.delete("/api/exams/:examId", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.EXAM_WRITE), requireExamAccess, async (req, res, next) => {
     try {
       const examRepo = new ExamRepository();
       const exam = await examRepo.findExamById(Number(req.params.examId));
