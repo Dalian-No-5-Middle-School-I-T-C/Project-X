@@ -121,6 +121,7 @@ async function main() {
   const { getMysqlDb } = await import("../src/server/db");
   const { parseAnswerKeyText } = await import("../src/apps/answer-card/server/answer-key-ocr");
   const { answerKeyDir, answerKeysDir, paperDir } = await import("../src/apps/answer-card/server/storage");
+  const { resolveAnswerKeyPageFile, resolveAnswerKeyPreviewFile } = await import("../src/server/services/ExamPaperViewService");
 
   initializeDatabase();
   const sqlite = getDatabase();
@@ -530,7 +531,8 @@ async function main() {
   ok((await patchMode({ answerKeyMode: "pdf" })).status === 400, "非法模式 → 400");
   ok((await modeColumn()) === "text", "非法模式被拒后不落库");
   await putModeAnswers({ answers: [{ questionNumber: 1, answerText: "B" }, { questionNumber: 2, answerText: "大于 90" }] });
-  const pageImage = await uploadModePage(new Blob([await jpegBuffer()], { type: "image/jpeg" }), "答案扫描页.jpg");
+  const uploadedJpeg = await jpegBuffer();
+  const pageImage = await uploadModePage(new Blob([uploadedJpeg], { type: "image/jpeg" }), "答案扫描页.jpg");
   const pageDocx = await uploadModePage(
     new Blob([Buffer.from("PK\x03\x04 fake docx fixture")], {
       type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -561,7 +563,10 @@ async function main() {
     "「显示原卷」关闭时原卷页与 hasOriginalPaper 仍收着（直发不顺带泄露试卷）");
 
   const fileImageRes = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/answer-file/1`, { headers: { Authorization: `Bearer ${stuToken}` } });
+  const fileImageBytes = Buffer.from(await fileImageRes.arrayBuffer());
   ok(fileImageRes.status === 200 && (fileImageRes.headers.get("content-type") ?? "").includes("image/jpeg"), "学生可取到答案图片字节");
+  ok(fileImageRes.headers.get("cache-control") === "private, no-store", "答案文件不进浏览器缓存，换账号不能命中上一名学生的字节");
+  ok(fileImageBytes.equals(uploadedJpeg), "JPEG 原字节原样下发，不再二次压缩");
   {
     const registeredName = fileRows[0]?.filename;
     const registeredPath = registeredName ? path.join(answerKeyDir(modeExamId), registeredName) : "";
@@ -585,6 +590,36 @@ async function main() {
       ok(false, "答案图片路径可用于孤儿回退回归");
     }
   }
+  const uploadedPng = await sharp({
+    create: { width: 80, height: 60, channels: 3, background: { r: 1, g: 2, b: 3 } },
+  }).png().toBuffer();
+  const pagePng = await uploadModePage(new Blob([uploadedPng], { type: "image/png" }), "答案原图.png");
+  ok(pagePng.status === 200 && pagePng.body?.pages?.[0]?.filename === "answerkey-3.png", "PNG 按原扩展名登记，不再改写成 JPEG");
+  const pngRes = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/answer-file/3`, { headers: { Authorization: `Bearer ${stuToken}` } });
+  const pngBytes = Buffer.from(await pngRes.arrayBuffer());
+  ok(pngRes.status === 200 && (pngRes.headers.get("content-type") ?? "").includes("image/png") && pngBytes.equals(uploadedPng),
+    "学生下载到的 PNG 与上传字节一致");
+  const pngPreviewPath = path.join(answerKeyDir(modeExamId), "answerkey-3.preview.jpg");
+  const teacherPng = await fetch(`${base}/api/exams/${modeExamId}/answer-key/pages/3/image`, { headers: { Authorization: `Bearer ${adminToken}` } });
+  const teacherPngBytes = Buffer.from(await teacherPng.arrayBuffer());
+  ok(existsSync(pngPreviewPath) && teacherPng.status === 200 && (teacherPng.headers.get("content-type") ?? "").includes("image/jpeg")
+    && !teacherPngBytes.equals(uploadedPng),
+    "教师预览与 OCR 走压缩派生图，不把原 PNG 当预览");
+  const studentOriginal = resolveAnswerKeyPageFile(modeExamId, 3, "answerkey-3.png", { exact: true });
+  ok(studentOriginal?.filename === "answerkey-3.png", "学生直发解析仍指向登记的原文件");
+  const historicalJpeg = await jpegBuffer();
+  const historicalName = "answerkey-8.jpg";
+  await writeFile(path.join(answerKeyDir(modeExamId), historicalName), historicalJpeg);
+  const historicalPreview = resolveAnswerKeyPreviewFile(modeExamId, 8, historicalName);
+  ok(historicalPreview?.filename === historicalName && !existsSync(path.join(answerKeyDir(modeExamId), "answerkey-8.preview.jpg")),
+    "没有派生图的历史压缩 JPEG 继续用登记文件做预览");
+  unlinkSync(path.join(answerKeyDir(modeExamId), historicalName));
+  const delPng = await fetch(`${base}/api/exams/${modeExamId}/answer-key/pages/3`, {
+    method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  ok(delPng.status === 200 && !existsSync(pngPreviewPath) && !existsSync(path.join(answerKeyDir(modeExamId), "answerkey-3.png")),
+    "删除答案页时一并清掉预览派生图");
+
   const fileDocxRes = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/answer-file/2`, { headers: { Authorization: `Bearer ${stuToken}` } });
   ok(fileDocxRes.status === 200 && String(fileDocxRes.headers.get("content-disposition") ?? "").includes("attachment"),
     "DOCX 以附件下发（浏览器/小程序都渲染不了内联 docx）");
@@ -619,6 +654,11 @@ async function main() {
   await patchMode({ showOriginalPaper: false });
   const flagsClosed = await paperFlags(stuToken, modeExamId);
   ok(flagsClosed.listed === 0 && flagsClosed.detail === 0, "两闸都关 → 入口标记归 0");
+  await getMysqlDb().run("UPDATE exams SET answer_key_mode = 'FILE', show_original_paper = 0, score_published = 1 WHERE id = ?", modeExamId);
+  const dirtyFlags = await paperFlags(stuToken, modeExamId);
+  const dirtyPaper = await modePaper();
+  ok(dirtyFlags.listed === 0 && dirtyFlags.detail === 0 && dirtyPaper.status === 404,
+    "脏值 FILE 按 text 处理，列表入口与 /paper 都不放行");
 
   // ── E. 删除考试时的文件清理 ──────────────────────────
   section("E. 删除考试清理答案页文件");

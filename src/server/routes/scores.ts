@@ -643,7 +643,8 @@ router.get("/me/exams/:examId/paper/answer-file/:pageIndex", async (req: Request
   if (path.extname(resolved.filename).toLowerCase() === ".docx") {
     res.setHeader("Content-Disposition", `attachment; filename="${resolved.filename.replace(/["\r\n]/g, "")}"`);
   }
-  res.setHeader("Cache-Control", "private, max-age=300");
+  // 媒体 URL 不含账号。private + max-age 会让同一浏览器换账号后仍命中上一名学生的答案字节。
+  res.setHeader("Cache-Control", "private, no-store");
   res.sendFile(resolved.filePath);
 });
 

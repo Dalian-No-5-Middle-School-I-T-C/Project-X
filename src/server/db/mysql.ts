@@ -155,6 +155,18 @@ export function buildInsertIgnore(
   return `INSERT IGNORE INTO ${table} (${quoted}) VALUES (${placeholders})`;
 }
 
+/**
+ * `answer_key_mode` 是否精确等于 `'file'`。
+ * MariaDB 的 VARCHAR 默认大小写不敏感，`'FILE'` 会等于 `'file'`；
+ * `normalizeAnswerKeyMode` 只认精确的 `file`，列表入口必须同一口径。
+ */
+export function answerKeyModeIsFileSql(dialect: "sqlite" | "mariadb", column: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(column)) {
+    throw new Error(`invalid column: ${column}`);
+  }
+  return dialect === "mariadb" ? `BINARY ${column} = 'file'` : `${column} = 'file'`;
+}
+
 // ── SQLite Adapter ─────────────────────────────────────
 // 内部用 better-sqlite3（同步），对外暴露 async 接口
 

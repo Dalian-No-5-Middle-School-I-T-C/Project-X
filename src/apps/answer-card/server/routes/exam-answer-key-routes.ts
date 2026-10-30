@@ -15,18 +15,17 @@
 import { Router } from "express";
 import multer from "multer";
 import path from "node:path";
-import { existsSync, unlinkSync } from "node:fs";
+import { unlinkSync } from "node:fs";
 import type { Request, Response } from "express";
 import { getMysqlDb, buildUpsertSQL } from "../../../../server/db/mysql";
 import {
-  ANSWER_KEY_EXTENSIONS,
-  answerKeyBaseName,
   listAnswerKeyPages,
   listExamAnswerKeys,
   listExamPaperPages,
   loadAnswerKeyPageFilename,
+  discardAnswerKeyPageFiles,
   purgeAnswerKeyPageSiblings,
-  resolveAnswerKeyPageFile,
+  resolveAnswerKeyPreviewFile,
 } from "../../../../server/services/ExamPaperViewService";
 import { answerKeyDir, answerKeysDir, ensureAnswerKeyDir } from "../storage";
 import { MAX_FILE_SIZE, storeAnswerKeyPageFile, validatePaperFile } from "../paper-converter";
@@ -313,10 +312,13 @@ export function examAnswerKeyRoutes(): Router {
         // 落盘循环必须与入库同处一个 try：转换（compressImage）抛错时本轮已写下的文件
         // 还没有任何 DB 记录引用，若只兜入库失败就会留下「无记录占文件名」的孤儿，
         // 后续同名页会被扩展名探测顺序遮蔽（PR 审查 P2）。
-        const planned: Array<{ pageIndex: number; diskFilename: string; relPath: string }> = [];
+        const planned: Array<{ pageIndex: number; diskFilename: string; relPath: string; previewFilename: string | null }> = [];
         const discardPlannedFiles = (): void => {
           for (const page of planned) {
-            try { unlinkSync(path.join(dir, page.diskFilename)); } catch {}
+            for (const name of [page.diskFilename, page.previewFilename]) {
+              if (!name) continue;
+              try { unlinkSync(path.join(dir, name)); } catch {}
+            }
           }
           planned.length = 0;
         };
@@ -325,7 +327,12 @@ export function examAnswerKeyRoutes(): Router {
           for (const { file, originalname } of valid) {
             const pageIndex = takeIndex();
             const stored = await storeAnswerKeyPageFile(file.path, originalname, dir, pageIndex);
-            planned.push({ pageIndex, diskFilename: stored.diskFilename, relPath: stored.relPath });
+            planned.push({
+              pageIndex,
+              diskFilename: stored.diskFilename,
+              relPath: stored.relPath,
+              previewFilename: stored.previewFilename,
+            });
           }
 
           await db.transaction(async (tx) => {
@@ -355,7 +362,7 @@ export function examAnswerKeyRoutes(): Router {
       const ocrResults: Array<{ pageIndex: number; text?: string; drafts?: Array<{ questionNumber: number; answerText: string }>; recognized?: boolean; error?: string }> = [];
       if (runOcr) {
         for (const page of uploaded) {
-          const resolved = resolveAnswerKeyPageFile(exam.id, page.pageIndex, page.filename);
+          const resolved = resolveAnswerKeyPreviewFile(exam.id, page.pageIndex, page.filename);
           if (!resolved) { ocrResults.push({ pageIndex: page.pageIndex, error: "文件不存在" }); continue; }
           try {
             const text = await ocrAnswerKeyFile(resolved.filePath);
@@ -395,7 +402,7 @@ export function examAnswerKeyRoutes(): Router {
 
       const filename = await loadAnswerKeyPageFilename(examId, pageIndex);
       if (!filename) { res.status(404).json({ message: "答案页不存在" }); return; }
-      const resolved = resolveAnswerKeyPageFile(examId, pageIndex, filename);
+      const resolved = resolveAnswerKeyPreviewFile(examId, pageIndex, filename);
       if (!resolved) { res.status(404).json({ message: "答案页不存在" }); return; }
       const text = await ocrAnswerKeyFile(resolved.filePath);
       res.json({ pageIndex, ...draftPayload(text) });
@@ -415,7 +422,7 @@ export function examAnswerKeyRoutes(): Router {
       const examId = Number(req.params.examId);
       const filename = await loadAnswerKeyPageFilename(examId, pageIndex);
       if (!filename) { res.status(404).json({ message: "答案页不存在" }); return; }
-      const resolved = resolveAnswerKeyPageFile(examId, pageIndex, filename);
+      const resolved = resolveAnswerKeyPreviewFile(examId, pageIndex, filename);
       if (!resolved) { res.status(404).json({ message: "答案页不存在" }); return; }
       res.contentType(resolved.mimeType);
       res.sendFile(resolved.filePath);
@@ -440,12 +447,7 @@ export function examAnswerKeyRoutes(): Router {
       ) as { filename: string } | undefined;
       if (!row) { res.status(404).json({ message: "答案页不存在" }); return; }
 
-      const dir = answerKeyDir(examId);
-      const baseName = answerKeyBaseName(pageIndex);
-      for (const ext of ANSWER_KEY_EXTENSIONS) {
-        const filePath = path.join(dir, `${baseName}${ext}`);
-        if (existsSync(filePath)) { try { unlinkSync(filePath); } catch {} }
-      }
+      discardAnswerKeyPageFiles(examId, pageIndex);
       await db.run("DELETE FROM exam_answer_key_pages WHERE exam_id = ? AND page_index = ?", examId, pageIndex);
       // 注意：exam_answer_keys.page_index 存的是「原卷页码」（card 级资产，见答案配置面板），
       // 与这里删除的「答案扫描页码」是两套坐标系，不能按同一数字联动清空。

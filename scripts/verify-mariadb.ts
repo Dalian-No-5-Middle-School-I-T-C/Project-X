@@ -17,7 +17,7 @@ async function main(): Promise<void> {
   // 避免测试往仓库 data/ 里落真实的 bootstrap-admin.txt。
   const bootstrapTmpDir = mkdtempSync(path.join(tmpdir(), "projectx-mariadb-bootstrap-"));
   process.env.PROJECTX_DB_PATH = path.join(bootstrapTmpDir, "projectx.db");
-  const { getMysqlDb, initMariadbSchema, runMariadbMigrations, getMariadbConfig, resetAdapter, buildUpsertSQL, buildInsertIgnore } =
+  const { getMysqlDb, initMariadbSchema, runMariadbMigrations, getMariadbConfig, resetAdapter, buildUpsertSQL, buildInsertIgnore, answerKeyModeIsFileSql } =
     await import("../src/server/db/mysql");
   const { ensureDefaultAdmin, getBootstrapAdminPath, hashPassword, verifyPassword } =
     await import("../src/server/db/index");
@@ -241,10 +241,13 @@ async function main(): Promise<void> {
     assert.equal((await db.get<{ m: string }>("SELECT answer_key_mode AS m FROM exams WHERE id = ?", akExam.lastInsertRowid))?.m, "text",
       "未显式赋值的新考试取默认 text（v54 行为）");
     // 入口条件 SQL 与 assertStudentPaperVisible 必须同口径：这里把「显示原卷」关掉、只开直发模式
-    const entryCase = "SELECT CASE WHEN score_published = 1 AND (show_original_paper = 1 OR answer_key_mode = 'file') THEN 1 ELSE 0 END AS c FROM exams WHERE id = ?";
+    const entryCase = `SELECT CASE WHEN score_published = 1 AND (show_original_paper = 1 OR ${answerKeyModeIsFileSql("mariadb", "answer_key_mode")}) THEN 1 ELSE 0 END AS c FROM exams WHERE id = ?`;
+    await db.run("UPDATE exams SET show_original_paper = 0, answer_key_mode = 'FILE' WHERE id = ?", akExam.lastInsertRowid);
+    assert.equal((await db.get<{ c: number }>(entryCase, akExam.lastInsertRowid))?.c, 0,
+      "MariaDB 脏值 FILE 不是直发，入口与 normalizeAnswerKeyMode 一致");
     await db.run("UPDATE exams SET show_original_paper = 0, answer_key_mode = 'file' WHERE id = ?", akExam.lastInsertRowid);
     assert.equal((await db.get<{ c: number }>(entryCase, akExam.lastInsertRowid))?.c, 1,
-      "MariaDB 下「直发模式 + 原卷开关关闭」同样算作开放（字符串比较走默认 collation）");
+      "MariaDB 下「直发模式 + 原卷开关关闭」同样算作开放（精确比较，不走默认 collation）");
     await db.run("UPDATE exams SET answer_key_mode = 'text' WHERE id = ?", akExam.lastInsertRowid);
     assert.equal((await db.get<{ c: number }>(entryCase, akExam.lastInsertRowid))?.c, 0,
       "两闸都关时入口归 0");

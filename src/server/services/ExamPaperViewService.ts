@@ -17,6 +17,7 @@ import path from "node:path";
 import { getMysqlDb, type DbAdapter } from "../db/mysql";
 import { answerKeyDir, paperDir } from "../../apps/answer-card/server/storage";
 import { getFileMime } from "../../apps/answer-card/server/paper-ocr";
+import { answerKeyPreviewFilename } from "../../shared/answerKeyFiles";
 
 export const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".bmp", ".webp"];
 export const ANSWER_KEY_EXTENSIONS = [...IMAGE_EXTENSIONS, ".tiff", ".tif", ".pdf", ".docx"];
@@ -210,6 +211,39 @@ export function resolveAnswerKeyPageFile(
     return { filePath, filename, mimeType: getFileMime(filename), isImage: isImageFile(filename) };
   }
   return null;
+}
+
+/**
+ * 教师预览与 OCR 读的文件。
+ * 新上传的图片旁边有 `<base>.preview.jpg`（压缩派生），原件留给学生直发。
+ * 这次改动之前的图片入库时已经被压成 JPEG，没有原件、也没有 preview 文件，
+ * 这时预览只能继续用登记的那一份。PDF / DOCX 没有派生图，直接用原文件。
+ */
+export function resolveAnswerKeyPreviewFile(
+  examId: number | string,
+  pageIndex: number,
+  preferredFilename?: string | null,
+): { filePath: string; filename: string; mimeType: string; isImage: boolean } | null {
+  const original = resolveAnswerKeyPageFile(examId, pageIndex, preferredFilename);
+  if (!original) return null;
+  const previewName = answerKeyPreviewFilename(answerKeyBaseName(pageIndex));
+  const previewPath = path.join(answerKeyDir(examId), previewName);
+  if (!existsSync(previewPath)) return original;
+  return { filePath: previewPath, filename: previewName, mimeType: getFileMime(previewName), isImage: true };
+}
+
+/** 删除某一页答案在磁盘上的登记文件、扩展名残留和预览派生图。 */
+export function discardAnswerKeyPageFiles(examId: number | string, pageIndex: number): void {
+  const dir = answerKeyDir(examId);
+  const baseName = answerKeyBaseName(pageIndex);
+  for (const filename of [
+    ...ANSWER_KEY_EXTENSIONS.map((ext) => `${baseName}${ext}`),
+    answerKeyPreviewFilename(baseName),
+  ]) {
+    const filePath = path.join(dir, filename);
+    if (!existsSync(filePath)) continue;
+    try { unlinkSync(filePath); } catch {}
+  }
 }
 
 /**
