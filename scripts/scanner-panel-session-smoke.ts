@@ -434,6 +434,39 @@ try {
     cancelHttpStatus = 200;
   }
 
+  // SSE 晚连 / 重连不补发 page_done：本地页数为 0 时以服务端记录为准，
+  // 不能把已落盘的页和入口一起撤掉；服务端确实没有页面时才撤占位。
+  for (const [serverPages, expectation] of [[2, "archive"], [0, "abandon"]] as const) {
+    retainedPageCount = serverPages;
+    const handoffHost = document.createElement("div");
+    document.body.append(handoffHost);
+    const handoffRoot = createRoot(handoffHost);
+    const handoffArchived: string[] = [];
+    const handoffAbandoned: string[] = [];
+    await act(async () => { handoffRoot.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id,
+      onBatchArchived: (sid: string, pageCount: number) => { handoffArchived.push(`${sid}/${pageCount}`); },
+      onScanSessionAbandoned: (sid: string) => { handoffAbandoned.push(sid); },
+    }))); });
+    await settle();
+    await act(async () => {
+      [...handoffHost.querySelectorAll("button")].find(node => node.textContent?.trim() === "开始扫描")!.click();
+    });
+    await settle();
+    const handoffSession = `scan-${scans.length}`;
+    const snapshotsBeforeHandoff = snapshotRequests.length;
+    await act(async () => { handoffRoot.unmount(); });
+    await settle();
+    assert(snapshotRequests.slice(snapshotsBeforeHandoff).some(url => url.includes(handoffSession)),
+      "本地没有页面时，交接前要问服务端记录数");
+    if (expectation === "archive") {
+      assert(handoffArchived.includes(`${handoffSession}/${serverPages}`), "服务端已有页面时要按服务端页数交给后处理");
+      assert(!handoffAbandoned.includes(handoffSession), "服务端已有页面时不能撤掉占位");
+    } else {
+      assert(handoffAbandoned.includes(handoffSession), "服务端确实没有页面时才撤掉占位");
+    }
+    handoffHost.remove();
+  }
+
   // 启动请求还在路上就离开：晚到的响应不能再建会话、也不能再开进度流（否则设备继续送纸却没人看）。
   const lateHost = document.createElement("div");
   document.body.append(lateHost);

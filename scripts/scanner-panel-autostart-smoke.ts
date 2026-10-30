@@ -64,6 +64,8 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   }
   // 面板卸载时会取消后台扫描（离开 = 不停设备是不允许的），这里同样要接住。
   if (/\/scan\/[^/]+\/cancel$/.test(url)) return Response.json({ ok: true });
+  // 本地没有页数时，交接前会问服务端这一批到底有没有落页；这个夹具一张都没扫。
+  if (/\/scan\/[^/]+$/.test(url)) return Response.json({ session: { status: "scanning" }, records: [] });
   throw new Error(`Uncovered autostart request: ${url}`);
 });
 

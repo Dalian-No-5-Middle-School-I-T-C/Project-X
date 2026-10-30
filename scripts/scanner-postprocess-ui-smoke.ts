@@ -655,9 +655,16 @@ try {
     const studentDocs = new Map([["a", docFor("a")], ["b", docFor("b")]]);
     const studentChannel = {
       ...localChannel(),
-      request: async (url: string) => {
+      request: async (url: string, init?: RequestInit) => {
         const sid = [...studentDocs.keys()].find(key => url.includes(`/session/${key}/`));
-        return sid ? Response.json(studentDocs.get(sid)) : Response.json({ message: "unknown" }, { status: 404 });
+        if (!sid) return Response.json({ message: "unknown" }, { status: 404 });
+        if (init?.method === "PUT") {
+          // 保存会让服务端 revision +1：草稿迁移回归要靠它验证「迁过去的草稿对得上新文档」。
+          const doc = studentDocs.get(sid)!;
+          studentDocs.set(sid, { ...doc, pages: doc.pages.map(page => ({ ...page, revision: page.revision + 1 })) });
+          return Response.json({ saved: true });
+        }
+        return Response.json(studentDocs.get(sid));
       },
     };
     const studentHost = document.createElement("div");
@@ -723,8 +730,12 @@ try {
 
     // 考号面板与订正页共用同一个草稿键：只输了一半考号、没动格选时，
     // 打开订正页不能把这份草稿当成空草稿删掉，否则切回考号面板就丢了。
-    const { readCorrectionDraft } = await import("../src/apps/answer-card/client/lib/correctionDraft");
+    const { readCorrectionDraft, writeCorrectionDraft, draftMatchesDocument } = await import("../src/apps/answer-card/client/lib/correctionDraft");
     const { PostprocessCorrectionView: CorrectionViewProbe } = await import("../src/apps/answer-card/client/components/scanner-postprocess/PostprocessCorrectionView");
+    // 给这份草稿加一条未保存改动，挂载后就能直接点「保存修改」验证保存路径。
+    const seededDraft = readCorrectionDraft(card.id, "a", "2")!;
+    writeCorrectionDraft(card.id, "a", "2", studentDocs.get("a")!,
+      seededDraft.edits.map(edit => ({ ...edit, touched: ["seed"] })), "2000");
     const typedDraftHost = document.createElement("div");
     document.body.append(typedDraftHost);
     const typedDraftRoot = createRoot(typedDraftHost);
@@ -733,6 +744,15 @@ try {
     }))));
     await settle();
     assert.equal(readCorrectionDraft(card.id, "a", "2")?.typed, "2000", "打开订正页不能删掉考号面板的半截草稿");
+    // 保存只提交格选：考号面板里还没落格的手输考号不能跟着草稿一起被清掉，
+    // 而且要迁到保存后的新 revision 上，否则切回考号面板照样恢复不出来。
+    const saveDraftButton = [...typedDraftHost.querySelectorAll("button")].find(node => node.textContent?.includes("保存修改"));
+    assert(saveDraftButton && !saveDraftButton.disabled, "有未保存改动时可以保存");
+    await act(async () => { saveDraftButton!.click(); });
+    await settle(40);
+    const afterSaveDraft = readCorrectionDraft(card.id, "a", "2");
+    assert.equal(afterSaveDraft?.typed, "2000", "保存格选不能丢掉考号面板里还没提交的考号");
+    assert(afterSaveDraft && draftMatchesDocument(afterSaveDraft, studentDocs.get("a")!), "迁过去的草稿要跟上保存后的 revision");
     await act(async () => { typedDraftRoot.unmount(); });
     typedDraftHost.remove();
 

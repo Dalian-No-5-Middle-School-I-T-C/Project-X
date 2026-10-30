@@ -92,6 +92,8 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
   /** null=没有待保存修改；true=本机草稿写入成功；false=写入失败，必须提示别重载。 */
   const [draftPersisted, setDraftPersisted] = useState<boolean | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
+  /** 保存成功后要迁到新 revision 草稿上的半截考号（考号面板输入、本编辑器不提交）。 */
+  const pendingTypedRef = useRef<string | undefined>(undefined);
   /** 本组件创建的原卷 blob URL；切卷/卸载时统一回收，避免多页大图把渲染进程撑爆。 */
   const blobUrlsRef = useRef<Set<string>>(new Set());
 
@@ -118,6 +120,13 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
         } else {
           setEdits(baseEdits);
           setDraftRestored(false);
+        }
+        // 保存只提交格选，考号面板那份还没落到格上的原文得跟到新 revision 上，
+        // 否则保存成功后 revision 一变，切回考号面板就找不到它了。
+        if (pendingTypedRef.current !== undefined) {
+          const typed = pendingTypedRef.current;
+          pendingTypedRef.current = undefined;
+          writeCorrectionDraft(doc.card.id, sessionId, groupId, doc, baseEdits, typed);
         }
         setDraftPersisted(null);
         setPageIndex(0);
@@ -322,7 +331,15 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
       const response = await channel.request(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pages: edits, ...(draftOnly ? { draft: true } : {}) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.message || "保存失败");
+      // 考号面板的半截输入不在这次提交里：先记下来，重拉文档后按新 revision 写回草稿。
+      const carriedTyped = document
+        ? (() => {
+          const existing = readCorrectionDraft(document.card.id, sessionId, groupId);
+          return existing && draftMatchesDocument(existing, document) ? existing.typed : undefined;
+        })()
+        : undefined;
       if (document) clearCorrectionDraft(document.card.id, sessionId, groupId);
+      if (carriedTyped !== undefined) pendingTypedRef.current = carriedTyped;
       setDraftRestored(false);
       setDraftPersisted(null);
       // 只有本机正式入库才锁。远端模式的草稿保存即使带回 saved，也还要等上传，不能把界面锁死。

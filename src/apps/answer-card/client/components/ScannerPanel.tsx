@@ -646,12 +646,28 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
   }
 
   /** 把当前会话交给后处理，或在还没有页面时撤掉占位。已正常结束的批次不撤。 */
-  function handoffCurrentSession() {
+  async function handoffCurrentSession() {
     const sid = sessionIdRef.current;
     if (!sid) return;
     const pageCount = pagesRef.current.length;
-    if (pageCount > 0) onBatchArchivedRef.current?.(sid, pageCount);
-    else if (!completedRef.current) onScanSessionAbandonedRef.current?.(sid);
+    if (pageCount > 0) {
+      onBatchArchivedRef.current?.(sid, pageCount);
+      return;
+    }
+    if (completedRef.current) return;
+    // SSE 不补发 page_done：晚连或重连时本地页数可能是 0，而服务端早就落了页。
+    // 直接撤占位会把已扫页面和它们的入口一起删掉，先问服务端记录数再决定。
+    // 查询失败时保持现状（占位仍在 postSessions 里），留到下次进后处理页再核对。
+    try {
+      const response = await authFetch(`/api/scanner/scan/${encodeURIComponent(sid)}`);
+      if (!response.ok) return;
+      const data = await response.json() as { records?: unknown };
+      const serverPages = Array.isArray(data.records) ? data.records.length : 0;
+      if (serverPages > 0) onBatchArchivedRef.current?.(sid, serverPages);
+      else onScanSessionAbandonedRef.current?.(sid);
+    } catch (error) {
+      console.warn("[scanner] 交接前核对会话记录失败，保留占位", error);
+    }
   }
 
   async function startScan() {
