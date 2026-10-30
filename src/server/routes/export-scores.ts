@@ -31,7 +31,7 @@ router.get("/templates", async (req: Request, res: Response) => {
 router.put("/templates/:slot", async (req: Request, res: Response) => {
   const db = getMysqlDb();
   const slot = Number(req.params.slot);
-  if (slot < 1 || slot > 4) { res.status(400).json({ message: "槽位须为 1-4" }); return; }
+  if (slot < 1 || slot > 4) { res.status(400).json({ message: "模板槽位必须为 1–4。" }); return; }
 
   const { name, columns, sideTableN, gapCols } = req.body as {
     name?: string; columns?: string[]; sideTableN?: number; gapCols?: number;

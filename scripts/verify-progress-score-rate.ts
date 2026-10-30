@@ -266,11 +266,11 @@ async function main() {
     const rb = await fetch(`${base}/api/scores/me/ai-analysis`, { method: "POST", headers: { ...hBio, "Content-Type": "application/json" }, body: "{}" });
     const bb = (await rb.json().catch(() => ({}))) as any;
     const caveats: string[] = bb?.report?.caveats ?? [];
-    const unjudged = caveats.filter((c) => c.includes("缺少满分依据"));
+    const unjudged = caveats.filter((c) => c.includes("未设置满分"));
     ok(unjudged.some((c) => c.includes("生物")),
       `6.3 缺满分学科向学生说明「未参与进步/退步判定」（实际 ${JSON.stringify(unjudged)}）`);
     const caveatsP: string[] = body?.report?.caveats ?? [];
-    ok(!caveatsP.some((c) => c.includes("缺少满分依据")), "6.4 满分齐全的学科不产生该说明");
+    ok(!caveatsP.some((c) => c.includes("未设置满分")), "6.4 满分齐全的学科不产生该说明");
   }
 
   // ── 7. 教师端单场「较上届」对比同样按得分率 ──

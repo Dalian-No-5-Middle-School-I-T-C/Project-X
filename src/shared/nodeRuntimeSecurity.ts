@@ -4,9 +4,8 @@
  * 触发条件是进程用 `node:zlib` 解开攻击者提供的 Brotli（含 `fetch` 自动解码 `Content-Encoding: br`）。
  *
  * 服务端跑在系统 Node 上，版本不够就退出 78，不监听端口。
- * 扫描端跑在 Electron 内嵌的 Node 上。已核对的 Electron 39.8.10 带 Node 22.22.1 与
- * Chromium 142.0.7444.265，两边的 Brotli 解码都还没有这份补丁。Electron 45.0.0 的 Node 是
- * 24.22.0，仍低于 24.22.1；它的 Chromium 是 156，不在这次已核对的范围内。
+ * 扫描端 Electron 43.8.3 带 Node 24.22.0 与 Chromium 150.0.7871.250。
+ * 内嵌 Node 低于修复版本 24.22.1，因此继续启用 Brotli 解码防护。
  * 这里关掉 Node 的 Brotli 解码。Chromium 那条路径在 `electron/main.cjs` 里另行关掉：
  * 壳直接打开远端页面时，加载前就限制编码；本地壳会在第一次远端请求创建前先装好同一限制，
  * 装好前的远端请求一律取消。
@@ -81,7 +80,7 @@ export function isNodeRuntimeVulnerableToCve2026111497(version: string): boolean
 export function nodeRuntimeCveMessage(version: string, action: Exclude<NodeRuntimeCveAction, "allow">): string {
   const floors = "22.23.4、24.22.1 或 26.12.1";
   if (action === "guard") {
-    return `Electron 内嵌的 Node.js ${version} 仍受 ${CVE_2026_111497} 影响（Brotli 解码越界写）。已核对的 Electron 39.8.10 带的是未修复的 Node 与 Chromium 142.0.7444.265。扫描端已关闭 Node 的 Brotli 解码。壳直接加载远端页面时，窗口在加载前只接受 gzip 与 deflate；本地壳会在第一次远端请求创建前先装好同样的限制，装好前的远端请求一律取消。上游发布同时包含已修复 Node.js（${floors} 及以上）和已修复 Chromium 的版本后请升级扫描端。`;
+    return `Electron 内嵌的 Node.js ${version} 仍受 ${CVE_2026_111497} 影响（Brotli 解码越界写）。扫描端已关闭 Node 的 Brotli 解码。壳直接加载远端页面时，窗口在加载前只接受 gzip 与 deflate；本地壳会在第一次远端请求创建前先装好同样的限制，装好前的远端请求一律取消。上游发布同时包含已修复 Node.js（${floors} 及以上）和已修复 Chromium 的版本后请升级扫描端。`;
   }
   return `Node.js ${version} 受 ${CVE_2026_111497} 影响（Brotli 解码越界写，畸形压缩数据可导致崩溃、内存泄露或远程代码执行）。请安装 Node.js ${floors} 及以上后再启动。20.x、23.x、25.x 已停止维护，没有补丁。进程将以退出码 ${NODE_RUNTIME_REFUSAL_EXIT_CODE} 结束。`;
 }

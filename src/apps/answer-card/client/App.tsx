@@ -803,7 +803,7 @@ function App() {
       settled = next;
     }
     if (editRevisionRef.current !== savedRevisionRef.current) {
-      setStatus("答题卡仍在持续改动，已取消导出：请停手一两秒后重试");
+      setStatus("答题卡还在保存，导出已取消。请稍候几秒再试。");
       return null;
     }
     return settled;

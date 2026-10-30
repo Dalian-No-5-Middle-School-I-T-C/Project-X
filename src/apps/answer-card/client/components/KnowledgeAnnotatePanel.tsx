@@ -71,8 +71,8 @@ export function KnowledgeAnnotatePanel({ examId, onApplied }: { examId: number; 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
           <Wand2 className="size-4 text-primary" aria-hidden />
-          <h3 className="text-sm font-semibold text-foreground">知识点半自动标注</h3>
-          <span className="text-xs text-muted-foreground">（静态词典匹配，人工确认后写入）</span>
+          <h3 className="text-sm font-semibold text-foreground">知识点自动标注</h3>
+          <span className="text-xs text-muted-foreground">（匹配结果需人工确认后写入）</span>
         </div>
         <div className="flex items-center gap-2">
           {msg && <span className="text-xs text-primary">{msg}</span>}
@@ -89,7 +89,7 @@ export function KnowledgeAnnotatePanel({ examId, onApplied }: { examId: number; 
         <EmptyState
           size="sm"
           title="暂无匹配候选"
-          description="客观题没有独立题干文本；解答题请在答题卡设计页补充题干注释后重新匹配。"
+          description="客观题没有独立题干，无法匹配；解答题可在答题卡设计页补充题干注释后重试。"
         />
       ) : (
         <ul className="flex flex-col gap-1.5">

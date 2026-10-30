@@ -126,7 +126,7 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
         if (!key) throw new Error("服务器可达，请填写 API Key 后验证上传权限");
         if (!sendKey) {
           setTestStatus("ok");
-          setTestMessage(`服务器可达，但 ${base} 是跨机明文 HTTP，未发送 API Key。勾选下方确认后才能验证上传权限并保存`);
+          setTestMessage(`服务器可达。该地址使用明文 HTTP，已暂停发送 API Key；勾选下方确认后才能验证上传并保存`);
           return;
         }
         const authRes = await fetch(`${base}/api/scanner/upload/check`, {
@@ -200,8 +200,8 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
   const form = (
     <div className="flex flex-col gap-3">
       <p className="m-0 text-xs text-muted-foreground">
-        扫描、识别和账号登录始终在本机完成。填入服务器地址和 API Key 后，可将扫描结果上传到远端服务器。
-        跨机部署请填写 <code className="font-mono">https://</code> 地址；明文 HTTP 只在勾选确认后才会发送凭据。
+        扫描、识别和账号登录始终在本机完成。填写服务器地址和 API Key 后，可将扫描结果上传到远端服务器。
+        跨机部署请使用 <code className="font-mono">https://</code> 地址；明文 HTTP 仅在勾选确认后发送凭据。
       </p>
       {blockedByActiveJobs && (
         <p className="m-0 rounded border border-destructive-border bg-destructive-soft px-2 py-1 text-xs text-destructive-fg">
@@ -234,9 +234,9 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
       {insecureTarget && (
         <div className="m-0 rounded border border-warning-border bg-warning-soft px-2 py-1.5 text-xs text-warning-foreground">
           <p className="m-0">
-            <code className="font-mono">{typedHost}</code> 是<strong>跨机明文 HTTP</strong>：
-            API Key 与登录凭据会以明文经过整个网段，同网段任何人都能截走它，而这把 Key 能向服务器写入扫描结果。
-            正式部署请改用 <code className="font-mono">https://</code> 地址（本机 <code className="font-mono">127.0.0.1</code> 不受此限）。
+            <code className="font-mono">{typedHost}</code> 使用明文 HTTP。登录凭据和 API Key 会在网络中明文传输，
+            同网段的人可能截获并写入扫描结果。正式部署请改用 <code className="font-mono">https://</code> 地址；
+            本机 <code className="font-mono">127.0.0.1</code> 不受影响。
           </p>
           <label className="mt-1.5 flex cursor-pointer items-start gap-2">
             <Checkbox
@@ -246,8 +246,8 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
               className="mt-0.5"
             />
             <span>
-              我确认这是<strong>隔离的内网测试环境</strong>，允许向 <code className="font-mono">{typedHost}</code> 明文发送凭据。
-              未勾选时不会保存该地址，上传也不会发出 API Key。
+              我确认这是<strong>隔离的内网测试环境</strong>，允许向该地址发送凭据。
+              未勾选时不会保存该地址，也不会发送 API Key。
             </span>
           </label>
         </div>

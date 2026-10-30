@@ -169,7 +169,7 @@ export function StudentScores() {
                     <div className="flex items-end justify-between gap-2">
                       <div className="flex items-baseline gap-1">
                         <strong className="text-3xl font-bold tabular-nums text-foreground">{exam.total_score}</strong>
-                        <span className="text-sm text-muted-foreground">{full != null ? `/ ${full}` : "/ 满分未知"}</span>
+                        <span className="text-sm text-muted-foreground">{full != null ? `/ ${full}` : "/ 未设置满分"}</span>
                       </div>
                       {exam.paper_visible === 1 && (
                         <Button
@@ -259,7 +259,7 @@ export function StudentScores() {
                 <TableCell numeric><span className="tabular-nums">{selectedExam.total_score}</span></TableCell>
                 <TableCell numeric><span className="tabular-nums">{full ?? "未知"}</span></TableCell>
                 <TableCell numeric><span className="tabular-nums">{scoreRate != null ? `${Math.round(scoreRate * 100)}%` : "—"}</span></TableCell>
-                <TableCell>{scoreRate != null ? <Badge tone={scoreRate >= 0.85 ? "success" : scoreRate >= 0.6 ? "neutral" : "danger"} dot>{scoreRate >= 0.85 ? "优势" : scoreRate >= 0.6 ? "稳定" : "待提升"}</Badge> : <span className="text-xs text-muted-foreground">满分未知</span>}</TableCell>
+                <TableCell>{scoreRate != null ? <Badge tone={scoreRate >= 0.85 ? "success" : scoreRate >= 0.6 ? "neutral" : "danger"} dot>{scoreRate >= 0.85 ? "优势" : scoreRate >= 0.6 ? "稳定" : "待提升"}</Badge> : <span className="text-xs text-muted-foreground">未设置满分</span>}</TableCell>
                 <TableCell numeric><ChevronDown size={16} className={expandedExamId === selectedExam.exam_id ? "rotate-180" : ""} /></TableCell>
               </TableRow>
             </TableBody>

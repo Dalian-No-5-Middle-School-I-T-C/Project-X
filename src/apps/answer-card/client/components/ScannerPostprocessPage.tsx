@@ -298,7 +298,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
         if (!res.ok) throw new Error(data.message || "删除失败");
         deleted += data.deletedGroups ?? target.groupIds.length;
       }
-      if (blocked.length) throw Object.assign(new Error("所选卷包含已入库或待老师确认的回执"), { blocked });
+      if (blocked.length) throw Object.assign(new Error("所选卷中有已保存或待处理的记录，不能直接删除"), { blocked });
       notify.success(`已删除 ${deleted} 组扫描记录`);
       finished = true;
     } finally {

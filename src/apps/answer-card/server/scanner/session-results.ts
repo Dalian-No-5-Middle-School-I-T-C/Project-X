@@ -73,8 +73,7 @@ export function legacyIdentityProblems(
   const first = rows.find((row) => row.layoutPage === 1);
   if (!first) {
     problems.push(
-      "兼容模式（无二维码）下本份答题卡没有第 1 页：物理页序已不可信，" +
-        "请核对是否缺页、乱序或 ADF 双进纸后重新扫描，或改用人工归组",
+      "本份答题卡缺少第 1 页。请检查是否缺页、乱序或多张进纸，整理后重新扫描。",
     );
     return problems;
   }
@@ -82,18 +81,16 @@ export function legacyIdentityProblems(
   if (!first.studentId) {
     problems.push(
       stray
-        ? `兼容模式（无二维码）下第 1 页没有学号，却在第 ${stray.layoutPage} 页读到学号 ${stray.studentId}：` +
-          "学号填涂区只印在第 1 页，这说明页序已经错位（缺页/乱序/ADF 双进纸）。" +
-          "不能把它当作本份答题卡的归属，也不会沿用前一名学生的学号，请人工归组后重试"
-        : "兼容模式（无二维码）下第 1 页未识别到学号：不能从其它页或前一份答题卡推断归属，" +
-          "请核对该份答题卡后人工指定学号再重试",
+        ? `第 1 页没有读到学号，第 ${stray.layoutPage} 页却读到学号 ${stray.studentId}。` +
+          "学号只印在第 1 页，页序可能已经错位（缺页、乱序或多张进纸）。请人工归组后重试。"
+        : "第 1 页没有读到学号。不会沿用前一份答题卡的学号，请核对该份答题卡后人工指定学号再重试。",
     );
     return problems;
   }
   if (stray) {
     problems.push(
-      `兼容模式（无二维码）下第 ${stray.layoutPage} 页读到学号 ${stray.studentId}，` +
-        `与第 1 页的 ${first.studentId} 不一致：疑似缺页/乱序/ADF 双进纸导致页序错位，请人工归组后重试`,
+      `第 ${stray.layoutPage} 页读到学号 ${stray.studentId}，与第 1 页的 ${first.studentId} 不一致。` +
+        "页序可能错位，请人工归组后重试。",
     );
   }
   return problems;
@@ -134,8 +131,8 @@ export function legacySessionBlockReason(opts: {
   const sheets = new Set(records.map((record) => Number(record.page_num))).size;
   if (sheets % sheetsPerStudent !== 0) {
     return (
-      `兼容模式（无二维码）下本次共 ${sheets} 张纸，不是每份答题卡 ${sheetsPerStudent} 张的整数倍：` +
-      "存在缺页或多进纸（ADF 双进纸），物理页序已不可信，请核对后重新扫描"
+      `本次共 ${sheets} 张纸，不是每份答题卡 ${sheetsPerStudent} 张的整数倍，可能有缺页或多张进纸。` +
+      "请核对后重新扫描。"
     );
   }
 
@@ -145,9 +142,8 @@ export function legacySessionBlockReason(opts: {
   }
   if (untrusted.length > 0) {
     return (
-      `兼容模式（无二维码）下第 ${untrusted.join("、")} 份答题卡的第 1 页学号不可信。` +
-      "没有二维码就无法排除整批页序错位，因此本批成绩暂不入库；" +
-      "请为这些卡人工指定学号（或重新扫描）后再汇总"
+      `第 ${untrusted.join("、")} 份答题卡的第 1 页学号不可信。为避免页序错位导致成绩串人，本批成绩暂不入库。` +
+      "请为这些卡人工指定学号，或整理原卷后重新扫描。"
     );
   }
   return null;

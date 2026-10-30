@@ -166,7 +166,7 @@ export function StudentExamPaper({ examId, examName, onBack }: Props) {
               <div>
                 <CardTitle>逐题正确答案</CardTitle>
                 <CardDescription className="mt-1 text-sm">
-                  {data.subject ? `${data.subject} · ` : ""}由老师录入，仅作对照，不判断你的作答
+                  {data.subject ? `${data.subject} · ` : ""}由老师录入，供学习参考
                 </CardDescription>
               </div>
             </CardHeader>

@@ -268,11 +268,11 @@ export function AdminConsolePage({ onBack }: Props) {
       <SectionCard title="用户偏好分布" desc="各设置项在全部用户中的取值分布。">
         {preferences ? (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-            <DistBar label="成绩显示模式（score_display_mode）" dist={preferences.scoreDisplayMode} />
-            <DistBar label="底部导航栏（show_tab_bar）" dist={preferences.showTabBar} />
-            <DistBar label="皮肤（ui_style / theme_skin）" dist={preferences.theme} />
-            <DistBar label="明暗（color_scheme）" dist={preferences.colorScheme} />
-            <DistBar label="文理分科（track）" dist={preferences.track} />
+            <DistBar label="成绩显示方式" dist={preferences.scoreDisplayMode} />
+            <DistBar label="底部导航栏" dist={preferences.showTabBar} />
+            <DistBar label="界面皮肤" dist={preferences.theme} />
+            <DistBar label="明暗模式" dist={preferences.colorScheme} />
+            <DistBar label="文理分科" dist={preferences.track} />
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">偏好分布加载失败。</p>
