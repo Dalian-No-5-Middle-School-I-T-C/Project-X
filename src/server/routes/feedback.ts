@@ -597,6 +597,16 @@ class FeedbackSessionStaleError extends Error {
   }
 }
 
+/** 等锁期间角色被恢复改掉：已认证但不再允许执行当前反馈操作。 */
+class FeedbackForbiddenError extends Error {
+  readonly code = "FEEDBACK_FORBIDDEN";
+
+  constructor() {
+    super("当前账号没有执行该反馈操作的权限");
+    this.name = "FeedbackForbiddenError";
+  }
+}
+
 /** 附件总数上限：备份按条目打包，超出恢复侧条目预算的备份将无法恢复。 */
 class FeedbackAttachmentCountError extends Error {
   readonly code = "FEEDBACK_ATTACHMENT_COUNT_EXCEEDED";
@@ -968,6 +978,8 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
     reportId = await withFeedbackMutationLock(async () => {
       // 等锁期间可能发生了恢复：按当前库重新加载账号，避免用旧角色 / 旧提交人身份写库。
       if (!(await refreshRequestUser(req))) throw new FeedbackSessionStaleError();
+      const currentRole = req.user!.role_name;
+      if (currentRole !== "admin" && currentRole !== "teacher") throw new FeedbackForbiddenError();
       return settleFeedbackStorage(
         feedbackRoot,
         reservation,
@@ -1037,6 +1049,12 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
     if (err instanceof FeedbackSessionStaleError) {
       if (!res.headersSent) {
         res.status(401).json({ ok: false, code: err.code, error: err.message });
+      }
+      return;
+    }
+    if (err instanceof FeedbackForbiddenError) {
+      if (!res.headersSent) {
+        res.status(403).json({ ok: false, code: err.code, error: err.message });
       }
       return;
     }
@@ -1159,6 +1177,9 @@ router.delete("/:id", requireAdmin, async (req, res) => {
         // 与备份共用同一把锁：备份在数据库快照与附件目录复制之间不允许删除提交，
         // 否则备份会保留附件记录却缺少文件。
         await withFeedbackMutationLock(async () => {
+          // 等锁期间恢复可能替换账号 / 权限：重新加载并按当前库复核 SYSTEM_MANAGE。
+          if (!(await refreshRequestUser(req))) throw new FeedbackSessionStaleError();
+          if (!roleHasPermission(req.user!.role_id, PERMISSIONS.SYSTEM_MANAGE)) throw new FeedbackForbiddenError();
           const db = getMysqlDb();
           const existing = await db.get<{ id: number }>("SELECT id FROM feedback_reports WHERE id = ?", id);
           if (!existing) return res.status(404).json({ ok: false, error: "反馈不存在" });
@@ -1216,6 +1237,14 @@ router.delete("/:id", requireAdmin, async (req, res) => {
           res.json({ ok: true, message: "反馈已删除" });
         });
       } catch (err: any) {
+        if (err instanceof FeedbackSessionStaleError) {
+          if (!res.headersSent) res.status(401).json({ ok: false, code: err.code, error: err.message });
+          return;
+        }
+        if (err instanceof FeedbackForbiddenError) {
+          if (!res.headersSent) res.status(403).json({ ok: false, code: err.code, error: err.message });
+          return;
+        }
         if (!res.headersSent) res.status(500).json({ ok: false, error: err.message });
       }
     });

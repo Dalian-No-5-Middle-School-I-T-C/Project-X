@@ -10,6 +10,7 @@ import {
   describeScanUploadLimits,
 } from "../../../shared/scanUploadLimits";
 import { requestUploadBudget } from "../../../server/lib/uploadBudget";
+import { holdAnswerCardDataMutationLock } from "../../../server/lib/answerCardDataLock";
 import { describeReviewPoolLimits } from "../../../shared/reviewPoolLimits";
 import { describeRestoreZipLimits } from "../../../shared/restoreZipLimits";
 import { describePaperStorageLimits } from "../../../shared/paperStorageLimits";
@@ -124,7 +125,7 @@ import {
   restoreCropFileMoves,
   type CropFileMove,
 } from "../../../server/services/AnswerBlockCropService";
-import { optionalAuth, authMiddleware, requirePermission } from "../../../server/middleware/auth";
+import { optionalAuth, authMiddleware, refreshAuthenticatedUser, requirePermission } from "../../../server/middleware/auth";
 import { requirePasswordChangeCompleted } from "../../../server/middleware/auth";
 import { authService } from "../../../server/services/AuthService";
 import { initPermissionCache, roleHasPermission, PERMISSIONS, ROLE_IDS } from "../../../server/auth/permissions";
@@ -2047,7 +2048,7 @@ export async function createApp(): Promise<express.Express> {
   // ── 答题卡导出/导入/删除 ──────────────────────────────
 
   // DELETE: 删除答题卡
-  app.delete("/api/cards/:cardId", async (req, res, next) => {
+  app.delete("/api/cards/:cardId", holdAnswerCardDataMutationLock, async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const card = await cardRepo.findById(cardId);
@@ -2642,7 +2643,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.delete("/api/exams/:examId", requireExamAccess, async (req, res, next) => {
+  app.delete("/api/exams/:examId", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, requireExamAccess, async (req, res, next) => {
     try {
       const examRepo = new ExamRepository();
       const exam = await examRepo.findExamById(Number(req.params.examId));
