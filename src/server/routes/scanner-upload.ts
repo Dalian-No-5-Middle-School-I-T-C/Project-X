@@ -33,6 +33,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import crypto from "node:crypto";
 import { dualAuth } from "../middleware/scanner-auth";
+import { hasViewPermission } from "../../apps/answer-card/server/middleware";
 import { requireScannerExamScope, requireScannerRecordScope, enforceScannerCardScope } from "../middleware/scanner-scope";
 import { resolveScannerExam } from "../services/scannerExam";
 import { getMysqlDb } from "../db";
@@ -562,6 +563,12 @@ router.get("/sessions/:sessionId/participant-search", dualAuth, async (req, res,
     const { exam } = await resolveScannerExam(session.card_id, sessionId);
     if (!exam) {
       res.status(409).json({ message: "无法确定扫描会话的考试归属" });
+      return;
+    }
+    // 教师 JWT 与 /api/exams/:examId/participant-search 同口径：名单查看被矩阵关闭时不得检索学生。
+    // 扫描端 API Key 无 req.user，仍走 requireScannerExamScope 的归属链，不受此门约束。
+    if (req.user && !(await hasViewPermission(req.user, exam.id, "can_view_students"))) {
+      res.status(403).json({ message: "权限不足：管理员已关闭你对本场考试「学生名单」的查看权限" });
       return;
     }
     const students = await searchExamParticipantRoster(db, exam.id, q);
