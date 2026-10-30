@@ -3,7 +3,9 @@ import multer from "multer";
 import path from "node:path";
 import { existsSync, unlinkSync } from "node:fs";
 import { ensurePaperDir, paperDir, paperTmpDir, safeId } from "../storage";
-import { holdAnswerCardDataMutationLock, withAnswerCardDataMutationLock } from "../../../../server/lib/answerCardDataLock";
+import { holdAnswerCardDataMutationLock } from "../../../../server/lib/answerCardDataLock";
+import { refreshAuthenticatedUser, recheckWritePermission } from "../../../../server/middleware/auth";
+import { PERMISSIONS } from "../../../../server/auth/permissions";
 import {
   validatePaperFile,
   storePaperPageFile,
@@ -165,6 +167,8 @@ export function paperRoutes(): Router {
   router.post(
     "/api/cards/:cardId/paper",
     holdAnswerCardDataMutationLock,
+    refreshAuthenticatedUser,
+    recheckWritePermission(PERMISSIONS.GRADE_WRITE),
     requestUploadBudget({ maxTotalBytes: MAX_PAPER_REQUEST_BYTES, label: "原卷上传" }),
     (req: Request, res: Response, next) => {
       paperUpload.array("files", MAX_PAPER_FILES_PER_REQUEST)(req, res, (err) => {
@@ -422,9 +426,8 @@ export function paperRoutes(): Router {
   });
 
   // DELETE /api/cards/:cardId/paper — 删除原卷（全部页）
-  router.delete("/api/cards/:cardId/paper", async (req: Request, res: Response) => {
+  router.delete("/api/cards/:cardId/paper", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.GRADE_WRITE), async (req: Request, res: Response) => {
     try {
-      await withAnswerCardDataMutationLock(async () => {
         const cardId = String(req.params.cardId);
         const dir = paperDir(cardId);
 
@@ -449,7 +452,6 @@ export function paperRoutes(): Router {
         invalidatePaperUsageCache();
 
         res.json({ success: true });
-      });
     } catch (err: any) {
       console.error("[paper] delete failed:", err);
       res.status(500).json({ error: err.message || "删除失败" });
@@ -457,9 +459,8 @@ export function paperRoutes(): Router {
   });
 
   // DELETE /api/cards/:cardId/paper/page/:pageIndex — 删除单页
-  router.delete("/api/cards/:cardId/paper/page/:pageIndex", async (req: Request, res: Response) => {
+  router.delete("/api/cards/:cardId/paper/page/:pageIndex", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.GRADE_WRITE), async (req: Request, res: Response) => {
     try {
-      await withAnswerCardDataMutationLock(async () => {
         const cardId = String(req.params.cardId);
         const pageIndex = Number(req.params.pageIndex);
         const dir = paperDir(cardId);
@@ -485,7 +486,6 @@ export function paperRoutes(): Router {
         }
         invalidatePaperUsageCache(); // 删除改变了磁盘占用：让下一次配额判定重新实测（安全 R10）
         res.json({ success: true });
-      });
     } catch (err: any) {
       console.error("[paper] delete page failed:", err);
       res.status(500).json({ error: err.message || "删除失败" });

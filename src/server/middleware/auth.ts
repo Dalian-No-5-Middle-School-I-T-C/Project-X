@@ -190,6 +190,25 @@ export async function refreshAuthenticatedUser(req: Request, res: Response, next
   }
 }
 
+/** 数据锁 + 刷新账号之后重跑写权限门（恢复可能已替换角色）。 */
+export function recheckWritePermission(permission: Permission) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!isAuthEnforced()) {
+      next();
+      return;
+    }
+    if (!req.user) {
+      res.status(401).json({ message: "未提供认证令牌" });
+      return;
+    }
+    if (!roleHasPermission(req.user.role_id, permission)) {
+      res.status(403).json({ message: `权限不足：缺少 ${permission}` });
+      return;
+    }
+    next();
+  };
+}
+
 /**
  * 角色鉴权中间件：要求用户属于允许的角色之一。
  * @param allowedRoles 角色名数组，如 ["admin", "teacher"]

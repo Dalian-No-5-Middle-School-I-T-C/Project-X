@@ -125,7 +125,7 @@ import {
   restoreCropFileMoves,
   type CropFileMove,
 } from "../../../server/services/AnswerBlockCropService";
-import { optionalAuth, authMiddleware, refreshAuthenticatedUser, requirePermission } from "../../../server/middleware/auth";
+import { optionalAuth, authMiddleware, refreshAuthenticatedUser, recheckWritePermission, requirePermission } from "../../../server/middleware/auth";
 import { requirePasswordChangeCompleted } from "../../../server/middleware/auth";
 import { authService } from "../../../server/services/AuthService";
 import { initPermissionCache, roleHasPermission, PERMISSIONS, ROLE_IDS } from "../../../server/auth/permissions";
@@ -1313,17 +1313,6 @@ export async function createApp(): Promise<express.Express> {
   const analysisGate = makeGate(enforceAuth, PERMISSIONS.GRADE_READ, PERMISSIONS.GRADE_READ);
   const scannerAuth = makeScannerAuth(enforceAuth);
   const cropGate = answerBlockCropGate(enforceAuth);
-  // 数据锁 + 恢复之后重新挂载的 req.user 可能已降权：按当前角色重跑写权限门。
-  const recheckWritePermission = (permission: string) =>
-    (req: express.Request, res: express.Response, next: express.NextFunction): void => {
-      if (!enforceAuth) { next(); return; }
-      if (!req.user) { res.status(401).json({ message: "未提供认证令牌" }); return; }
-      if (!roleHasPermission(req.user.role_id, permission)) {
-        res.status(403).json({ message: `权限不足：缺少 ${permission}` });
-        return;
-      }
-      next();
-    };
   app.use("/api/cards", cardGate);
   app.use("/api/exams", examGate);
   // v54: 考试级「本次正确答案」配置（挂在 examGate 之后，继承 EXAM_READ/EXAM_WRITE 再叠加数据范围校验）

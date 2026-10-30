@@ -42,7 +42,16 @@ export function holdAnswerCardDataMutationLock(req: Request, res: Response, next
       return;
     }
     res.once("finish", release);
-    res.once("close", release);
+    // 客户端在 handler 运行中断连时 close 会先到，但异步 handler 仍在写文件 / 库；
+    // 锁必须等它真正结束响应（res.end）后再释放，不能跟着 close 提前放行备份 / 恢复。
+    const originalEnd = res.end.bind(res);
+    (res as unknown as { end: (...args: unknown[]) => unknown }).end = (...args: unknown[]) => {
+      try {
+        return originalEnd(...(args as Parameters<typeof res.end>));
+      } finally {
+        release();
+      }
+    };
     next();
   })).catch(next);
 }
