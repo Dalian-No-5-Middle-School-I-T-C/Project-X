@@ -136,6 +136,7 @@ let hideCard = false;
 const busySessionId = "scan-busy";
 let busyCancelled = false;
 let busyCancels = 0;
+let busyCancelStatus = 200;
 install("fetch", async (input: unknown, init?: RequestInit) => {
   const url = String(input);
   const method = init?.method ?? "GET";
@@ -146,7 +147,7 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   if (url.endsWith(`/api/scanner/scan/${busySessionId}/cancel`)) {
     busyCancelled = true;
     busyCancels += 1;
-    return Response.json({ status: "cancelled", message: "扫描已取消" });
+    return Response.json({ status: "cancelled", message: "扫描已取消" }, { status: busyCancelStatus });
   }
   const sessionMatch = url.match(/\/api\/scanner\/session\/([^/]+)\/(validate|results)/);
   if (sessionMatch) {
@@ -818,6 +819,33 @@ try {
     assert(focusHost.textContent?.includes("第 2 / 2 条"), `队列直接停在恢复目标那一条（实际 ${focusHost.textContent?.match(/第 \d+ \/ \d+ 条/)?.[0]}）`);
     await act(async () => { root7!.unmount(); });
     root7 = null;
+
+    // 同一组有多条异常项时，恢复要回到具体那一条（itemId），不能只按组选第一条。
+    const sameGroupItems = [
+      { id: "sg-student", kind: "student_id" as const, sessionId: "sg", groupId: "0", studentId: null, label: "考号问题",
+        conflicts: [], missingLayoutPages: [], needsReviewCount: 0 },
+      { id: "sg-low", kind: "low_confidence" as const, sessionId: "sg", groupId: "0", studentId: null, label: "存疑",
+        conflicts: [], missingLayoutPages: [], needsReviewCount: 1 },
+    ];
+    const itemHost = document.createElement("div");
+    document.body.append(itemHost);
+    const itemRoot = createRoot(itemHost);
+    const itemChanges: string[] = [];
+    await act(async () => itemRoot.render(createElement(TooltipProvider, null, createElement(PostprocessQueueView, {
+      channel: studentChannel, queue: sameGroupItems, scans: [], examIdForSession: () => null,
+      layoutPageCountFor: () => 1, focus: { sessionId: "sg", groupId: "0", itemId: "sg-low" },
+      onCurrentChange: (sessionId: string, groupId: string, itemId?: string) => itemChanges.push(`${sessionId}/${groupId}/${itemId}`),
+      onResolved: () => {}, onPreviewDiscard: () => {}, onDelete: async () => {}, onJumpToCorrection: () => {},
+    }))));
+    await settle();
+    assert.deepEqual(itemChanges, ["sg/0/sg-low"], "同组多条异常项要按 itemId 恢复到具体那一条");
+    assert(itemHost.textContent?.includes("第 2 / 2 条"), "同组第二条异常项也能直接定位");
+    await act(async () => { itemRoot.unmount(); });
+    itemHost.remove();
+    const { writePostprocessView: writeViewMarker, readPostprocessView: readViewMarker } = await import("../src/apps/answer-card/client/lib/postprocessResume");
+    writeViewMarker(card.id, { view: "queue", sessionId: "sg", groupId: "0", itemId: "sg-low" }, 7);
+    assert.equal(readViewMarker(card.id, 7)?.itemId, "sg-low", "恢复标记要保留队列项 id");
+
     studentHost.remove();
     focusHost.remove();
   }
@@ -962,6 +990,39 @@ try {
   assert.equal(busyCancelled, true, "取消接口成功后会话收尾");
   assert(busyHost.textContent?.includes("扫描后处理"), "取消后按已收尾会话打开后处理");
   await act(async () => { busyRoot.unmount(); });
+
+  // 在途批次还在送纸时点「返回扫描」：必须先停设备再离开。
+  // 否则新工作台拿不到这个会话、设备照旧送纸，用户还能再开一批。
+  busyCancelled = false;
+  busyCancels = 0;
+  const leaveHost = document.createElement("div");
+  document.body.appendChild(leaveHost);
+  const leaveRoot = createRoot(leaveHost);
+  let leaveCalls = 0;
+  await act(async () => {
+    leaveRoot.render(createElement(TooltipProvider, null, createElement(ScannerPostprocessPage, {
+      cardId: card.id, cardTitle: card.title, userId: 7,
+      sessions: [{ sessionId: busySessionId, pageCount: 0 }],
+      onBack: () => { leaveCalls += 1; },
+    })));
+  });
+  await settle(30);
+  assert(leaveHost.textContent?.includes("上一批扫描还没有结束"), "在途批次仍进入等待界面");
+  busyCancelStatus = 500;
+  const blockedBack = [...leaveHost.querySelectorAll("button")].find(el => el.textContent?.trim() === "返回扫描");
+  assert(blockedBack, "等待界面提供返回扫描");
+  await act(async () => { blockedBack!.click(); });
+  await settle(40);
+  assert.equal(busyCancels, 1, "返回扫描要先发停止请求");
+  assert.equal(leaveCalls, 0, "停止失败时不能返回工作台");
+  busyCancelStatus = 200;
+  const allowedBack = [...leaveHost.querySelectorAll("button")].find(el => el.textContent?.trim() === "返回扫描");
+  await act(async () => { allowedBack!.click(); });
+  await settle(40);
+  assert.equal(busyCancels, 2, "确认停止成功后才离开");
+  assert.equal(leaveCalls, 1, "停设备成功后仍要返回工作台");
+  await act(async () => { leaveRoot.unmount(); });
+  leaveHost.remove();
 
   console.log("PASS scanner-postprocess-ui-smoke");
 } catch (error) {

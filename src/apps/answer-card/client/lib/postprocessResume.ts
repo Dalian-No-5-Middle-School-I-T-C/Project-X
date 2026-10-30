@@ -15,6 +15,8 @@ export interface PostprocessViewState {
   view: "results" | "correction" | "queue";
   sessionId: string;
   groupId: string;
+  /** 同一组可能有多条异常项（考号 + 存疑等）：恢复时要回到具体那一条，不能只按组找第一条。 */
+  itemId?: string;
 }
 
 function readJson<T>(key: string): T | null {
@@ -112,7 +114,12 @@ export function readPostprocessView(cardId: string, userId?: number | null): Pos
   if (!saved || typeof saved.at !== "number" || Date.now() - saved.at > MAX_AGE_MS) return null;
   if (saved.view !== "results" && saved.view !== "correction" && saved.view !== "queue") return null;
   if (typeof saved.sessionId !== "string" || typeof saved.groupId !== "string") return null;
-  return { view: saved.view, sessionId: saved.sessionId, groupId: saved.groupId };
+  return {
+    view: saved.view,
+    sessionId: saved.sessionId,
+    groupId: saved.groupId,
+    ...(typeof saved.itemId === "string" ? { itemId: saved.itemId } : {}),
+  };
 }
 
 export function writePostprocessView(cardId: string, state: PostprocessViewState, userId?: number | null): void {

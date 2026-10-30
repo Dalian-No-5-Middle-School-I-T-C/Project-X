@@ -33,10 +33,11 @@ export interface PostprocessQueueViewProps {
   /** 按该组所属会话的扫描时页数画缺页对照，不能用后来拉到的新卡页数。 */
   layoutPageCountFor: (sessionId: string) => number;
   /** 从扫描结果点开的异常：把指针定位到该组，而不是永远从队首开始。
+   *  同一组可能有多条异常项（如考号 + 存疑），恢复时靠 itemId 精确到上次那一条。
    *  这是一次性的定位请求，不要把 onCurrentChange 上报的项回灌进来，否则两边会互相拉着跳。 */
-  focus?: { sessionId: string; groupId: string } | null;
+  focus?: { sessionId: string; groupId: string; itemId?: string } | null;
   /** 当前停留的队列项变化：父页面用它持久化崩溃恢复位置，而不是只记最初打开的那组。 */
-  onCurrentChange?: (sessionId: string, groupId: string) => void;
+  onCurrentChange?: (sessionId: string, groupId: string, itemId?: string) => void;
   /** 处理完成（考号已改、重复卷已定性等）：页面重拉批结果并按需补传 */
   onResolved: (sessionId: string, groupId: string) => void | Promise<void>;
   /** 远端预览没有回执。记下「不保留」的那份，由页面在后续预览里滤掉，不能打本地作废接口。 */
@@ -57,11 +58,20 @@ const kindTone = (kind: PostprocessQueueItem["kind"]): "danger" | "warning" | "n
   kind === "low_confidence" ? "warning" : kind === "other" ? "neutral" : "danger"
 );
 
+/** 先按 itemId 精确匹配（同组多条异常），找不到再退回按组定位。 */
+function focusIndexOf(queue: PostprocessQueueItem[], focus: { sessionId: string; groupId: string; itemId?: string }): number {
+  if (focus.itemId) {
+    const byId = queue.findIndex(item => item.id === focus.itemId);
+    if (byId >= 0) return byId;
+  }
+  return queue.findIndex(item => item.sessionId === focus.sessionId && item.groupId === focus.groupId);
+}
+
 export function PostprocessQueueView({ queue, channel, examIdForSession, scans, layoutPageCountFor, focus, onCurrentChange, onResolved, onJumpToCorrection, onDelete, onPreviewDiscard }: PostprocessQueueViewProps) {
   // 带着定位目标挂载时首帧就落到它：等 focus 的 effect 再跳，首帧上报的会是第 1 条，
   // 父页面按上报值写恢复标记，崩溃恢复的位置会被覆盖成队首。
   const [cursor, setCursor] = useState(() => {
-    const index = focus ? queue.findIndex(item => item.sessionId === focus.sessionId && item.groupId === focus.groupId) : -1;
+    const index = focus ? focusIndexOf(queue, focus) : -1;
     return index >= 0 ? index : 0;
   });
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
@@ -72,9 +82,9 @@ export function PostprocessQueueView({ queue, channel, examIdForSession, scans, 
   // 从扫描结果点开某一异常卡时定位到它；focus 变化只跳一次，不跟队列刷新较劲
   const lastFocus = useRef<string | null>(null);
   useEffect(() => {
-    const key = focus ? `${focus.sessionId}/${focus.groupId}` : null;
+    const key = focus ? `${focus.itemId ?? ""}/${focus.sessionId}/${focus.groupId}` : null;
     if (!key || key === lastFocus.current) return;
-    const index = queue.findIndex(item => `${item.sessionId}/${item.groupId}` === key);
+    const index = focus! ? focusIndexOf(queue, focus!) : -1;
     if (index < 0) return;
     lastFocus.current = key;
     setCursor(index);
@@ -97,8 +107,8 @@ export function PostprocessQueueView({ queue, channel, examIdForSession, scans, 
 
   useEffect(() => {
     if (!current) return;
-    onCurrentChange?.(current.sessionId, current.groupId);
-  }, [current?.sessionId, current?.groupId, onCurrentChange]);
+    onCurrentChange?.(current.sessionId, current.groupId, current.id);
+  }, [current?.sessionId, current?.groupId, current?.id, onCurrentChange]);
   const total = queue.length + resolved.size;
   const skippedCount = queue.filter(item => skipped.has(item.id)).length;
 

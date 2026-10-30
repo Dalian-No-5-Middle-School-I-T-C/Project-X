@@ -43,10 +43,10 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   const [scans, setScans] = useState<ScanMeta[]>([]);
   const [active, setActive] = useState<PostprocessGroup | null>(null);
   const [highlight, setHighlight] = useState<SubjectiveQuestionNumber | null>(null);
-  const [focusIssue, setFocusIssue] = useState<{ sessionId: string; groupId: string } | null>(null);
+  const [focusIssue, setFocusIssue] = useState<{ sessionId: string; groupId: string; itemId?: string } | null>(null);
   /** 队列视图当前停在哪个组：只用于崩溃恢复标记，不参与 focus 回灌，
    *  否则子组件上报 → 父页面改 focus → 子组件再跳 cursor，两边会一直对抖。 */
-  const [queueCurrent, setQueueCurrent] = useState<{ sessionId: string; groupId: string } | null>(null);
+  const [queueCurrent, setQueueCurrent] = useState<{ sessionId: string; groupId: string; itemId?: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [savingAll, setSavingAll] = useState(false);
   const [error, setError] = useState("");
@@ -145,8 +145,8 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
     return () => clearTimeout(timer);
   }, [waitingSessions, reload]);
 
-  const stopWaitingScan = useCallback(async () => {
-    if (stoppingWait || waitingSessions.length === 0) return;
+  const stopWaitingScan = useCallback(async (): Promise<boolean> => {
+    if (stoppingWait || waitingSessions.length === 0) return waitingSessions.length === 0;
     setStoppingWait(true);
     try {
       for (const sessionId of waitingSessions) {
@@ -157,19 +157,27 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           // 网络失败时 authFetch 会拒绝；没有这层 catch 就只剩一条未处理的 rejection，设备照旧在送纸。
           console.error("[scanner] 停止在途批次失败", error);
           notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
-          return;
+          return false;
         }
         if (!response.ok) {
           notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
-          return;
+          return false;
         }
       }
       // 取消后服务端保留已扫页面，按收尾会话重新加载即可继续查看。
       await reload();
+      return true;
     } finally {
       setStoppingWait(false);
     }
   }, [channel, reload, stoppingWait, waitingSessions]);
+
+  /** 在途批次还在送纸时离开：先停设备并确认，再返回工作台，否则新工作台拿不到这个会话，
+   *  后台可能继续落页，用户还能再开一批。停止失败就留在本页（已有提示）。 */
+  const leavePage = useCallback(async () => {
+    if (waitingSessions.length > 0 && !await stopWaitingScan()) return;
+    onBack();
+  }, [waitingSessions, stopWaitingScan, onBack]);
 
   const sessionLayouts = useMemo(() => {
     const localFingerprint = localCard ? cardFingerprint(localCard) : null;
@@ -197,8 +205,8 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   }, [batches, sessions, sessionLayouts, card]);
   const queue = useMemo(() => buildPostprocessQueue(groups), [groups]);
 
-  const handleQueueCurrent = useCallback((sessionId: string, groupId: string) => {
-    setQueueCurrent({ sessionId, groupId });
+  const handleQueueCurrent = useCallback((sessionId: string, groupId: string, itemId?: string) => {
+    setQueueCurrent({ sessionId, groupId, itemId });
   }, []);
 
   // 闪退重载后回到上次停留的卷/视图；组已不存在时静默忽略，仍停在结果页。
@@ -211,7 +219,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
     if (!group) return;
     setActive(group);
     setView(saved.view);
-    if (saved.view === "queue") setFocusIssue({ sessionId: saved.sessionId, groupId: saved.groupId });
+    if (saved.view === "queue") setFocusIssue({ sessionId: saved.sessionId, groupId: saved.groupId, itemId: saved.itemId });
     setResumedFromCrash(true);
   }, [groups, cardId]);
 
@@ -219,7 +227,12 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   const resumeTarget = view === "queue" ? queueCurrent : active;
   useEffect(() => {
     if (!resumeTarget) return;
-    writePostprocessView(cardId, { view, sessionId: resumeTarget.sessionId, groupId: resumeTarget.groupId }, userId);
+    writePostprocessView(cardId, {
+      view,
+      sessionId: resumeTarget.sessionId,
+      groupId: resumeTarget.groupId,
+      ...("itemId" in resumeTarget && resumeTarget.itemId ? { itemId: resumeTarget.itemId } : {}),
+    }, userId);
   }, [cardId, view, resumeTarget]);
 
   // 定位请求是一次性的：离开队列视图后就过期了，再回来应停在刚才那一条（queueCurrent），
@@ -375,7 +388,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           <p className="m-0 text-xs text-muted-foreground">停止这一批会保留已扫页面，可以在这里继续查看。</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" icon={<ArrowLeft size={16} />} onClick={onBack}>返回扫描</Button>
+          <Button variant="outline" icon={<ArrowLeft size={16} />} onClick={() => void leavePage()}>返回扫描</Button>
           <Button onClick={() => void stopWaitingScan()} disabled={stoppingWait}>停止这一批</Button>
         </div>
       </div>
@@ -399,7 +412,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   return (
     <main className="flex h-[100dvh] min-w-0 flex-col overflow-hidden bg-background">
       <header className="flex h-page-header shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-5">
-        <Button variant="ghost" size="icon-sm" onClick={onBack} aria-label="返回扫描"><ArrowLeft size={18} /></Button>
+        <Button variant="ghost" size="icon-sm" onClick={() => void leavePage()} aria-label="返回扫描"><ArrowLeft size={18} /></Button>
         <div className="flex min-w-0 flex-1 flex-col">
           <strong className="truncate text-base font-semibold">{cardTitle} · 扫描后处理</strong>
           <span className="truncate text-xs tabular-nums text-muted-foreground">
