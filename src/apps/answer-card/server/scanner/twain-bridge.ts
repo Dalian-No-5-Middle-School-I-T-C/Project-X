@@ -346,11 +346,9 @@ export function describeBridgeFailure(code: number | null, stderr: string): stri
   // 现场实测 DLL 齐全却仍报此码时，多为安装不完整或文件被安全软件隔离。
   // 文案改为并列可能原因，不再一口断定缺运行库（避免误导排查方向）。
   if (unsigned === 0xc0000135) {
-    return "扫描桥接程序无法启动（0xC0000135：加载依赖 DLL 失败）。" +
-      "v2.5.5 起运行库已随包分发，因此通常是安装不完整或文件被安全软件隔离：" +
-      "请确认安装目录 resources/native/" + nativeResourceDir() +
-      " 下存在 msvcp140.dll / vcruntime140.dll / concrt140.dll，并把安装目录加入安全软件白名单；" +
-      "该错误由 Windows 报告，并不表示扫描仪或驱动有问题。";
+    return "扫描组件无法启动（缺少运行库或文件被安全软件隔离）。" +
+      "请确认安装完整，尤其是 resources/native/" + nativeResourceDir() + " 下的运行库文件，" +
+      "并把安装目录加入安全软件白名单。该错误由 Windows 报告，与扫描仪或驱动无关。";
   }
   // 0xC000007B STATUS_INVALID_IMAGE_FORMAT：位宽不匹配或 DLL 损坏
   if (unsigned === 0xc000007b) {

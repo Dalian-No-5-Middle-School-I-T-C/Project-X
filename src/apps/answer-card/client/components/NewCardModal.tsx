@@ -350,7 +350,7 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
           )}
 
           {showCustom && (
-            <Field label="手动填写科目名称" hint={customSubject.trim() ? `拼音 key: ${subjectToKey(customSubject.trim()) || "—"}` : undefined}>
+            <Field label="手动填写科目名称">
               <Input
                 value={customSubject}
                 onChange={(e) => handleCustomSubjectChange(e.target.value)}

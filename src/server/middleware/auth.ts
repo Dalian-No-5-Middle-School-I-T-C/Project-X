@@ -220,7 +220,7 @@ export function requireRole(...allowedRoles: string[]) {
       return;
     }
     if (!allowedRoles.includes(req.user.role_name)) {
-      res.status(403).json({ message: "权限不足：需要角色 " + allowedRoles.join("/") });
+      res.status(403).json({ message: "权限不足：当前账号不能访问此页面。" });
       return;
     }
     next();

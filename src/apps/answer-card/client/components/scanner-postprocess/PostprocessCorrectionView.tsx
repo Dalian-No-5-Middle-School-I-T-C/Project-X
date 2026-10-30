@@ -299,12 +299,12 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
           <RotationButtons rotation={rotation} onChange={setRotation} disabled={saving} />
           {uploadBusy ? (
             <Tip label={uploadBlock === "recovery-damaged"
-              ? "本机上传恢复记录已损坏，读不出远端会话与逐页进度；这一卷可能已经入库，保存或重传都会改写正式成绩。请先在服务器核对原上传会话，再点「已核对服务器，清除损坏记录」"
+              ? "本机上传记录已损坏，无法确认这卷是否已入库。请先在服务器核对原上传会话，再清除本机记录。"
               : uploadBlock === "completion-pending"
-              ? "这一卷的页面都已上传、只差提交（重复学号这类冲突是服务器拒的）；现在保存会让服务器收到半旧半新的识别结果，请先「重试保存」或处理冲突卷"
+              ? "这卷的页面已上传，只差提交。现在保存可能与服务器已有记录冲突；请先重试保存或处理冲突卷。"
               : uploadResumable
-              ? "这一卷已上传一部分、还有失败页可续传；现在保存会让服务器收到半旧半新的识别结果。请先重试失败页，或点「放弃续传」后再保存"
-              : "这一卷正在上传；现在保存会让服务器收到半旧半新的识别结果，请等它传完或先取消任务"}>
+              ? "这卷还有失败页未传完。现在保存会让服务器收到新旧不一的识别结果；请先重试失败页，或放弃续传后再改。"
+              : "这卷正在上传。请等上传完成或取消任务后再改分。"}>
               <Button variant="primary" size="sm" icon={<Save />} disabled loading>保存修改</Button>
             </Tip>
           ) : (
@@ -323,12 +323,12 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
           {uploadBlock === "recovery-damaged" && uploadCardId && (
             <Button size="sm" variant="outline" onClick={() => {
               const remoteSessionId = scannerUploadManager.damagedRecoverySessionId(uploadCardId, groupId, sessionId);
-              if (!window.confirm(`本机上传恢复记录已损坏，无法确认这一卷在服务器上是否已经入库${remoteSessionId ? `（原上传会话 ${remoteSessionId}）` : ""}。请先在成绩或异常卷列表里核对那一份：确认没有已保存的成绩之后，再清除本机记录；清除后这一卷会按新会话重新上传。确定已经核对过吗？`)) return;
+              if (!window.confirm(`本机上传记录已损坏，无法确认这一卷在服务器上是否已经入库${remoteSessionId ? `（原上传会话 ${remoteSessionId}）` : ""}。请先在成绩或异常卷列表里核对；确认没有已保存的成绩后，再清除本机记录并按新会话重新上传。确定已经核对过吗？`)) return;
               const result = scannerUploadManager.discardDamagedRecovery(uploadCardId, groupId, sessionId);
               if (!result.ok) { setMessage(result.message); return; }
               onUploadAbandoned?.();
-              setMessage("已清除损坏的恢复记录；请先把这一卷的填涂核对确认，再整卷重新上传。");
-            }}>已核对服务器，清除损坏记录</Button>
+              setMessage("已清除损坏记录。请先核对这一卷的填涂，再整卷重新上传。");
+            }}>清除损坏记录</Button>
           )}
         </div>
       </div>

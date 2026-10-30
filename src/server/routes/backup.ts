@@ -18,7 +18,7 @@ import { activeFeedbackTempFiles, beginFeedbackMaintenance, invalidateFeedbackSt
 // 备份要在数据库快照前收敛 `feedback/_trash`，与反馈删除共用同一份核对逻辑。
 import { reconcileFeedbackTrashLocked, resetFeedbackRuntimeStateAfterRestore } from "./feedback";
 import { sanitizeOpsMessage } from "../lib/opsErrorMessage";
-import { PERMISSIONS } from "../auth/permissions";
+import { PERMISSIONS, initPermissionCache, invalidatePermissionCache } from "../auth/permissions";
 import { closeDatabase, getDatabase, getMysqlDb, getMariadbConfig, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, detectDialect, ensureDefaultAdmin, removeBootstrapAdminFile } from "../db";
 import { closeDb } from "../../apps/answer-card/server/database";
 import { seedDemoData, clearDemoData } from "../services/DemoDataService";
@@ -47,7 +47,7 @@ let restoreInProgress = false;
 
 const receiveRestoreZip: RequestHandler = (req, res, next) => {
   if (!req.is("application/zip")) {
-    res.status(400).json({ message: "请上传 .zip 备份文件（需以 application/zip Content-Type 发送）" });
+    res.status(400).json({ message: "请选择 .zip 备份文件。" });
     return;
   }
   const limitMessage = `备份文件不能超过 ${Math.round(RESTORE_ZIP_UPLOAD_LIMIT_BYTES / MEBIBYTE)} MiB`;
@@ -195,16 +195,14 @@ function isSeparatelyBackedUpDbFile(filePath: string, dbPaths: string[]): boolea
   });
 }
 
-/** 反馈的临时上传目录与删除暂存目录都不属于备份视图：`_tmp` 可能有半截文件，
- *  `_trash` 在备份前已按数据库收敛（仍存在的记录移回原位、无记录的残留删除）。 */
-function isFeedbackTransientPath(filePath: string, dataDir: string): boolean {
-  const feedbackDir = path.join(path.resolve(dataDir), "feedback");
-  const resolved = path.resolve(filePath);
-  return ["_tmp", "_trash"].some((name) => {
-    const dir = path.join(feedbackDir, name);
-    const rel = path.relative(dir, resolved);
-    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-  });
+/** 任何 `_tmp` 临时目录与反馈 `_trash` 都不属于备份视图：前者可能有半截文件，
+ *  后者在备份前已按数据库收敛（仍存在的记录移回原位、无记录的残留删除）。 */
+function isDataTreeTransientPath(filePath: string, dataDir: string): boolean {
+  const rel = path.relative(path.resolve(dataDir), path.resolve(filePath));
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) return false;
+  const parts = rel.split(path.sep);
+  if (parts.includes("_tmp")) return true;
+  return parts[0] === "feedback" && parts[1] === "_trash";
 }
 
 /**
@@ -284,7 +282,7 @@ router.get("/backup", async (_req: Request, res: Response) => {
         await copyDirectory(
           dataDir,
           dataBakDir,
-          (filePath: string) => !isSeparatelyBackedUpDbFile(filePath, separatelyBackedUp) && !isFeedbackTransientPath(filePath, dataDir)
+          (filePath: string) => !isSeparatelyBackedUpDbFile(filePath, separatelyBackedUp) && !isDataTreeTransientPath(filePath, dataDir)
         );
         metadata.files.push({ name: "data/answer-card/", size: 0 });
       }
@@ -299,6 +297,8 @@ router.get("/backup", async (_req: Request, res: Response) => {
 
     archive.on("error", (err?: Error) => {
       console.error("[Backup] Archive error:", err?.message);
+      // 已经 pipe 到响应后无法再改状态码：直接销毁连接，避免客户端把截断 ZIP 当成功。
+      if (!res.destroyed) res.destroy(err);
     });
 
     // 将 archive 管道到响应
@@ -336,6 +336,8 @@ router.get("/backup", async (_req: Request, res: Response) => {
     cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     if (!res.headersSent) {
       respondOpsFailure(res, error, "导出失败");
+    } else if (!res.destroyed) {
+      res.destroy(error instanceof Error ? error : undefined);
     }
   }
 });
@@ -355,7 +357,7 @@ router.post("/restore", receiveRestoreZip, async (req, res) => {
 async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
   const zipPath = (req as RestoreRequest).restoreZipPath;
   if (!zipPath) {
-    res.status(400).json({ message: "请上传 .zip 备份文件（需以 application/zip Content-Type 发送）" });
+    res.status(400).json({ message: "请选择 .zip 备份文件。" });
     return;
   }
   const dialect = detectDialect();
@@ -364,9 +366,9 @@ async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  if (!(await hasZipMagic(zipPath))) {
+  if (!(await hasZipMagic(zipPath).catch(() => false))) {
     await rm(zipPath, { force: true }).catch(() => undefined);
-    res.status(400).json({ message: "上传的文件不是有效的 ZIP 格式（缺少 PK 文件头）" });
+    res.status(400).json({ message: "所选文件不是有效的 ZIP 备份，请重新选择。" });
     return;
   }
 
@@ -474,6 +476,15 @@ async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
       await swapRestoredDataDir(dataDir, staging, backupSuffix);
       // 备份不含 feedback/_tmp：替换数据树后让反馈模块按新目录重新初始化。
       resetFeedbackRuntimeStateAfterRestore();
+
+      // 恢复可能替换 roles 表：先清空启动时的权限缓存，再按新库重载；失败时缓存保持为空，
+      // 回落到内置默认角色，不会继续用旧权限矩阵放行。
+      invalidatePermissionCache();
+      try {
+        await initPermissionCache();
+      } catch (e) {
+        console.error("[Restore] 重新加载角色权限失败，已回落到默认权限:", e);
+      }
 
       // 在锁内失效：放开锁之前新基线已经生效，后到的上传不会读到恢复前的占盘。
       invalidateFeedbackStorageUsage();
@@ -656,7 +667,7 @@ async function backupMariadb(res: Response): Promise<void> {
         await copyDirectory(
           dataDir,
           dataBakDir,
-          (filePath: string) => !isSeparatelyBackedUpDbFile(filePath, separatelyBackedUp) && !isFeedbackTransientPath(filePath, dataDir)
+          (filePath: string) => !isSeparatelyBackedUpDbFile(filePath, separatelyBackedUp) && !isDataTreeTransientPath(filePath, dataDir)
         );
       }
     });
@@ -683,7 +694,10 @@ async function backupMariadb(res: Response): Promise<void> {
     res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''ProjectX_backup_${timestamp}.zip`);
 
     const archive = new ZipArchive({ zlib: { level: 6 } });
-    archive.on("error", (err?: Error) => { console.error("[Backup] Archive error:", err?.message); });
+    archive.on("error", (err?: Error) => {
+      console.error("[Backup] Archive error:", err?.message);
+      if (!res.destroyed) res.destroy(err);
+    });
     archive.pipe(res);
     archive.file(path.join(tmpDir, "metadata.json"), { name: "metadata.json" });
     archive.file(dumpFile, { name: "dump.sql" });
@@ -699,6 +713,8 @@ async function backupMariadb(res: Response): Promise<void> {
     cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     if (!res.headersSent) {
       respondOpsFailure(res, error, "导出失败");
+    } else if (!res.destroyed) {
+      res.destroy(error instanceof Error ? error : undefined);
     }
   }
 }
@@ -707,9 +723,9 @@ async function backupMariadb(res: Response): Promise<void> {
  * MariaDB 恢复 — 上传 ZIP 含 dump.sql → mysql 导入
  */
 async function restoreMariadb(req: Request, res: Response, zipPath: string): Promise<void> {
-  if (!(await hasZipMagic(zipPath))) {
+  if (!(await hasZipMagic(zipPath).catch(() => false))) {
     await rm(zipPath, { force: true }).catch(() => undefined);
-    res.status(400).json({ message: "不是有效的 ZIP 格式" });
+    res.status(400).json({ message: "所选文件不是有效的 ZIP 备份，请重新选择。" });
     return;
   }
 
@@ -761,7 +777,7 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
       await withFeedbackMutationLock(async () => {
         // 将 dump.sql 通过 stdin 传给 mysql（使用参数数组，避免 shell 命令注入）
         await new Promise<void>((resolve, reject) => {
-          const child = execFile("mysql", args, (err) => {
+          const child = execFile("mysql", args, { timeout: 300_000, killSignal: "SIGKILL" }, (err) => {
             if (err) reject(err); else resolve();
           });
           const input = createReadStream(dumpFile);
@@ -792,6 +808,14 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
           }
         } catch (e) {
           console.warn("[Restore] MariaDB 管理员再引导失败（可重启服务自动修复）:", e);
+        }
+
+        // 恢复可能替换 roles 表：清空启动时的权限缓存并按新库重载。
+        invalidatePermissionCache();
+        try {
+          await initPermissionCache();
+        } catch (e) {
+          console.error("[Restore] MariaDB 重新加载角色权限失败，已回落到默认权限:", e);
         }
 
         // 在锁内失效：放开锁之前新基线已经生效，后到的上传不会读到恢复前的占盘。

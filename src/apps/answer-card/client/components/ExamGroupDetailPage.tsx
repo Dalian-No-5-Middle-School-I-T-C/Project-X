@@ -350,7 +350,7 @@ function OverviewTab({
           <StatCard
             label="整体难度系数 P"
             value={overallMetrics.totalFullScore > 0 ? overallMetrics.difficulty.toFixed(3) : "—"}
-            hint={overallMetrics.totalFullScore > 0 ? <DifficultyBadge value={overallMetrics.difficulty} bands={bands?.difficulty} /> : "缺少满分依据"}
+            hint={overallMetrics.totalFullScore > 0 ? <DifficultyBadge value={overallMetrics.difficulty} bands={bands?.difficulty} /> : "未设置满分"}
           />
           <StatCard
             label="整体区分度 D"

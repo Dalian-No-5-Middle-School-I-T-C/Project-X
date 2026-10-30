@@ -10,7 +10,7 @@ import {
   describeScanUploadLimits,
 } from "../../../shared/scanUploadLimits";
 import { requestUploadBudget } from "../../../server/lib/uploadBudget";
-import { holdAnswerCardDataMutationLock } from "../../../server/lib/answerCardDataLock";
+import { holdAnswerCardDataMutationLock, releaseDataMutationLock } from "../../../server/lib/answerCardDataLock";
 import { describeReviewPoolLimits } from "../../../shared/reviewPoolLimits";
 import { describeRestoreZipLimits } from "../../../shared/restoreZipLimits";
 import { describePaperStorageLimits } from "../../../shared/paperStorageLimits";
@@ -979,7 +979,7 @@ export async function createApp(): Promise<express.Express> {
         const askedGradingFields = GRADING_SELF_SETTING_FIELDS.filter((field) => body[field] !== undefined);
         if (askedGradingFields.length > 0) {
           res.status(403).json({
-            message: `权限不足：修改阅卷设置需要 ${PERMISSIONS.GRADE_WRITE}`
+            message: "权限不足：修改阅卷设置需要阅卷管理权限。"
           });
           return;
         }
@@ -2071,8 +2071,21 @@ export async function createApp(): Promise<express.Express> {
       const visibleNames = (referenced as Array<{ id: number; name: string }>)
         .filter((e) => manageable.includes(Number(e.id)))
         .map((e) => e.name);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      // 批量删除入口先做只读预检：把「哪些考试会被解绑」一次摆给老师确认，
+      // 不再把 unlinkExams 当预检参数直接删卡。
+      if (requestFlag(body.preflight)) {
+        res.json({
+          ok: true,
+          preflight: true,
+          referencedExamCount: referenced.length,
+          referencedExamNames: visibleNames,
+          manageableExamCount: manageable.length,
+          outOfScopeExamCount: referenced.length - manageable.length
+        });
+        return;
+      }
       if (referenced.length > 0) {
-        const body = (req.body ?? {}) as Record<string, unknown>;
         const unlinkExams = requestFlag(body.unlinkExams);
         const deleteReferencedExams = requestFlag(body.deleteReferencedExams);
         if (!unlinkExams && !deleteReferencedExams) {
@@ -3191,7 +3204,7 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       await clearExplicitParticipants(db, examId);
-      res.json({ ok: true, message: "显式应考名单已清除（考试已回落年级/班级名册快照）" });
+      res.json({ ok: true, message: "应考名单已清除，已恢复为年级/班级名册。" });
     } catch (error) {
       next(error);
     }
@@ -3238,13 +3251,17 @@ export async function createApp(): Promise<express.Express> {
     });
   }
 
-  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  app.use((error: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     // 安全（R30）：错误对象里可能带着完整 URL（侧车/第三方接口失败时 message 常含请求地址），
     // 落日志前先打码凭据类查询参数。
     console.error(safeErrorForLog(error));
     // 请求级上传预算（R28）已经给出 413 并销毁请求，随后 multer 抛出的断流错误不再改写响应。
     // 已经结束/已销毁的响应连 `end()` 都不能调：那是对写完的 writable 再写一次，只会得到 write-after-end。
-    if (res.writableEnded || res.destroyed) return;
+    if (res.writableEnded || res.destroyed) {
+      // 响应不会再 end：持锁请求必须在这里显式结算，否则全局数据锁永久泄漏。
+      releaseDataMutationLock(req);
+      return;
+    }
     if (res.headersSent) { res.end(); return; }
     // 上传类错误映射：multer 超限应 413、其它上传错误 400，而不是 500
     if (error && typeof error === "object" && (error as any)?.name === "MulterError") {

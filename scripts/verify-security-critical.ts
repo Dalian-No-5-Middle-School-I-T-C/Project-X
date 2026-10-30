@@ -1114,8 +1114,8 @@ async function main(): Promise<void> {
     check(!r10Pages.ok && r10Pages.reason === "pages" && !r10CardBytes.ok && r10CardBytes.reason === "card-bytes"
       && !r10TotalBytes.ok && r10TotalBytes.reason === "total-bytes",
       "页数 / 单卡体积 / 全局体积三条容量线各自越界时给出对应原因（此前只有「单文件 50MB」一道闸）");
-    check(!containsHostPath(r10Pages.message) && r10Pages.message.includes("PROJECTX_PAPER_MAX_PAGES_PER_CARD"),
-      "容量拒绝文案只给档位与调整入口，不外泄服务端目录");
+    check(!containsHostPath(r10Pages.message) && r10Pages.message.includes("最多"),
+      "容量拒绝文案只给教师可读的上限，不外泄服务端目录或环境变量名");
 
     const r10CardId = "critical-r10-card";
     const r10Dir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "papers", r10CardId);

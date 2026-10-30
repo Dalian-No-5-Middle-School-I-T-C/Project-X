@@ -244,21 +244,21 @@ export function evaluatePaperQuota(
     return {
       ok: false,
       reason: "pages",
-      message: `原卷页数超出单张答题卡上限：已有 ${snapshot.cardPages} 页，本次 ${incoming.pages} 页，最多 ${limits.maxPaperPagesPerCard} 页（可由 PROJECTX_PAPER_MAX_PAGES_PER_CARD 调整，上限 600）`,
+      message: `原卷页数超过单张答题卡上限：已有 ${snapshot.cardPages} 页，本次 ${incoming.pages} 页，最多 ${limits.maxPaperPagesPerCard} 页。请拆分后上传。`,
     };
   }
   if (snapshot.cardBytes + incoming.bytes > limits.maxPaperBytesPerCard) {
     return {
       ok: false,
       reason: "card-bytes",
-      message: `该答题卡原卷累计体积已达上限：已占 ${mib(snapshot.cardBytes)}，本次 ${mib(incoming.bytes)}，单卡最多 ${mib(limits.maxPaperBytesPerCard)}（可由 PROJECTX_PAPER_MAX_BYTES_PER_CARD_MIB 调整）`,
+      message: `该答题卡原卷已达到体积上限（最多 ${mib(limits.maxPaperBytesPerCard)}）。请删除不用的页面后重试。`,
     };
   }
   if (snapshot.totalBytes + incoming.bytes > limits.maxPaperBytesTotal) {
     return {
       ok: false,
       reason: "total-bytes",
-      message: `服务器原卷存储总量已达上限：当前 ${mib(snapshot.totalBytes)}，本次需要 ${mib(incoming.bytes)}，总量最多 ${mib(limits.maxPaperBytesTotal)}（可由 PROJECTX_PAPER_MAX_TOTAL_MIB 调整）。请先清理不再需要的原卷或扩容后重试`,
+      message: "服务器原卷存储空间已满，请清理不再使用的原卷后重试。",
     };
   }
   return { ok: true };

@@ -145,7 +145,7 @@ export function evaluateAiQuota(
     return {
       ok: false,
       reason: "maxActiveJobsPerUser",
-      message: `AI 分析并发配额已满：你仍有 ${snapshot.activeJobsForUser} 个任务在排队或执行中（单用户上限 ${limits.maxActiveJobsPerUser}，可由 PROJECTX_AI_MAX_ACTIVE_JOBS_PER_USER 调整），请等待完成后再提交`,
+      message: `同时进行的 AI 分析任务已达上限（最多 ${limits.maxActiveJobsPerUser} 个）。请等待现有任务完成后再提交。`,
       retryAfterSeconds: 30,
     };
   }
@@ -153,7 +153,7 @@ export function evaluateAiQuota(
     return {
       ok: false,
       reason: "maxActiveJobsGlobal",
-      message: `AI 分析服务繁忙：当前全局已有 ${snapshot.activeJobsGlobal} 个任务在处理（上限 ${limits.maxActiveJobsGlobal}，可由 PROJECTX_AI_MAX_ACTIVE_JOBS_GLOBAL 调整），请稍后重试`,
+      message: "AI 分析服务当前繁忙，请稍后重试。",
       retryAfterSeconds: 60,
     };
   }
@@ -161,7 +161,7 @@ export function evaluateAiQuota(
     return {
       ok: false,
       reason: "maxRunsPerUserHour",
-      message: `AI 调用频率超限：最近 1 小时已发起 ${snapshot.runsLastHour} 次（上限 ${limits.maxRunsPerUserHour} 次，可由 PROJECTX_AI_MAX_RUNS_PER_HOUR 调整）`,
+      message: "AI 调用次数过多，请一小时后再试。",
       retryAfterSeconds: 3600,
     };
   }
@@ -169,7 +169,7 @@ export function evaluateAiQuota(
     return {
       ok: false,
       reason: "maxTokensPerUserDay",
-      message: `AI 用量已达当日上限：近 24 小时已消耗 ${snapshot.tokensLastDay} tokens（上限 ${limits.maxTokensPerUserDay}，可由 PROJECTX_AI_MAX_TOKENS_PER_DAY 调整），请联系管理员调整配额`,
+      message: "AI 用量已达 24 小时上限，请联系管理员调整配额。",
       retryAfterSeconds: 24 * 3600,
     };
   }

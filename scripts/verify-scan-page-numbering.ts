@@ -135,20 +135,20 @@ function layoutOf(pageNums: number[], sides: Side[], layoutPageCount: number, si
   // 缺页错位：第 1 页没有学号，却在第 3 页读到 → 失败闭合，不得沿用前一名学生
   const shifted = legacyIdentityProblems([row(1, null, "legacy"), row(2, null, "legacy"), row(3, "91002", "legacy"), row(4, "91002", "legacy")]);
   assert.equal(shifted.length, 1, "⑧: 页序错位必须给出一条失败原因");
-  assert.match(shifted[0], /第 3 页读到学号 91002/, "⑧: 原因要指明在哪一页读到了不该出现的学号");
+  assert.match(shifted[0], /第 3 页.*读到学号 91002/, "⑧: 原因要指明在哪一页读到了不该出现的学号");
   assert.match(shifted[0], /缺页|乱序|双进纸/, "⑧: 原因要指出可能的物理成因");
   assert.match(shifted[0], /人工归组/, "⑧: 原因要给出人工归组的处置");
 
   // 整组都没有学号 → 失败闭合（不能从别的卡推断）
   const noId = legacyIdentityProblems([row(1, null, "legacy"), row(2, null, "legacy")]);
   assert.equal(noId.length, 1, "⑧: 第 1 页无学号必须失败闭合");
-  assert.match(noId[0], /第 1 页未识别到学号/, "⑧: 原因要说明第 1 页没有学号");
-  assert.match(noId[0], /不能从其它页或前一份答题卡推断/, "⑧: 原因要写明不会沿用前一份答题卡");
+  assert.match(noId[0], /第 1 页没有读到学号/, "⑧: 原因要说明第 1 页没有学号");
+  assert.match(noId[0], /不会沿用前一份答题卡/, "⑧: 原因要写明不会沿用前一份答题卡");
 
   // 组内没有第 1 页（缺页/乱序）→ 失败闭合
   const noFirst = legacyIdentityProblems([row(3, "91003", "legacy"), row(4, "91003", "legacy")]);
   assert.equal(noFirst.length, 1, "⑧: 缺第 1 页必须失败闭合");
-  assert.match(noFirst[0], /没有第 1 页/, "⑧: 原因要指明缺的是第 1 页");
+  assert.match(noFirst[0], /缺少第 1 页/, "⑧: 原因要指明缺的是第 1 页");
 
   // 第 1 页与后续页学号不一致（ADF 双进纸把下一份卡的正面当成本卡背面）→ 失败闭合
   const conflict = legacyIdentityProblems([row(1, "91001", "legacy"), row(2, "91004", "legacy")]);
