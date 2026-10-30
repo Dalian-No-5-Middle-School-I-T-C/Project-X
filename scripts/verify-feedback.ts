@@ -610,6 +610,26 @@ async function main(): Promise<void> {
   ok((await olderWait) === "ok", "最早请求在后到者让出后获得剩余容量");
   olderReservation.release();
 
+  // 更早请求暂停发送、只声明了更大的 Content-Length：后到者不能把它的剩余 body 容量抢光。
+  const pauseRoot = path.join(tmpDir, "quota-pause");
+  const pauseTmp = path.join(pauseRoot, "_tmp");
+  mkdirSync(pauseTmp, { recursive: true });
+  const pauseOlder = feedbackStorage.createFeedbackStorageReservation(
+    pauseRoot, pauseTmp, fairTotal, Math.floor(fairTotal * 0.6)
+  );
+  const pauseNewer = feedbackStorage.createFeedbackStorageReservation(
+    pauseRoot, pauseTmp, fairTotal, Math.floor(fairTotal * 0.7)
+  );
+  await pauseOlder.ensureBytes(Math.floor(fairTotal * 0.3));
+  const pauseOlderWait = pauseOlder.ensureBytes(Math.floor(fairTotal * 0.6));
+  const pauseNewerWait = pauseNewer.ensureBytes(Math.floor(fairTotal * 0.7))
+    .then(() => "ok", (err) => err instanceof feedbackStorage.FeedbackStorageQuotaError ? "quota" : "other");
+  ok((await pauseNewerWait) === "quota", "更早请求声明了更大的 body 时，后到者不会抢走剩余容量");
+  pauseNewer.release();
+  ok((await pauseOlderWait.then(() => "ok", (err) => err instanceof feedbackStorage.FeedbackStorageQuotaError ? "quota" : "other")) === "ok",
+    "更早请求恢复发送后仍能补满自己的预留");
+  pauseOlder.release();
+
   const dataLock = await import("../src/server/lib/answerCardDataLock");
   ok(feedbackStorage.withFeedbackMutationLock === dataLock.withAnswerCardDataMutationLock,
     "反馈、原卷 / 答案页删除与备份 / 恢复共用同一把数据锁");

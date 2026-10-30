@@ -739,10 +739,16 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
       await withFeedbackMutationLock(() => sweepFeedbackOrphansOnce());
       // 初始不占额度：只有真的写到文件字节才在存储引擎里申请预留，
       // 纯文本反馈、只声明长度不传文件的慢请求都不会锁住附件配额。
+      // 但把 Content-Length 记进 ledger：后到的快上传不能把早到慢上传剩余的 body 容量吃光。
+      const declaredRequestBytes = Number(req.headers["content-length"]);
+      const expectedUploadBytes = Number.isFinite(declaredRequestBytes) && declaredRequestBytes > 0
+        ? Math.min(declaredRequestBytes, MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES)
+        : 0;
       const reservation = createFeedbackStorageReservation(
         feedbackRoot,
         feedbackTmpDir,
-        MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES
+        MAX_FEEDBACK_ATTACHMENTS_TOTAL_BYTES,
+        expectedUploadBytes
       );
       if (res.destroyed || req.destroyed) {
         reservation.release();

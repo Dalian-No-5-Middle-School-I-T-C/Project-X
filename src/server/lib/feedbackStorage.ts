@@ -192,7 +192,7 @@ async function admissionUsage(feedbackRoot: string, tmpDir: string): Promise<num
 let reservedBytes = 0;
 let quotaQueue: Promise<void> = Promise.resolve();
 let reservationSeq = 0;
-type ReservationLedgerEntry = { held: number; target: number; released: boolean };
+type ReservationLedgerEntry = { held: number; target: number; expected: number; released: boolean };
 const reservationLedger = new Map<number, ReservationLedgerEntry>();
 const waitingReservations = new Set<number>();
 const USAGE_CACHE_TTL_MS = 15_000;
@@ -216,13 +216,20 @@ function makeReservation(
   feedbackRoot: string,
   tmpDir: string,
   initialBytes: number,
-  limitBytes: number
+  limitBytes: number,
+  expectedBytes = 0
 ): FeedbackStorageReservation {
   let held = initialBytes;
   let released = false;
   const id = ++reservationSeq;
   // 从创建时就算排队：即使还没写入第一个字节，更早的请求也保有优先权。
-  const ledger = { held: initialBytes, target: initialBytes, released: false };
+  const ledger = {
+    held: initialBytes,
+    target: initialBytes,
+    // 请求体声明长度：早到的慢请求即使暂时没送新 chunk，也要为它剩余的 body 留容量。
+    expected: Math.min(limitBytes, Math.max(initialBytes, Math.floor(expectedBytes))),
+    released: false,
+  };
   reservationLedger.set(id, ledger);
   const ensure = async (target: number, attempt: number): Promise<boolean> => {
     const run = quotaQueue.then(async (): Promise<boolean | "yield" | "persist"> => {
@@ -235,10 +242,16 @@ function makeReservation(
       if (held >= target) { waitingReservations.delete(id); return true; } // 并发文件已经把这个目标补上了
       const minimum = target - held;
       const available = MAX_FEEDBACK_STORAGE_BYTES - used - reservedBytes;
-      // 先到先得：为更早请求尚未满足的目标预留容量，且更早请求正在等待时后到者不再增长。
+      // 先到先得：为更早请求尚未满足的目标 / 已声明 body 预留容量，且更早请求正在等待时
+      // 后到者不再增长。
       const earlier = [...reservationLedger.entries()].filter(([otherId, entry]) => otherId < id && !entry.released);
       const earlierWaiting = earlier.some(([otherId]) => waitingReservations.has(otherId));
-      const earlierNeed = earlier.reduce((sum, [, entry]) => sum + Math.max(0, entry.target - entry.held), 0);
+      // 只给「已经开始写文件字节」的早到请求预留剩余 body：只声明了长度、还没写任何
+      // 文件数据的慢请求不能把整包额度锁死（Prior review 明确要求声明长度不提前锁配额）。
+      const earlierNeed = earlier.reduce((sum, [, entry]) => {
+        const reserveTarget = entry.held > 0 ? Math.max(entry.target, entry.expected) : entry.target;
+        return sum + Math.max(0, reserveTarget - entry.held);
+      }, 0);
       const availableForMe = available - earlierNeed;
       if (available < minimum || earlierWaiting || availableForMe < minimum) {
         waitingReservations.add(id);
@@ -275,6 +288,7 @@ function makeReservation(
     ensureBytes(totalBytes: number): Promise<boolean> {
       const target = Math.max(0, Math.floor(totalBytes));
       ledger.target = Math.max(ledger.target, target);
+      ledger.expected = Math.max(ledger.expected, target);
       return ensure(target, 0);
     },
     release() {
@@ -293,9 +307,10 @@ function makeReservation(
 export function createFeedbackStorageReservation(
   feedbackRoot: string,
   tmpDir: string,
-  limitBytes: number
+  limitBytes: number,
+  expectedBytes = 0
 ): FeedbackStorageReservation {
-  return makeReservation(feedbackRoot, tmpDir, 0, limitBytes);
+  return makeReservation(feedbackRoot, tmpDir, 0, limitBytes, expectedBytes);
 }
 
 /** 上传完成/失败时把预留换成实际占用，再串行执行「测容量 → 移动/入库」。

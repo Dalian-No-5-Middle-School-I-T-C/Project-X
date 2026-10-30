@@ -9,7 +9,11 @@ import crypto from "node:crypto";
 
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { extractZipFileWithinBudget, RestoreZipError } from "../services/restoreZip";
-import { MAX_RESTORE_ZIP_ENTRIES, MAX_RESTORE_ZIP_TOTAL_BYTES } from "../../shared/restoreZipLimits";
+import {
+  MAX_RESTORE_ZIP_ENTRIES,
+  MAX_RESTORE_ZIP_ENTRY_BYTES,
+  MAX_RESTORE_ZIP_TOTAL_BYTES,
+} from "../../shared/restoreZipLimits";
 import { activeFeedbackTempFiles, beginFeedbackMaintenance, invalidateFeedbackStorageUsage, withFeedbackMutationLock } from "../lib/feedbackStorage";
 // 备份要在数据库快照前收敛 `feedback/_trash`，与反馈删除共用同一份核对逻辑。
 import { reconcileFeedbackTrashLocked, resetFeedbackRuntimeStateAfterRestore } from "./feedback";
@@ -280,7 +284,7 @@ router.get("/backup", async (_req: Request, res: Response) => {
 
     // 4. 写入 metadata
     await writeFile(path.join(tmpDir, "metadata.json"), JSON.stringify(metadata, null, 2));
-    await assertBackupEntryBudget(dataBakDir);
+    await assertBackupFitsRestoreBudget(tmpDir);
 
     // 5. 创建 ZIP（archiver v8 ESM: new ZipArchive）
     const archive = new ZipArchive({ zlib: { level: 6 } });
@@ -664,7 +668,7 @@ async function backupMariadb(res: Response): Promise<void> {
       ]
     };
     await writeFile(path.join(tmpDir, "metadata.json"), JSON.stringify(metadata, null, 2));
-    await assertBackupEntryBudget(dataBakDir);
+    await assertBackupFitsRestoreBudget(tmpDir);
 
     // 创建 ZIP 响应
     res.setHeader("Content-Type", "application/zip");
@@ -812,25 +816,48 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
 }
 
 /**
- * 备份条目预算前置校验：导出成功但恢复时被条目数拒绝的 ZIP 没有意义。
- * 非反馈文件（原卷 / 答案页）没有独立的数量配额，只能在导出前按实际条目数兜底。
+ * 备份预算前置校验：导出成功但恢复时被条目数 / 体积 / 单条上限拒绝的 ZIP 没有意义。
+ * 答案页、答题卡资源、版式与数据库没有独立聚合配额，只能在导出前按实际产出兜底。
  */
-async function countFilesInDir(dir: string): Promise<number> {
-  let total = 0;
+type BackupMeasure = { files: number; bytes: number; largest: number };
+
+async function measureFilesInDir(dir: string): Promise<BackupMeasure> {
+  const out: BackupMeasure = { files: 0, bytes: 0, largest: 0 };
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) total += await countFilesInDir(full);
-    else if (entry.isFile()) total += 1;
+    if (entry.isDirectory()) {
+      const child = await measureFilesInDir(full);
+      out.files += child.files;
+      out.bytes += child.bytes;
+      out.largest = Math.max(out.largest, child.largest);
+    } else if (entry.isFile()) {
+      const size = (await stat(full)).size;
+      out.files += 1;
+      out.bytes += size;
+      out.largest = Math.max(out.largest, size);
+    }
   }
-  return total;
+  return out;
 }
 
-async function assertBackupEntryBudget(dataBakDir: string): Promise<void> {
-  const dataFiles = existsSync(dataBakDir) ? await countFilesInDir(dataBakDir) : 0;
-  const total = dataFiles + 8; // metadata / 数据库文件 / data 根目录标记
-  if (total > MAX_RESTORE_ZIP_ENTRIES) {
+async function assertBackupFitsRestoreBudget(stagingDir: string): Promise<void> {
+  const measure = await measureFilesInDir(stagingDir);
+  const entries = measure.files + 1; // data/answer-card/ 根目录标记
+  if (entries > MAX_RESTORE_ZIP_ENTRIES) {
     throw new Error(
-      `备份将包含 ${total} 个条目，超过恢复预算 ${MAX_RESTORE_ZIP_ENTRIES} 个；请先清理原卷、答案页或反馈附件后再导出`
+      `备份将包含 ${entries} 个条目，超过恢复预算 ${MAX_RESTORE_ZIP_ENTRIES} 个；请先清理原卷、答案页或反馈附件后再导出`
+    );
+  }
+  if (measure.largest > MAX_RESTORE_ZIP_ENTRY_BYTES) {
+    throw new Error(
+      `备份内单个文件 ${Math.round(measure.largest / MEBIBYTE)} MiB，超过恢复单条预算 `
+      + `${Math.round(MAX_RESTORE_ZIP_ENTRY_BYTES / MEBIBYTE)} MiB；请先清理或拆分该文件后再导出`
+    );
+  }
+  if (measure.bytes > MAX_RESTORE_ZIP_TOTAL_BYTES) {
+    throw new Error(
+      `备份累计约 ${Math.round(measure.bytes / MEBIBYTE)} MiB，超过恢复预算 `
+      + `${Math.round(MAX_RESTORE_ZIP_TOTAL_BYTES / MEBIBYTE)} MiB；请先清理数据或多留恢复预算后再导出`
     );
   }
 }
