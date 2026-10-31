@@ -7,6 +7,7 @@
  * 运行：npx tsx scripts/verify-scanner-recovery.ts
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import net from "node:net";
 import { createRequire } from "node:module";
 
@@ -131,7 +132,26 @@ function testPostprocessResume(): void {
   assert.equal(resolvePersistCardId("", { userId: 7, cardId: "card-0" }, 8), "", "换账号不能认上一个账号的卡");
   assert.equal(resolvePersistCardId("", null, 7), "", "没有历史选择时不写");
   assert.equal(resolvePersistCardId("", { userId: 7, cardId: "card-0" }, null), "", "未登录不写");
-  console.log("  ✓ 后处理续接：会话列表 / 活动卡 / 停留视图 / 正常离开清理");
+
+  // 返回卡片列表后，内存 postSessions 仍属于刚离开的卡：交接结果必须同步改内存，
+  // 否则紧随其后的持久化 effect 会拿旧值把刚删掉的 0 页占位写回去。
+  const scannerAppSource = readFileSync(
+    new URL("../src/apps/answer-card/client/ScannerApp.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(scannerAppSource,
+    /onScanSessionAbandoned[\s\S]{0,700}resolvePersistCardId\(currentCardIdRef\.current, lastSelectionRef\.current, currentUserIdRef\.current\) === originCardId/,
+    "撤占位时要按持久化目标判断是否同步内存会话列表");
+  assert.match(scannerAppSource,
+    /onBatchArchived[\s\S]{0,900}resolvePersistCardId\(currentCardIdRef\.current, lastSelectionRef\.current, currentUserIdRef\.current\) === originCardId/,
+    "晚到归档同样要判断是否属于当前内存卡");
+  assert.match(scannerAppSource,
+    /const ownerUserId = scanSessionOwnersRef\.current\.get\(sid\) \?\? user\?\.id \?\? null/,
+    "交接要带上会话发起账号，不能只看当前闭包里的 user");
+  assert.match(scannerAppSource,
+    /const sameAccount = ownerUserId != null && currentUserIdRef\.current === ownerUserId/,
+    "晚到交接还要确认内存仍属于发起时的账号，不能写进换号后的新会话");
+  console.log("  ✓ 后处理续接：会话列表 / 活动卡 / 停留视图 / 正常离开清理 / 交接回写内存");
 }
 
 const requireCjs = createRequire(import.meta.url);

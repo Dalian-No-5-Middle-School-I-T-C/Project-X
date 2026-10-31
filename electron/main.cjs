@@ -41,9 +41,13 @@ if (!gotSingleInstanceLock) {
 
 let server;
 let mainWindow;
+/** 区分「建窗前失败」与「建好的窗口在启动期间被老师关掉」：后者 mainWindow 会被 closed 置空。 */
+let mainWindowCreated = false;
 /** 渲染进程崩溃后的自动恢复：5 分钟内最多两次，避免坏数据导致反复重载。 */
 let rendererCrashHistory = [];
 let pendingRecoveryNotice = false;
+/** 崩溃/无响应重载因 Brotli 重装失败被推迟：failClosed 的退避重试成功后要继续这次重载。 */
+let protectedReloadPending = false;
 
 /**
  * 本壳自己加载的那个来源（本机服务端 `http://127.0.0.1:<port>`，或运维配置的远端 URL）。
@@ -369,7 +373,39 @@ async function installChromiumBrotliWithRetry(webContents, attempts = 3) {
   throw lastError;
 }
 
+/** 渲染进程崩溃后 target-closed 已清掉就绪标记；远端壳重载前必须先重装，
+ *  否则 onBeforeRequest 会把顶层文档请求当成未受保护请求直接取消。 */
+async function reloadMainWindowWithProtection() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  // 崩溃与「无响应 → 重新加载」可能同时到达：只保留一轮，避免恢复后 reload 两次。
+  if (protectedReloadPending) return;
+  if (chromiumBrotliProtectionEnabled()) {
+    const contents = mainWindow.webContents;
+    protectedReloadPending = true;
+    try {
+      await installChromiumBrotliWithRetry(contents);
+    } catch (error) {
+      // 窗口可能在等待安装期间被关掉；先判存活再交给 fail-closed。
+      if (!mainWindow || mainWindow.isDestroyed() || contents.isDestroyed()) {
+        protectedReloadPending = false;
+        return;
+      }
+      reportChromiumBrotliWindowFailure(contents, error);
+      // 不在这里直接重载：failClosed 的退避重试成功后会读取 protectedReloadPending 继续。
+      return;
+    }
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      protectedReloadPending = false;
+      return;
+    }
+  }
+  protectedReloadPending = false;
+  mainWindow.webContents.reloadIgnoringCache();
+}
+
 async function createWindow() {
+  mainWindowCreated = false;
+  protectedReloadPending = false;
   const baseUrl = await resolveStartUrl();
   mainWindow = new BrowserWindow({
     width: 1360,
@@ -385,6 +421,8 @@ async function createWindow() {
       sandbox: true
     }
   });
+  mainWindowCreated = true;
+  mainWindow.on("closed", () => { mainWindow = null; });
 
   // 安全审计（F-5）：新窗口仅放行同源；其余 URL 仅允许 https:// 经系统浏览器打开，
   // 拒绝 file://、smb:// 及自定义协议，防止远端页面被攻破后诱导打开本机文件/协议处理器。
@@ -467,9 +505,7 @@ async function createWindow() {
     appendLog("WARN", "[Renderer] 800ms 后自动重新加载界面，未保存的订正草稿会保留");
     pendingRecoveryNotice = true;
     setTimeout(() => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.reloadIgnoringCache();
-      }
+      void reloadMainWindowWithProtection();
     }, 800);
   });
   mainWindow.webContents.on("did-finish-load", () => {
@@ -508,10 +544,8 @@ async function createWindow() {
     }).then(({ response }) => {
       unresponsiveDialogOpen = false;
       if (response !== 1) return;
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        pendingRecoveryNotice = true;
-        mainWindow.webContents.reloadIgnoringCache();
-      }
+      pendingRecoveryNotice = true;
+      void reloadMainWindowWithProtection();
     }).catch(() => { unresponsiveDialogOpen = false; });
   });
   mainWindow.webContents.on("responsive", () => {
@@ -578,6 +612,13 @@ async function failClosedChromiumBrotli(error) {
       await installChromiumBrotliWithRetry(contents, 2);
       appendLog("INFO", "[Electron] Brotli 解码拦截已恢复，继续运行");
       brotliRecoveryInFlight = false;
+      if (protectedReloadPending) {
+        protectedReloadPending = false;
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          appendLog("INFO", "[Electron] 防护恢复后继续执行崩溃重载");
+          mainWindow.webContents.reloadIgnoringCache();
+        }
+      }
       return;
     } catch (retryError) {
       const retryDetail = retryError instanceof Error ? retryError.message : String(retryError);
@@ -704,8 +745,9 @@ app.whenReady().then(async () => {
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     appendLog("ERROR", `[Electron] createWindow failed: ${error instanceof Error ? error.stack || msg : msg}`);
-    // 冷启动空白窗口期间老师主动关窗时，loadURL 会以 ERR_FAILED 结束；这不是启动故障。
-    if (!mainWindow || mainWindow.isDestroyed()) return;
+    // 只忽略「窗口已经创建后被老师主动关掉」：closed 会把 mainWindow 置空，因此还要看创建标记。
+    // 窗口从未创建（内嵌服务 / 配置 / 数据库出错）必须给出提示并退出，不能留下占着单实例锁的后台进程。
+    if (mainWindowCreated && (!mainWindow || mainWindow.isDestroyed())) return;
     dialog.showErrorBox(
       "扫描端启动失败",
       "启动时遇到问题，扫描端将退出。\n\n请重新启动；如果仍然出现，请联系维护人员并提供日志 main.log。",
@@ -715,7 +757,11 @@ app.whenReady().then(async () => {
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      void createWindow();
+      void createWindow().catch((error) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        appendLog("ERROR", `[Electron] activate 创建窗口失败: ${detail}`);
+        dialog.showErrorBox("扫描端启动失败", "无法重新打开扫描端窗口，请重启应用。");
+      });
     }
   });
 });

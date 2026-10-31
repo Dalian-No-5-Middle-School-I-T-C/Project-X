@@ -256,7 +256,37 @@ check(
     && mainCjs.includes("if (!mainWindow || mainWindow.isDestroyed()) return;"),
   "首启 loadURL 对瞬时 ERR_FAILED 重试，关窗后不再弹启动失败",
 );
+const reloadHelperAt = mainCjs.indexOf("async function reloadMainWindowWithProtection()");
+const createWindowAt = mainCjs.indexOf("async function createWindow()", reloadHelperAt);
+const reloadHelperBody = reloadHelperAt > 0 && createWindowAt > reloadHelperAt
+  ? mainCjs.slice(reloadHelperAt, createWindowAt)
+  : "";
+const helperInstallAt = reloadHelperBody.indexOf("installChromiumBrotliWithRetry(contents)");
+const helperReloadAt = reloadHelperBody.indexOf("reloadIgnoringCache()");
+check(
+  reloadHelperAt > 0
+    && helperInstallAt > 0
+    && helperReloadAt > helperInstallAt
+    && (mainCjs.match(/void reloadMainWindowWithProtection\(\);/g) ?? []).length >= 2,
+  "渲染进程崩溃 / 无响应重载前先重装 Brotli 防护，远端壳不会被 onBeforeRequest 取消",
+);
 const readyBody = mainCjs.slice(mainCjs.indexOf("app.whenReady().then(async () => {"));
+const readyCatchStart = readyBody.indexOf("} catch (error) {");
+const readyCatchEnd = readyBody.indexOf('app.on("activate"', readyCatchStart);
+const readyCatch = readyBody.slice(readyCatchStart, readyCatchEnd > readyCatchStart ? readyCatchEnd : readyCatchStart + 1500);
+check(
+  readyCatchStart > 0
+    && readyCatch.includes("if (mainWindowCreated && (!mainWindow || mainWindow.isDestroyed())) return;")
+    && readyCatch.includes("dialog.showErrorBox(")
+    && readyCatch.includes("app.quit();"),
+  "窗口尚未创建时的启动失败仍会提示并退出，只有已创建窗口被主动关闭才静默",
+);
+check(
+  (mainCjs.match(/void reloadMainWindowWithProtection\(\);/g) ?? []).length >= 2
+    && mainCjs.includes("protectedReloadPending")
+    && mainCjs.includes("防护恢复后继续执行崩溃重载"),
+  "崩溃与无响应重载共用同一 helper；重装失败后由 failClosed 恢复时继续重载",
+);
 const permissionAt = readyBody.indexOf("installDevicePermissionPolicy();");
 const headerAt = readyBody.indexOf("installChromiumBrotliHeaderBlock(session.defaultSession");
 const createAt = readyBody.indexOf("await createWindow();");
@@ -683,6 +713,25 @@ check(
   cjs.isChromiumBrotliDecodeReady(opened) === true
     && openedUrls.includes("http://127.0.0.1/during-gap"),
   "编码限制重新装上之后才继续被拦住的导航",
+);
+
+// 渲染进程崩溃会发 target closed：就绪标记被清掉后，上一轮导航的 opening/resuming
+// 必须已复位；否则下一次导航既不重新安装也不会被拦停，远端壳的重载直接被取消。
+opened.debugger.emit("detach", "target closed");
+let crashNavigationPrevented = false;
+pageHandlers["will-navigate"]?.(
+  { preventDefault() { crashNavigationPrevented = true; } },
+  "http://127.0.0.1/after-crash",
+);
+check(
+  crashNavigationPrevented && !openedUrls.includes("http://127.0.0.1/after-crash"),
+  "target closed 后新导航先停住，不会带着残留的 resuming 直接放行",
+);
+for (let tick = 0; tick < 5; tick += 1) await new Promise((resolve) => setImmediate(resolve));
+check(
+  cjs.isChromiumBrotliDecodeReady(opened) === true
+    && openedUrls.includes("http://127.0.0.1/after-crash"),
+  "target closed 后 opening 已复位，能重新安装防护并恢复被拦住的导航",
 );
 
 console.log("\n== 已修复的运行时保持 Brotli 可用 ==");

@@ -49,6 +49,8 @@ let failNextSnapshot = false;
 let retainedPageCount = 2;
 /** 取消后 worker 还没收尾：服务端可能马上还会落页，交接时不能撤占位。 */
 let snapshotWorkerActive = false;
+/** 会话还没进入终态时，0 页只是「尚未开始落页」，同样不能撤占位。 */
+let snapshotSessionStatus = "error";
 const snapshotRequests: string[] = [];
 const cancelRequests: string[] = [];
 /** 让下一次答题卡版本请求挂起，模拟「点开始扫描后立刻离开」的在途窗口。 */
@@ -86,7 +88,7 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   if (/\/scan\/scan-\d+$/.test(url)) {
     snapshotRequests.push(url);
     if (failNextSnapshot) { failNextSnapshot = false; return Response.json({ message: "临时读取页面失败" }, { status: 503 }); }
-    return Response.json({ session: { status: "error", error_msg: "未扫描到页面" }, workerActive: snapshotWorkerActive, records:
+    return Response.json({ session: { status: snapshotSessionStatus, error_msg: "未扫描到页面" }, workerActive: snapshotWorkerActive, records:
       Array.from({ length: retainedPageCount }, (_, index) => ({ id: `page-${index + 1}`, pageNum: index + 1,
         side: "front", studentId: index === 0 ? "91001" : null, studentConf: null, ocrStatus: "done" })) });
   }
@@ -473,13 +475,16 @@ try {
   // 不能把已落盘的页和入口一起撤掉；取消后 worker 还在落页时同样要留着；
   // 服务端确实没有页面且已收尾时才撤占位。
   const handoffCases = [
-    { serverPages: 2, workerActive: false, expectation: "archive" },
-    { serverPages: 0, workerActive: true, expectation: "archive" },
-    { serverPages: 0, workerActive: false, expectation: "abandon" },
+    { status: "error", serverPages: 2, workerActive: false, expectation: "archive" },
+    { status: "error", serverPages: 0, workerActive: true, expectation: "archive" },
+    { status: "error", serverPages: 0, workerActive: false, expectation: "abandon" },
+    // 会话还在等待 worker 注册 / 版式准备时，0 页不是「没有这一批」：保留恢复入口。
+    { status: "pending", serverPages: 0, workerActive: false, expectation: "keep" },
   ] as const;
   for (const handoffCase of handoffCases) {
     retainedPageCount = handoffCase.serverPages;
     snapshotWorkerActive = handoffCase.workerActive;
+    snapshotSessionStatus = handoffCase.status;
     const handoffHost = document.createElement("div");
     document.body.append(handoffHost);
     const handoffRoot = createRoot(handoffHost);
@@ -504,12 +509,17 @@ try {
       assert(handoffArchived.includes(`${card.id}/${handoffSession}/${handoffCase.serverPages}`),
         "服务端已有页面或 worker 仍在收尾时，要按服务端页数交给后处理");
       assert(!handoffAbandoned.includes(`${card.id}/${handoffSession}`), "服务端已有页面或 worker 仍在收尾时不能撤掉占位");
+    } else if (handoffCase.expectation === "keep") {
+      assert(!handoffArchived.includes(`${card.id}/${handoffSession}/0`),
+        "会话尚未进入终态时，0 页不能当成已结束批次归档");
+      assert(!handoffAbandoned.includes(`${card.id}/${handoffSession}`), "会话尚未进入终态时不能撤掉恢复入口");
     } else {
       assert(handoffAbandoned.includes(`${card.id}/${handoffSession}`), "服务端确实没有页面且已收尾时才撤掉占位");
     }
     handoffHost.remove();
   }
   snapshotWorkerActive = false;
+  snapshotSessionStatus = "error";
   retainedPageCount = 2;
 
   // 启动请求还在路上就离开：晚到的响应不能再建会话、也不能再开进度流（否则设备继续送纸却没人看）。

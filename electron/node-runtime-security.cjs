@@ -699,7 +699,10 @@ function holdNavigationUntilBrotliBlock(contents, options) {
     const next = queuedUrl;
     queuedUrl = null;
     resuming = true;
-    contents.loadURL(next).catch(fail);
+    contents.loadURL(next).catch(fail).finally(() => {
+      // 上一轮导航结束后必须复位：残留的 resuming 会让下次 target-closed 重载被直接放行。
+      resuming = false;
+    });
   };
   const arm = () => {
     if (opening || decodeReady.has(contents)) {
@@ -708,12 +711,30 @@ function holdNavigationUntilBrotliBlock(contents, options) {
     }
     opening = true;
     const run = () => {
-      installChromiumBrotliDecodeBlock(contents, options?.log, options).then(resume).catch(fail);
+      installChromiumBrotliDecodeBlock(contents, options?.log, options)
+        .then(resume)
+        .catch(fail)
+        .finally(() => {
+          // 安装失败 / target-closed 中断也要复位，否则后续崩溃重载永远进不了 arm。
+          opening = false;
+        });
     };
     // 原导航的 did-stop-loading 回调尚未退出时就 loadURL(about:blank)，
     // Electron 会把旧导航的收尾误交给新 loadURL，导致 ERR_FAILED。等到下一轮再预热。
     if (typeof contents.isLoading === "function" && contents.isLoading()) {
-      contents.once("did-stop-loading", () => setImmediate(run));
+      let waiting = true;
+      const proceed = () => {
+        if (!waiting) return;
+        waiting = false;
+        setImmediate(run);
+      };
+      contents.once("did-stop-loading", proceed);
+      // 渲染进程崩溃时 did-stop-loading 可能永远不来；释放 opening，让后续导航能重新 arm。
+      const timer = setTimeout(() => {
+        // 5 秒还没收尾就不能再等：直接进入安装，opening 会由 run 的 finally 复位。
+        proceed();
+      }, 5000);
+      if (timer && typeof timer.unref === "function") timer.unref();
       return;
     }
     run();

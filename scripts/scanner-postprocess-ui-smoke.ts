@@ -95,6 +95,7 @@ const batch = (): ScanBatchResponse => ({
 });
 
 const puts: Array<{ groupId: string; draft: boolean; pages: Array<{ sourceId: string; selected: string[]; touched?: string[] }> }> = [];
+const correctionGets: string[] = [];
 const deletes: Array<{ url: string; body: { groupIds: string[]; force?: boolean; previewOnly?: boolean } }> = [];
 const saveBodies: unknown[] = [];
 const saveCalls: string[] = [];
@@ -222,6 +223,7 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
       // 服务端 saveSessionCorrection 对已关联考试的会话会顺带入库，返回 saved:true
       return Response.json({ ok: true, saved: true });
     }
+    correctionGets.push(url);
     return Response.json(correctionDocument);
   }
   if (/\/scan-image\//.test(url)) return new Response("img", { headers: { "content-type": "image/png" } });
@@ -596,6 +598,10 @@ try {
   });
   await settle();
   assert.match(resumeHost.textContent ?? "", /第 1 \/ 2 条/, "下一条要翻到队首");
+  // 队列翻到另一条后直接点顶栏「卡查看与改分」：必须打开当前那条，不能停在恢复时的旧 active。
+  await clickText("卡查看与改分"); await settle();
+  assert.match(correctionGets.at(-1) ?? "", /\/groups\/1\/correction$/, "顶栏切换要用队列当前项的组打开改分页");
+  await clickText("异常处理"); await settle();
   await clickText("扫描结果"); await settle();
   await clickText("异常处理"); await settle();
   assert.match(resumeHost.textContent ?? "", /第 1 \/ 2 条/,

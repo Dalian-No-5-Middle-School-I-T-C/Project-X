@@ -39,6 +39,11 @@ function ScannerAppInner() {
   // 面板卸载后的交接要查服务端页数，回调可能晚于换卡：晚到的旧批次只能落回原卡或卡片列表。
   const currentCardIdRef = useRef("");
   currentCardIdRef.current = selectedCardId;
+  /** 卸载清理里的异步交接可能晚于换账号：用当前账号判断内存会话归属，闭包里的 user 可能是上一个账号。 */
+  const currentUserIdRef = useRef<number | null>(null);
+  currentUserIdRef.current = user?.id ?? null;
+  /** 每个扫描会话的发起账号：晚到交接即使当前已换人，也只能写回原账号的槽位。 */
+  const scanSessionOwnersRef = useRef(new Map<string, number>());
   // v2.7.2：本卡已扫完的批次会话；返回工作台续扫后新批次累加进来，异常队列共用同一份
   const [postSessions, setPostSessions] = useState<Array<{ sessionId: string; pageCount: number }>>([]);
   /** 离开工作台时 selectedCardId 会先被清空，而扫描面板的卸载清理要等到提交阶段才归档；
@@ -214,29 +219,42 @@ function ScannerAppInner() {
         autoStartScan={pendingContinueScan}
         onAutoStartConsumed={() => setPendingContinueScan(false)}
         onScanSessionStarted={(sid) => {
+          if (user?.id != null) scanSessionOwnersRef.current.set(sid, user.id);
           setLiveScanSessionId(sid);
           setPostSessions(prev => prev.some(p => p.sessionId === sid) ? prev : [...prev, { sessionId: sid, pageCount: 0 }]);
         }}
         onScanSessionAbandoned={(originCardId, sid) => {
           setLiveScanSessionId(prev => prev === sid ? null : prev);
-          if (currentCardIdRef.current === originCardId) {
+          const ownerUserId = scanSessionOwnersRef.current.get(sid) ?? user?.id ?? null;
+          scanSessionOwnersRef.current.delete(sid);
+          // 返回卡片列表后 selectedCardId 为空，但内存里的 postSessions 仍属于刚离开的那张卡。
+          // 此时只删 localStorage 会让紧随其后的持久化 effect 把内存里的 0 页占位又写回去。
+          // 内存归属按当前账号 + 会话发起账号判断，旧账号只写自己的槽位。
+          const sameAccount = ownerUserId != null && currentUserIdRef.current === ownerUserId;
+          if (sameAccount
+            && resolvePersistCardId(currentCardIdRef.current, lastSelectionRef.current, currentUserIdRef.current) === originCardId) {
             setPostSessions(prev => prev.filter(p => p.sessionId !== sid));
-          } else if (user?.id) {
-            const stored = readPostprocessSessions(originCardId, user.id);
-            writePostprocessSessions(originCardId, stored.filter(item => item.sessionId !== sid), user.id);
+          } else if (ownerUserId != null) {
+            const stored = readPostprocessSessions(originCardId, ownerUserId);
+            writePostprocessSessions(originCardId, stored.filter(item => item.sessionId !== sid), ownerUserId);
           }
         }}
         onBatchArchived={(originCardId, sid, pageCount) => {
-          // 交接请求晚到时可能已经切到另一张卡或回到列表。只在原卡仍活跃时写内存；
-          // 其余情况按发起卡直接归到它自己的账号槽位，不能借 lastSelectionRef 写进新卡。
-          if (currentCardIdRef.current === originCardId) {
+          const ownerUserId = scanSessionOwnersRef.current.get(sid) ?? user?.id ?? null;
+          scanSessionOwnersRef.current.delete(sid);
+          // 交接请求晚到时可能已经切到另一张卡或回到列表。原卡仍是本机持久化目标时写内存；
+          // 其余情况按发起卡直接归到它自己的账号槽位，不能借 lastSelectionRef 写进新卡或新账号。
+          const sameAccount = ownerUserId != null && currentUserIdRef.current === ownerUserId;
+          if (sameAccount
+            && resolvePersistCardId(currentCardIdRef.current, lastSelectionRef.current, currentUserIdRef.current) === originCardId) {
             setPostSessions(prev => [...prev.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }]);
-          } else if (user?.id) {
-            const stored = readPostprocessSessions(originCardId, user.id);
-            writePostprocessSessions(originCardId, [...stored.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }], user.id);
+          } else if (ownerUserId != null) {
+            const stored = readPostprocessSessions(originCardId, ownerUserId);
+            writePostprocessSessions(originCardId, [...stored.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }], ownerUserId);
           }
         }}
         onScansComplete={(sid, pageCount) => {
+          scanSessionOwnersRef.current.delete(sid);
           setLiveScanSessionId(null);
           setPostSessions(prev => [...prev.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }]);
           setPage("postprocess");

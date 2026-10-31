@@ -227,6 +227,20 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
     setQueueCurrent({ sessionId, groupId, itemId });
   }, []);
 
+  /** 从异常队列直接切到「卡查看与改分」时，active 可能还停在上一张卷或为空；
+   *  顶栏切换要把当前队列项同步过去，否则看到的是过期卷。 */
+  const handleViewChange = useCallback((next: View) => {
+    if (next === "correction" && view === "queue" && queueCurrent) {
+      // 队列项已随刷新消失时也要清掉旧 active，否则会打开并落盘一张早已过期的卷。
+      const group = groups.find(entry =>
+        entry.sessionId === queueCurrent.sessionId && entry.groupId === queueCurrent.groupId) ?? null;
+      setActive(group);
+      // 队列的题号高亮不应带进顶栏切换；否则会滚到上一张卷的题目。
+      setHighlight(null);
+    }
+    setView(next);
+  }, [groups, queueCurrent, view]);
+
   // 闪退重载后回到上次停留的卷/视图；组已不存在时静默忽略，仍停在结果页。
   useEffect(() => {
     if (resumeAppliedRef.current || groups.length === 0) return;
@@ -484,7 +498,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
         <SegmentedControl
           aria-label="后处理视图"
           value={view}
-          onValueChange={setView}
+          onValueChange={handleViewChange}
           items={[
             { value: "results", label: "扫描结果" },
             { value: "correction", label: "卡查看与改分" },
