@@ -52,6 +52,8 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   const [error, setError] = useState("");
   /** 仍在扫描 / 识别、读不到结果的会话：崩溃重载后会走到这里，等它收尾而不是报加载失败。 */
   const [waitingSessions, setWaitingSessions] = useState<string[]>([]);
+  /** 等待轮询的轮次：临时失败后靠它重挂定时器，否则 waitingSessions 不变就再也不会重拉。 */
+  const [waitingAttempt, setWaitingAttempt] = useState(0);
   const [stoppingWait, setStoppingWait] = useState(false);
   const [resumedFromCrash, setResumedFromCrash] = useState(false);
   /** 本页见过的异常组（sid/gid）：失败卷与冲突副本还没建过回执，订正后允许补传一次。
@@ -139,11 +141,16 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   useEffect(() => { void reload(); }, [reload]);
 
   // 等待中的会话：桥接进程还在送纸 / 识别时没人会来叫醒本页，定时重拉直到服务端收尾。
+  // 一次 503 / 网络失败后 waitingSessions 与 reload 引用都不变，必须自己再排下一轮，
+  // 否则等待页会永远停住，错误也被等待界面遮住。
   useEffect(() => {
     if (waitingSessions.length === 0) return;
-    const timer = setTimeout(() => { void reload(); }, 3000);
+    const timer = setTimeout(() => {
+      setWaitingAttempt(current => current + 1);
+      void reload();
+    }, 3000);
     return () => clearTimeout(timer);
-  }, [waitingSessions, reload]);
+  }, [waitingSessions, reload, waitingAttempt]);
 
   const stopWaitingScan = useCallback(async (): Promise<boolean> => {
     if (stoppingWait || waitingSessions.length === 0) return waitingSessions.length === 0;
@@ -386,10 +393,12 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           <p className="m-0 text-sm font-medium text-foreground">上一批扫描还没有结束</p>
           <p className="m-0 text-sm text-muted-foreground">扫描仪仍在送纸或识别中，结束后会自动打开后处理。</p>
           <p className="m-0 text-xs text-muted-foreground">停止这一批会保留已扫页面，可以在这里继续查看。</p>
+          {error && <p role="alert" className="m-0 text-xs text-destructive-fg">上次自动刷新失败：{error}（会继续重试）</p>}
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" icon={<ArrowLeft size={16} />} onClick={() => void leavePage()}>返回扫描</Button>
           <Button onClick={() => void stopWaitingScan()} disabled={stoppingWait}>停止这一批</Button>
+          {error && <Button variant="outline" onClick={() => void reload()} disabled={loading}>重试</Button>}
         </div>
       </div>
     );

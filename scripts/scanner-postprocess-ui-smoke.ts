@@ -137,6 +137,9 @@ const busySessionId = "scan-busy";
 let busyCancelled = false;
 let busyCancels = 0;
 let busyCancelStatus = 200;
+/** 等待轮询夹具：首次 409，第二次临时 503，之后收尾成功。 */
+const flakySessionId = "scan-flaky";
+let flakyCalls = 0;
 install("fetch", async (input: unknown, init?: RequestInit) => {
   const url = String(input);
   const method = init?.method ?? "GET";
@@ -151,6 +154,12 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   }
   const sessionMatch = url.match(/\/api\/scanner\/session\/([^/]+)\/(validate|results)/);
   if (sessionMatch) {
+    if (sessionMatch[1] === flakySessionId) {
+      flakyCalls += 1;
+      if (flakyCalls === 1) return Response.json({ message: "请等待扫描和识别全部完成" }, { status: 409 });
+      if (flakyCalls === 2) return Response.json({ message: "临时刷新失败" }, { status: 503 });
+      return Response.json(batchFor(flakySessionId));
+    }
     if (sessionMatch[1] === busySessionId && !busyCancelled) {
       return Response.json({ message: "请等待扫描和识别全部完成" }, { status: 409 });
     }
@@ -1023,6 +1032,29 @@ try {
   assert.equal(leaveCalls, 1, "停设备成功后仍要返回工作台");
   await act(async () => { leaveRoot.unmount(); });
   leaveHost.remove();
+
+  // 等待轮询遇到一次临时 503 要继续重试，不能停在等待页，也不能把错误藏起来。
+  flakyCalls = 0;
+  const flakyHost = document.createElement("div");
+  document.body.appendChild(flakyHost);
+  const flakyRoot = createRoot(flakyHost);
+  await act(async () => {
+    flakyRoot.render(createElement(TooltipProvider, null, createElement(ScannerPostprocessPage, {
+      cardId: card.id, cardTitle: card.title, userId: 7,
+      sessions: [{ sessionId: flakySessionId, pageCount: 0 }],
+      onBack: () => {},
+    })));
+  });
+  await settle(30);
+  assert(flakyHost.textContent?.includes("上一批扫描还没有结束"), "首轮 409 进入等待");
+  await settle(3300);
+  assert(flakyHost.textContent?.includes("上次自动刷新失败"), "临时失败要显示错误，不能只留在等待界面");
+  assert(flakyHost.textContent?.includes("上一批扫描还没有结束"), "临时失败后继续等待，不误报结束");
+  await settle(3300);
+  assert.equal(flakyCalls, 3, "临时失败后要自动继续重拉");
+  assert(!flakyHost.textContent?.includes("上一批扫描还没有结束"), "会话收尾后要打开后处理，不能停在等待页");
+  await act(async () => { flakyRoot.unmount(); });
+  flakyHost.remove();
 
   console.log("PASS scanner-postprocess-ui-smoke");
 } catch (error) {
