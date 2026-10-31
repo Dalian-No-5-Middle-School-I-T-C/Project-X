@@ -17,7 +17,7 @@
  *
  * 用法: npm run verify:permission-scope
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
@@ -49,7 +49,7 @@ function ok(cond: boolean, label: string): void {
 async function main(): Promise<void> {
   const { initializeDatabase, ensureDefaultAdmin, getDatabase, closeDatabase } = await import("../src/server/db/index");
   initializeDatabase();
-  await ensureDefaultAdmin();
+  const bootstrap = await ensureDefaultAdmin();
   const db = getDatabase();
   const { createApp } = await import("../src/apps/answer-card/server/index");
   const { UserRepository } = await import("../src/server/repositories/UserRepository");
@@ -111,6 +111,11 @@ async function main(): Promise<void> {
   const tokenA = (await authService.login(teacherA.username, "pass-1234")).token!;
   const tokenB = (await authService.login(teacherB.username, "pass-1234")).token!;
   const tokenS1 = (await authService.login("s-9001", "pass-1234")).token!;
+  const adminPassword = readFileSync(bootstrap.passwordFile, "utf8").trim();
+  const adminChangedPassword = "PermScopeAdmin-2026!";
+  const changed = await authService.changePassword(adminId, adminPassword, adminChangedPassword);
+  assert.equal(changed.success, true, "测试管理员必须完成首次改密");
+  const adminToken = (await authService.login("admin", adminChangedPassword)).token!;
   const json = async (urlPath: string, init?: RequestInit): Promise<{ status: number; body: any }> => {
     const r = await fetch(`${base}${urlPath}`, init);
     return { status: r.status, body: await r.json().catch(() => ({})) };
@@ -124,6 +129,36 @@ async function main(): Promise<void> {
        VALUES (?, NULL, NULL, ?, ?, ?, 0, ?, ?, 0)`
     ).run(teacherId, extra.class_id ?? null, extra.block_id ?? null, extra.can_view_scores ?? 1, extra.can_view_students ?? 1, extra.can_grade ?? 1);
   const clearMatrix = (teacherId: number) => db.prepare("DELETE FROM teacher_permissions WHERE teacher_id = ?").run(teacherId);
+
+  console.log("\n== 数据目录上传与备份 / 恢复共享锁 ==");
+  const { withAnswerCardDataMutationLock } = await import("../src/server/lib/answerCardDataLock");
+  const tinyPng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=",
+    "base64",
+  );
+  async function assertUploadWaitsForDataLock(urlPath: string, label: string): Promise<void> {
+    let release!: () => void;
+    const held = withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => { release = resolve; }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(typeof release, "function", `${label}应排在上一笔数据变更之后取得锁`);
+    const form = new FormData();
+    form.append("file", new Blob([tinyPng], { type: "image/png" }), "locked.png");
+    let settled = false;
+    const pending = fetch(`${base}${urlPath}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: form,
+    });
+    pending.then(() => { settled = true; }, () => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    ok(!settled, `${label}在数据锁释放前不能完成`);
+    release();
+    await held;
+    const response = await pending;
+    ok(response.ok, `${label}取得数据锁后正常完成（实际 ${response.status}）`);
+  }
+  await assertUploadWaitsForDataLock(`/api/cards/${cardId}/assets`, "答题卡资源上传");
+  await assertUploadWaitsForDataLock("/api/users/me/background", "自定义背景上传");
 
   console.log("\n== R21 花名册按可访问班级收敛 ==");
   db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, '数学')").run(teacherA.id, classA);

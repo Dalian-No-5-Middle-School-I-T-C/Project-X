@@ -10,7 +10,11 @@ import {
   describeScanUploadLimits,
 } from "../../../shared/scanUploadLimits";
 import { requestUploadBudget } from "../../../server/lib/uploadBudget";
-import { holdAnswerCardDataMutationLock, releaseDataMutationLock } from "../../../server/lib/answerCardDataLock";
+import {
+  holdAnswerCardDataMutationLock,
+  releaseDataMutationLock,
+  stopDisconnectedUpload,
+} from "../../../server/lib/answerCardDataLock";
 import { describeReviewPoolLimits } from "../../../shared/reviewPoolLimits";
 import { describeRestoreZipLimits } from "../../../shared/restoreZipLimits";
 import { describePaperStorageLimits } from "../../../shared/paperStorageLimits";
@@ -1131,46 +1135,58 @@ export async function createApp(): Promise<express.Express> {
   const receiveBackgroundUpload: express.RequestHandler = (req, res, next) => {
     bgUpload.single("file")(req, res, (err: unknown) => {
       if (err && typeof err === "object" && (err as { code?: string }).code === "LIMIT_FILE_SIZE") {
+        releaseDataMutationLock(req);
         res.status(413).json({
           code: "UPLOAD_ERROR",
           message: backgroundUploadTooLargeMessage(MAX_BACKGROUND_UPLOAD_BYTES),
         });
         return;
       }
+      if (err) releaseDataMutationLock(req);
       next(err);
     });
   };
 
   // #322: 学生账号不能上传自定义背景图。门放在 multer 之前——
   // 否则被拒的请求仍会先把上传体落盘到 dataDir/backgrounds 再返回 403。
-  app.post("/api/users/me/background", authMiddleware, requireBackgroundUploadAccess, receiveBackgroundUpload, async (req, res, next) => {
-    try {
-      const userId = req.user?.id;
-      if (userId == null) {
-        // 免登录模式的上传门会放行无身份请求，multer 已经落了临时文件。
-        // 没有用户 id 时文件名会变成 undefined.jpg，GET 也不会下发它。
-        if (req.file?.path) await rm(req.file.path, { force: true });
-        res.status(401).json({ error: "保存背景图需要已登录用户" });
-        return;
+  app.post(
+    "/api/users/me/background",
+    authMiddleware,
+    requireBackgroundUploadAccess,
+    holdAnswerCardDataMutationLock,
+    refreshAuthenticatedUser,
+    requireBackgroundUploadAccess,
+    stopDisconnectedUpload,
+    receiveBackgroundUpload,
+    async (req, res, next) => {
+      try {
+        const userId = req.user?.id;
+        if (userId == null) {
+          // 免登录模式的上传门会放行无身份请求，multer 已经落了临时文件。
+          // 没有用户 id 时文件名会变成 undefined.jpg，GET 也不会下发它。
+          if (req.file?.path) await rm(req.file.path, { force: true });
+          res.status(401).json({ error: "保存背景图需要已登录用户" });
+          return;
+        }
+        if (!req.file) {
+          res.status(400).json({ error: "请选择图片文件" });
+          return;
+        }
+        if (!await assertImageFile(req.file.path, res)) return;
+        // 重命名为 <userId>.jpg，覆盖旧背景。id 非法时不落一个跑出目录的名字。
+        const target = resolveUserBackgroundPath(backgroundsDir, userId);
+        if (!target) {
+          await rm(req.file.path, { force: true });
+          res.status(400).json({ error: "无法保存背景图" });
+          return;
+        }
+        await rename(req.file.path, target);
+        res.json({ ok: true });
+      } catch (error) {
+        next(error);
       }
-      if (!req.file) {
-        res.status(400).json({ error: "请选择图片文件" });
-        return;
-      }
-      if (!await assertImageFile(req.file.path, res)) return;
-      // 重命名为 <userId>.jpg，覆盖旧背景。id 非法时不落一个跑出目录的名字。
-      const target = resolveUserBackgroundPath(backgroundsDir, userId);
-      if (!target) {
-        await rm(req.file.path, { force: true });
-        res.status(400).json({ error: "无法保存背景图" });
-        return;
-      }
-      await rename(req.file.path, target);
-      res.json({ ok: true });
-    } catch (error) {
-      next(error);
-    }
-  });
+    },
+  );
 
   // #336：本人删除自己的背景文件，并把透明度归零。学生也可以调——
   // 禁的是「使用/上传」自定义背景，不是「清掉自己留下的文件」。设置页不给学生摆按钮。
@@ -1363,6 +1379,13 @@ export async function createApp(): Promise<express.Express> {
       }
     }
   });
+
+  const receiveCardAssetUpload: express.RequestHandler = (req, res, next) => {
+    upload.single("file")(req, res, (err: unknown) => {
+      if (err) releaseDataMutationLock(req);
+      next(err);
+    });
+  };
 
   const recognitionUpload = multer({
     // 安全（R28）：批量判分/识别上传此前只有单文件 50 MiB 上限，文件数量与单次请求累计
@@ -1981,28 +2004,36 @@ export async function createApp(): Promise<express.Express> {
   });
 
 
-  app.post("/api/cards/:cardId/assets", upload.single("file"), async (req, res, next) => {
-    try {
-      const cardId = safeId(paramValue(req.params.cardId));
-      const card = await cardRepo.findById(cardId);
-      if (!card) {
-        res.status(404).json({ message: "答题卡不存在" });
-        return;
+  app.post(
+    "/api/cards/:cardId/assets",
+    holdAnswerCardDataMutationLock,
+    refreshAuthenticatedUser,
+    cardGate,
+    stopDisconnectedUpload,
+    receiveCardAssetUpload,
+    async (req, res, next) => {
+      try {
+        const cardId = safeId(paramValue(req.params.cardId));
+        const card = await cardRepo.findById(cardId);
+        if (!card) {
+          res.status(404).json({ message: "答题卡不存在" });
+          return;
+        }
+        if (!req.file) {
+          res.status(400).json({ message: "没有收到图片文件" });
+          return;
+        }
+        if (!await assertImageFile(req.file.path, res)) return;
+        res.status(201).json({
+          assetId: req.file.filename,
+          originalName: decodeMultipartFilename(req.file.originalname),
+          url: `/api/assets/${cardId}/${req.file.filename}`
+        });
+      } catch (error) {
+        next(error);
       }
-      if (!req.file) {
-        res.status(400).json({ message: "没有收到图片文件" });
-        return;
-      }
-      if (!await assertImageFile(req.file.path, res)) return;
-      res.status(201).json({
-        assetId: req.file.filename,
-        originalName: decodeMultipartFilename(req.file.originalname),
-        url: `/api/assets/${cardId}/${req.file.filename}`
-      });
-    } catch (error) {
-      next(error);
-    }
-  });
+    },
+  );
 
   app.get("/api/cards/:cardId/pdf", async (req, res, next) => {
     try {
