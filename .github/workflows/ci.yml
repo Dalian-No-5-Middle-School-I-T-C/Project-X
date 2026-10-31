@@ -133,6 +133,10 @@ jobs:
         run: npm run verify:scanner-panel-session
       - name: Scanner postprocess page pure logic, delete guard and mounted views
         run: npm run verify:scanner-postprocess-all
+      - name: Scanner crash recovery local state and stable local origin port
+        run: npm run verify:scanner-recovery
+      - name: Scanner notice card (crash recovery and uncaught error)
+        run: npm run verify:scanner-notice
       - name: Card image rotation mounted component regression
         run: npm run verify:card-rotation-ui
       - name: Scanner partial transfer failure persistence

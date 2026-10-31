@@ -13,11 +13,12 @@ import {
 } from "../../../../shared/scanPostprocess";
 import type { ScanBatchResponse, ScanBatchResult } from "../../../../shared/scanPages";
 import type { AnswerCard, SubjectiveQuestionNumber } from "../../../../shared/types";
-import { localChannel, loadSessionMeta, queueGroupUpload, type PostprocessChannel, type SessionMeta } from "./scanner-postprocess/postprocessChannel";
+import { localChannel, loadSessionMeta, PostprocessHttpError, queueGroupUpload, type PostprocessChannel, type SessionMeta } from "./scanner-postprocess/postprocessChannel";
 import { PostprocessResultsView } from "./scanner-postprocess/PostprocessResultsView";
 import { PostprocessCorrectionView } from "./scanner-postprocess/PostprocessCorrectionView";
 import { PostprocessQueueView, type ScanMeta } from "./scanner-postprocess/PostprocessQueueView";
 import { getScannerMode, isRemoteServerConfigured } from "../lib/scannerMode";
+import { clearPostprocessView, readPostprocessView, writePostprocessView } from "../lib/postprocessResume";
 
 type View = "results" | "correction" | "queue";
 
@@ -28,9 +29,11 @@ export interface ScannerPostprocessPageProps {
   onBack: () => void;
   /** 同一答题卡继续扫下一批：回到工作台并自动开扫，新批次累加到本页。 */
   onContinueScan?: () => void;
+  /** 停留位置按账号隔离：同机多人共用时不互相改写恢复位置。 */
+  userId?: number | null;
 }
 
-export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, onContinueScan }: ScannerPostprocessPageProps) {
+export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, onContinueScan, userId }: ScannerPostprocessPageProps) {
   const [view, setView] = useState<View>("results");
   const [localCard, setLocalCard] = useState<AnswerCard | null>(null);
   const [remoteCard, setRemoteCard] = useState<AnswerCard | null>(null);
@@ -40,16 +43,28 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   const [scans, setScans] = useState<ScanMeta[]>([]);
   const [active, setActive] = useState<PostprocessGroup | null>(null);
   const [highlight, setHighlight] = useState<SubjectiveQuestionNumber | null>(null);
-  const [focusIssue, setFocusIssue] = useState<{ sessionId: string; groupId: string } | null>(null);
+  const [focusIssue, setFocusIssue] = useState<{ sessionId: string; groupId: string; itemId?: string } | null>(null);
+  /** 队列视图当前停在哪个组：只用于崩溃恢复标记，不参与 focus 回灌，
+   *  否则子组件上报 → 父页面改 focus → 子组件再跳 cursor，两边会一直对抖。 */
+  const [queueCurrent, setQueueCurrent] = useState<{ sessionId: string; groupId: string; itemId?: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [savingAll, setSavingAll] = useState(false);
+  const [queueRevision, setQueueRevision] = useState(0);
   const [error, setError] = useState("");
+  /** 仍在扫描 / 识别、读不到结果的会话：崩溃重载后会走到这里，等它收尾而不是报加载失败。 */
+  const [waitingSessions, setWaitingSessions] = useState<string[]>([]);
+  /** 等待轮询的轮次：临时失败后靠它重挂定时器，否则 waitingSessions 不变就再也不会重拉。 */
+  const [waitingAttempt, setWaitingAttempt] = useState(0);
+  const [stoppingWait, setStoppingWait] = useState(false);
+  const [resumedFromCrash, setResumedFromCrash] = useState(false);
   /** 本页见过的异常组（sid/gid）：失败卷与冲突副本还没建过回执，订正后允许补传一次。
    *  识别成功的卷（含存疑卷）已在 reload 的首传里排队，不再建第二份回执。 */
   const abnormalKey = `projectx-postprocess-abnormal/${cardId}`;
   const abnormalSeen = useRef<Set<string>>(readIdSet(abnormalKey));
   /** 完成名单持久化；未完成上传由 manager 恢复原远端会话。 */
   const queuedByPage = useRef<Set<string>>(readQueuedGroups(cardId));
+  /** 崩溃重载后只恢复一次上次停留的组，避免用户返回结果页又被弹回去。 */
+  const resumeAppliedRef = useRef(false);
 
   // 通道唯一为本地（spec §5 通道裁定）：远端语义只经 queueGroupUpload 补传承担
   const channel: PostprocessChannel = useMemo(() => localChannel(), []);
@@ -57,7 +72,13 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   const isRemoteUploadOn = useCallback(() => getScannerMode() === "remote" && isRemoteServerConfigured(), []);
 
   /** 返回本轮拉到的快照：补传判定必须用重拉后的数据，闭包里的旧 batches 会漏掉刚处理好的组 */
-  const reload = useCallback(async (): Promise<{ batches: Record<string, ScanBatchResponse>; metas: Record<string, SessionMeta>; card: AnswerCard | null }> => {
+  const reload = useCallback(async (): Promise<{
+    batches: Record<string, ScanBatchResponse>;
+    metas: Record<string, SessionMeta>;
+    card: AnswerCard | null;
+    waitingSessions: string[];
+    confirmed: boolean;
+  }> => {
     setLoading(true);
     setError("");
     try {
@@ -67,10 +88,25 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
       const discarded = readPreviewDiscards(cardId);
       const nextBatches: Record<string, ScanBatchResponse> = {};
       const nextMetas: Record<string, SessionMeta> = {};
+      const stillRunning: string[] = [];
       for (const { sessionId } of sessions) {
-        const batch = omitPreviewDiscardedGroups(await channel.results(sessionId), discarded, sessionId);
-        nextBatches[sessionId] = batch;
-        nextMetas[sessionId] = await loadSessionMeta(sessionId);
+        try {
+          const batch = omitPreviewDiscardedGroups(await channel.results(sessionId), discarded, sessionId);
+          nextBatches[sessionId] = batch;
+          nextMetas[sessionId] = await loadSessionMeta(sessionId);
+        } catch (e) {
+          // 409 = 会话还没收尾（崩溃后仍在扫描 / 识别）。这不是加载失败：等它结束再进来，
+          // 否则现场只剩一个怎么也打不开的失败页，还没法停掉那台还在送纸的扫描仪。
+          if (e instanceof PostprocessHttpError && e.status === 409) { stillRunning.push(sessionId); continue; }
+          throw e;
+        }
+      }
+      setWaitingSessions(stillRunning);
+      if (stillRunning.length > 0) {
+        // 批次不完整时先不展示（组会缺卷）：把卡挂上，渲染等待界面并在收尾后重拉。
+        setLocalCard(loaded.local);
+        setRemoteCard(loaded.remote);
+        return { batches: {}, metas: {}, card: display, waitingSessions: stillRunning, confirmed: false };
       }
       // 记入学号、判分成功的卷（含仍带存疑标记的）都已随批上传，存疑状态随回执返回；
       // 失败组与冲突副本还没有学号或归属，服务端无处挂这份成绩，继续留在本机处理，
@@ -86,7 +122,10 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
         for (const review of next.reviewCards ?? []) abnormalSeen.current.add(`${review.sessionId}/${review.groupId}`);
       }
       writeIdSet(abnormalKey, abnormalSeen.current);
-      const queuedNow = ensureFirstUploads(cardId, display.id, nextBatches, nextMetas, isRemoteUploadOn(), queuedByPage.current);
+      // 老师中止的批次只允许显式「保存成绩」，不跟着首传自动补传。
+      const uploadable = Object.fromEntries(Object.entries(nextBatches)
+        .filter(([sid]) => nextMetas[sid]?.status !== "cancelled"));
+      const queuedNow = ensureFirstUploads(cardId, display.id, uploadable, nextMetas, isRemoteUploadOn(), queuedByPage.current);
       if (queuedNow > 0) notify.info(queuedNow === 1 ? "已加入上传队列，图片后台续传" : `已加入上传队列（${queuedNow} 份），图片后台续传`);
       setLocalCard(loaded.local);
       setRemoteCard(loaded.remote);
@@ -97,16 +136,66 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
         const rows = (await scanList.json()) as Array<{ recordId: string; createdAt: string; scanQuality: number | null }>;
         setScans(rows.map(row => ({ recordId: row.recordId, createdAt: row.createdAt, scanQuality: row.scanQuality })));
       }
-      return { batches: nextBatches, metas: nextMetas, card: display };
+      return { batches: nextBatches, metas: nextMetas, card: display, waitingSessions: [], confirmed: true };
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败");
-      return { batches: {}, metas: {}, card: null };
+      return { batches: {}, metas: {}, card: null, waitingSessions: [], confirmed: false };
     } finally {
       setLoading(false);
     }
   }, [cardId, sessions, channel, abnormalKey, isRemoteUploadOn]);
 
   useEffect(() => { void reload(); }, [reload]);
+
+  // 等待中的会话：桥接进程还在送纸 / 识别时没人会来叫醒本页，定时重拉直到服务端收尾。
+  // 一次 503 / 网络失败后 waitingSessions 与 reload 引用都不变，必须自己再排下一轮，
+  // 否则等待页会永远停住，错误也被等待界面遮住。
+  useEffect(() => {
+    if (waitingSessions.length === 0) return;
+    const timer = setTimeout(() => {
+      setWaitingAttempt(current => current + 1);
+      void reload();
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [waitingSessions, reload, waitingAttempt]);
+
+  const stopWaitingScan = useCallback(async (): Promise<boolean> => {
+    if (stoppingWait || waitingSessions.length === 0) return waitingSessions.length === 0;
+    setStoppingWait(true);
+    try {
+      for (const sessionId of waitingSessions) {
+        let response: Response;
+        try {
+          response = await channel.request(`/api/scanner/scan/${sessionId}/cancel`, { method: "POST" });
+        } catch (error) {
+          // 网络失败时 authFetch 会拒绝；没有这层 catch 就只剩一条未处理的 rejection，设备照旧在送纸。
+          console.error("[scanner] 停止在途批次失败", error);
+          notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
+          return false;
+        }
+        if (!response.ok) {
+          notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
+          return false;
+        }
+      }
+      // 取消后服务端保留已扫页面，按收尾会话重新加载即可继续查看。
+      const refreshed = await reload();
+      if (!refreshed.confirmed || refreshed.waitingSessions.length > 0) {
+        notify.info("扫描仪仍在收尾，请稍候再返回");
+        return false;
+      }
+      return true;
+    } finally {
+      setStoppingWait(false);
+    }
+  }, [channel, reload, stoppingWait, waitingSessions]);
+
+  /** 在途批次还在送纸时离开：先停设备并确认，再返回工作台，否则新工作台拿不到这个会话，
+   *  后台可能继续落页，用户还能再开一批。停止失败就留在本页（已有提示）。 */
+  const leavePage = useCallback(async () => {
+    if (waitingSessions.length > 0 && !await stopWaitingScan()) return;
+    onBack();
+  }, [waitingSessions, stopWaitingScan, onBack]);
 
   const sessionLayouts = useMemo(() => {
     const localFingerprint = localCard ? cardFingerprint(localCard) : null;
@@ -133,8 +222,71 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
     ));
   }, [batches, sessions, sessionLayouts, card]);
   const queue = useMemo(() => buildPostprocessQueue(groups), [groups]);
+
+  const handleQueueCurrent = useCallback((sessionId: string, groupId: string, itemId?: string) => {
+    setQueueCurrent({ sessionId, groupId, itemId });
+  }, []);
+
+  /** 从异常队列直接切到「卡查看与改分」时，active 可能还停在上一张卷或为空；
+   *  顶栏切换要把当前队列项同步过去，否则看到的是过期卷。 */
+  const handleViewChange = useCallback((next: View) => {
+    if (next === "correction" && view === "queue" && queueCurrent) {
+      // 队列项已随刷新消失时也要清掉旧 active，否则会打开并落盘一张早已过期的卷。
+      const group = groups.find(entry =>
+        entry.sessionId === queueCurrent.sessionId && entry.groupId === queueCurrent.groupId) ?? null;
+      setActive(group);
+      // 队列的题号高亮不应带进顶栏切换；否则会滚到上一张卷的题目。
+      setHighlight(null);
+    }
+    setView(next);
+  }, [groups, queueCurrent, view]);
+
+  // 闪退重载后回到上次停留的卷/视图；组已不存在时静默忽略，仍停在结果页。
+  useEffect(() => {
+    if (resumeAppliedRef.current || groups.length === 0) return;
+    resumeAppliedRef.current = true;
+    const saved = readPostprocessView(cardId, userId);
+    if (!saved) return;
+    const group = groups.find(entry => entry.sessionId === saved.sessionId && entry.groupId === saved.groupId);
+    if (!group) return;
+    setActive(group);
+    setView(saved.view);
+    if (saved.view === "queue") setFocusIssue({ sessionId: saved.sessionId, groupId: saved.groupId, itemId: saved.itemId });
+    setResumedFromCrash(true);
+  }, [groups, cardId]);
+
+  // 记录当前停留位置：只在打开具体卷或停在队列某一条时写，正常返回结果页不会把旧组写回去。
+  const resumeTarget = view === "queue" ? queueCurrent : active;
+  useEffect(() => {
+    if (!resumeTarget) return;
+    writePostprocessView(cardId, {
+      view,
+      sessionId: resumeTarget.sessionId,
+      groupId: resumeTarget.groupId,
+      ...("itemId" in resumeTarget && resumeTarget.itemId ? { itemId: resumeTarget.itemId } : {}),
+    }, userId);
+  }, [cardId, view, resumeTarget]);
+
+  // 定位请求是一次性的：离开队列视图后就过期了，再回来应停在刚才那一条（queueCurrent），
+  // 而不是最初点开的那条。
+  useEffect(() => {
+    if (view !== "queue") setFocusIssue(null);
+  }, [view]);
   const issueGroups = useMemo(() => new Set(queue.map(item => `${item.sessionId}/${item.groupId}`)).size, [queue]);
   const uploaded = useMemo(() => Object.values(batches).flatMap(b => b.results).filter(r => r.saved).length, [batches]);
+  const remoteCancelledUploadCount = useMemo(() => sessions.reduce((count, { sessionId }) => {
+    if (metas[sessionId]?.status !== "cancelled") return count;
+    const uploadCardId = card?.id ?? cardId;
+    return count + (batches[sessionId]?.results ?? [])
+      .filter(result => {
+        const key = `${sessionId}/${result.groupId}`;
+        return !result.saved
+          && result.needsReviewCount === 0
+          && !queuedByPage.current.has(key)
+          && !isGroupQueued(cardId, sessionId, result.groupId)
+          && !scannerUploadManager.hasGroupUpload(uploadCardId, result.groupId, sessionId);
+      }).length;
+  }, 0), [batches, card?.id, cardId, metas, queueRevision, sessions]);
 
   /**
    * 仅本地模式的「保存成绩入库」：扫描完成后本页会自动接管工作台视图，
@@ -165,6 +317,35 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
       await reload();
     } catch (e) {
       notify.error(e instanceof Error ? e.message : "保存成绩失败");
+    } finally {
+      setSavingAll(false);
+    }
+  }
+
+  /** 远端取消批次不会自动首传：老师点按钮后只补传已完成识别且没有异常的正常卷。 */
+  async function saveAllRemote() {
+    setSavingAll(true);
+    try {
+      const uploadCardId = card?.id ?? cardId;
+      let queued = 0;
+      let missingVersion = false;
+      for (const { sessionId } of sessions) {
+        if (metas[sessionId]?.status !== "cancelled") continue;
+        for (const result of batches[sessionId]?.results ?? []) {
+          if (result.saved || result.needsReviewCount > 0) continue;
+          const outcome = queueCleanGroup(cardId, uploadCardId, sessionId, metas[sessionId], result, queuedByPage.current);
+          if (outcome === "queued") queued += 1;
+          if (outcome === "missing-version") missingVersion = true;
+        }
+      }
+      if (missingVersion) {
+        notify.error("本机会话没有扫描时的答题卡版本，已停止补传，避免按新版面上传旧识别结果");
+      } else if (queued === 0) {
+        notify.info("没有需要上传的正常卷");
+      } else {
+        setQueueRevision(value => value + 1);
+        notify.info(queued === 1 ? "已加入上传队列，图片后台续传" : `已加入上传队列（${queued} 份），图片后台续传`);
+      }
     } finally {
       setSavingAll(false);
     }
@@ -271,6 +452,24 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   }
 
   if (loading && !card) return <div className="flex h-[100dvh] items-center justify-center bg-background"><Spinner size={24} /></div>;
+  if (waitingSessions.length > 0) {
+    return (
+      <div className="flex h-[100dvh] flex-col items-center justify-center gap-4 bg-background px-6 text-center">
+        <Spinner size={24} />
+        <div className="flex flex-col gap-1">
+          <p className="m-0 text-sm font-medium text-foreground">上一批扫描还没有结束</p>
+          <p className="m-0 text-sm text-muted-foreground">扫描仪仍在送纸或识别中，结束后会自动打开后处理。</p>
+          <p className="m-0 text-xs text-muted-foreground">停止这一批会保留已扫页面，可以在这里继续查看。</p>
+          {error && <p role="alert" className="m-0 text-xs text-destructive-fg">上次自动刷新失败：{error}（会继续重试）</p>}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" icon={<ArrowLeft size={16} />} onClick={() => void leavePage()} disabled={stoppingWait}>返回扫描</Button>
+          <Button onClick={() => void stopWaitingScan()} disabled={stoppingWait}>停止这一批</Button>
+          {error && <Button variant="outline" onClick={() => void reload()} disabled={loading}>重试</Button>}
+        </div>
+      </div>
+    );
+  }
   if (!card) {
     return (
       <div className="flex h-[100dvh] flex-col items-center justify-center gap-3 bg-background px-6 text-sm text-destructive-fg">
@@ -289,7 +488,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   return (
     <main className="flex h-[100dvh] min-w-0 flex-col overflow-hidden bg-background">
       <header className="flex h-page-header shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-5">
-        <Button variant="ghost" size="icon-sm" onClick={onBack} aria-label="返回扫描"><ArrowLeft size={18} /></Button>
+        <Button variant="ghost" size="icon-sm" onClick={() => void leavePage()} aria-label="返回扫描"><ArrowLeft size={18} /></Button>
         <div className="flex min-w-0 flex-1 flex-col">
           <strong className="truncate text-base font-semibold">{cardTitle} · 扫描后处理</strong>
           <span className="truncate text-xs tabular-nums text-muted-foreground">
@@ -299,7 +498,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
         <SegmentedControl
           aria-label="后处理视图"
           value={view}
-          onValueChange={setView}
+          onValueChange={handleViewChange}
           items={[
             { value: "results", label: "扫描结果" },
             { value: "correction", label: "卡查看与改分" },
@@ -307,11 +506,21 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           ]}
         />
         {onContinueScan && (
-          <Button variant="primary" size="sm" icon={<Play size={15} />} onClick={onContinueScan}>
+          <Button variant="primary" size="sm" icon={<Play size={15} />} onClick={() => {
+            // 主动去扫下一批不是闪退。留下的停留位置会在新批次完成后被当成恢复入口，跳回旧卷。
+            clearPostprocessView(cardId, userId);
+            onContinueScan?.();
+          }}>
             继续扫描
           </Button>
         )}
       </header>
+      {resumedFromCrash && (
+        <div role="status" className="flex items-center gap-2 border-b border-info-border bg-info-soft px-5 py-2 text-sm text-info-fg">
+          已恢复上次停留的卷；本机草稿可用时会恢复未保存的订正，请核对后保存。
+          <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setResumedFromCrash(false)}>知道了</Button>
+        </div>
+      )}
       {sessionWarnings.length > 0 && (
         <div role="status" className="flex flex-col gap-2 border-b border-warning-border bg-warning-soft px-5 py-3 text-sm text-foreground">
           {sessionWarnings.map(warning => (
@@ -327,8 +536,15 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           groups={groups}
           channel={channel}
           onDelete={handleDelete}
-          onSaveAll={isRemoteUploadOn() ? undefined : saveAllLocal}
+          onSaveAll={isRemoteUploadOn()
+            ? (remoteCancelledUploadCount > 0 ? saveAllRemote : undefined)
+            : saveAllLocal}
           saveAllBusy={savingAll}
+          saveAllLabel={isRemoteUploadOn() ? "上传正常卷" : "保存成绩入库"}
+          saveAllTip={isRemoteUploadOn()
+            ? `把 ${remoteCancelledUploadCount} 份取消批次中的正常卷加入远端上传队列`
+            : undefined}
+          saveAllCount={isRemoteUploadOn() ? remoteCancelledUploadCount : undefined}
           onOpen={group => {
             setActive(group);
             if (group.issues.length) {
@@ -340,8 +556,8 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           }}
         />
       )}
-      {active && (
-        <div className={view === "correction" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
+      {active && view === "correction" && (
+        <div className="flex min-h-0 flex-1 flex-col" data-postprocess-correction>
           <PostprocessCorrectionView
             key={`${active.sessionId}/${active.groupId}`}
             channel={channel}
@@ -350,6 +566,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
             initialSaved={isRemoteUploadOn() ? false : active.saved}
             draftOnly={isRemoteUploadOn()}
             highlightQuestion={highlight}
+            visible={view === "correction"}
             onUploadAbandoned={() => queuedByPage.current.delete(`${active.sessionId}/${active.groupId}`)}
             onSaved={() => syncAfterFix(active.sessionId, active.groupId)}
           />
@@ -365,7 +582,8 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           examIdForSession={sessionId => metas[sessionId]?.examId ?? null}
           scans={scans}
           layoutPageCountFor={sessionId => sessionLayouts[sessionId]?.pageCount ?? 0}
-          focus={focusIssue}
+          focus={focusIssue ?? queueCurrent}
+          onCurrentChange={handleQueueCurrent}
           onResolved={syncAfterFix}
           onPreviewDiscard={(sessionId, groupId) => rememberPreviewDiscard(cardId, sessionId, groupId)}
           onDelete={handleDelete}

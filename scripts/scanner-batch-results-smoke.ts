@@ -1,10 +1,11 @@
 /** Isolated HTTP/DB regression. Set SCANNER_BATCH_MARIADB=1 with a fresh
  * projectx_scanner_batch_* database to exercise MariaDB; otherwise uses temp SQLite. */
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, unlink } from "node:fs/promises";
+import { mkdtemp, mkdir, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import express from "express";
+import sharp from "sharp";
 import { createDefaultCard } from "../src/shared/defaultCard";
 import { buildLayout } from "../src/shared/layout";
 import { collectSessionResults } from "../src/apps/answer-card/server/scanner/session-results";
@@ -114,6 +115,23 @@ try {
   assert.equal(preview.results.length, 3);
   assert.equal(preview.results[0].totalScore, 5);
   assert.equal(await scoreCount(), 0, "Remote upload preview must not save grades");
+  await mkdir(process.env.ANSWER_CARD_DATA_DIR!, { recursive: true });
+  const thumbnailSourcePath = path.join(process.env.ANSWER_CARD_DATA_DIR!, "thumbnail-source.png");
+  await writeFile(thumbnailSourcePath, await sharp({
+    create: { width: 1200, height: 1600, channels: 3, background: { r: 240, g: 245, b: 250 } },
+  }).png().toBuffer());
+  await db.run("UPDATE twain_scan_records SET image_path = ? WHERE id = ?", thumbnailSourcePath, records[0].id);
+  const fullImageResponse = await fetch(`http://127.0.0.1:${address.port}/api/scanner/scan-image/${records[0].id}`);
+  const fullImageBytes = Buffer.from(await fullImageResponse.arrayBuffer());
+  const thumbnailResponse = await fetch(`http://127.0.0.1:${address.port}/api/scanner/scan-image/${records[0].id}?thumb=1`);
+  const thumbnailBytes = Buffer.from(await thumbnailResponse.arrayBuffer());
+  assert.equal(fullImageResponse.status, 200);
+  assert.equal(thumbnailResponse.status, 200);
+  const thumbnailMeta = await sharp(thumbnailBytes).metadata();
+  assert.match(thumbnailResponse.headers.get("content-type") ?? "", /image\/jpeg/);
+  assert.equal(thumbnailMeta.width, 360);
+  assert(thumbnailMeta.height! <= 480);
+  assert(thumbnailBytes.length < fullImageBytes.length, "列表缩略图字节数必须明显小于 300 DPI 原图");
   const retryResponse = await fetch(`http://127.0.0.1:${address.port}/twain/scanner/session/${session.id}/retry`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupId: "missing" }),
   });
@@ -127,6 +145,39 @@ try {
   await saveCard(staleCard);
   assert.equal((await request()).results[0].totalScore, 5, "Ignore stale JSON answer keys");
   await unlink(cardPath(card.id));
+
+  // 崩溃 / 停扫恢复：会话还没收尾时照旧 409（前端据此进入等待，不当成加载失败）；
+  // 取消的批次保留已扫页面，必须能重新读回，否则现场停扫后那一批再也打不开。
+  const stuck = await store.createSession(card.id, "崩溃恢复");
+  const stuckRecord = await createVerifiedRecord({ sessionId: stuck.id, cardId: card.id, pageNum: 1, imagePath: path.join(root, "stuck_0.png") });
+  // 学号刻意避开主夹具的 91001-91003：同学号跨会话会触发重复卷冲突（那是另一条业务规则）。
+  await store.updateScanOcrResult(stuckRecord.id, "91009", 1, "done");
+  await store.upsertRecognitionResult({ scanRecordId: stuckRecord.id,
+    objectiveJson: JSON.stringify([{ questionNumber: 1, selectedOptions: ["A"], confidence: 1 }]),
+    subjectiveJson: "[]", gradeStatus: "done" });
+  const stuckResponse = await fetch(`http://127.0.0.1:${address.port}/api/scanner/session/${stuck.id}/validate`, { method: "POST" });
+  assert.equal(stuckResponse.status, 409, "还没收尾的会话必须返回 409，前端据此进入等待");
+  await store.updateSessionStatus(stuck.id, "cancelled", "用户取消扫描");
+  // 取消接口先写 cancelled，worker 还在落页 / 识别：这时放行会读到半批，而且页面不会再刷新。
+  const { beginScanWorker, endScanWorker } = await import("../src/apps/answer-card/server/scanner/scanWorkers");
+  beginScanWorker(stuck.id);
+  const drainingResponse = await fetch(`http://127.0.0.1:${address.port}/api/scanner/session/${stuck.id}/validate`, { method: "POST" });
+  assert.equal(drainingResponse.status, 409, "取消但 worker 还没收尾时仍返回 409");
+  const drainingInfo = await (await fetch(`http://127.0.0.1:${address.port}/api/scanner/scan/${stuck.id}`)).json() as { workerActive?: boolean };
+  assert.equal(drainingInfo.workerActive, true, "会话仍在收尾时，面板交接要能看到 worker 未退出");
+  endScanWorker(stuck.id);
+  const cancelledResponse = await fetch(`http://127.0.0.1:${address.port}/api/scanner/session/${stuck.id}/validate`, { method: "POST" });
+  assert.equal(cancelledResponse.status, 200, "取消的批次保留已扫页面，收尾后必须能重新读回");
+  const cancelledBatch = await cancelledResponse.json() as ScanBatchResponse;
+  assert.equal(cancelledBatch.results.length, 1, "取消批次也要返回已识别的卷");
+
+  // error 是终态：0 页的失败会话必须能读回空结果，否则后处理页会一直 409 等待，
+  // 而「停止这一批」对终态会话不改变状态，页面永远出不来。
+  const emptyError = await store.createSession(card.id, "失败恢复");
+  await store.updateSessionStatus(emptyError.id, "error", "扫描仪启动失败");
+  const emptyErrorResponse = await fetch(`http://127.0.0.1:${address.port}/api/scanner/session/${emptyError.id}/validate`, { method: "POST" });
+  assert.equal(emptyErrorResponse.status, 200, "0 页的失败会话是终态，不能一直 409");
+  assert.equal(((await emptyErrorResponse.json()) as ScanBatchResponse).results.length, 0, "终态失败会话读回空批次");
 
   // Real bearer authentication on both route mounts; denials precede any mutation.
   const { authService } = await import("../src/server/services/AuthService");
@@ -619,7 +670,6 @@ try {
   // Remote ingress rejects missing/wrong evidence and invalidates a previous successful upload.
   const uploadSession = await store.createSession(card.id, "qr-upload");
   const uploadRecord = await createVerifiedRecord({ sessionId: uploadSession.id, cardId: card.id, pageNum: 1, imagePath: "pending.png" });
-  const { default: sharp } = await import("sharp");
   const image = await sharp({ create: { width: 20, height: 20, channels: 3, background: "white" } }).png().toBuffer();
   async function uploadIdentity(identity: unknown) {
     const form = new FormData();

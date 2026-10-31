@@ -10,6 +10,7 @@ import {
 import { cardFingerprint } from "../../../../shared/cardVersion";
 import type { ScanProgressEvent, ScanSessionConfig } from "./scanner-types";
 import { markSessionTerminal } from "./sessionWarnings";
+import { beginScanWorker, endScanWorker } from "./scanWorkers";
 import { listSources, scan } from "./twain-bridge";
 import { recognizeAnswerCard } from "../recognition";
 import { enqueueScannerSubmission, invalidateScanRecognitionInQueue } from "../../../../server/services/scannerSubmissions";
@@ -77,6 +78,8 @@ export async function runScanSession(
   const outputDir = scansDir(config.cardId);
   await mkdir(outputDir, { recursive: true });
 
+  // 取消接口先写 cancelled，落页与识别仍在这个 worker 里继续；后处理页据此判断是否已收尾。
+  beginScanWorker(sessionId);
   try {
     // 竞态防线 1：createScanSession 返回 202 后用户可能立即取消（此时子进程尚未注册），
     // 若取消已写入 cancelled，这里必须退出而不是把状态覆盖回 scanning
@@ -217,6 +220,8 @@ export async function runScanSession(
     if (!await markSessionTerminal(sessionId, "error", msg)) return sessionId;
     onProgress({ sessionId, type: "error", message: msg });
     throw error;
+  } finally {
+    endScanWorker(sessionId);
   }
 }
 

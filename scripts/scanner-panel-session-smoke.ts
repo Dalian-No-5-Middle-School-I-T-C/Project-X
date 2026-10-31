@@ -47,7 +47,19 @@ let includeFailure = false;
 let failNextSummary = false;
 let failNextSnapshot = false;
 let retainedPageCount = 2;
+/** 取消后 worker 还没收尾：服务端可能马上还会落页，交接时不能撤占位。 */
+let snapshotWorkerActive = false;
+/** 会话还没进入终态时，0 页只是「尚未开始落页」，同样不能撤占位。 */
+let snapshotSessionStatus = "error";
 const snapshotRequests: string[] = [];
+const cancelRequests: string[] = [];
+/** 让下一次答题卡版本请求挂起，模拟「点开始扫描后立刻离开」的在途窗口。 */
+let holdNextCard = false;
+let cancelHttpStatus = 200;
+let releaseHeldCard: (() => void) | null = null;
+const archivedBatches: string[] = [];
+const startedSessions: string[] = [];
+const abandonedSessions: string[] = [];
 const summaryRequests: string[] = [];
 const retryRequests: unknown[] = [];
 const correctionSaves: Array<{ pages: unknown[] }> = [];
@@ -63,8 +75,12 @@ const summary = () => ({ failures: includeFailure ? [{ groupId: "1", studentId: 
   ] });
 install("fetch", async (input: unknown, init?: RequestInit) => {
   const url = String(input);
-  if (url.includes("/api/cards/")) { cardRequests++; await cardReady; return Response.json(card); }
+  if (url.includes("/api/cards/")) { cardRequests++; if (holdNextCard) { holdNextCard = false; await new Promise<void>(resolve => { releaseHeldCard = resolve; }); } await cardReady; return Response.json(card); }
   if (url.endsWith("/sources")) return Response.json({ sources: [], code: "NO_SOURCES" });
+  if (/\/scan\/scan-\d+\/cancel$/.test(url)) {
+    cancelRequests.push(url);
+    return Response.json({ ok: cancelHttpStatus < 400 }, { status: cancelHttpStatus });
+  }
   if (url.endsWith("/scan")) {
     scans.push(JSON.parse(String(init?.body)));
     return Response.json({ sessionId: `scan-${scans.length}` });
@@ -72,7 +88,7 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   if (/\/scan\/scan-\d+$/.test(url)) {
     snapshotRequests.push(url);
     if (failNextSnapshot) { failNextSnapshot = false; return Response.json({ message: "临时读取页面失败" }, { status: 503 }); }
-    return Response.json({ session: { status: "error", error_msg: "未扫描到页面" }, records:
+    return Response.json({ session: { status: snapshotSessionStatus, error_msg: "未扫描到页面" }, workerActive: snapshotWorkerActive, records:
       Array.from({ length: retainedPageCount }, (_, index) => ({ id: `page-${index + 1}`, pageNum: index + 1,
         side: "front", studentId: index === 0 ? "91001" : null, studentConf: null, ocrStatus: "done" })) });
   }
@@ -126,8 +142,13 @@ async function click(label: string) {
 function hasAction(label: string) {
   return [...document.querySelectorAll("button")].some(node => node.textContent?.trim() === label);
 }
+let panelMounted = true;
 try {
-  await act(async () => { root.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id }))); });
+  await act(async () => { root.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id,
+    onBatchArchived: (originCardId: string, sid: string, pageCount: number) => { archivedBatches.push(`${originCardId}/${sid}/${pageCount}`); },
+    onScanSessionStarted: (sid: string) => { startedSessions.push(sid); },
+    onScanSessionAbandoned: (_cardId: string, sid: string) => { abandonedSessions.push(sid); },
+  }))); });
   await settle();
   const checkbox = document.querySelector<HTMLButtonElement>('[role="checkbox"]');
   assert(checkbox, "Actual legacy-mode control is mounted");
@@ -140,6 +161,7 @@ try {
   assert.equal(scans.length, 0, "Cancelling during version loading prevents a late scan from starting");
   await click("开始扫描"); await settle();
   assert.equal(scans[0].identityMode, "legacy");
+  assert.deepEqual(startedSessions, ["scan-1"], "会话一创建就上报，不等扫描结束或卸载");
   assert.equal(streams.length, 1);
   // This handler was installed by the scan-start render, before the legacy
   // session state was committed. It must still upload with the session snapshot.
@@ -358,10 +380,174 @@ try {
   assert(hasAction("停止扫描"), "继续扫描直接进入扫描中");
   await act(async () => { streams.at(-1)?.done(); }); await settle();
   assert.equal(uploads.length, uploadsBeforeContinue + 2, "继续扫出的批次完成后照常上传");
-  console.log("PASS scanner panel React/SSE: session metadata; partial view/correction/save; terminal replay and reconnect hydrate persisted pages; hydration retry, zero-page and next-session recovery; continue-scan");
+
+  // 扫描中离开面板（关闭 / 返回工作台）：停掉后台扫描，并把已扫页面交给后处理页，
+  // 否则设备继续送纸、这一批却再也找不到入口。
+  await click("开始新扫描"); await settle();
+  await click("开始扫描"); await settle();
+  const midScanSession = `scan-${scans.length}`;
+  await act(async () => { streams.at(-1)?.emit({ type: "page_done", recordId: "mid-page", pageNum: 1, side: "front" }); }); await settle();
+  assert(hasAction("停止扫描"), "离开前确实处于扫描中");
+  const cancelsBeforeLeave = cancelRequests.length;
+  const archivedBeforeLeave = archivedBatches.length;
+  await act(async () => { root.unmount(); }); panelMounted = false;
+  await settle();
+  assert(cancelRequests.slice(cancelsBeforeLeave).some(url => url.includes(midScanSession)),
+    "扫描中离开面板要终止后台扫描，不能让设备继续送纸");
+  assert(archivedBatches.slice(archivedBeforeLeave).includes(`${card.id}/${midScanSession}/1`),
+    "已扫出的页面要交给后处理页，离开面板不等于丢掉这一批");
+
+  // 离开面板时取消接口返回 401/500：authFetch 不会抛，必须看 response.ok 才提示，并且已扫页面仍交接。
+  const { notify } = await import("../src/apps/answer-card/client/components/ui/v2/toaster");
+  const stopWarnings: string[] = [];
+  const originalNotifyError = notify.error;
+  notify.error = ((message: unknown) => {
+    stopWarnings.push(String(message));
+    return "toast";
+  }) as typeof notify.error;
+  try {
+    for (const status of [401, 500]) {
+      stopWarnings.length = 0;
+      cancelHttpStatus = status;
+      const stopHost = document.createElement("div");
+      document.body.append(stopHost);
+      const stopRoot = createRoot(stopHost);
+      await act(async () => { stopRoot.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id,
+        onBatchArchived: (originCardId: string, sid: string, pageCount: number) => { archivedBatches.push(`${originCardId}/${sid}/${pageCount}`); },
+      }))); });
+      await settle();
+      await act(async () => {
+        stopHost.querySelectorAll("button").forEach((node) => {
+          if (node.textContent?.trim() === "开始扫描") node.click();
+        });
+      });
+      await settle();
+      const stopSession = `scan-${scans.length}`;
+      await act(async () => { streams.at(-1)?.emit({ type: "page_done", recordId: "stop-page", pageNum: 1, side: "front" }); });
+      await settle();
+      const archivedBeforeStop = archivedBatches.length;
+      await act(async () => { stopRoot.unmount(); });
+      await settle();
+      assert.equal(stopWarnings.length, 1, `取消接口 HTTP ${status} 要提示未能确认扫描仪已停止`);
+      assert.match(stopWarnings[0] ?? "", /未能确认扫描仪已停止/);
+      assert(archivedBatches.slice(archivedBeforeStop).includes(`${card.id}/${stopSession}/1`),
+        `HTTP ${status} 时已扫页面仍交给后处理，不因为停止失败就丢掉`);
+    }
+  } finally {
+    notify.error = originalNotifyError;
+    cancelHttpStatus = 200;
+  }
+
+  // 主动点「停止扫描」和离开面板一样要检查 response.ok：设备可能还在送纸。
+  {
+    cancelHttpStatus = 500;
+    const clickHost = document.createElement("div");
+    document.body.append(clickHost);
+    const clickRoot = createRoot(clickHost);
+    const clickWarnings: string[] = [];
+    const originalClickNotify = notify.error;
+    notify.error = ((message: unknown) => {
+      clickWarnings.push(String(message));
+      return "toast";
+    }) as typeof notify.error;
+    try {
+      await act(async () => { clickRoot.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id }))); });
+      await settle();
+      await act(async () => {
+        [...clickHost.querySelectorAll("button")].find(node => node.textContent?.trim() === "开始扫描")!.click();
+      });
+      await settle();
+      await act(async () => {
+        [...clickHost.querySelectorAll("button")].find(node => node.textContent?.trim() === "停止扫描")!.click();
+      });
+      await settle();
+      assert.equal(clickWarnings.length, 1, "主动停止失败要提示未能确认停止，不能静默宣称已取消");
+      assert.match(clickWarnings[0] ?? "", /未能确认扫描仪已停止/);
+    } finally {
+      notify.error = originalClickNotify;
+      cancelHttpStatus = 200;
+      await act(async () => { clickRoot.unmount(); });
+      clickHost.remove();
+    }
+  }
+
+  // SSE 晚连 / 重连不补发 page_done：本地页数为 0 时以服务端记录为准，
+  // 不能把已落盘的页和入口一起撤掉；取消后 worker 还在落页时同样要留着；
+  // 服务端确实没有页面且已收尾时才撤占位。
+  const handoffCases = [
+    { status: "error", serverPages: 2, workerActive: false, expectation: "archive" },
+    { status: "error", serverPages: 0, workerActive: true, expectation: "archive" },
+    { status: "error", serverPages: 0, workerActive: false, expectation: "abandon" },
+    // 会话还在等待 worker 注册 / 版式准备时，0 页不是「没有这一批」：保留恢复入口。
+    { status: "pending", serverPages: 0, workerActive: false, expectation: "keep" },
+  ] as const;
+  for (const handoffCase of handoffCases) {
+    retainedPageCount = handoffCase.serverPages;
+    snapshotWorkerActive = handoffCase.workerActive;
+    snapshotSessionStatus = handoffCase.status;
+    const handoffHost = document.createElement("div");
+    document.body.append(handoffHost);
+    const handoffRoot = createRoot(handoffHost);
+    const handoffArchived: string[] = [];
+    const handoffAbandoned: string[] = [];
+    await act(async () => { handoffRoot.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id,
+      onBatchArchived: (originCardId: string, sid: string, pageCount: number) => { handoffArchived.push(`${originCardId}/${sid}/${pageCount}`); },
+      onScanSessionAbandoned: (originCardId: string, sid: string) => { handoffAbandoned.push(`${originCardId}/${sid}`); },
+    }))); });
+    await settle();
+    await act(async () => {
+      [...handoffHost.querySelectorAll("button")].find(node => node.textContent?.trim() === "开始扫描")!.click();
+    });
+    await settle();
+    const handoffSession = `scan-${scans.length}`;
+    const snapshotsBeforeHandoff = snapshotRequests.length;
+    await act(async () => { handoffRoot.unmount(); });
+    await settle();
+    assert(snapshotRequests.slice(snapshotsBeforeHandoff).some(url => url.includes(handoffSession)),
+      "本地没有页面时，交接前要问服务端记录数");
+    if (handoffCase.expectation === "archive") {
+      assert(handoffArchived.includes(`${card.id}/${handoffSession}/${handoffCase.serverPages}`),
+        "服务端已有页面或 worker 仍在收尾时，要按服务端页数交给后处理");
+      assert(!handoffAbandoned.includes(`${card.id}/${handoffSession}`), "服务端已有页面或 worker 仍在收尾时不能撤掉占位");
+    } else if (handoffCase.expectation === "keep") {
+      assert(!handoffArchived.includes(`${card.id}/${handoffSession}/0`),
+        "会话尚未进入终态时，0 页不能当成已结束批次归档");
+      assert(!handoffAbandoned.includes(`${card.id}/${handoffSession}`), "会话尚未进入终态时不能撤掉恢复入口");
+    } else {
+      assert(handoffAbandoned.includes(`${card.id}/${handoffSession}`), "服务端确实没有页面且已收尾时才撤掉占位");
+    }
+    handoffHost.remove();
+  }
+  snapshotWorkerActive = false;
+  snapshotSessionStatus = "error";
+  retainedPageCount = 2;
+
+  // 启动请求还在路上就离开：晚到的响应不能再建会话、也不能再开进度流（否则设备继续送纸却没人看）。
+  const lateHost = document.createElement("div");
+  document.body.append(lateHost);
+  const lateRoot = createRoot(lateHost);
+  const scansBeforeLate = scans.length;
+  const streamsBeforeLate = streams.length;
+  await act(async () => { lateRoot.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id }))); });
+  await settle();
+  // 面板挂载时自己会读一次卡设置；等它读完再挂起，挂到的才是「开始扫描」那次版本请求。
+  holdNextCard = true;
+  await act(async () => {
+    [...lateHost.querySelectorAll("button")].find(node => node.textContent?.trim() === "开始扫描")!.click();
+  });
+  await settle();
+  assert(releaseHeldCard, "答题卡版本请求应处于挂起状态");
+  await act(async () => { lateRoot.unmount(); });
+  await act(async () => { releaseHeldCard?.(); });
+  await settle();
+  assert.equal(scans.length, scansBeforeLate, "离开后晚到的启动请求不能再建扫描会话");
+  assert.equal(streams.length, streamsBeforeLate, "离开后不能再给新会话开进度流");
+  lateHost.remove();
+
+  console.log("PASS scanner panel React/SSE: session metadata; partial view/correction/save; terminal replay and reconnect hydrate persisted pages; hydration retry, zero-page and next-session recovery; continue-scan; leave-mid-scan; leave-before-start");
 } finally {
   releaseCard();
-  await act(async () => { root.unmount(); });
+  if (panelMounted) await act(async () => { root.unmount(); });
   serverStatus.stop(); scannerUploadManager.startUpload = startUpload;
   dom.window.close();
   for (const [name, descriptor] of globals) {

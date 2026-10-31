@@ -16,6 +16,10 @@ import { notify, Spinner } from "./components/ui/v2";
 import { DEFAULT_SKIN, SKIN_CHOSEN_KEY } from "./components/SkinSwitcher";
 import { skinPatchDecision } from "./lib/skinPatchGuard";
 import { useSkinPreferenceWriter } from "./lib/skinSync";
+import {
+  clearActivePostprocess, clearPostprocessView, readActivePostprocess, readPostprocessSessions,
+  resolvePersistCardId, writeActivePostprocess, writePostprocessSessions,
+} from "./lib/postprocessResume";
 
 // ── ScannerApp：三屏容器 ──
 // page="select" → CardSelectPage（答题卡选择，含单科/大考双Tab）
@@ -32,10 +36,27 @@ function ScannerAppInner() {
   const [page, setPage] = useState<Page>("select");
   const [selectedCardId, setSelectedCardId] = useState<string>("");
   const [selectedCardTitle, setSelectedCardTitle] = useState<string>("");
+  // 面板卸载后的交接要查服务端页数，回调可能晚于换卡：晚到的旧批次只能落回原卡或卡片列表。
+  const currentCardIdRef = useRef("");
+  currentCardIdRef.current = selectedCardId;
+  /** 卸载清理里的异步交接可能晚于换账号：用当前账号判断内存会话归属，闭包里的 user 可能是上一个账号。 */
+  const currentUserIdRef = useRef<number | null>(null);
+  currentUserIdRef.current = user?.id ?? null;
+  /** 每个扫描会话的发起账号：晚到交接即使当前已换人，也只能写回原账号的槽位。 */
+  const scanSessionOwnersRef = useRef(new Map<string, number>());
   // v2.7.2：本卡已扫完的批次会话；返回工作台续扫后新批次累加进来，异常队列共用同一份
   const [postSessions, setPostSessions] = useState<Array<{ sessionId: string; pageCount: number }>>([]);
+  /** 离开工作台时 selectedCardId 会先被清空，而扫描面板的卸载清理要等到提交阶段才归档；
+   *  落盘得认「刚才那张卡」。账号一起记：换账号后不能把上一个账号的卡写进新账号的槽位。 */
+  const lastSelectionRef = useRef<{ userId: number; cardId: string } | null>(null);
+  useEffect(() => {
+    if (!selectedCardId || !user) return;
+    lastSelectionRef.current = { userId: user.id, cardId: selectedCardId };
+  }, [selectedCardId, user?.id]);
   /** 后处理页点「继续扫描」→ 回到工作台并自动开下一批；工作台消费后清掉，避免再次进入重复开扫。 */
   const [pendingContinueScan, setPendingContinueScan] = useState(false);
+  /** 扫描会话已创建、结果页还没接管。崩溃重载要靠活动卡标记找回这一批，不能只等完成或卸载。 */
+  const [liveScanSessionId, setLiveScanSessionId] = useState<string | null>(null);
   // 安全 R35：离线用缓存卡进入时的工作台提示（版本 + 缓存时间），空串表示版本与服务器一致
   const [cardVersionNote, setCardVersionNote] = useState<string>("");
   // v2.1.0: 皮肤 = 风格维度（与明暗正交），同步策略与 web 端 App 保持一致。
@@ -97,6 +118,47 @@ function ScannerAppInner() {
     );
   }, [skin, user?.id, user?.themeSkin, writeSkinPreference, patchUserLocal, refreshUser]);
 
+  // 闪退/白屏后回到应用：上次停在这张卡的扫描后处理，就恢复会话列表并直接打开，
+  // 否则草稿还在本机却没有入口。只在刚登录且尚未选卡时触发。
+  useEffect(() => {
+    if (!user || selectedCardId) return;
+    // 只读本人槽位：同机其他账号的标记原样留着，他们回来时仍能自动回到自己的后处理页。
+    const active = readActivePostprocess(user.id);
+    if (!active) return;
+    const sessions = readPostprocessSessions(active.cardId, user.id);
+    if (!sessions.length) {
+      clearActivePostprocess(user.id);
+      return;
+    }
+    setSelectedCardId(active.cardId);
+    setSelectedCardTitle(active.cardTitle);
+    setPostSessions(sessions);
+    setPage("postprocess");
+  }, [user?.id, selectedCardId]);
+
+  // 会话列表随卡片落到本机：崩溃重载后仍能回到同一批卷。
+  // 未登录/登录态过期时不写：否则会把 userId 改成 null，崩溃后同一账号也恢复不了。
+  useEffect(() => {
+    // 返回卡片列表时 selectedCardId 已清空，但面板卸载清理刚归档的批次要归到刚才那张卡上。
+    const targetCardId = resolvePersistCardId(selectedCardId, lastSelectionRef.current, user?.id);
+    if (!targetCardId || !user) return;
+    writePostprocessSessions(targetCardId, postSessions, user.id);
+    // 只有在后处理页才记「活动卡」；老师主动回到工作台后崩溃，重载应回工作台，
+    // 而不是被一个仅因存在历史会话就写回的标记拉回后处理。
+    const liveScan = liveScanSessionId !== null && postSessions.some((item) => item.sessionId === liveScanSessionId);
+    if (selectedCardId && postSessions.length && (page === "postprocess" || liveScan)) writeActivePostprocess(selectedCardId, selectedCardTitle, user.id);
+    else clearActivePostprocess(user.id);
+  }, [selectedCardId, selectedCardTitle, postSessions, page, user?.id, liveScanSessionId]);
+
+  // 登出/会话过期时清掉工作台选择，避免下一个登录账号继承上一人的扫描会话。
+  useEffect(() => {
+    if (user || !selectedCardId) return;
+    setSelectedCardId("");
+    setSelectedCardTitle("");
+    setPostSessions([]);
+    setPage("select");
+  }, [user?.id, selectedCardId]);
+
   if (loading) {
     return (
       <div className="flex h-[100dvh] w-full flex-col items-center justify-center gap-3 bg-background">
@@ -128,8 +190,11 @@ function ScannerAppInner() {
         cardId={selectedCardId}
         cardTitle={selectedCardTitle}
         sessions={postSessions}
-        onBack={() => setPage("workspace")}
+        userId={user?.id ?? null}
+        onBack={() => { clearActivePostprocess(user?.id); clearPostprocessView(selectedCardId, user?.id); setPage("workspace"); }}
         onContinueScan={() => {
+          clearPostprocessView(selectedCardId, user?.id);
+          setLiveScanSessionId(null);
           setPendingContinueScan(true);
           setPage("workspace");
         }}
@@ -143,16 +208,59 @@ function ScannerAppInner() {
         cardId={selectedCardId}
         cardTitle={selectedCardTitle}
         cardVersionNote={cardVersionNote}
-        onBack={() => setPage("select")}
+        onBack={() => {
+          clearActivePostprocess(user?.id);
+          setSelectedCardId("");
+          setSelectedCardTitle("");
+          // 不清 postSessions：面板卸载清理紧接着会归档当前批次，先清空会让落盘只剩这一批；
+          // 选另一张卡时会被它自己的恢复列表整体替换。
+          setPage("select");
+        }}
         autoStartScan={pendingContinueScan}
         onAutoStartConsumed={() => setPendingContinueScan(false)}
-        onBatchArchived={(sid, pageCount) => {
-          setPostSessions(prev => [...prev.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }]);
+        onScanSessionStarted={(sid) => {
+          if (user?.id != null) scanSessionOwnersRef.current.set(sid, user.id);
+          setLiveScanSessionId(sid);
+          setPostSessions(prev => prev.some(p => p.sessionId === sid) ? prev : [...prev, { sessionId: sid, pageCount: 0 }]);
+        }}
+        onScanSessionAbandoned={(originCardId, sid) => {
+          setLiveScanSessionId(prev => prev === sid ? null : prev);
+          const ownerUserId = scanSessionOwnersRef.current.get(sid) ?? user?.id ?? null;
+          scanSessionOwnersRef.current.delete(sid);
+          // 返回卡片列表后 selectedCardId 为空，但内存里的 postSessions 仍属于刚离开的那张卡。
+          // 此时只删 localStorage 会让紧随其后的持久化 effect 把内存里的 0 页占位又写回去。
+          // 内存归属按当前账号 + 会话发起账号判断，旧账号只写自己的槽位。
+          const sameAccount = ownerUserId != null && currentUserIdRef.current === ownerUserId;
+          if (sameAccount
+            && resolvePersistCardId(currentCardIdRef.current, lastSelectionRef.current, currentUserIdRef.current) === originCardId) {
+            setPostSessions(prev => prev.filter(p => p.sessionId !== sid));
+          } else if (ownerUserId != null) {
+            const stored = readPostprocessSessions(originCardId, ownerUserId);
+            writePostprocessSessions(originCardId, stored.filter(item => item.sessionId !== sid), ownerUserId);
+          }
+        }}
+        onBatchArchived={(originCardId, sid, pageCount) => {
+          const ownerUserId = scanSessionOwnersRef.current.get(sid) ?? user?.id ?? null;
+          scanSessionOwnersRef.current.delete(sid);
+          // 交接请求晚到时可能已经切到另一张卡或回到列表。原卡仍是本机持久化目标时写内存；
+          // 其余情况按发起卡直接归到它自己的账号槽位，不能借 lastSelectionRef 写进新卡或新账号。
+          const sameAccount = ownerUserId != null && currentUserIdRef.current === ownerUserId;
+          if (sameAccount
+            && resolvePersistCardId(currentCardIdRef.current, lastSelectionRef.current, currentUserIdRef.current) === originCardId) {
+            setPostSessions(prev => [...prev.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }]);
+          } else if (ownerUserId != null) {
+            const stored = readPostprocessSessions(originCardId, ownerUserId);
+            writePostprocessSessions(originCardId, [...stored.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }], ownerUserId);
+          }
         }}
         onScansComplete={(sid, pageCount) => {
+          scanSessionOwnersRef.current.delete(sid);
+          setLiveScanSessionId(null);
           setPostSessions(prev => [...prev.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }]);
           setPage("postprocess");
         }}
+        postprocessBatchCount={postSessions.length}
+        onOpenPostprocess={() => setPage("postprocess")}
         skin={skin}
         onSkinChange={setSkin}
       />
@@ -187,8 +295,10 @@ function ScannerAppInner() {
               setCardVersionNote(`本机缓存版本 ${version}（未连上服务器，${updatedAt}）`);
               setSelectedCardId(cardId);
               setSelectedCardTitle(card?.title || cardId);
-              setPostSessions([]);
-              setPage("workspace");
+              const restored = readPostprocessSessions(cardId, user?.id);
+              const active = readActivePostprocess(user?.id);
+              setPostSessions(restored);
+              setPage(active?.cardId === cardId && active.userId === user?.id ? "postprocess" : "workspace");
               return;
             }
             // 远端新建的卡不在本机库：直扫/阅卷只读本机服务，先进本机库（幂等 upsert）
@@ -198,8 +308,10 @@ function ScannerAppInner() {
             setCardVersionNote("");
             setSelectedCardId(cardId);
             setSelectedCardTitle(card?.title || cardId);
-            setPostSessions([]);
-            setPage("workspace");
+            const restored = readPostprocessSessions(cardId, user?.id);
+            const active = readActivePostprocess(user?.id);
+            setPostSessions(restored);
+            setPage(active?.cardId === cardId && active.userId === user?.id ? "postprocess" : "workspace");
           } catch (e: unknown) {
             const err = e as { status?: number; message?: string };
             if (err?.status === 404) {

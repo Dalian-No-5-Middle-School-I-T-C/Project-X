@@ -18,6 +18,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { listSources, runScanSession, createScanSession, runOcrOnSession, getCardScansWithStudents } from "./scanner-service";
 import { cancelScan } from "./twain-bridge";
+import { isScanWorkerActive } from "./scanWorkers";
 import {
   listScanRecords,
   getScanRecordWithResult,
@@ -40,6 +41,7 @@ import { findCardForLayout } from "../card-layout";
 import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
 import { collectSessionResults, groupSessionPages } from "./session-results";
 import { filterDeletableGroups } from "../../../../shared/scanPostprocess";
+import sharp from "sharp";
 
 // persistScannerResultToMainDb 的串行队列（模块级，跨请求生效）：
 // better-sqlite3 是单连接,并发事务会在 BEGIN/COMMIT 之间互相穿插（见 SqliteAdapter.transaction 注释），
@@ -340,6 +342,8 @@ export function createScannerRouter(twainEnabled = true): Router {
       res.json({
         session,
         examId: exam?.id ?? null,
+        // 面板离开时据此判断「这一批还会不会有页落进来」：取消后 worker 还没收尾时不能撤占位。
+        workerActive: isScanWorkerActive(session.id),
         // 安全（R04）：不再回传服务端绝对路径；预览走 /api/scanner/scan-image/:recordId
         records: records.filter(r => scanPageAllowed(scope,
           scanRecordLayoutPage(card, r.page_num, r.side === "back" ? "back" : "front"))).map((r) => ({
@@ -618,10 +622,18 @@ export function createScannerRouter(twainEnabled = true): Router {
   });
 
   async function sessionReadyForResults(sessionId: string, status: string): Promise<boolean> {
+    // 取消的批次同样保留已扫页面（#320 崩溃恢复要靠它把那一批读回来），
+    // 否则现场停扫后只能看到 409，已扫的卷再也打不开。
+    // 但取消接口先把状态写成 cancelled，落页 / 识别还在后台跑：worker 没退出前
+    // 读到的会是不完整的一批，且后处理页不会再刷新，所以必须等它收尾。
     if (status === "completed") return true;
+    if (status === "cancelled") return !isScanWorkerActive(sessionId);
     if (status !== "error") return false;
     const records = await listScanRecords(sessionId);
-    return records.length > 0 && records.every(record => record.ocr_status !== "pending" && record.ocr_status !== "processing");
+    // error 是终态，不会再有页面落进来：0 页的失败会话也要能读回空结果。
+    // 若这里要求至少有 1 条记录，后处理页会对这种会话一直 409 等待，
+    // 而「停止这一批」对终态会话不会改变任何状态，页面永远出不来。
+    return records.every(record => record.ocr_status !== "pending" && record.ocr_status !== "processing");
   }
 
   async function sessionResults(
@@ -758,6 +770,19 @@ export function createScannerRouter(twainEnabled = true): Router {
       }
       if (!existsSync(imagePath)) {
         res.status(404).json({ message: "图片文件不存在" });
+        return;
+      }
+      if (req.query.thumb === "1") {
+        // 32 位扫描端一次展示上百份卷时，直接解码 300 DPI 原图会耗尽渲染进程地址空间。
+        // 列表只取长边约 480px 的 JPEG；原图仍由无 thumb 参数的路由提供。
+        const thumbnail = await sharp(imagePath, { failOn: "error" })
+          .rotate()
+          .resize({ width: 360, height: 480, fit: "inside", withoutEnlargement: true })
+          .jpeg({ quality: 72 })
+          .toBuffer();
+        res.setHeader("Content-Type", "image/jpeg");
+        res.setHeader("Cache-Control", "private, max-age=3600");
+        res.send(thumbnail);
         return;
       }
       const ext = path.extname(imagePath).toLowerCase();

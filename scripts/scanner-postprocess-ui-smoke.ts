@@ -95,6 +95,7 @@ const batch = (): ScanBatchResponse => ({
 });
 
 const puts: Array<{ groupId: string; draft: boolean; pages: Array<{ sourceId: string; selected: string[]; touched?: string[] }> }> = [];
+const correctionGets: string[] = [];
 const deletes: Array<{ url: string; body: { groupIds: string[]; force?: boolean; previewOnly?: boolean } }> = [];
 const saveBodies: unknown[] = [];
 const saveCalls: string[] = [];
@@ -104,6 +105,21 @@ const searchUrls: string[] = [];
 /** 第二批会话：groupId 与第一批重号，用来钉住「删除必须按会话下发」 */
 const batchFor = (sessionId: string): ScanBatchResponse => {
   const first = batch();
+  if (sessionId === "scan-cancelled") {
+    return {
+      results: [{
+        groupId: "cancel-0", studentId: "30001", totalScore: 10, maxScore: 10,
+        objectiveScore: 10, objectiveMaxScore: 10, subjectiveScore: 0, subjectiveMaxScore: 0,
+        needsReviewCount: 0, pageCount: 1, saved: false,
+        pages: [{
+          recordId: "rec-cancel", pageNum: 1, side: "front", layoutPage: 1,
+          objectiveScore: 10, subjectiveScore: 0, totalScore: 10, totalMaxScore: 10,
+        }],
+      }],
+      failures: [],
+      reviewCards: [],
+    };
+  }
   if (sessionId === "scan-3") {
     const kept = { ...first.results[1], groupId: "1", studentId: "20002",
       pages: first.results[1].pages.map(page => ({ ...page, recordId: "rec-6", pageNum: 6 })) };
@@ -132,6 +148,15 @@ const batchFor = (sessionId: string): ScanBatchResponse => {
   };
 };
 let hideCard = false;
+/** 崩溃恢复夹具：这一批的服务端会话还没收尾，validate 先回 409，取消后才读出已扫页面。 */
+const busySessionId = "scan-busy";
+let busyCancelled = false;
+let busyCancels = 0;
+let busyCancelStatus = 200;
+let busyCancelLeavesDraining = false;
+/** 等待轮询夹具：首次 409，第二次临时 503，之后收尾成功。 */
+const flakySessionId = "scan-flaky";
+let flakyCalls = 0;
 install("fetch", async (input: unknown, init?: RequestInit) => {
   const url = String(input);
   const method = init?.method ?? "GET";
@@ -139,8 +164,22 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
     return Response.json({ message: "答题卡不存在" }, { status: 404 });
   }
   if (url.includes("/api/cards/")) return Response.json(card);
+  if (url.endsWith(`/api/scanner/scan/${busySessionId}/cancel`)) {
+    busyCancelled = true;
+    busyCancels += 1;
+    return Response.json({ status: "cancelled", message: "扫描已取消" }, { status: busyCancelStatus });
+  }
   const sessionMatch = url.match(/\/api\/scanner\/session\/([^/]+)\/(validate|results)/);
   if (sessionMatch) {
+    if (sessionMatch[1] === flakySessionId) {
+      flakyCalls += 1;
+      if (flakyCalls === 1) return Response.json({ message: "请等待扫描和识别全部完成" }, { status: 409 });
+      if (flakyCalls === 2) return Response.json({ message: "临时刷新失败" }, { status: 503 });
+      return Response.json(batchFor(flakySessionId));
+    }
+    if (sessionMatch[1] === busySessionId && (!busyCancelled || busyCancelLeavesDraining)) {
+      return Response.json({ message: "请等待扫描和识别全部完成" }, { status: 409 });
+    }
     // 仅本地模式的「保存成绩入库」= POST results（save 模式），与 validate 演算不是一条路
     if (method === "POST" && url.endsWith("/results")) {
       saveCalls.push(`${method} ${url}`);
@@ -155,7 +194,10 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
     const warnings_json = sessionId === "scan-1"
       ? JSON.stringify(["本批未识别到红笔分数，请检查彩色设置"])
       : null;
-    return Response.json({ session: { identity_mode: "strict", dpi: 300, paper_size: "A4", card_version, warnings_json }, records: [], examId });
+    const status = sessionId === busySessionId
+      ? (busyCancelled ? "cancelled" : "scanning")
+      : sessionId === "scan-cancelled" ? "cancelled" : "completed";
+    return Response.json({ session: { identity_mode: "strict", dpi: 300, paper_size: "A4", card_version, warnings_json, status }, records: [], examId });
   }
   if (/\/api\/scanner\/card\/[^/]+\/scans$/.test(url)) {
     return Response.json([
@@ -181,6 +223,7 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
       // 服务端 saveSessionCorrection 对已关联考试的会话会顺带入库，返回 saved:true
       return Response.json({ ok: true, saved: true });
     }
+    correctionGets.push(url);
     return Response.json(correctionDocument);
   }
   if (/\/scan-image\//.test(url)) return new Response("img", { headers: { "content-type": "image/png" } });
@@ -228,6 +271,7 @@ let root3: ReturnType<typeof createRoot> | null = null;
 let root4: ReturnType<typeof createRoot> | null = null;
 let root5: ReturnType<typeof createRoot> | null = null;
 let root6: ReturnType<typeof createRoot> | null = null;
+let root7: ReturnType<typeof createRoot> | null = null;
 async function settle(ms = 12) { await act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); }); }
 async function clickNode(node: Element) {
   await act(async () => {
@@ -276,6 +320,18 @@ try {
   const tiles = document.querySelectorAll('[aria-label^="打开 "]');
   assert.equal(tiles.length, 3, "三组卷子各一个方块");
   assert.equal(tiles[2].getAttribute("aria-label"), "打开 10003", "无异常卷排到最后（异常置顶）");
+  const resultImages = [...tiles].map(tile => tile.querySelector("img")).filter((image): image is HTMLImageElement => Boolean(image));
+  assert(resultImages.length > 0 && resultImages.every(image =>
+    image.getAttribute("loading") === "lazy"
+    && image.getAttribute("decoding") === "async"
+    && image.getAttribute("src")?.includes("?thumb=1")),
+  "结果网格只加载缩略图并启用浏览器懒解码");
+  await clickSelector('[aria-label="打开 组 1"]');
+  await settle();
+  assert(!document.querySelector("[data-postprocess-correction]"),
+    "打开异常队列不能后台挂载改分页并额外解码 300 DPI 原图");
+  await clickText("扫描结果");
+  await settle();
 
   // ── 仅本地模式必须留有人库入口（自动跳页会卸载 ScannerPanel 的 done 视图）──
   assert(saveCalls.length === 0, "进页面本身只演算，不写成绩");
@@ -441,6 +497,7 @@ try {
 
   // ── 续扫第二批：groupId 跨会话重号，删除与选择都必须按会话隔离 ──
   await act(async () => { root.unmount(); });
+  localStorage.removeItem(`projectx-postprocess-view/v1/anon/${encodeURIComponent(card.id)}`);
   allClean = false;
   secondGroupResolved = false;
   const host2 = document.createElement("div");
@@ -481,6 +538,7 @@ try {
 
   // ── 重卡定性：队列项是被作废的那份时，补传必须跟着「保留下来的那份」走 ──
   await act(async () => { root2.unmount(); });
+  localStorage.removeItem(`projectx-postprocess-view/v1/anon/${encodeURIComponent(card.id)}`);
   const host3 = document.createElement("div");
   document.body.appendChild(host3);
   root3 = createRoot(host3);
@@ -510,8 +568,50 @@ try {
   assert.equal(uploads[uploads.length - 1].name, "扫描_20002", "补传任务对应保留下来的那份卷");
   assert.equal(uploads.filter(item => item.localSessionId === "scan-3" && item.pages[0]?.groupId === "1").length, 1, "保留份只上传一次");
 
+  // ── 崩溃恢复停在队列中间那一条：定位请求不能被队列的上报改写成队首 ──
+  await act(async () => { root3.unmount(); });
+  const resumeFlags = { allClean, secondGroupResolved };
+  allClean = false; secondGroupResolved = false;
+  const viewKey = `projectx-postprocess-view/v1/anon/${encodeURIComponent(card.id)}`;
+  localStorage.removeItem(viewKey);
+  // scan-1 的队列是 [考号问题 组 1, 存疑 组 0]；停在第二条才是「恢复中间那一条」
+  localStorage.setItem(viewKey, JSON.stringify({ view: "queue", sessionId: "scan-1", groupId: "0", at: Date.now() }));
+  const resumeHost = document.createElement("div");
+  document.body.appendChild(resumeHost);
+  root3 = createRoot(resumeHost);
+  await act(async () => {
+    root3!.render(createElement(TooltipProvider, null,
+      createElement(ScannerPostprocessPage, {
+        cardId: card.id, cardTitle: card.title, sessions: [{ sessionId: "scan-1", pageCount: 1 }], onBack: () => {},
+      })));
+  });
+  await settle();
+  assert.match(resumeHost.textContent ?? "", /第 2 \/ 2 条/,
+    `恢复要停在崩溃前那一条，不是队首（实际 ${resumeHost.textContent?.match(/第 \d+ \/ \d+ 条/)?.[0] ?? "没有条数"}）`);
+  assert.match(resumeHost.textContent ?? "", /已恢复上次停留的卷/, "恢复要当场告诉老师停在了哪一张");
+  const resumedMarker = JSON.parse(localStorage.getItem(viewKey) ?? "null") as { view: string; sessionId: string; groupId: string } | null;
+  assert.deepEqual(resumedMarker && { view: resumedMarker.view, sessionId: resumedMarker.sessionId, groupId: resumedMarker.groupId },
+    { view: "queue", sessionId: "scan-1", groupId: "0" }, "恢复标记不能被队列首帧的上报改写回队首");
+  // 队列里翻到另一条、离开再回来：要停在刚才那一条，而不是最初定位的那条。
+  await act(async () => {
+    [...resumeHost.querySelectorAll("button")].find(node => node.textContent?.trim() === "下一条")!.click();
+  });
+  await settle();
+  assert.match(resumeHost.textContent ?? "", /第 1 \/ 2 条/, "下一条要翻到队首");
+  // 队列翻到另一条后直接点顶栏「卡查看与改分」：必须打开当前那条，不能停在恢复时的旧 active。
+  await clickText("卡查看与改分"); await settle();
+  assert.match(correctionGets.at(-1) ?? "", /\/groups\/1\/correction$/, "顶栏切换要用队列当前项的组打开改分页");
+  await clickText("异常处理"); await settle();
+  await clickText("扫描结果"); await settle();
+  await clickText("异常处理"); await settle();
+  assert.match(resumeHost.textContent ?? "", /第 1 \/ 2 条/,
+    `从别的视图回来要停在刚才那一条，不能跳回最初定位的那条（实际 ${resumeHost.textContent?.match(/第 \d+ \/ \d+ 条/)?.[0] ?? "没有条数"}）`);
+  // root3 交给下一段卸载（那里本来就先 unmount 再清恢复标记）
+  allClean = resumeFlags.allClean; secondGroupResolved = resumeFlags.secondGroupResolved;
+
   // ── 远端卡 404：本机卡也没有时，页面仍能返回，而不是停在没有按钮的失败态 ──
   await act(async () => { root3.unmount(); });
+  localStorage.removeItem(`projectx-postprocess-view/v1/anon/${encodeURIComponent(card.id)}`);
   hideCard = true;
   const host4 = document.createElement("div");
   document.body.appendChild(host4);
@@ -529,6 +629,7 @@ try {
 
   // A valid score-cell combination still needs explicit teacher confirmation when recognition says review.
   await act(async () => { root4!.unmount(); });
+  localStorage.removeItem(`projectx-postprocess-view/v1/anon/${encodeURIComponent(card.id)}`);
   const reviewCard = createDefaultCard("subjective-review");
   reviewCard.bodyBlocks = [{id:"review-block",type:"subjective",title:"待确认",questions:[
     {id:"review-question",number:2,score:30,style:"manual_score_grid",kind:"plain_box",minHeightMm:30},
@@ -588,6 +689,211 @@ try {
   assert.equal((text().match(/题（客观）/g) ?? []).length, 1, "第二页没上报的题不能被重复列成存疑");
   assert(!text().includes("未答"), "合成条目不能伪装成本页的空白作答");
 
+  // ── 两份考号异常卷来回切换：各自草稿必须隔离，不能把上一份写到下一份键下 ──
+  {
+    const docFor = (sid: string): CorrectionDocument => {
+      const recognized = { ...recognition, studentId: { status: "ok", value: "10001" } } as typeof recognition;
+      return { card, version, pages: [{
+        sourceType: "twain_scan_record", sourceId: `${sid}-p1`, revision: 0, layout,
+        recognition: recognized, ...recognizedCells(layout, recognized), imageUrl: `/${sid}`,
+      }] };
+    };
+    const studentDocs = new Map([["a", docFor("a")], ["b", docFor("b")]]);
+    const studentChannel = {
+      ...localChannel(),
+      request: async (url: string, init?: RequestInit) => {
+        const sid = [...studentDocs.keys()].find(key => url.includes(`/session/${key}/`));
+        if (!sid) return Response.json({ message: "unknown" }, { status: 404 });
+        if (init?.method === "PUT") {
+          // 保存会让服务端 revision +1：草稿迁移回归要靠它验证「迁过去的草稿对得上新文档」。
+          const doc = studentDocs.get(sid)!;
+          studentDocs.set(sid, { ...doc, pages: doc.pages.map(page => ({ ...page, revision: page.revision + 1 })) });
+          return Response.json({ saved: true });
+        }
+        return Response.json(studentDocs.get(sid));
+      },
+    };
+    const studentHost = document.createElement("div");
+    document.body.append(studentHost);
+    root7 = createRoot(studentHost);
+    const queueItems = [
+      { id: "sid-b", kind: "student_id" as const, sessionId: "b", groupId: "1", studentId: null, label: "考号问题",
+        conflicts: [], missingLayoutPages: [], needsReviewCount: 0 },
+      { id: "sid-a", kind: "student_id" as const, sessionId: "a", groupId: "2", studentId: null, label: "考号问题",
+        conflicts: [], missingLayoutPages: [], needsReviewCount: 0 },
+    ];
+    const currentChanges: string[] = [];
+    await act(async () => root7!.render(createElement(TooltipProvider, null, createElement(PostprocessQueueView, {
+      channel: studentChannel, queue: queueItems, scans: [], examIdForSession: () => null,
+      layoutPageCountFor: () => 1, onCurrentChange: (sessionId, groupId) => currentChanges.push(`${sessionId}/${groupId}`),
+      onResolved: () => {}, onPreviewDiscard: () => {}, onDelete: async () => {}, onJumpToCorrection: () => {},
+    }))));
+    await settle();
+    assert.deepEqual(currentChanges, ["b/1"], "当前队列项变化要上抛给页面持久化");
+    const input = () => studentHost.querySelector('input[aria-label="考号"]') as HTMLInputElement;
+    const next = () => {
+      const button = [...studentHost.querySelectorAll("button")].find(node => node.textContent?.trim() === "下一条");
+      assert(button, "队列需要下一条入口");
+      return button;
+    };
+    const setInput = async (value: string) => {
+      await act(async () => {
+        valueSetter.call(input(), value);
+        input().dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+      });
+      await settle();
+    };
+    assert.equal(input().value, "10001", "B 的初始考号来自卡面格选");
+    // 打字不能把视口拽回裁图区：滚动只该在换页/换图时发生。
+    let scrollCalls = 0;
+    const realScrollIntoView = dom.window.Element.prototype.scrollIntoView;
+    dom.window.Element.prototype.scrollIntoView = function () { scrollCalls += 1; };
+    await setInput("1000");
+    dom.window.Element.prototype.scrollIntoView = realScrollIntoView;
+    assert.equal(scrollCalls, 0, "同一页输入考号不该触发滚屏");
+    assert.equal(input().value, "1000", "B 只输了一半，保持手输值");
+    await act(async () => { next().click(); });
+    await settle();
+    assert.equal(input().value, "10001", "切到 A 时不能带着 B 的未保存手输值");
+    assert.equal(currentChanges.at(-1), "a/2", "下一条后上抛的当前项要跟着变");
+    await setInput("2000");
+    await act(async () => { next().click(); });
+    await settle();
+    assert.equal(input().value, "1000", "切回 B 要恢复 B 自己的半截草稿，不能被 A 覆盖或清掉");
+    await act(async () => { next().click(); });
+    await settle();
+    assert.equal(input().value, "2000", "切回 A 也要恢复 A 自己的草稿");
+    // 本机存储写不进去时，界面不能继续宣称「已自动保存草稿」。
+    const storageProto = dom.window.Storage.prototype as Storage;
+    const realSetItem = storageProto.setItem;
+    storageProto.setItem = () => { throw new Error("QuotaExceededError"); };
+    await setInput("2001");
+    assert(studentHost.textContent?.includes("本机草稿保存失败"), "草稿写入失败要当场提示");
+    storageProto.setItem = realSetItem;
+    await setInput("2000");
+    assert(!studentHost.textContent?.includes("本机草稿保存失败"), "恢复写入后失败提示要消失");
+    await act(async () => { root7!.unmount(); });
+
+    // 考号面板与订正页共用同一个草稿键：只输了一半考号、没动格选时，
+    // 打开订正页不能把这份草稿当成空草稿删掉，否则切回考号面板就丢了。
+    const { readCorrectionDraft, writeCorrectionDraft, draftMatchesDocument } = await import("../src/apps/answer-card/client/lib/correctionDraft");
+    const { PostprocessCorrectionView: CorrectionViewProbe } = await import("../src/apps/answer-card/client/components/scanner-postprocess/PostprocessCorrectionView");
+    // 给这份草稿加一条未保存改动，挂载后就能直接点「保存修改」验证保存路径。
+    const seededDraft = readCorrectionDraft(card.id, "a", "2")!;
+    writeCorrectionDraft(card.id, "a", "2", studentDocs.get("a")!,
+      seededDraft.edits.map(edit => ({ ...edit, touched: ["seed"] })), "2000");
+    const typedDraftHost = document.createElement("div");
+    document.body.append(typedDraftHost);
+    const typedDraftRoot = createRoot(typedDraftHost);
+    await act(async () => typedDraftRoot.render(createElement(TooltipProvider, null, createElement(CorrectionViewProbe, {
+      channel: studentChannel, sessionId: "a", groupId: "2", draftOnly: false, onSaved: () => {},
+    }))));
+    await settle();
+    assert.equal(readCorrectionDraft(card.id, "a", "2")?.typed, "2000", "打开订正页不能删掉考号面板的半截草稿");
+    // 保存只提交格选：考号面板里还没落格的手输考号不能跟着草稿一起被清掉，
+    // 而且要迁到保存后的新 revision 上，否则切回考号面板照样恢复不出来。
+    const saveDraftButton = [...typedDraftHost.querySelectorAll("button")].find(node => node.textContent?.includes("保存修改"));
+    assert(saveDraftButton && !saveDraftButton.disabled, "有未保存改动时可以保存");
+    await act(async () => { saveDraftButton!.click(); });
+    await settle(40);
+    const afterSaveDraft = readCorrectionDraft(card.id, "a", "2");
+    assert.equal(afterSaveDraft?.typed, "2000", "保存格选不能丢掉考号面板里还没提交的考号");
+    assert(afterSaveDraft && draftMatchesDocument(afterSaveDraft, studentDocs.get("a")!), "迁过去的草稿要跟上保存后的 revision");
+    await act(async () => { typedDraftRoot.unmount(); });
+    typedDraftHost.remove();
+
+    // 隐藏的订正页不能用旧 edits 覆盖考号面板刚点出的格选：重新显示时按共享草稿同步，
+    // 否则写草稿和「保存修改」都会把考号改动丢回旧值（点数字格不产生 typed）。
+    studentDocs.set("c", docFor("c"));
+    const cellDoc = studentDocs.get("c")!;
+    const cellPage = cellDoc.pages[0];
+    const digitCells = correctionCells(cellPage.layout).filter(cell => cell.type === "student_digit");
+    assert(digitCells.length > 0, "夹具需要有考号数字格");
+    const droppedCell = digitCells.find(cell => cellPage.selected.includes(cell.id)) ?? digitCells[0];
+    // 同列换一个数字格：既模拟考号面板点格，又保持考号完整（缺位数会让保存按钮因 errors 禁用）。
+    const replacementCell = digitCells.find(cell => cell.id !== droppedCell.id
+      && cell.digitIndex === droppedCell.digitIndex && !cellPage.selected.includes(cell.id))!;
+    assert(replacementCell, "同一列需要有可替换的数字格");
+    const cellHost = document.createElement("div");
+    document.body.append(cellHost);
+    const cellRoot = createRoot(cellHost);
+    const putBodies: Array<{ pages: CorrectionEdit[] }> = [];
+    const cellChannel = {
+      ...studentChannel,
+      request: async (url: string, init?: RequestInit) => {
+        if (init?.method === "PUT" && typeof init.body === "string") putBodies.push(JSON.parse(init.body) as { pages: CorrectionEdit[] });
+        return studentChannel.request(url, init);
+      },
+    };
+    const renderCellView = async (visible: boolean) => {
+      await act(async () => cellRoot.render(createElement(TooltipProvider, null, createElement(CorrectionViewProbe, {
+        channel: cellChannel, sessionId: "c", groupId: "3", draftOnly: false, visible, onSaved: () => {},
+      }))));
+      await settle();
+    };
+    await renderCellView(false);
+    writeCorrectionDraft(card.id, "c", "3", cellDoc, [{
+      sourceId: cellPage.sourceId, revision: cellPage.revision,
+      selected: [...cellPage.selected.filter(id => id !== droppedCell.id), replacementCell.id], touched: [],
+    }], null);
+    await renderCellView(true);
+    const mergedSave = [...cellHost.querySelectorAll("button")].find(node => node.textContent?.includes("保存修改"));
+    assert(mergedSave && !mergedSave.disabled, "重新显示订正页要合并考号面板的格选，保存按钮可用");
+    await act(async () => { mergedSave!.click(); });
+    await settle(40);
+    assert.equal(putBodies.length, 1, "保存要提交合并后的格选");
+    assert(!putBodies[0].pages[0].selected.includes(droppedCell.id), "保存不能把考号面板点掉的数字格又提上去");
+    assert(putBodies[0].pages[0].selected.includes(replacementCell.id), "保存要带上考号面板换上的数字格");
+    await act(async () => { cellRoot.unmount(); });
+    cellHost.remove();
+
+    // 崩溃恢复带着定位目标挂载：首帧就得停在那一条。先报队首的话，页面会把恢复标记改写成第 1 条，
+    // 而 focus 又跟着回报值变，两边会一直对抖（第 2 条永远恢复不出来）。
+    const focusHost = document.createElement("div");
+    document.body.append(focusHost);
+    root7 = createRoot(focusHost);
+    const focusChanges: string[] = [];
+    await act(async () => root7!.render(createElement(TooltipProvider, null, createElement(PostprocessQueueView, {
+      channel: studentChannel, queue: queueItems, scans: [], examIdForSession: () => null,
+      layoutPageCountFor: () => 1, focus: { sessionId: "a", groupId: "2" },
+      onCurrentChange: (sessionId: string, groupId: string) => focusChanges.push(`${sessionId}/${groupId}`),
+      onResolved: () => {}, onPreviewDiscard: () => {}, onDelete: async () => {}, onJumpToCorrection: () => {},
+    }))));
+    await settle();
+    assert.deepEqual(focusChanges, ["a/2"], "带定位目标挂载时首帧上报的就是目标项，不是队首");
+    assert(focusHost.textContent?.includes("第 2 / 2 条"), `队列直接停在恢复目标那一条（实际 ${focusHost.textContent?.match(/第 \d+ \/ \d+ 条/)?.[0]}）`);
+    await act(async () => { root7!.unmount(); });
+    root7 = null;
+
+    // 同一组有多条异常项时，恢复要回到具体那一条（itemId），不能只按组选第一条。
+    const sameGroupItems = [
+      { id: "sg-student", kind: "student_id" as const, sessionId: "sg", groupId: "0", studentId: null, label: "考号问题",
+        conflicts: [], missingLayoutPages: [], needsReviewCount: 0 },
+      { id: "sg-low", kind: "low_confidence" as const, sessionId: "sg", groupId: "0", studentId: null, label: "存疑",
+        conflicts: [], missingLayoutPages: [], needsReviewCount: 1 },
+    ];
+    const itemHost = document.createElement("div");
+    document.body.append(itemHost);
+    const itemRoot = createRoot(itemHost);
+    const itemChanges: string[] = [];
+    await act(async () => itemRoot.render(createElement(TooltipProvider, null, createElement(PostprocessQueueView, {
+      channel: studentChannel, queue: sameGroupItems, scans: [], examIdForSession: () => null,
+      layoutPageCountFor: () => 1, focus: { sessionId: "sg", groupId: "0", itemId: "sg-low" },
+      onCurrentChange: (sessionId: string, groupId: string, itemId?: string) => itemChanges.push(`${sessionId}/${groupId}/${itemId}`),
+      onResolved: () => {}, onPreviewDiscard: () => {}, onDelete: async () => {}, onJumpToCorrection: () => {},
+    }))));
+    await settle();
+    assert.deepEqual(itemChanges, ["sg/0/sg-low"], "同组多条异常项要按 itemId 恢复到具体那一条");
+    assert(itemHost.textContent?.includes("第 2 / 2 条"), "同组第二条异常项也能直接定位");
+    await act(async () => { itemRoot.unmount(); });
+    itemHost.remove();
+    const { writePostprocessView: writeViewMarker, readPostprocessView: readViewMarker } = await import("../src/apps/answer-card/client/lib/postprocessResume");
+    writeViewMarker(card.id, { view: "queue", sessionId: "sg", groupId: "0", itemId: "sg-low" }, 7);
+    assert.equal(readViewMarker(card.id, 7)?.itemId, "sg-low", "恢复标记要保留队列项 id");
+
+    studentHost.remove();
+    focusHost.remove();
+  }
 
   await clickText("去改这题");assert(jumped);
   const releasedGroups: string[] = [];
@@ -681,11 +987,150 @@ try {
   await clickNode(scoreCell());await settle();
   assert.equal(scoreCell()!.getAttribute("aria-pressed"), pressedBefore, "再点一次回到原状态");
 
+  const { writePostprocessView, readPostprocessView } = await import("../src/apps/answer-card/client/lib/postprocessResume");
+  hideCard = false;
+  writePostprocessView(card.id, { view: "queue", sessionId: "scan-1", groupId: "0" }, 7);
+  const continueHost = document.createElement("div");
+  document.body.appendChild(continueHost);
+  const continueRoot = createRoot(continueHost);
+  let continued = false;
+  await act(async () => {
+    continueRoot.render(createElement(TooltipProvider, null, createElement(ScannerPostprocessPage, {
+      cardId: card.id, cardTitle: card.title, userId: 7,
+      sessions: [{ sessionId: "scan-1", pageCount: 1 }],
+      onBack: () => {},
+      onContinueScan: () => { continued = true; },
+    })));
+  });
+  await settle();
+  assert.equal(readPostprocessView(card.id, 7)?.groupId, "0", "挂载后仍保留继续扫描前写入的停留位置");
+  const continueButton = [...continueHost.querySelectorAll("button")].find(el => el.textContent?.includes("继续扫描"));
+  assert.ok(continueButton, "后处理页提供继续扫描");
+  await act(async () => { continueButton!.click(); });
+  await settle();
+  assert.equal(continued, true, "继续扫描回调仍然发出");
+  assert.equal(readPostprocessView(card.id, 7), null, "继续扫描清掉停留位置，新批次完成时不再跳回旧卷");
+  await act(async () => { continueRoot.unmount(); });
+
+  // 崩溃恢复（#320 Codex P1）：上一批还没收尾时，后处理页不能停在「加载失败」，
+  // 要等它结束并给出停止入口；停扫后仍能读回已扫页面。
+  const busyHost = document.createElement("div");
+  document.body.appendChild(busyHost);
+  const busyRoot = createRoot(busyHost);
+  await act(async () => {
+    busyRoot.render(createElement(TooltipProvider, null, createElement(ScannerPostprocessPage, {
+      cardId: card.id, cardTitle: card.title, userId: 7,
+      sessions: [{ sessionId: busySessionId, pageCount: 0 }],
+      onBack: () => {},
+    })));
+  });
+  await settle(30);
+  assert(busyHost.textContent?.includes("上一批扫描还没有结束"), "未收尾的批次进入等待界面，而不是加载失败");
+  assert(!busyHost.textContent?.includes("加载失败"), "409 不能被渲染成加载失败页");
+  const stopWaitingButton = [...busyHost.querySelectorAll("button")].find(el => el.textContent?.includes("停止这一批"));
+  assert.ok(stopWaitingButton, "等待界面提供停止入口");
+  await act(async () => { stopWaitingButton!.click(); });
+  await settle(40);
+  assert.equal(busyCancels, 1, "停止这一批会调用取消接口");
+  assert.equal(busyCancelled, true, "取消接口成功后会话收尾");
+  assert(busyHost.textContent?.includes("扫描后处理"), "取消后按已收尾会话打开后处理");
+  await act(async () => { busyRoot.unmount(); });
+
+  // 在途批次还在送纸时点「返回扫描」：必须先停设备再离开。
+  // 否则新工作台拿不到这个会话、设备照旧送纸，用户还能再开一批。
+  busyCancelled = false;
+  busyCancels = 0;
+  const leaveHost = document.createElement("div");
+  document.body.appendChild(leaveHost);
+  const leaveRoot = createRoot(leaveHost);
+  let leaveCalls = 0;
+  await act(async () => {
+    leaveRoot.render(createElement(TooltipProvider, null, createElement(ScannerPostprocessPage, {
+      cardId: card.id, cardTitle: card.title, userId: 7,
+      sessions: [{ sessionId: busySessionId, pageCount: 0 }],
+      onBack: () => { leaveCalls += 1; },
+    })));
+  });
+  await settle(30);
+  assert(leaveHost.textContent?.includes("上一批扫描还没有结束"), "在途批次仍进入等待界面");
+  busyCancelStatus = 500;
+  const blockedBack = [...leaveHost.querySelectorAll("button")].find(el => el.textContent?.trim() === "返回扫描");
+  assert(blockedBack, "等待界面提供返回扫描");
+  await act(async () => { blockedBack!.click(); });
+  await settle(40);
+  assert.equal(busyCancels, 1, "返回扫描要先发停止请求");
+  assert.equal(leaveCalls, 0, "停止失败时不能返回工作台");
+  busyCancelStatus = 200;
+  busyCancelLeavesDraining = true;
+  const allowedBack = [...leaveHost.querySelectorAll("button")].find(el => el.textContent?.trim() === "返回扫描");
+  await act(async () => { allowedBack!.click(); });
+  await settle(40);
+  assert.equal(busyCancels, 2, "确认停止成功后才尝试离开");
+  assert.equal(leaveCalls, 0, "取消状态写入后 worker 仍在收尾时不能提前离开");
+  busyCancelLeavesDraining = false;
+  const finishedBack = [...leaveHost.querySelectorAll("button")].find(el => el.textContent?.trim() === "返回扫描");
+  await act(async () => { finishedBack!.click(); });
+  await settle(40);
+  assert.equal(busyCancels, 3, "worker 收尾后再确认才离开");
+  assert.equal(leaveCalls, 1, "停设备成功后仍要返回工作台");
+  await act(async () => { leaveRoot.unmount(); });
+  leaveHost.remove();
+
+  // 等待轮询遇到一次临时 503 要继续重试，不能停在等待页，也不能把错误藏起来。
+  flakyCalls = 0;
+  const flakyHost = document.createElement("div");
+  document.body.appendChild(flakyHost);
+  const flakyRoot = createRoot(flakyHost);
+  await act(async () => {
+    flakyRoot.render(createElement(TooltipProvider, null, createElement(ScannerPostprocessPage, {
+      cardId: card.id, cardTitle: card.title, userId: 7,
+      sessions: [{ sessionId: flakySessionId, pageCount: 0 }],
+      onBack: () => {},
+    })));
+  });
+  await settle(30);
+  assert(flakyHost.textContent?.includes("上一批扫描还没有结束"), "首轮 409 进入等待");
+  await settle(3300);
+  assert(flakyHost.textContent?.includes("上次自动刷新失败"), "临时失败要显示错误，不能只留在等待界面");
+  assert(flakyHost.textContent?.includes("上一批扫描还没有结束"), "临时失败后继续等待，不误报结束");
+  await settle(3300);
+  assert.equal(flakyCalls, 3, "临时失败后要自动继续重拉");
+  assert(!flakyHost.textContent?.includes("上一批扫描还没有结束"), "会话收尾后要打开后处理，不能停在等待页");
+  await act(async () => { flakyRoot.unmount(); });
+  flakyHost.remove();
+
+  // 远端模式下老师主动取消的批次不会自动首传；保留的正常卷必须有显式上传入口。
+  localStorage.setItem("projectx_scanner_mode", "remote");
+  localStorage.setItem("projectx_server_url", "https://remote.test");
+  const cancelledUploadsBefore = uploads.length;
+  const cancelledHost = document.createElement("div");
+  document.body.appendChild(cancelledHost);
+  const cancelledRoot = createRoot(cancelledHost);
+  await act(async () => {
+    cancelledRoot.render(createElement(TooltipProvider, null, createElement(ScannerPostprocessPage, {
+      cardId: card.id, cardTitle: card.title, userId: 7,
+      sessions: [{ sessionId: "scan-cancelled", pageCount: 1 }],
+      onBack: () => {},
+    })));
+  });
+  await settle(30);
+  assert.equal(uploads.length, cancelledUploadsBefore, "取消批次加载时不自动补传");
+  assert(cancelledHost.textContent?.includes("上传正常卷（1）"), "取消批次的正常卷提供显式上传入口");
+  await clickText("上传正常卷（1）");
+  await settle();
+  assert.equal(uploads.length, cancelledUploadsBefore + 1, "显式上传只补传取消批次中保留的正常卷");
+  assert.equal(uploads.at(-1)?.localSessionId, "scan-cancelled");
+  assert.equal(uploads.at(-1)?.name, "扫描_30001");
+  assert(!cancelledHost.textContent?.includes("上传正常卷（1）"),
+    "已入队的取消批次正常卷不再继续显示待上传入口");
+  await act(async () => { cancelledRoot.unmount(); });
+  cancelledHost.remove();
+
   console.log("PASS scanner-postprocess-ui-smoke");
 } catch (error) {
   failure = error;
 } finally {
-  await act(async () => { root.unmount(); root2?.unmount(); root3?.unmount(); root4?.unmount(); root5?.unmount(); root6?.unmount(); });
+  await act(async () => { root.unmount(); root2?.unmount(); root3?.unmount(); root4?.unmount(); root5?.unmount(); root6?.unmount(); root7?.unmount(); });
   notify.info = realNotifyInfo;
   scannerUploadManager.startUpload = realStartUpload;
   // 不关掉 jsdom 的 window，其定时器与观察者会让进程一直挂着

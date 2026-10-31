@@ -18,9 +18,13 @@ export interface PostprocessResultsViewProps {
   /** 删除按会话分组下发：groupId 只在单个 session 内有意义，续扫后两批会出现同名组 */
   onDelete: (targets: DeleteTarget[], force: boolean) => Promise<void>;
   onOpen: (group: PostprocessGroup) => void;
-  /** 仅本地模式的入库动作；未传（远端模式）时不显示，避免重复 ScannerPanel 的保存语义 */
+  /** 本地写入正式成绩；远端只用于老师主动上传取消批次中保留的正常卷。 */
   onSaveAll?: () => Promise<void>;
   saveAllBusy?: boolean;
+  /** 远端取消批次使用「加入上传队列」，不能沿用「入库」文案。 */
+  saveAllLabel?: string;
+  saveAllTip?: string;
+  saveAllCount?: number;
 }
 
 /** issues 按 duplicate → student_id → missing_page → low_confidence → other 有序，取首条定性。 */
@@ -35,7 +39,10 @@ function statusOf(group: PostprocessGroup): { tone: "success" | "warning" | "dan
   }
 }
 
-export function PostprocessResultsView({ groups, channel, onDelete, onOpen, onSaveAll, saveAllBusy = false }: PostprocessResultsViewProps) {
+export function PostprocessResultsView({
+  groups, channel, onDelete, onOpen, onSaveAll, saveAllBusy = false, saveAllLabel = "保存成绩入库",
+  saveAllTip, saveAllCount,
+}: PostprocessResultsViewProps) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [layout, setLayout] = useState<Layout>("grid");
@@ -58,6 +65,7 @@ export function PostprocessResultsView({ groups, channel, onDelete, onOpen, onSa
   const issueCount = groups.filter(g => g.issues.length > 0).length;
   // 正常但未入库的份数：这就是「保存成绩入库」要写的对象（异常卷保存会被服务端拒）
   const unsavedNormal = groups.filter(g => !g.issues.length && !g.saved).length;
+  const pendingSaveCount = saveAllCount ?? unsavedNormal;
   const stopSelecting = () => { setSelecting(false); setSelected(new Set()); };
   const groupKey = (group: PostprocessGroup) => `${group.sessionId}/${group.groupId}`;
   const toggle = (group: PostprocessGroup) => setSelected(prev => {
@@ -116,10 +124,10 @@ export function PostprocessResultsView({ groups, channel, onDelete, onOpen, onSa
           ]}
         />
         <div className="ml-auto flex items-center gap-2">
-          {onSaveAll && unsavedNormal > 0 && (
-            <Tip label={`把 ${unsavedNormal} 份正常卷写成本机正式成绩；异常卷请先处理完再保存`}>
+          {onSaveAll && pendingSaveCount > 0 && (
+            <Tip label={saveAllTip ?? `把 ${pendingSaveCount} 份正常卷写成本机正式成绩；异常卷请先处理完再保存`}>
               <Button variant="secondary" size="sm" icon={<Database />} loading={saveAllBusy} disabled={saveAllBusy} onClick={() => void onSaveAll()}>
-                保存成绩入库（{unsavedNormal}）
+                {saveAllLabel}（{pendingSaveCount}）
               </Button>
             </Tip>
           )}
@@ -171,7 +179,13 @@ export function PostprocessResultsView({ groups, channel, onDelete, onOpen, onSa
                       </span>
                     )}
                     {group.thumbRecordId ? (
-                      <img src={channel.imageUrl(group.thumbRecordId)} alt={`第 ${group.groupId} 组答题卡`} className="aspect-[3/4] w-full rounded-xs border border-border bg-paper object-contain" />
+                      <img
+                        src={channel.thumbnailUrl(group.thumbRecordId)}
+                        alt={`第 ${group.groupId} 组答题卡`}
+                        loading="lazy"
+                        decoding="async"
+                        className="aspect-[3/4] w-full rounded-xs border border-border bg-paper object-contain"
+                      />
                     ) : (
                       <span className="flex aspect-[3/4] w-full items-center justify-center rounded-xs border border-border bg-muted text-xs text-muted-foreground">无图</span>
                     )}

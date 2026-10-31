@@ -29,11 +29,12 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             <span className="mx-auto flex size-11 items-center justify-center rounded-full bg-destructive-soft text-destructive-fg">
               <AlertTriangle size={22} aria-hidden />
             </span>
-            <p className="m-0 mt-3 text-lg font-semibold text-foreground">页面加载失败</p>
-            <p className="m-0 mt-1 text-sm text-muted-foreground">请刷新后重试，或联系管理员</p>
-            <p className="m-0 mt-3 rounded-sm bg-muted p-2 text-left text-xs break-words text-muted-foreground">
-              {this.state.error.message}
-            </p>
+            <p className="m-0 mt-3 text-lg font-semibold text-foreground">界面遇到异常</p>
+            <p className="m-0 mt-1 text-sm text-muted-foreground">请重新加载页面。已写入本机的订正草稿会保留。</p>
+            <details className="m-0 mt-3 rounded-sm bg-muted p-2 text-left text-xs text-muted-foreground">
+              <summary className="cursor-pointer select-none">技术信息</summary>
+              <p className="m-0 mt-2 break-words">{this.state.error.message}</p>
+            </details>
             <Button
               className="mt-4"
               variant="primary"
@@ -42,7 +43,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               icon={<RefreshCw />}
               onClick={() => window.location.reload()}
             >
-              刷新页面
+              重新加载
             </Button>
           </Card>
         </div>

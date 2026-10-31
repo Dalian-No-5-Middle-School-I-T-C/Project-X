@@ -17,6 +17,7 @@ import { matchesCorrectionFocus, selectObjectiveOptionCells, selectScoreCells } 
 import { findObjectiveQuestion, gradeCombinedRecognition, gradeSubjectiveRecognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
 import { isMultiSelectMode, objectiveModeLabel } from "../../../../../shared/objectiveMode";
 import type { CombinedRecognitionResult, SubjectiveQuestionNumber } from "../../../../../shared/types";
+import { clearCorrectionDraft, draftMatchesDocument, readCorrectionDraft, writeCorrectionDraft } from "../../lib/correctionDraft";
 
 export interface PostprocessCorrectionViewProps {
   channel: PostprocessChannel;
@@ -28,6 +29,8 @@ export interface PostprocessCorrectionViewProps {
   draftOnly?: boolean;
   /** 从异常队列「去改这题」带过来的题号：挂载后把该行滚进视野 */
   highlightQuestion?: SubjectiveQuestionNumber | null;
+  /** 本编辑器当前是否可见：隐藏期间考号面板可能改了共享草稿，重新显示时要先同步。 */
+  visible?: boolean;
   /** 放弃半成品续传成功后回调：调用方要清掉自己的「已入队」标记，否则改完不会再整卷上传 */
   onUploadAbandoned?: () => void;
   onSaved: () => void | Promise<void>;
@@ -65,12 +68,26 @@ function markLowConfidenceConfirmation<T extends { sourceId: string; selected: s
   });
 }
 
+/** 只比较格选内容本身：同一份草稿重新读出来是新数组，不能因此再写一遍。 */
+function sameEditContent(a: CorrectionEdit[], b: CorrectionEdit[]): boolean {
+  if (a.length !== b.length) return false;
+  const normalize = (list: CorrectionEdit[]) => [...list]
+    .map(edit => ({
+      sourceId: edit.sourceId,
+      revision: edit.revision,
+      selected: [...edit.selected].sort(),
+      touched: [...(edit.touched ?? [])].sort(),
+    }))
+    .sort((left, right) => left.sourceId.localeCompare(right.sourceId));
+  return JSON.stringify(normalize(a)) === JSON.stringify(normalize(b));
+}
+
 /** 卡面选项字母表：A..（optionCount） */
 function optionLetters(count: number | undefined): string[] {
   return Array.from({ length: Math.max(0, count ?? 0) }, (_, index) => String.fromCharCode(65 + index));
 }
 
-export function PostprocessCorrectionView({ channel, sessionId, groupId, initialSaved = false, draftOnly = false, highlightQuestion, onUploadAbandoned, onSaved }: PostprocessCorrectionViewProps) {
+export function PostprocessCorrectionView({ channel, sessionId, groupId, initialSaved = false, draftOnly = false, highlightQuestion, visible = true, onUploadAbandoned, onSaved }: PostprocessCorrectionViewProps) {
   const url = channel.correctionUrl(sessionId, groupId);
   const [document, setDocument] = useState<CorrectionDocument | null>(null);
   const [edits, setEdits] = useState<CorrectionEdit[]>([]);
@@ -86,32 +103,50 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
   const locked = initialSaved || savedOnce;
   /** 保存成功后自增：服务端会 +1 revision，不重拉文档下次保存必被「答题卡已更新」拒绝 */
   const [loadTick, setLoadTick] = useState(0);
+  /** 本次加载是否从本机草稿恢复：闪退/白屏后要明确告诉老师改动还在。 */
+  const [draftRestored, setDraftRestored] = useState(false);
+  /** null=没有待保存修改；true=本机草稿写入成功；false=写入失败，必须提示别重载。 */
+  const [draftPersisted, setDraftPersisted] = useState<boolean | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
+  /** 保存成功后要迁到新 revision 草稿上的半截考号（考号面板输入、本编辑器不提交）。 */
+  const pendingTypedRef = useRef<string | undefined>(undefined);
+  /** 最近一次草稿写入是否失败：失败时本机没有新副本，重新显示不能拿旧草稿顶掉内存里的改动。 */
+  const draftWriteFailedRef = useRef(false);
+  /** 本组件创建的原卷 blob URL；切卷/卸载时统一回收，避免多页大图把渲染进程撑爆。 */
+  const blobUrlsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     let alive = true;
-    const blobs: string[] = [];
+    for (const url of blobUrlsRef.current) URL.revokeObjectURL(url);
+    blobUrlsRef.current.clear();
     setBusy(true);
     setDocument(null);
+    setImages({});
     void (async () => {
       try {
         const response = await channel.request(url);
         const data = await response.json();
         if (!response.ok) throw new Error(data.message || "加载答题卡失败");
         const doc = data as CorrectionDocument;
-        const loaded: Record<string, string> = {};
-        for (const page of doc.pages) {
-          const image = await channel.request(page.imageUrl);
-          if (!image.ok) throw new Error("完整答题卡图片加载失败");
-          const blob = URL.createObjectURL(await image.blob());
-          if (!alive) { URL.revokeObjectURL(blob); return; }
-          blobs.push(blob);
-          loaded[page.sourceId] = blob;
-        }
         if (!alive) return;
         setDocument(doc);
-        setImages(loaded);
-        setEdits(doc.pages.map(p => ({ sourceId: p.sourceId, revision: p.revision, selected: [...p.selected], touched: [] })));
+        const baseEdits = doc.pages.map(p => ({ sourceId: p.sourceId, revision: p.revision, selected: [...p.selected], touched: [] }));
+        const draft = readCorrectionDraft(doc.card.id, sessionId, groupId);
+        if (draft && draftMatchesDocument(draft, doc)) {
+          setEdits(draft.edits);
+          setDraftRestored(true);
+        } else {
+          setEdits(baseEdits);
+          setDraftRestored(false);
+        }
+        // 保存只提交格选，考号面板那份还没落到格上的原文得跟到新 revision 上，
+        // 否则保存成功后 revision 一变，切回考号面板就找不到它了。
+        if (pendingTypedRef.current !== undefined) {
+          const typed = pendingTypedRef.current;
+          pendingTypedRef.current = undefined;
+          writeCorrectionDraft(doc.card.id, sessionId, groupId, doc, baseEdits, typed);
+        }
+        setDraftPersisted(null);
         setPageIndex(0);
       } catch (error) {
         if (alive) setMessage(error instanceof Error ? error.message : "加载失败");
@@ -119,8 +154,61 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
         if (alive) setBusy(false);
       }
     })();
-    return () => { alive = false; blobs.forEach(blob => URL.revokeObjectURL(blob)); };
-  }, [url, channel, loadTick]);
+    return () => { alive = false; };
+  }, [url, channel, loadTick, sessionId, groupId]);
+
+  // 考号面板与这里共用同一份草稿。本编辑器隐藏期间（队列视图里点数字格改考号），
+  // 草稿会被另一边更新，而这里的 edits 还停在旧值；重新显示时先按草稿同步，
+  // 否则下一次写草稿和「保存修改」都会把考号改动覆盖回旧值（点格不产生 typed）。
+  useEffect(() => {
+    if (!visible || !document || draftWriteFailedRef.current) return;
+    const draft = readCorrectionDraft(document.card.id, sessionId, groupId);
+    if (!draft || !draftMatchesDocument(draft, document)) return;
+    if (sameEditContent(edits, draft.edits)) return;
+    setEdits(draft.edits);
+    setDraftRestored(true);
+    // 只在显示状态或文档变化时同步；编辑过程中不能拿草稿反顶本地状态。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, document, sessionId, groupId]);
+
+  // 只按当前页取原图：一张 A4 300DPI 解码后约 35MB，整卷十几页同时留在内存里，
+  // 异常卷一页页翻就可能把渲染进程顶到 OOM。切页时再取，离开时统一 revoke。
+  const currentSourceId = document?.pages[pageIndex]?.sourceId ?? null;
+  useEffect(() => {
+    if (!document || !currentSourceId) return;
+    // 同一时间只留当前页：翻过十几页也不把整卷解码图都攒在内存里。
+    const stale = Object.keys(images).filter(sourceId => sourceId !== currentSourceId);
+    if (stale.length) {
+      for (const sourceId of stale) {
+        const url = images[sourceId];
+        if (url) { URL.revokeObjectURL(url); blobUrlsRef.current.delete(url); }
+      }
+      setImages(prev => (prev[currentSourceId] ? { [currentSourceId]: prev[currentSourceId] } : {}));
+      return;
+    }
+    if (images[currentSourceId]) return;
+    let alive = true;
+    const page = document.pages.find(item => item.sourceId === currentSourceId);
+    if (!page) return;
+    void (async () => {
+      try {
+        const image = await channel.request(page.imageUrl);
+        if (!image.ok) throw new Error("完整答题卡图片加载失败");
+        const blob = URL.createObjectURL(await image.blob());
+        if (!alive) { URL.revokeObjectURL(blob); return; }
+        blobUrlsRef.current.add(blob);
+        setImages(prev => (prev[currentSourceId] ? (URL.revokeObjectURL(blob), prev) : { ...prev, [currentSourceId]: blob }));
+      } catch (error) {
+        if (alive) setMessage(error instanceof Error ? error.message : "完整答题卡图片加载失败");
+      }
+    })();
+    return () => { alive = false; };
+  }, [document, currentSourceId, channel, images]);
+
+  useEffect(() => () => {
+    for (const url of blobUrlsRef.current) URL.revokeObjectURL(url);
+    blobUrlsRef.current.clear();
+  }, []);
 
   // 全部可编辑格与「格 → 所在页」索引：跨页改一题时只替换该题作用域内的格
   const cells = useMemo<CorrectionCell[]>(() => (document ? document.pages.flatMap(page => correctionCells(page.layout)) : []), [document]);
@@ -209,6 +297,26 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
     return [...origin.selected].sort().join() !== [...current.selected].sort().join() || !!current.touched?.length;
   });
 
+  // 每次改动立刻落本机草稿：闪退/白屏不会等到 debounce 才丢。页 revision 不符时不写新草稿，
+  // 由加载阶段 decide 是否恢复；保存成功后由 save() 清掉。
+  useEffect(() => {
+    if (!document || busy || locked || edits.length !== document.pages.length) return;
+    // 考号面板和这里共用同一个草稿键：老师手输的考号（含主动清空的空串）不能因为
+    // 「这个编辑器没有格选改动」就被当成空草稿删掉，否则切回考号面板就丢了。
+    const existing = readCorrectionDraft(document.card.id, sessionId, groupId);
+    const carriedTyped = existing && draftMatchesDocument(existing, document) ? existing.typed : undefined;
+    if (!dirty) {
+      if (carriedTyped !== undefined) return;
+      clearCorrectionDraft(document.card.id, sessionId, groupId);
+      setDraftRestored(false);
+      setDraftPersisted(null);
+      return;
+    }
+    const persisted = writeCorrectionDraft(document.card.id, sessionId, groupId, document, edits, carriedTyped);
+    draftWriteFailedRef.current = !persisted;
+    setDraftPersisted(persisted);
+  }, [document, edits, dirty, busy, locked, sessionId, groupId]);
+
   const missing = document?.pages.some(p => !p.recognition.geometry) ?? false;
 
   /**
@@ -257,6 +365,17 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
       const response = await channel.request(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pages: edits, ...(draftOnly ? { draft: true } : {}) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.message || "保存失败");
+      // 考号面板的半截输入不在这次提交里：先记下来，重拉文档后按新 revision 写回草稿。
+      const carriedTyped = document
+        ? (() => {
+          const existing = readCorrectionDraft(document.card.id, sessionId, groupId);
+          return existing && draftMatchesDocument(existing, document) ? existing.typed : undefined;
+        })()
+        : undefined;
+      if (document) clearCorrectionDraft(document.card.id, sessionId, groupId);
+      if (carriedTyped !== undefined) pendingTypedRef.current = carriedTyped;
+      setDraftRestored(false);
+      setDraftPersisted(null);
       // 只有本机正式入库才锁。远端模式的草稿保存即使带回 saved，也还要等上传，不能把界面锁死。
       if (result.saved && !draftOnly) setSavedOnce(true);
       else if (typeof result.message === "string" && result.message) setMessage(result.message);
@@ -288,6 +407,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
           <span className="text-muted-foreground">/{graded.subjectiveMaxScore}</span>
           {" · 总分 "}<b>{graded.totalScore}</b>
           <span className="text-muted-foreground">/{graded.totalMaxScore}</span></span>
+        {draftRestored && dirty && <Badge tone="info" dot>已恢复本机草稿</Badge>}
         {missing && <Badge tone="warning" dot>缺坐标</Badge>}
         <div className="ml-auto flex items-center gap-2">
           <Button size="sm" variant="outline" disabled={pageIndex === 0 || saving} onClick={() => setPageIndex(i => i - 1)}>上一页</Button>
@@ -334,6 +454,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
       </div>
       <div className="flex min-h-0 flex-1 gap-4 p-4">
         <div className="min-w-0 flex-1 overflow-auto rounded-md bg-muted p-3">
+          {!images[page.sourceId] && <div className="flex min-h-[220px] items-center justify-center gap-2 text-sm text-muted-foreground"><Spinner /> 正在加载原卷…</div>}
           <CorrectionCanvas document={document} pageIndex={pageIndex} edit={edit} images={images} zoom={zoom} rotation={rotation} busy={busy || locked} reviewQuestions={reviewQuestions} onToggle={toggle} />
         </div>
         <div ref={tableRef} className="min-w-0 flex-1 overflow-auto">
@@ -423,7 +544,7 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
             ? <span className="text-muted-foreground">本卷成绩已入库，不能再从扫描端改；后续改分请到 Web 端「成绩修改」，或重扫该卷由服务器重新判分。</span>
             : errors.length
             ? <span className="text-destructive-fg">{[...new Set(errors)].slice(0, 3).join("；")}{errors.length > 3 ? "…" : ""}</span>
-            : <span className="text-muted-foreground">{missing ? "此页缺少坐标数据，点选不可用；请在异常处理里重新识别该卡。" : dirty ? "修改尚未保存；左图点选与右表改分同步生效。" : "左图点填涂格改，右表按题改，两边同步。"}</span>}
+            : <span className="text-muted-foreground">{missing ? "此页缺少坐标数据，点选不可用；请在异常处理里重新识别该卡。" : dirty ? (draftPersisted === false ? "修改尚未保存，本机草稿保存失败；请尽快点击「保存修改」，不要直接关闭或重载。" : "修改尚未保存，已自动存本机草稿；左图点选与右表改分同步生效。") : "左图点填涂格改，右表按题改，两边同步。"}</span>}
       </div>
     </div>
   );

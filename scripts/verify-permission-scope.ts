@@ -24,6 +24,8 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-perm-scope-"));
+/** scan-image 只允许读数据目录内的文件，夹具图片也必须放进去，才能验证「授权教师真能取到图」。 */
+let scanImageDir = "";
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "verify.db");
 process.env.PROJECTX_TOKEN_DIR = path.join(tmpDir, "tokens");
 for (const key of [
@@ -483,6 +485,10 @@ async function main(): Promise<void> {
   ok(pageB1 > 0 && pageB2 > 0 && pageB1 !== pageB2,
     `夹具自校验：两个题块分处不同排版页（实际 ${pageB1} / ${pageB2}，共 ${scanLayout.pages.length} 页）`);
 
+  const { dataDir: appDataDir } = await import("../src/apps/answer-card/server/storage");
+  scanImageDir = path.join(appDataDir, "verify-permission-scope-images");
+  mkdirSync(scanImageDir, { recursive: true });
+
   const examScan = makeExam("扫描范围考", { classId: classA, subject: "数学", createdBy: adminId, published: true, card: scanCardId });
   const scanSession = "perm-scan-session";
   db.prepare("INSERT INTO twain_scan_sessions (id, card_id, name, status, identity_mode, page_count) VALUES (?, ?, '范围验收', 'completed', 'strict', 2)")
@@ -491,8 +497,8 @@ async function main(): Promise<void> {
     db.prepare(
       `INSERT INTO twain_scan_records (id, session_id, card_id, student_id, image_path, page_num, side, ocr_status, identity_json)
        VALUES (?, ?, ?, '9001', ?, ?, 'front', 'uploaded', '{}')`
-    ).run(rec, scanSession, scanCardId, path.join(tmpDir, `${rec}.png`), page);
-    writeFileSync(path.join(tmpDir, `${rec}.png`), "fake-image-for-preview");
+    ).run(rec, scanSession, scanCardId, path.join(scanImageDir, `${rec}.png`), page);
+    writeFileSync(path.join(scanImageDir, `${rec}.png`), "fake-image-for-preview");
     // 两条识别结果都同时含 B1/B2：即使在同一排版页上，他人题块也不该外发。
     db.prepare(
       `INSERT INTO twain_recognition_results (id, scan_record_id, objective_json, subjective_json, total_score, max_score, grade_status)
@@ -516,8 +522,8 @@ async function main(): Promise<void> {
   db.prepare(
     `INSERT INTO twain_scan_records (id, session_id, card_id, student_id, image_path, page_num, side, ocr_status, identity_json)
      VALUES ('rec-p3', ?, ?, '9001', ?, 1, 'front', 'uploaded', '{}')`
-  ).run(scanSessionB, scanCardId, path.join(tmpDir, "rec-p3.png"));
-  writeFileSync(path.join(tmpDir, "rec-p3.png"), "fake-image-for-preview-b");
+  ).run(scanSessionB, scanCardId, path.join(scanImageDir, "rec-p3.png"));
+  writeFileSync(path.join(scanImageDir, "rec-p3.png"), "fake-image-for-preview-b");
   db.prepare(
     `INSERT INTO scanner_submissions (exam_id, session_id, group_id, student_number, state, pages_json)
      VALUES (?, ?, '0', '9001', 'saved', ?)`
@@ -544,6 +550,11 @@ async function main(): Promise<void> {
     `评分表预览读取扫描端原卷（实际 ${JSON.stringify(ownPreviewPages).slice(0, 120)}）`);
   ok(!ownPreviewPages.some(page => page.recordId === "rec-p3"),
     "同卡另一场考试的扫描页不能混进本场预览");
+  // 预览里给出的地址必须真的能取到图：讲师端 <img> 走 cookie 认证，接口 200 但图片 403 同样是白屏。
+  const ownPreviewImage = await get(ownPreviewPages[0]?.imageUrl ?? "", tokenA);
+  ok(ownPreviewImage.status === 200, `本场教师按预览返回的地址能读到原卷图片（实际 ${ownPreviewImage.status}）`);
+  const foreignPreviewImage = await get(ownPreviewPages[0]?.imageUrl ?? "", tokenB);
+  ok(foreignPreviewImage.status === 403, `范围外教师读同一张原卷图片被 403（实际 ${foreignPreviewImage.status}）`);
   const previewB = await get(`/api/scanner/exam/${examScanB}/student/${sids["9001"]}/scans`, tokenA);
   const previewBPages = (previewB.body as { pages?: Array<{ recordId?: string }> }).pages ?? [];
   ok(previewB.status === 200 && previewBPages.length === 1 && previewBPages[0]?.recordId === "rec-p3",
@@ -556,7 +567,6 @@ async function main(): Promise<void> {
 
   // 评审 B1：`/api/cards/:cardId/grading/preview/:fileName` 与扫描端的 grading-image
   // 读的是同一个物理目录（`recognition/uploads/<cardId>/`），CR3 的收口却只挂在扫描端那一侧。
-  const { dataDir: appDataDir } = await import("../src/apps/answer-card/server/storage");
   const previewDir = path.join(appDataDir, "recognition", "uploads", scanCardId);
   mkdirSync(previewDir, { recursive: true });
   const previewFile = path.join(previewDir, "b1-page.png");
@@ -775,6 +785,22 @@ async function main(): Promise<void> {
       && Number(preflightForeign.body?.outOfScopeExamCount) === referencedCount,
     `无归属关系的教师预检只得到范围外数量，拿不到考试名单（实际 ${JSON.stringify(preflightForeign.body).slice(0, 140)}）`
   );
+  // 最危险的分支：没有任何考试引用的卡，预检必须命中只读分支返回，而不是直接删卡。
+  const orphanCardId = "PERMORPHAN001";
+  db.prepare(
+    `INSERT INTO answer_cards (id, title, subject, subject_label, exam_date, paper_size, orientation, student_fields, student_number_digits, sided, layout_version, created_by)
+     VALUES (?, '无引用卡', 'math', '数学', '2026-09-01', 'A4', 'portrait', '{}', 4, 'single', 1, ?)`
+  ).run(orphanCardId, adminId);
+  const orphanPreflight = await json(`/api/cards/${orphanCardId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${tokenA}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ preflight: true })
+  });
+  ok(orphanPreflight.status === 200 && orphanPreflight.body?.preflight === true
+    && Number(orphanPreflight.body?.referencedExamCount) === 0,
+  `无引用卡的预检也走只读分支（实际 ${orphanPreflight.status} ${JSON.stringify(orphanPreflight.body).slice(0, 120)}）`);
+  ok(Boolean(await new CardRepository().findById(orphanCardId)), "预检请求不能把无引用卡直接删掉");
+  await json(`/api/cards/${orphanCardId}`, { method: "DELETE", headers: { Authorization: `Bearer ${tokenA}` } });
   const blockedNames = await json(`/api/cards/${cardId}`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${tokenB}`, "Content-Type": "application/json" },
@@ -812,6 +838,9 @@ async function main(): Promise<void> {
 }
 
 function removeTmpDir(): void {
+  if (scanImageDir) {
+    try { rmSync(scanImageDir, { recursive: true, force: true }); } catch { /* 句柄未释放时交给系统清理 */ }
+  }
   // Windows 上句柄未释放时 rmSync 会 EPERM，临时目录由系统清理，不影响验收结论
   try {
     rmSync(tmpDir, { recursive: true, force: true });

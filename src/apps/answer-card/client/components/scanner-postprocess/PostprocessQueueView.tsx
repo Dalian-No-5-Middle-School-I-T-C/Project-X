@@ -15,6 +15,7 @@ import { uniqueScanConflictCards, type ScanConflictCard } from "../../../../../s
 import { correctionCells, mergeRecognitions, toggleCorrectionCell, type CorrectionDocument, type CorrectionEdit } from "../../../../../shared/scanCorrection";
 import { gradeCombinedRecognition, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../../../shared/grading";
 import type { SubjectiveQuestionNumber } from "../../../../../shared/types";
+import { clearCorrectionDraft, draftMatchesDocument, readCorrectionDraft, writeCorrectionDraft } from "../../lib/correctionDraft";
 
 export interface ScanMeta { recordId: string; createdAt: string; scanQuality: number | null; }
 
@@ -31,8 +32,12 @@ export interface PostprocessQueueViewProps {
   scans: ScanMeta[];
   /** 按该组所属会话的扫描时页数画缺页对照，不能用后来拉到的新卡页数。 */
   layoutPageCountFor: (sessionId: string) => number;
-  /** 从扫描结果点开的异常：把指针定位到该组，而不是永远从队首开始 */
-  focus?: { sessionId: string; groupId: string } | null;
+  /** 从扫描结果点开的异常：把指针定位到该组，而不是永远从队首开始。
+   *  同一组可能有多条异常项（如考号 + 存疑），恢复时靠 itemId 精确到上次那一条。
+   *  这是一次性的定位请求，不要把 onCurrentChange 上报的项回灌进来，否则两边会互相拉着跳。 */
+  focus?: { sessionId: string; groupId: string; itemId?: string } | null;
+  /** 当前停留的队列项变化：父页面用它持久化崩溃恢复位置，而不是只记最初打开的那组。 */
+  onCurrentChange?: (sessionId: string, groupId: string, itemId?: string) => void;
   /** 处理完成（考号已改、重复卷已定性等）：页面重拉批结果并按需补传 */
   onResolved: (sessionId: string, groupId: string) => void | Promise<void>;
   /** 远端预览没有回执。记下「不保留」的那份，由页面在后续预览里滤掉，不能打本地作废接口。 */
@@ -53,8 +58,22 @@ const kindTone = (kind: PostprocessQueueItem["kind"]): "danger" | "warning" | "n
   kind === "low_confidence" ? "warning" : kind === "other" ? "neutral" : "danger"
 );
 
-export function PostprocessQueueView({ queue, channel, examIdForSession, scans, layoutPageCountFor, focus, onResolved, onJumpToCorrection, onDelete, onPreviewDiscard }: PostprocessQueueViewProps) {
-  const [cursor, setCursor] = useState(0);
+/** 先按 itemId 精确匹配（同组多条异常），找不到再退回按组定位。 */
+function focusIndexOf(queue: PostprocessQueueItem[], focus: { sessionId: string; groupId: string; itemId?: string }): number {
+  if (focus.itemId) {
+    const byId = queue.findIndex(item => item.id === focus.itemId);
+    if (byId >= 0) return byId;
+  }
+  return queue.findIndex(item => item.sessionId === focus.sessionId && item.groupId === focus.groupId);
+}
+
+export function PostprocessQueueView({ queue, channel, examIdForSession, scans, layoutPageCountFor, focus, onCurrentChange, onResolved, onJumpToCorrection, onDelete, onPreviewDiscard }: PostprocessQueueViewProps) {
+  // 带着定位目标挂载时首帧就落到它：等 focus 的 effect 再跳，首帧上报的会是第 1 条，
+  // 父页面按上报值写恢复标记，崩溃恢复的位置会被覆盖成队首。
+  const [cursor, setCursor] = useState(() => {
+    const index = focus ? focusIndexOf(queue, focus) : -1;
+    return index >= 0 ? index : 0;
+  });
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
   const [resolved, setResolved] = useState<Set<string>>(new Set());
   const [fixTarget, setFixTarget] = useState<{ sessionId: string; groupId: string } | null>(null);
@@ -63,9 +82,9 @@ export function PostprocessQueueView({ queue, channel, examIdForSession, scans, 
   // 从扫描结果点开某一异常卡时定位到它；focus 变化只跳一次，不跟队列刷新较劲
   const lastFocus = useRef<string | null>(null);
   useEffect(() => {
-    const key = focus ? `${focus.sessionId}/${focus.groupId}` : null;
+    const key = focus ? `${focus.itemId ?? ""}/${focus.sessionId}/${focus.groupId}` : null;
     if (!key || key === lastFocus.current) return;
-    const index = queue.findIndex(item => `${item.sessionId}/${item.groupId}` === key);
+    const index = focus! ? focusIndexOf(queue, focus!) : -1;
     if (index < 0) return;
     lastFocus.current = key;
     setCursor(index);
@@ -85,6 +104,11 @@ export function PostprocessQueueView({ queue, channel, examIdForSession, scans, 
 
   const index = Math.min(cursor, Math.max(0, queue.length - 1));
   const current = queue[index];
+
+  useEffect(() => {
+    if (!current) return;
+    onCurrentChange?.(current.sessionId, current.groupId, current.id);
+  }, [current?.sessionId, current?.groupId, current?.id, onCurrentChange]);
   const total = queue.length + resolved.size;
   const skippedCount = queue.filter(item => skipped.has(item.id)).length;
 
@@ -148,10 +172,10 @@ export function PostprocessQueueView({ queue, channel, examIdForSession, scans, 
 
       <div className="min-w-0 flex-1 overflow-auto">
         {fixTarget
-          ? <StudentIdPanel sessionId={fixTarget.sessionId} groupId={fixTarget.groupId} channel={channel} examId={examIdForSession(fixTarget.sessionId)}
+          ? <StudentIdPanel key={`${fixTarget.sessionId}/${fixTarget.groupId}`} sessionId={fixTarget.sessionId} groupId={fixTarget.groupId} channel={channel} examId={examIdForSession(fixTarget.sessionId)}
               onResolved={onResolved} onBack={() => setFixTarget(null)} />
           : current.kind === "student_id"
-            ? <StudentIdPanel sessionId={current.sessionId} groupId={current.groupId} channel={channel} examId={examIdForSession(current.sessionId)} onResolved={onResolved} />
+            ? <StudentIdPanel key={`${current.sessionId}/${current.groupId}`} sessionId={current.sessionId} groupId={current.groupId} channel={channel} examId={examIdForSession(current.sessionId)} onResolved={onResolved} />
             : current.kind === "duplicate"
               ? <DuplicatePanel item={current} channel={channel} scans={scans} onResolved={onResolved} onPreviewDiscard={onPreviewDiscard} onFixStudentId={target => setFixTarget(target)} />
               : current.kind === "missing_page"
@@ -208,6 +232,47 @@ function useCorrectionBundle(channel: PostprocessChannel, url: string | null, wi
   return { document, images, error, busy };
 }
 
+/** 只取当前页原图：考号面板只需要学号页，没必要把整卷大图都解码进内存。 */
+function useSinglePageImage(channel: PostprocessChannel, document: CorrectionDocument | null, sourceId: string | null) {
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [tick, setTick] = useState(0);
+  const urlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (urlRef.current) { URL.revokeObjectURL(urlRef.current); urlRef.current = null; }
+    setImageUrl(null);
+    setError("");
+    if (!document || !sourceId) return;
+    const page = document.pages.find(item => item.sourceId === sourceId);
+    if (!page) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const response = await channel.request(page.imageUrl);
+        if (!response.ok) throw new Error("答题卡图片加载失败");
+        const blob = URL.createObjectURL(await response.blob());
+        if (!alive) { URL.revokeObjectURL(blob); return; }
+        urlRef.current = blob;
+        setImageUrl(blob);
+      } catch (err) {
+        // 图片失败仍可用表格改分，但必须说清楚「这一页没显示出来」，否则老师会对着空白确认考号。
+        if (alive) setError(err instanceof Error ? err.message : "原图加载失败");
+      }
+    })();
+    return () => { alive = false; };
+  }, [channel, document, sourceId, tick]);
+
+  useEffect(() => () => {
+    if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+    urlRef.current = null;
+  }, []);
+
+  // 每次渲染返回新对象会让下游的滚屏 effect 跟着每次按键重跑，把老师滚开的视图又拉回去。
+  const images = useMemo(() => (imageUrl ? { [sourceId ?? ""]: imageUrl } : {}), [imageUrl, sourceId]);
+  return { images, error, reload: () => setTick(current => current + 1) };
+}
+
 function PanelShell({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
   return (
     <Card className="flex min-h-0 flex-col">
@@ -234,7 +299,7 @@ interface StudentIdPanelProps {
  *  确认提交的就是屏幕上看到的那个号。 */
 function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBack }: StudentIdPanelProps) {
   const url = channel.correctionUrl(sessionId, groupId);
-  const { document, images, error, busy } = useCorrectionBundle(channel, url, true);
+  const { document, error, busy } = useCorrectionBundle(channel, url, false);
   const [edits, setEdits] = useState<CorrectionEdit[]>([]);
   /** 老师手输但还没落到格上的原文；null = 没有手输，显示格选结果 */
   const [typed, setTyped] = useState<string | null>(null);
@@ -244,9 +309,12 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
   const [rosterKnown, setRosterKnown] = useState(false);
   const [saving, setSaving] = useState(false);
   const [rotation, setRotation] = useState<ImageRotation>(0);
+  const [draftRestored, setDraftRestored] = useState(false);
+  const [draftPersisted, setDraftPersisted] = useState<boolean | null>(null);
   const cropRef = useRef<HTMLDivElement>(null);
   const digitPageIndex = useMemo(() => (document ? document.pages.findIndex(page => correctionCells(page.layout).some(cell => cell.type === "student_digit")) : -1), [document]);
   const digitPage = document && digitPageIndex >= 0 ? document.pages[digitPageIndex] : null;
+  const { images, error: imageError, reload: reloadImage } = useSinglePageImage(channel, document, digitPage?.sourceId ?? null);
   const digitCells = useMemo(() => (document ? document.pages.flatMap(page => correctionCells(page.layout)).filter(cell => cell.type === "student_digit") : []), [document]);
   const cellOwner = useMemo(() => {
     const map = new Map<string, string>();
@@ -271,9 +339,35 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
 
   useEffect(() => {
     if (!document) return;
-    setEdits(document.pages.map(page => ({ sourceId: page.sourceId, revision: page.revision, selected: [...page.selected], touched: [] })));
-    setTyped(null);
-  }, [document]);
+    const baseEdits = document.pages.map(page => ({ sourceId: page.sourceId, revision: page.revision, selected: [...page.selected], touched: [] }));
+    const draft = readCorrectionDraft(document.card.id, sessionId, groupId);
+    if (draft && draftMatchesDocument(draft, document)) {
+      setEdits(draft.edits);
+      setTyped(draft.typed ?? null);
+      setDraftRestored(true);
+    } else {
+      setEdits(baseEdits);
+      setTyped(null);
+      setDraftRestored(false);
+    }
+    setDraftPersisted(null);
+  }, [document, sessionId, groupId]);
+
+  // 考号修改同样即时落本机草稿：位数没选完时 typed 是唯一真值，必须一起存。
+  useEffect(() => {
+    if (!document || edits.length !== document.pages.length) return;
+    const dirty = typed !== null || edits.some((current, index) => {
+      const origin = document.pages[index];
+      return [...origin.selected].sort().join() !== [...current.selected].sort().join() || !!current.touched?.length;
+    });
+    if (!dirty) {
+      clearCorrectionDraft(document.card.id, sessionId, groupId);
+      setDraftRestored(false);
+      setDraftPersisted(null);
+      return;
+    }
+    setDraftPersisted(writeCorrectionDraft(document.card.id, sessionId, groupId, document, edits, typed));
+  }, [document, edits, typed, sessionId, groupId]);
 
   useEffect(() => {
     const node = cropRef.current?.querySelector('polygon[data-cell-type="student_digit"]');
@@ -358,6 +452,9 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
       const response = await channel.request(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pages: edits }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.message || "保存考号失败");
+      clearCorrectionDraft(document.card.id, sessionId, groupId);
+      setDraftRestored(false);
+      setDraftPersisted(null);
       notify.success(`考号已改为 ${digitsFromCells}`);
       await onResolved(sessionId, groupId);
     } catch (err) {
@@ -388,6 +485,12 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
           <div ref={cropRef} className="min-h-[220px] w-full overflow-auto rounded-md bg-muted p-3">
             <CorrectionCanvas document={document} pageIndex={digitPageIndex} edit={edit} images={images} zoom={3} rotation={rotation} busy={saving} onToggle={toggleCell} />
           </div>
+          {imageError && (
+            <div role="status" className="flex flex-wrap items-center gap-2 text-xs text-warning-foreground">
+              <span>原图没加载出来（{imageError}）：可以先按右侧表格改分。</span>
+              <Button variant="ghost" size="sm" onClick={reloadImage}>重试加载原图</Button>
+            </div>
+          )}
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-3">
           <label className="flex flex-col gap-1.5 text-sm">
@@ -413,6 +516,8 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
               确认考号 · 重新匹配学生
             </Button>
           </div>
+          {draftRestored && <p className="m-0 text-xs text-info-fg">已恢复上次未保存的考号修改。</p>}
+          {draftPersisted === false && <p className="m-0 text-xs text-destructive-fg">本机草稿保存失败，请先点击「确认考号」保存。</p>}
           <p className="m-0 text-xs text-muted-foreground">
             {complete ? "也可以直接在左图点击学号数字格修改；每列只能选一个数字，会与上方输入框同步。"
               : `卡面每列都要恰好选中一个数字（共 ${digitColumns.length} 位），当前选择不完整，不能提交。`}

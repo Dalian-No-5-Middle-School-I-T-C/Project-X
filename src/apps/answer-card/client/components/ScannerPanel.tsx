@@ -34,6 +34,7 @@ import {
   ControlRow,
   Field,
   Input,
+  notify,
   SegmentedControl,
   Select,
   SelectContent,
@@ -54,7 +55,11 @@ interface ScannerPanelProps {
   cardId: string;
   onScansComplete?: (sessionId: string, pageCount: number) => void;
   /** 继续扫描/重开前把当前会话交给后处理页：部分中断的批次不能因为离开面板就消失。 */
-  onBatchArchived?: (sessionId: string, pageCount: number) => void;
+  onBatchArchived?: (cardId: string, sessionId: string, pageCount: number) => void;
+  /** 会话一创建就上报。渲染进程在扫描中崩溃时来不及走卸载清理，后处理页仍要找得到这一批。 */
+  onScanSessionStarted?: (sessionId: string) => void;
+  /** 还没扫出页面就取消或被新会话替换时，撤掉刚才的占位，避免恢复出空批次。 */
+  onScanSessionAbandoned?: (cardId: string, sessionId: string) => void;
   /** 从后处理页点「继续扫描」进入时自动开始下一批；消费后回调避免刷新重复触发。 */
   autoStartScan?: boolean;
   onAutoStartConsumed?: () => void;
@@ -107,7 +112,7 @@ function readStoredScanSettings(): Partial<StoredScanSettings> {
   }
 }
 
-export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoStartScan, onAutoStartConsumed, onClose }: ScannerPanelProps) {
+export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanSessionStarted, onScanSessionAbandoned, autoStartScan, onAutoStartConsumed, onClose }: ScannerPanelProps) {
   const storedSettings = useRef(readStoredScanSettings()).current;
   const [state, setState] = useState<ScannerState>("idle");
   const [sources, setSources] = useState<string[]>([]);
@@ -153,6 +158,13 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
   // 用 ref 追踪最新值，避免 SSE onmessage / setTimeout 闭包捕获到过期的 state
   const pagesRef = useRef<ScanPage[]>([]);
   const sessionIdRef = useRef("");
+  /** 卸载时才取的回调：卸载清理的闭包里读 props 会拿到第一次渲染的值。 */
+  const onBatchArchivedRef = useRef(onBatchArchived);
+  const onScanSessionStartedRef = useRef(onScanSessionStarted);
+  const onScanSessionAbandonedRef = useRef(onScanSessionAbandoned);
+  useEffect(() => { onBatchArchivedRef.current = onBatchArchived; }, [onBatchArchived]);
+  useEffect(() => { onScanSessionStartedRef.current = onScanSessionStarted; }, [onScanSessionStarted]);
+  useEffect(() => { onScanSessionAbandonedRef.current = onScanSessionAbandoned; }, [onScanSessionAbandoned]);
 
   // UI-5: SSE 断开重连状态
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -224,6 +236,25 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
     return () => {
       eventSourceRef.current?.close();
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      // 卸载后仍有在途的启动请求：自增尝试号让它在返回时走取消分支，别在新会话上继续开流。
+      scanAttemptRef.current += 1;
+      // 离开面板（关闭 / 返回工作台 / 切走卡片）不等于放弃这一批：扫描还在跑就先停设备，
+      // 已扫出的页面交给后处理页，避免后台继续送纸却再也找不到这批卷的入口。
+      const sid = sessionIdRef.current;
+      if (!sid) return;
+      if (!completedRef.current) {
+        // 停不下来必须让老师知道：设备可能还在送纸，界面却已经没有这批卷的入口。
+        void authFetch(`/api/scanner/scan/${sid}/cancel`, { method: "POST" }).then((response) => {
+          // authFetch 只在网络失败时拒绝；401/500 仍是正常 Response，不看 ok 就会静默放走还在送纸的设备。
+          if (!response.ok) {
+            notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
+          }
+        }, (error: unknown) => {
+          console.error("[scanner] 离开面板时停止扫描失败", error);
+          notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
+        });
+      }
+      handoffCurrentSession();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -614,8 +645,50 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
     finally { resultsBusyRef.current = false; setResultsBusy(false); }
   }
 
+  /** 把当前会话交给后处理，或在还没有页面时撤掉占位。已正常结束的批次不撤。 */
+  async function handoffCurrentSession() {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    const pageCount = pagesRef.current.length;
+    if (pageCount > 0) {
+      onBatchArchivedRef.current?.(cardId, sid, pageCount);
+      return;
+    }
+    if (completedRef.current) return;
+    // SSE 不补发 page_done：晚连或重连时本地页数可能是 0，而服务端早就落了页；
+    // 取消后 worker 也可能还在落页 / 识别。两种情况下撤占位都会把已扫页面和入口一起删掉：
+    // 先问服务端「有多少页、worker 是否还在跑、会话是否已进入终态」，
+    // 只有确认终态、没页且 worker 已退出才撤；pending 窗口里的 0 页不是「没有这一批」。
+    // 查询失败时保持现状（占位仍在 postSessions 里），留到下次进后处理页再核对。
+    try {
+      const response = await authFetch(`/api/scanner/scan/${encodeURIComponent(sid)}`);
+      // 会话已不存在（被清理 / 恢复换库）：占位没有可恢复的对象，直接撤掉。
+      if (response.status === 404) {
+        onScanSessionAbandonedRef.current?.(cardId, sid);
+        return;
+      }
+      if (!response.ok) return;
+      const data = await response.json() as {
+        session?: { status?: string };
+        records?: unknown;
+        workerActive?: boolean;
+      };
+      // 响应缺 records 时是未知状态，不能当成「0 页」；保留占位等下次核对。
+      if (!Array.isArray(data.records)) return;
+      const serverPages = data.records.length;
+      const terminal = data.session?.status === "completed"
+        || data.session?.status === "error"
+        || data.session?.status === "cancelled";
+      if (serverPages > 0 || data.workerActive === true) onBatchArchivedRef.current?.(cardId, sid, serverPages);
+      else if (terminal) onScanSessionAbandonedRef.current?.(cardId, sid);
+    } catch (error) {
+      console.warn("[scanner] 交接前核对会话记录失败，保留占位", error);
+    }
+  }
+
   async function startScan() {
     const attempt = ++scanAttemptRef.current;
+    handoffCurrentSession();
     // 继续扫描/重开前先断开上一批的 SSE：旧批次在后台跑完时不能再把界面从新批次切走。
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
@@ -691,6 +764,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
         cardVersion: version, dpi, paperSize };
       sessionIdRef.current = data.sessionId;
       setSessionId(data.sessionId);
+      onScanSessionStartedRef.current?.(data.sessionId);
       setSessionLegacyIdentity(identityMode === "legacy");
       setLegacyIdentity(false);
       listenProgress(data.sessionId);
@@ -715,15 +789,20 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoSta
     // 通知后端终止 scanner-bridge.exe 子进程（不再只是关闭 SSE，否则 ADF 会继续送纸）
     const sid = sessionIdRef.current;
     if (sid) {
-      void authFetch(`/api/scanner/scan/${sid}/cancel`, { method: "POST" }).catch(() => undefined);
+      // authFetch 只在网络失败时拒绝，401/500 仍是正常 Response；不看 ok 就会在设备还在送纸时宣称已取消。
+      void authFetch(`/api/scanner/scan/${sid}/cancel`, { method: "POST" }).then((response) => {
+        if (!response.ok) notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
+      }, (error: unknown) => {
+        console.error("[scanner] 停止扫描失败", error);
+        notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
+      });
+      handoffCurrentSession();
     }
   }
 
   /** 把当前会话交给后处理页：继续扫描/开始新扫描离开面板后，部分中断的批次仍能回去处理。 */
   function archiveCurrentBatch() {
-    const sid = sessionIdRef.current;
-    const pageCount = pagesRef.current.length;
-    if (sid && pageCount > 0) onBatchArchived?.(sid, pageCount);
+    handoffCurrentSession();
   }
 
   /** 同一答题卡继续扫下一批：保留上一批结果，新批次完成后在「扫描后处理」里一起保存。 */
