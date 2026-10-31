@@ -477,10 +477,21 @@ async function main(): Promise<void> {
 
   // 接线检查：门必须挂在 multer 之前——否则被拒的请求已把上传体落盘到 dataDir/backgrounds
   const selfSettingsSource = readFileSync(path.resolve("src/apps/answer-card/server/index.ts"), "utf8");
+  const backgroundRouteAt = selfSettingsSource.search(/app\.post\(\s*"\/api\/users\/me\/background"/);
+  const backgroundHandlerAt = selfSettingsSource.indexOf("async (req, res, next)", backgroundRouteAt);
+  const backgroundWiring = backgroundRouteAt >= 0 && backgroundHandlerAt > backgroundRouteAt
+    ? selfSettingsSource.slice(backgroundRouteAt, backgroundHandlerAt)
+    : "";
+  const backgroundAuthAt = backgroundWiring.indexOf("authMiddleware");
+  const backgroundAccessAt = backgroundWiring.indexOf("requireBackgroundUploadAccess");
+  const backgroundLockAt = backgroundWiring.indexOf("holdAnswerCardDataMutationLock");
+  const backgroundUploadAt = backgroundWiring.indexOf("receiveBackgroundUpload");
   ok(
-    /app\.post\(\s*"\/api\/users\/me\/background",\s*authMiddleware,\s*requireBackgroundUploadAccess,\s*receiveBackgroundUpload/.test(
-      selfSettingsSource
-    ) && /bgUpload\.single\(/.test(selfSettingsSource)
+    backgroundAuthAt >= 0
+      && backgroundAccessAt > backgroundAuthAt
+      && backgroundLockAt > backgroundAccessAt
+      && backgroundUploadAt > backgroundLockAt
+      && /bgUpload\.single\(/.test(selfSettingsSource)
       && /backgroundUploadTooLargeMessage\(/.test(selfSettingsSource),
     "#322/#335 背景图路由在 multer 前挂载身份门，超限文案带当前生效上限"
   );
