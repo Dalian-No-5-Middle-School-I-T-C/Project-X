@@ -318,6 +318,7 @@ CREATE TABLE IF NOT EXISTS exams (
     review_enabled INTEGER DEFAULT 0,            -- v1.9.0: 0=未开启网阅 1=已开启
     exam_mode      TEXT NOT NULL DEFAULT 'formal', -- v34: quiz=晨测(全量权限) formal=大考(精细权限，默认)
     show_original_paper INTEGER DEFAULT 0,         -- v54: 0=不向学生展示原卷 1=成绩发布后可查看原卷与答案解析
+    answer_key_mode     TEXT NOT NULL DEFAULT 'text', -- v68: text=学生看逐题文字答案 file=学生看教师上传的答案原文件
     created_by    INTEGER REFERENCES users(id),
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP

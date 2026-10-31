@@ -13,6 +13,7 @@ import { requestUploadBudget } from "../../../server/lib/uploadBudget";
 import { describeReviewPoolLimits } from "../../../shared/reviewPoolLimits";
 import { describeRestoreZipLimits } from "../../../shared/restoreZipLimits";
 import { describePaperStorageLimits } from "../../../shared/paperStorageLimits";
+import { isAnswerKeyMode } from "../../../shared/answerKeyMode";
 import { describeAiQuotaLimits } from "../../../shared/aiQuotaLimits";
 import { safeErrorForLog } from "../../../server/lib/logRedaction";
 import {
@@ -2699,7 +2700,7 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
-      const { cardId, name, subject, mode, gradeId, classId, retentionPolicyId, showOriginalPaper } = req.body as Record<string, unknown>;
+      const { cardId, name, subject, mode, gradeId, classId, retentionPolicyId, showOriginalPaper, answerKeyMode } = req.body as Record<string, unknown>;
       const updates: Record<string, unknown> = { updated_at: databaseTimestamp() };
       if (cardId !== undefined) updates.card_id = String(cardId);
       if (name !== undefined) updates.name = String(name);
@@ -2713,6 +2714,16 @@ export async function createApp(): Promise<express.Express> {
           return;
         }
         updates.show_original_paper = showOriginalPaper ? 1 : 0;
+      }
+      // v66: 「本次正确答案」展示模式（text=逐题文字 / file=答案原文件直发）。
+      // 与 showOriginalPaper 一样属于答案泄露面，只接受显式合法值；切换不销毁另一侧数据，
+      // 文字答案与已上传答案文件都原样保留，切回去即可复用。
+      if (answerKeyMode !== undefined) {
+        if (!isAnswerKeyMode(answerKeyMode)) {
+          res.status(400).json({ message: "answerKeyMode 只能为 'text' 或 'file'" });
+          return;
+        }
+        updates.answer_key_mode = answerKeyMode;
       }
       // 评审 P1-2：补设/修改应考范围（年级/班级）。不允许清空（创建后的考试需保留所属范围）；
       // 与显式应考名单互斥：已有显式名单时须先清除（DELETE /participants）再设置班级范围。
@@ -2786,7 +2797,7 @@ export async function createApp(): Promise<express.Express> {
       }
 
       // Whitelist: only these columns may appear in a dynamic UPDATE
-      const ALLOWED_COLUMNS = new Set(["updated_at", "card_id", "name", "subject", "exam_mode", "grade_id", "class_id", "retention_policy_id", "show_original_paper"]);
+      const ALLOWED_COLUMNS = new Set(["updated_at", "card_id", "name", "subject", "exam_mode", "grade_id", "class_id", "retention_policy_id", "show_original_paper", "answer_key_mode"]);
       for (const col of Object.keys(updates)) {
         if (!ALLOWED_COLUMNS.has(col)) {
           res.status(400).json({ message: `不支持的更新字段：${col}` });

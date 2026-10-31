@@ -1,7 +1,7 @@
 # Project-X 数据库模块文档
 
-> **迁移水位**: v63（`scan-session-warnings`）—— SQLite `migrations.ts` 与 MariaDB `mariadbMigrations` 双轨同步
-> **文档复核**: 2026-10-17（v2.6.0 文档校订轮 + 同日随 main 对齐到 v2.7.1 / v63；表结构变更以迁移文件与 `schema.sql` 为准，不以本文版本号为准）
+> **迁移水位**: v68（`exam-answer-key-mode`）—— SQLite `migrations.ts` 与 MariaDB `mariadbMigrations` 双轨同步。v66/v67 留给反馈迁移，本支不占用。
+> **文档复核**: 2026-10-29（答案展示模式登记为 v68，v66/v67 留给反馈迁移；2026-10-27 曾写作 v66，并补上 main 已落地但未登记的 v64 订正溯源、v65 小数题号；上一轮为 2026-10-17 v2.6.0 文档校订 + 随 main 对齐到 v2.7.1 / v63；表结构变更以迁移文件与 `schema.sql` 为准，不以本文版本号为准）
 > **技术栈**: SQLite (本地) / MariaDB 10.11 LTS (远程) + better-sqlite3 + mysql2 + bcryptjs
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力，支持本地单机部署和远程服务器部署
 
@@ -589,7 +589,7 @@ exam_archives 表：记录归档信息（路径、大小、归档时间）
 
 ## 数据库迁移 (SQLite → MariaDB)
 
-### 迁移编号台账（v35 → v63）
+### 迁移编号台账（v35 → v68）
 
 两套迁移各自维护版本号，**同一版本号在两侧含义必须一致**；作废编号只留注释占号，禁止复用
 （`migrations.ts` / `mysql.ts` 顶部有完整说明）。
@@ -623,6 +623,9 @@ exam_archives 表：记录归档信息（路径、大小、归档时间）
 | v61 | `scanner-session-card-version` | `twain_scan_sessions` 增 `card_version` 与 `version_source`（默认 `upload`）；升级前已存在的会话整体标为 `legacy`，区分「扫描端上报版本」与「后来补录的指纹」，避免历史会话被冒充成原始版本 |
 | v62 | `scan-correction-pages` | 建 `scan_correction_pages`（主键 `source_type` + `source_id`，存 `card_version`、`layout_json` / `recognition_json` 与 `revision` 乐观锁、修改人与时间），承载整卡/逐题改分快照。两侧由同一个 `scanCorrectionSchema(dialect)` 生成，只有 JSON 列按方言分叉——SQLite `TEXT`、MariaDB `LONGTEXT`；两列都存纯文本、JSON 解析留在 JS 层，符合[双方言SQL函数安全清单](双方言SQL函数安全清单.md)对 `json_extract` 的口径 |
 | v63 | `scan-session-warnings` | `twain_scan_sessions` 增 `warnings_json TEXT`，把色彩升级、DPI 取证、零红笔三类扫描告警随会话落库，SSE 断线重连时先补发已落库告警再补终态事件（按文本去重、只留最近 20 条是应用侧写入策略，不在 DDL 里）。SQLite 走 `addColumnIfMissing`，MariaDB 走裸 `ALTER`，幂等性由迁移循环统一吞掉 `ER_DUP_FIELDNAME` / “already exists” 保证 |
+| v64 | `scan-correction-provenance` | `scan_correction_pages` 增 `recovery_fingerprint VARCHAR(64)`：整卡订正快照记录「补识别来源指纹」，缺指纹的历史卷打开时按「待核验」处理，必须走签名补识别才能改正式成绩（`src/server/services/scanCorrection.ts`） |
+| v65 | `question-number-decimals` | 语文模板出现 13.1 / 17.1 这类小题号：MariaDB 把 `subjective_questions.number`、`knowledge_points.question_number`、`question_scores.question_number`、`answer_overrides.question_number` 改为 `DOUBLE`（strict mode 下 INT 直接拒写，非 strict 又把 13.1/13.2 截成同一个 13）；SQLite 是动态类型、INTEGER 亲和列本来就能存小数，故只登记版本保持两端号对齐，`up() {}` 为空 |
+| v68 | `exam-answer-key-mode` | `exams` 增 `answer_key_mode`（SQLite `TEXT` / MariaDB `VARCHAR(16)`，均 `NOT NULL DEFAULT 'text'`），决定「本次正确答案」下发哪一份：`text` 沿用 v54 的 `exam_answer_keys` 逐题文字，`file` 把已上传的 `exam_answer_key_pages` 原样发给学生。默认值即历史行为，**存量考试不回填数据**，老库升级后仍是 `text`，不会出现「升级完答案突然变成一堆文件」。取值只认 `'file'`，其余（含脏值）在 `shared/answerKeyMode.ts` 的 `normalizeAnswerKeyMode()` 统一回落 `text`，读写两侧共用这一个判据。**号位说明**：本支最初取 64，合 main 时 64/65 已被占用；v66 `feedback-reports` 与 v67 `feedback-attachments` 留给反馈分支，本迁移登记为 68。执行器按版本号是否已存在决定是否执行，因此先跑过反馈 v66 的库仍会补上本列 |
 
 > 表结构章节里出现的历史版本标签（如「模块五：大考组 (v1.5.0)」「v1.9.0 新增表」）是
 > **该能力的引入时间点**，不是当前版本；表本身仍是现行结构。

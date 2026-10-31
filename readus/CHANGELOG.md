@@ -1,5 +1,20 @@
 # Project-X CHANGELOG
 
+## 2026-10-27：「本次正确答案」新增「原文件直接下发」模式（迁移 v68）
+
+- **背景**：v54 起学生只有一条答案通道——教师上传的文件留在服务端做 OCR，学生永远只看 `exam_answer_keys` 的文字。OCR 识别失败时老师没有可用答案，想「把答案 PDF / 扫描图原样发给学生」做不到。本次把「发哪一份」变成考试级二选一。
+- **数据**：`exams.answer_key_mode`（SQLite `TEXT` / MariaDB `VARCHAR(16)`，`NOT NULL DEFAULT 'text'`），迁移 **v68 `exam-answer-key-mode`**。默认值即历史行为，**存量考试不回填**，老库升级后仍是 `text`。取值只在 `src/shared/answerKeyMode.ts` 一处归一：只认 `'file'`，脏值一律回落 `text`，读写两侧共用该判据。
+- **号位说明**：本支最初取 v64，合 main 时 64/65 已被占用。v66 `feedback-reports` 与 v67 `feedback-attachments` 留给反馈分支，SQLite 与 MariaDB 的答案展示模式都登记为 v68。`scripts/verify-mariadb.ts` 删除并重跑的是 68。两端号序严格递增、与反馈迁移不重号。
+- **闸门仍全在后端**：`/api/scores/me/exams/:examId/paper` 的准入条件由「已公布 + 显示原卷」放宽为「已公布 +（显示原卷 **或** 模式为 `file`）」；原卷图片路由额外要求 `show_original_paper=1`，新答案文件路由额外要求 `answer_key_mode='file'`，不满足都是 404。列表 `paper_visible` / 详情 `paperVisible` 同步这条口径，只开直发、不开卷的考试也会有入口，且不会出现「点进去 404」。
+- **一份响应只装一种答案**：`text` 模式不下发 `answerFiles`；`file` 模式不下发 `answers` 与 `pages[].answers`。响应新增 `answerKeyMode` / `showOriginalPaper` / `answerFiles[]`（每项带 `fileUrl`），客户端只按模式排版、不自行推断。切换模式**不销毁另一侧数据**，文字答案与已上传文件都原样保留。
+- **新接口**：`GET /api/scores/me/exams/:examId/paper/answer-file/:pageIndex` —— 文件名一律取库中登记值（不接受请求里的名字），`Cache-Control: private, no-store`（媒体 URL 不含账号，不能让换账号的浏览器命中上一名学生的缓存），DOCX 带 `Content-Disposition: attachment`；路径已加入 R30 媒体白名单（`mediaAllowlist.ts`），否则会绕过鉴权中间件或被日志脱敏误伤。
+- **图片原件**：新上传的图片按原字节、原扩展名落盘，学生直发拿到的就是这一份。旁边另写 `<base>.preview.jpg` 给 OCR 和教师预览。这次改动之前已经压成 JPEG 的历史页没有原件，预览和直发都继续用登记的那一份。列表入口在 MariaDB 上用精确比较，脏值 `FILE` 不再被当成 `file`。
+- **教师端**：`ExamAnswerKeyPanel` 增加「答案展示方式」分段控件（即时 `PATCH`，失败回滚显示），直发模式下上传改带 `?ocr=0` 不再白跑识别、隐藏「重新识别」、未上传任何文件时给红字提醒；考试管理页对直发考试加「答案直发」标记（卡片与表格两种视图）。
+- **学生网页端**：`StudentExamPaper` 按模式渲染——图片内联，PDF / DOCX 给「打开 / 下载」两个动作（下载带 `download` 属性保留原文件名）；`text` 模式视图保持原样。合入 main 的「原卷旋转查看」后，右上角旋转同时作用于原卷页、**直发答案图片**与作答图块（扫描件歪放的可能性和原卷一样，不该只对原卷生效）。
+- **验证**：`npm run verify:exam-paper` **119 项全绿 / 0 失败**（含「v66 已记成 feedback-reports 时仍由 v68 补列」、原图字节一致、答案文件 `no-store`、脏值 `FILE` 不放行，以及两种模式各自的下发内容、闸门组合、越界/未登记页码、DOCX 附件头、未公布 404、双闸关闭时入口标记归 0）。`npm run typecheck` 通过。`npm run verify:mariadb` 在空库 `projectx_ci`（MariaDB **10.11.14**）上通过，含入口 SQL 对脏值 `FILE` 的精确比较。界面用 `scripts/answer-key-mode-ui-server.ts` 起真实 HTTP + 真实字节（jpg / pdf / docx）服务，在浏览器里过了教师面板三态与学生端三态。
+- **升级说明**：无新增环境变量、无新增配置项，列由两种方言的建表与 v68 迁移自动到位。**上线次序**：先发小程序新版本，再对具体考试打开直发——旧版本小程序不认识 `file`，会把直发考试显示成「老师尚未录入逐题答案」（详见 [原卷与逐题答案-使用说明](./原卷与逐题答案-使用说明.md) 第 4 节）。
+- **已知限制**：小程序真机未验（`wx.openDocument` 对 PDF / DOCX 的实际表现、转存菜单）；tesseract.js 端到端识别仍未跑。
+
 ## 2026-10-26：扫描端防护恢复与 Service Worker 注册拦截
 
 - 调试通道重连耗尽后，本机回环 API 继续可用；后续远端请求按退避重新安装编码限制，安装期间取消请求，成功后允许调用方重试。修正本地主窗口失败回调的窗口参数，提示和日志保留实际错误。
