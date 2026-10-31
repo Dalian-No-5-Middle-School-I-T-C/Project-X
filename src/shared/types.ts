@@ -1,5 +1,6 @@
 import type { HistogramBin, NormalityResult, QQPoint, ThresholdBand } from "./stats";
 import type { RichTextRun } from "./richText";
+import type { AnswerKeyMode } from "./answerKeyMode";
 
 export type ObjectiveMode = "single" | "multiple" | "indefinite";
 export type ObjectiveDensity = "loose" | "normal" | "compact" | "dense";
@@ -835,6 +836,8 @@ export type ExamRecord = {
   score_published?: number;
   /** 原卷/答案解析可见性（v54）：0=不向学生展示 1=成绩公布后可查看；缺省视为 0 */
   show_original_paper?: number;
+  /** 正确答案展示模式（v66）：text=逐题文字答案 file=答案原文件直发；缺省视为 text */
+  answer_key_mode?: AnswerKeyMode;
   created_at: string;
 };
 

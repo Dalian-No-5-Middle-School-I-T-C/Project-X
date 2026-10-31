@@ -17,7 +17,7 @@ async function main(): Promise<void> {
   // 避免测试往仓库 data/ 里落真实的 bootstrap-admin.txt。
   const bootstrapTmpDir = mkdtempSync(path.join(tmpdir(), "projectx-mariadb-bootstrap-"));
   process.env.PROJECTX_DB_PATH = path.join(bootstrapTmpDir, "projectx.db");
-  const { getMysqlDb, initMariadbSchema, runMariadbMigrations, getMariadbConfig, resetAdapter, buildUpsertSQL, buildInsertIgnore } =
+  const { getMysqlDb, initMariadbSchema, runMariadbMigrations, getMariadbConfig, resetAdapter, buildUpsertSQL, buildInsertIgnore, answerKeyModeIsFileSql } =
     await import("../src/server/db/mysql");
   const { ensureDefaultAdmin, getBootstrapAdminPath, hashPassword, verifyPassword } =
     await import("../src/server/db/index");
@@ -53,19 +53,25 @@ async function main(): Promise<void> {
     await db.exec("ALTER TABLE twain_scan_sessions DROP COLUMN identity_mode");
     await db.exec("ALTER TABLE twain_scan_sessions DROP COLUMN warnings_json");
     await db.exec("ALTER TABLE twain_scan_records DROP COLUMN identity_json");
+    await db.exec("ALTER TABLE exams DROP COLUMN answer_key_mode");
     await db.run("DELETE FROM schema_migrations WHERE version = 51");
     await db.run("DELETE FROM schema_migrations WHERE version = 63");
+    // answer_key_mode 由 v68 补列。v66/v67 留给反馈迁移，删的是自己那一号。
+    await db.run("DELETE FROM schema_migrations WHERE version = 68");
     await initMariadbSchema();
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'identity_mode'"));
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'warnings_json'"),
       "已有库升级必须补上告警列，不能只靠新装建表");
     assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_records LIKE 'identity_json'"));
+    assert.ok(await db.get("SHOW COLUMNS FROM exams LIKE 'answer_key_mode'"),
+      "已有库升级必须补上答案展示模式列（v68），不能只靠新装建表");
     const migrations = await db.all<{ version: number; name: string }>(
       "SELECT version, name FROM schema_migrations ORDER BY version",
     );
     assert.ok(migrations.some((row) => row.version === 49), "Scanner receipts migration must be applied");
     assert.ok(migrations.some((row) => row.version === 53), "WeChat grade-release subscription migration must be applied");
     assert.ok(migrations.some((row) => row.version === 54), "Exam original-paper + answer-key migration must be applied");
+    assert.ok(migrations.some((row) => row.version === 68 && row.name === "exam-answer-key-mode"), "Answer-key display mode migration must be applied as v68");
     assert.ok(await db.get("SHOW COLUMNS FROM scanner_submissions LIKE 'exam_id'"));
     assert.ok(await db.get("SHOW COLUMNS FROM answer_block_crops LIKE 'claimed_by'"));
     await initMariadbSchema();
@@ -203,6 +209,13 @@ async function main(): Promise<void> {
     // v54 原卷/答案：exams.show_original_paper 列 + 考试级答案表的复合主键与 UPSERT
     assert.ok(await db.get("SHOW COLUMNS FROM exams LIKE 'show_original_paper'"),
       "exams.show_original_paper 必须存在");
+    // v68 答案展示模式：默认必须是 text，否则老库升级后学生答案会凭空从文字变成一堆文件
+    const akModeColumn = await db.get<{ column_name: string; column_default: string | null }>(
+      "SELECT COLUMN_NAME AS column_name, COLUMN_DEFAULT AS column_default FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'exams' AND COLUMN_NAME = 'answer_key_mode'",
+    );
+    assert.ok(akModeColumn, "exams.answer_key_mode 必须存在");
+    assert.equal(String(akModeColumn!.column_default).replace(/^'|'$/g, ""), "text",
+      "answer_key_mode 默认值必须是 text");
     const akTables = await db.all<{ table_name: string }>(
       "SELECT TABLE_NAME AS table_name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('exam_answer_keys','exam_answer_key_pages')",
     );
@@ -225,6 +238,19 @@ async function main(): Promise<void> {
       "UNIQUE(exam_id, page_index) 保证同场考试页码不重复");
     const akExam = await db.run("INSERT INTO exams (name, score_published, show_original_paper) VALUES ('原卷答案CI', 1, 1)");
     assert.equal((await db.get<{ c: number }>("SELECT COUNT(*) AS c FROM exams WHERE id = ? AND show_original_paper = 1", akExam.lastInsertRowid))?.c, 1);
+    assert.equal((await db.get<{ m: string }>("SELECT answer_key_mode AS m FROM exams WHERE id = ?", akExam.lastInsertRowid))?.m, "text",
+      "未显式赋值的新考试取默认 text（v54 行为）");
+    // 入口条件 SQL 与 assertStudentPaperVisible 必须同口径：这里把「显示原卷」关掉、只开直发模式
+    const entryCase = `SELECT CASE WHEN score_published = 1 AND (show_original_paper = 1 OR ${answerKeyModeIsFileSql("mariadb", "answer_key_mode")}) THEN 1 ELSE 0 END AS c FROM exams WHERE id = ?`;
+    await db.run("UPDATE exams SET show_original_paper = 0, answer_key_mode = 'FILE' WHERE id = ?", akExam.lastInsertRowid);
+    assert.equal((await db.get<{ c: number }>(entryCase, akExam.lastInsertRowid))?.c, 0,
+      "MariaDB 脏值 FILE 不是直发，入口与 normalizeAnswerKeyMode 一致");
+    await db.run("UPDATE exams SET show_original_paper = 0, answer_key_mode = 'file' WHERE id = ?", akExam.lastInsertRowid);
+    assert.equal((await db.get<{ c: number }>(entryCase, akExam.lastInsertRowid))?.c, 1,
+      "MariaDB 下「直发模式 + 原卷开关关闭」同样算作开放（精确比较，不走默认 collation）");
+    await db.run("UPDATE exams SET answer_key_mode = 'text' WHERE id = ?", akExam.lastInsertRowid);
+    assert.equal((await db.get<{ c: number }>(entryCase, akExam.lastInsertRowid))?.c, 0,
+      "两闸都关时入口归 0");
     const akUpsert = buildUpsertSQL(db.dialect, "exam_answer_keys",
       ["exam_id", "question_number", "answer_text", "page_index", "updated_by"],
       ["exam_id", "question_number"],

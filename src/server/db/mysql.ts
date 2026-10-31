@@ -155,6 +155,18 @@ export function buildInsertIgnore(
   return `INSERT IGNORE INTO ${table} (${quoted}) VALUES (${placeholders})`;
 }
 
+/**
+ * `answer_key_mode` 是否精确等于 `'file'`。
+ * MariaDB 的 VARCHAR 默认大小写不敏感，`'FILE'` 会等于 `'file'`；
+ * `normalizeAnswerKeyMode` 只认精确的 `file`，列表入口必须同一口径。
+ */
+export function answerKeyModeIsFileSql(dialect: "sqlite" | "mariadb", column: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(column)) {
+    throw new Error(`invalid column: ${column}`);
+  }
+  return dialect === "mariadb" ? `BINARY ${column} = 'file'` : `${column} = 'file'`;
+}
+
 // ── SQLite Adapter ─────────────────────────────────────
 // 内部用 better-sqlite3（同步），对外暴露 async 接口
 
@@ -1169,6 +1181,14 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE knowledge_points MODIFY question_number DOUBLE NOT NULL",
     "ALTER TABLE question_scores MODIFY question_number DOUBLE",
     "ALTER TABLE answer_overrides MODIFY question_number DOUBLE",
+  ] });
+
+  // v68: 「本次正确答案」展示模式（与 SQLite v68 对齐）。
+  // v66/v67 留给反馈表（#358），避免两支合并后按版本号互相跳过。
+  // text=学生看逐题文字答案（v54 行为），file=学生看教师上传的答案原文件。
+  // 默认 'text'：已有库升级后行为不变，由教师在答案配置面板显式切换。
+  mariadbMigrations.push({ version: 68, name: "exam-answer-key-mode", sqls: [
+    "ALTER TABLE exams ADD COLUMN answer_key_mode VARCHAR(16) NOT NULL DEFAULT 'text'",
   ] });
 
   for (const m of mariadbMigrations) {
