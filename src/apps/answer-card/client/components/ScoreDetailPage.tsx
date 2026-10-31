@@ -444,14 +444,14 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                   <StatCard
                     label="及格率"
                     value={overview.fullScore > 0 ? formatPercent(overview.passRate) : "—"}
-                    hint={overview.fullScore > 0 ? `及格线 ${formatScore(overview.passScore)} 分` : "满分未知"}
+                    hint={overview.fullScore > 0 ? `及格线 ${formatScore(overview.passScore)} 分` : "未设置满分"}
                     delta={overview.fullScore > 0 ? toDelta(previousComparison?.passRateChange) : undefined}
                     deltaLabel="较上届"
                   />
                   <StatCard
                     label="优秀率"
                     value={overview.fullScore > 0 ? formatPercent(overview.excellentRate) : "—"}
-                    hint={overview.fullScore > 0 ? `优秀线 ${formatScore(overview.excellentScore)} 分` : "满分未知"}
+                    hint={overview.fullScore > 0 ? `优秀线 ${formatScore(overview.excellentScore)} 分` : "未设置满分"}
                   />
                   <StatCard label="标准差" value={formatScore(overview.stdDev)} suffix="分" hint="越大越分散" />
                   <StatCard label="参考人数" value={String(overview.gradedCount)} />
@@ -460,7 +460,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                       label="较上届得分率变化"
                       value={formatChange(previousComparison.avgScoreRateChange, " pp")}
                       hint={previousComparison.avgScoreRateChange == null
-                        ? "任一届满分未知，无法按得分率比较"
+                        ? "任一届未设置满分，无法比较得分率"
                         : `上届：${previousComparison.prevExamName}`}
                     />
                   )}
@@ -468,7 +468,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                     <StatCard
                       label="较上届均分变化"
                       value={formatChange(previousComparison.avgScoreChange, " 分")}
-                      hint="绝对分差，两届满分不同时不可直接比较"
+                      hint="两届满分不同，均分仅供参考"
                     />
                   )}
                   {previousComparison?.prevExamName && (
@@ -579,7 +579,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                 </div>
 
                 {/* 临界生名单 */}
-                {!(overview.fullScore > 0) && <p className="text-sm text-muted-foreground">满分未知，无法计算临界生名单</p>}
+                {!(overview.fullScore > 0) && <p className="text-sm text-muted-foreground">未设置满分，无法计算临界生名单</p>}
                 {overview.fullScore > 0 && criticalList.length > 0 && (
                   <RankPanel title={`临界生（及格/优秀线 ±${Math.round(overview.passScore * 0.05)} 分）`}>
                     {criticalList.map((r) => {
@@ -982,7 +982,7 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
               <h3 className="text-sm font-semibold text-foreground">
                 多维度雷达对比
               </h3>
-              <p className="text-xs text-muted-foreground">各维度按本班集合内最大/最小值独立缩放，用于比较班级相对高低；悬停查看真实数值。</p>
+              <p className="text-xs text-muted-foreground">各维度按班级内的相对高低缩放；悬停可查看真实数值。</p>
               <ClassRadar classes={comparison.classes} fullScore={comparison.fullScore} height={340} />
             </section>
           )}

@@ -335,7 +335,7 @@ export function ClassRadar({
 }) {
   const theme = useChartTheme();
   if (!(fullScore > 0)) {
-    return <p className="py-5 text-center text-sm text-muted-foreground">满分未知，无法计算班级多维度雷达图</p>;
+    return <p className="py-5 text-center text-sm text-muted-foreground">未设置满分，无法计算班级多维度雷达图</p>;
   }
   const score = (value: number) => (value / fullScore) * 100;
   // raw = 该维度的真实数值（tooltip 展示）；fmt = 真实数值的可读串

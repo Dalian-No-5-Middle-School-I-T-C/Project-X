@@ -59,6 +59,11 @@ interface Props {
   cardVersionNote?: string;
   /** v2.7.2：本批扫描完成时上抛给 ScannerApp，自动进入扫描后处理页 */
   onScansComplete?: (sessionId: string, pageCount: number) => void;
+  /** 继续扫描前先归档当前会话：部分中断的批次离开面板后仍能在后处理页找到。 */
+  onBatchArchived?: (sessionId: string, pageCount: number) => void;
+  /** 从后处理页点「继续扫描」进入时自动开扫。 */
+  autoStartScan?: boolean;
+  onAutoStartConsumed?: () => void;
 }
 
 const directoryInputProps = {
@@ -70,7 +75,7 @@ function isImageFile(file: File): boolean {
   return file.type.startsWith("image/") || /\.(png|jpe?g|bmp|webp|tiff?)$/i.test(file.name);
 }
 
-export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange, cardVersionNote, onScansComplete }: Props) {
+export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange, cardVersionNote, onScansComplete, onBatchArchived, autoStartScan, onAutoStartConsumed }: Props) {
   const [cfgOpen, setCfgOpen] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [status, setStatus] = useState("");
@@ -102,6 +107,22 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
   // v2.5.1: 导入阅卷的图片去向档位（与直扫面板共用同一记忆，hook 内置跨实例同步）
   // v2.5.6: 提升为工作台级常驻选择器（见侧栏「图片去向」卡），直扫与导入共用同一份状态
   const [imageMode, setImageMode] = useScannerMode();
+
+  // 从后处理页点「继续扫描」回工作台时，直接把扫描面板挂出来并自动开扫；
+  // 否则工作台仍停在落地页，autoStartScan 根本传不到未挂载的 ScannerPanel。
+  useEffect(() => {
+    if (!autoStartScan) return;
+    setScanning(true);
+    setGradingResult(null);
+    setStatus("");
+  }, [autoStartScan]);
+
+  // 右上角上传进度卡避开 340px 侧栏，别盖住「图片去向 / 开始扫描 / 导入阅卷」。
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--px-scanner-upload-right", "356px");
+    return () => { root.style.removeProperty("--px-scanner-upload-right"); };
+  }, []);
 
   function addGradingFiles(files: FileList | null) {
     if (!files) return;
@@ -229,6 +250,9 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
             {scanning ? (
               <ScannerPanel
                 cardId={cardId}
+                autoStartScan={autoStartScan}
+                onAutoStartConsumed={onAutoStartConsumed}
+                onBatchArchived={onBatchArchived}
                 onScansComplete={(sid, pageCount) => {
                   // v2.5.1: 保持面板挂在 done 视图；v2.7.2: 同时上抛给 ScannerApp 自动跳后处理页
                   setStatus(`扫描完成：${pageCount} 张`);
@@ -280,10 +304,10 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
                       已连接服务器：<code className="font-mono">{readServerUrl()}</code>。扫描与导入的图片都会上传。
                       {isInsecureRemoteTarget(readServerUrl()) && (
                         <span className="mt-1 block text-warning-foreground">
-                          该地址是跨机明文 HTTP：
+                          该地址使用明文 HTTP：
                           {canSendCredentialsToConfiguredServer(readServerUrl()).allowed
-                            ? "已按你的显式确认继续发送 API Key，建议尽快换成 https://。"
-                            : "API Key 不会被发送，上传会失败。请在「服务器连接」中改用 https:// 或显式勾选明文许可。"}
+                            ? "已按你的确认继续发送 API Key，建议尽快改用 https://。"
+                            : "API Key 不会发送，上传会失败。请在「服务器连接」中改用 https:// 或勾选明文许可。"}
                         </span>
                       )}
                     </p>

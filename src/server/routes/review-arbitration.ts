@@ -91,7 +91,7 @@ router.post(
 
         const questionNumbers = JSON.parse(crop.question_numbers ?? "[]");
         if (questionNumbers.length !== 1) {
-          throw new Error("多小题题块必须使用逐题仲裁；当前接口不接受单一总分以避免写入错误成绩");
+          throw new Error("多小题题块请使用逐题仲裁，不能提交单一总分。");
         }
         const questionMax = await tx.get(
           "SELECT max_score FROM question_scores WHERE exam_id = ? AND question_number = ? LIMIT 1",

@@ -978,7 +978,7 @@ export async function createApp(): Promise<express.Express> {
         const askedGradingFields = GRADING_SELF_SETTING_FIELDS.filter((field) => body[field] !== undefined);
         if (askedGradingFields.length > 0) {
           res.status(403).json({
-            message: `权限不足：修改阅卷设置需要 ${PERMISSIONS.GRADE_WRITE}`
+            message: "权限不足：修改阅卷设置需要阅卷管理权限。"
           });
           return;
         }
@@ -2069,8 +2069,21 @@ export async function createApp(): Promise<express.Express> {
       const visibleNames = (referenced as Array<{ id: number; name: string }>)
         .filter((e) => manageable.includes(Number(e.id)))
         .map((e) => e.name);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      // 批量删除入口先做只读预检：把「哪些考试会被解绑」一次摆给老师确认，
+      // 不再把 unlinkExams 当预检参数直接删卡。
+      if (requestFlag(body.preflight)) {
+        res.json({
+          ok: true,
+          preflight: true,
+          referencedExamCount: referenced.length,
+          referencedExamNames: visibleNames,
+          manageableExamCount: manageable.length,
+          outOfScopeExamCount: referenced.length - manageable.length
+        });
+        return;
+      }
       if (referenced.length > 0) {
-        const body = (req.body ?? {}) as Record<string, unknown>;
         const unlinkExams = requestFlag(body.unlinkExams);
         const deleteReferencedExams = requestFlag(body.deleteReferencedExams);
         if (!unlinkExams && !deleteReferencedExams) {
@@ -3199,7 +3212,7 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       await clearExplicitParticipants(db, examId);
-      res.json({ ok: true, message: "显式应考名单已清除（考试已回落年级/班级名册快照）" });
+      res.json({ ok: true, message: "应考名单已清除，已恢复为年级/班级名册。" });
     } catch (error) {
       next(error);
     }

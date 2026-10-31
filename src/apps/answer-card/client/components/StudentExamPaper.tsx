@@ -247,7 +247,7 @@ export function StudentExamPaper({ examId, examName, onBack }: Props) {
             <div className="flex flex-col gap-4">
               <h2 className="m-0 text-base font-semibold text-foreground">正确答案</h2>
               <p className="m-0 text-sm text-muted-foreground">
-                {data.subject ? `${data.subject} · ` : ""}老师直接下发的答案文件，排版与原答案一致；仅作对照，不判断你的作答
+                {data.subject ? `${data.subject} · ` : ""}老师直接下发的答案文件，排版与原答案一致；供学习参考
               </p>
               {answerFiles.length === 0 ? (
                 <Card>
@@ -270,7 +270,7 @@ export function StudentExamPaper({ examId, examName, onBack }: Props) {
                 <div>
                   <CardTitle>逐题正确答案</CardTitle>
                   <CardDescription className="mt-1 text-sm">
-                    {data.subject ? `${data.subject} · ` : ""}由老师录入，仅作对照，不判断你的作答
+                    {data.subject ? `${data.subject} · ` : ""}由老师录入，供学习参考
                   </CardDescription>
                 </div>
               </CardHeader>

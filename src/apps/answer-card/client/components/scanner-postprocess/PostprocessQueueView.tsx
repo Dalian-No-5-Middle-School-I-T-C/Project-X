@@ -414,8 +414,8 @@ function StudentIdPanel({ sessionId, groupId, channel, examId, onResolved, onBac
             </Button>
           </div>
           <p className="m-0 text-xs text-muted-foreground">
-            {complete ? "也可以直接在左图点 digit 格改某一位；单选列内互斥，与上面的输入同源。"
-              : `卡面每列都要恰好选中一个数字（共 ${digitColumns.length} 位），当前格选不完整，不能提交。`}
+            {complete ? "也可以直接在左图点击学号数字格修改；每列只能选一个数字，会与上方输入框同步。"
+              : `卡面每列都要恰好选中一个数字（共 ${digitColumns.length} 位），当前选择不完整，不能提交。`}
           </p>
         </div>
       </div>
@@ -481,8 +481,8 @@ function DuplicatePanel({ item, channel, scans, onResolved, onPreviewDiscard, on
   if (cards.length < 2) {
     return (
       <PanelShell title="考号重复" description={item.label}>
-        <p className="m-0 text-sm text-muted-foreground">只读到一份回执，无法并排定性。请核对原卷后改考号，或到服务端处理已入库的那一份。</p>
-        <Button variant="outline" size="sm" className="mt-3" disabled={busy} onClick={() => onFixStudentId({ sessionId: item.sessionId, groupId: item.groupId })}>不是同一人 → 改考号</Button>
+        <p className="m-0 text-sm text-muted-foreground">只找到一份扫描记录，无法并排核对。请核对原卷后改考号，或到服务器处理已入库的那份。</p>
+        <Button variant="outline" size="sm" className="mt-3" disabled={busy} onClick={() => onFixStudentId({ sessionId: item.sessionId, groupId: item.groupId })}>不是同一人，改考号</Button>
       </PanelShell>
     );
   }
@@ -490,7 +490,7 @@ function DuplicatePanel({ item, channel, scans, onResolved, onPreviewDiscard, on
   return (
     <PanelShell title="考号重复" description={item.label}>
       <Badge tone={samePaper ? "info" : "warning"} dot className="mb-3">
-        {samePaper ? "总分与页数一致，倾向同一张卡重扫" : "差异较大，倾向考号撞车，请看图确认"}
+        {samePaper ? "总分和页数一致，可能是同一张卡重扫" : "差异较大，可能是考号重复，请核对原图"}
       </Badge>
       <div className="grid gap-4 lg:grid-cols-2">
         {cards.map(card => {
@@ -563,7 +563,7 @@ function MissingPagePanel({ item, channel, layoutPageCount, onResolved, onDelete
       setConfirmDelete(false);
     } catch (err) {
       const blocked = (err as { blocked?: string[] }).blocked;
-      if (blocked?.length) { setConfirmDelete(false); notify.warning(`组 ${blocked.join("、")} 已有回执，请在扫描结果里二次确认后删除`); return; }
+      if (blocked?.length) { setConfirmDelete(false); notify.warning(`第 ${blocked.join("、")} 组已有成绩记录或待处理，请到扫描结果里核对后再删除。`); return; }
       notify.error(err instanceof Error ? err.message : "删除失败");
     } finally {
       setBusy(false);
@@ -591,8 +591,8 @@ function MissingPagePanel({ item, channel, layoutPageCount, onResolved, onDelete
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
         title={`删除第 ${Number(item.groupId) + 1} 组扫描卡？`}
-        description="本机扫描记录与识别结果将被移除，不可恢复。已上传的服务器成绩不受影响。"
-        confirmLabel="删除，不可恢复"
+        description="本机扫描记录与识别结果将被移除，且无法恢复。已上传到服务器的成绩不受影响。"
+        confirmLabel="删除"
         loading={busy}
         onConfirm={() => void remove()}
       />

@@ -582,19 +582,19 @@ function BasicInfoPanel({
         </Field>
         {card.layoutVersion !== 2 && (
           <div className="rounded-md border border-info-border bg-info-soft p-2.5 text-xs text-info-fg">
-            <strong className="block text-sm font-semibold">当前使用 V1 兼容排版</strong>
-            <p className="mt-1">旧打印件仍按原分数格坐标识别。升级后将使用紧凑分数区和更大的作答空间。</p>
+            <strong className="block text-sm font-semibold">当前使用兼容排版</strong>
+            <p className="mt-1">已打印的旧答题卡仍按原坐标识别。升级后会使用更紧凑的分数区和更大的作答空间。</p>
             <Button
               variant="outline"
               size="sm"
               className="mt-2"
               onClick={() => {
-                if (confirm("升级到 V2 后，已经打印的旧答题卡不能再按此卡片的新坐标识别。确认升级并立即重排吗？")) {
+                if (confirm("升级后，已经打印的旧答题卡不能再按新坐标识别。确认升级并立即重排吗？")) {
                   updateCard((d) => void (d.layoutVersion = 2));
                 }
               }}
             >
-              升级到紧凑排版 V2
+              升级到新排版
             </Button>
           </div>
         )}

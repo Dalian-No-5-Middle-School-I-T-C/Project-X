@@ -409,7 +409,7 @@ router.post("/me/ai-analysis", async (req: Request, res: Response) => {
   // issue #345：满分解析不出来的学科不参与得分率比较，需要向学生说明结论不完整
   const unjudgedSubjects = subjectSummaries.filter((s) => s.trend === "unknown").map((s) => s.subject);
   if (unjudgedSubjects.length > 0) {
-    caveats.push(`${unjudgedSubjects.join("、")} 的考试缺少满分依据，未参与进步/退步判定。`);
+    caveats.push(`${unjudgedSubjects.join("、")} 的考试未设置满分，暂不参与进步/退步判定。`);
   }
   if (strongSubjects.length > 0) {
     suggestions.push(`保持 ${strongSubjects.join("、")} 的优势，继续巩固练习。`);

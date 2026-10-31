@@ -159,7 +159,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
       return;
     }
     if (scoringMode === "per_question") {
-      setError("本题块为逐题评分模式，请使用在线阅卷逐题输入");
+      setError("本题块采用逐题评分，不能在这里提交题块总分。");
       return;
     }
     setSaving(true);
@@ -385,7 +385,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
         <div className="flex flex-col overflow-auto border-l border-border-subtle p-4">
           {scoringMode === "per_question" ? (
             <div className="rounded-lg bg-destructive-soft px-3.5 py-3 text-base text-destructive-fg">
-              本题块配置为「逐题评分」模式，请使用在线阅卷逐题输入；如需在此面板打分，请管理员将评分模式改为「题块总分」。
+              本题块采用「逐题评分」。此面板只支持题块总分，请返回阅卷列表选择逐题评分入口；如需在此打分，请管理员把评分模式改为「题块总分」。
             </div>
           ) : (
             <ScorePad
