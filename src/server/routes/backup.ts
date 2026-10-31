@@ -1,17 +1,24 @@
 import { Router } from "express";
-import type { Request, Response } from "express";
-import { raw as expressRaw } from "express";
+import type { Request, RequestHandler, Response } from "express";
 import { ZipArchive } from "archiver";
-import { existsSync, rmSync } from "node:fs";
-import { mkdir, readdir, copyFile, rm, stat, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream, existsSync, rmSync } from "node:fs";
+import { mkdir, open, readdir, copyFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 
 import { authMiddleware, requirePermission } from "../middleware/auth";
-import { extractZipWithinBudget, RestoreZipError } from "../services/restoreZip";
+import { extractZipFileWithinBudget, RestoreZipError } from "../services/restoreZip";
+import {
+  MAX_RESTORE_ZIP_ENTRIES,
+  MAX_RESTORE_ZIP_ENTRY_BYTES,
+  MAX_RESTORE_ZIP_TOTAL_BYTES,
+} from "../../shared/restoreZipLimits";
+import { activeFeedbackTempFiles, beginFeedbackMaintenance, invalidateFeedbackStorageUsage, withFeedbackMutationLock } from "../lib/feedbackStorage";
+// 备份要在数据库快照前收敛 `feedback/_trash`，与反馈删除共用同一份核对逻辑。
+import { reconcileFeedbackTrashLocked, resetFeedbackRuntimeStateAfterRestore } from "./feedback";
 import { sanitizeOpsMessage } from "../lib/opsErrorMessage";
-import { PERMISSIONS } from "../auth/permissions";
+import { PERMISSIONS, initPermissionCache, invalidatePermissionCache } from "../auth/permissions";
 import { closeDatabase, getDatabase, getMysqlDb, getMariadbConfig, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, detectDialect, ensureDefaultAdmin, removeBootstrapAdminFile } from "../db";
 import { closeDb } from "../../apps/answer-card/server/database";
 import { seedDemoData, clearDemoData } from "../services/DemoDataService";
@@ -27,9 +34,147 @@ const router = Router();
 router.use(authMiddleware);
 router.use(requirePermission(PERMISSIONS.USER_MANAGE));
 
-// 导入使用 raw body（避免 multpart/form-data 解析 corrupt ZIP 二进制数据）
-// 安全审计（F-12-11）：512MB → 128MB，收紧管理员上传面（防内存 DoS）
-const rawBodyParser = expressRaw({ type: "application/zip", limit: "128mb" });
+// 恢复上传改为流式落盘：合法备份可能包含反馈附件（默认 8 GiB），不能再按 128 MiB
+// 全量读进内存。上限与解压总量预算一致，另留 64 MiB 给 ZIP 头与不可压缩数据的余量。
+const MEBIBYTE = 1024 * 1024;
+export const RESTORE_ZIP_UPLOAD_LIMIT_BYTES = MAX_RESTORE_ZIP_TOTAL_BYTES + 64 * MEBIBYTE;
+
+type RestoreRequest = Request & { restoreZipPath?: string; releaseRestoreGuard?: () => void };
+
+// 同一时间只允许一个恢复任务：每个请求最多保留一份备份 ZIP + 一份解压树，
+// 并发恢复会在临时盘上叠加多份十几 GiB 的副本。
+let restoreInProgress = false;
+
+const receiveRestoreZip: RequestHandler = (req, res, next) => {
+  if (!req.is("application/zip")) {
+    res.status(400).json({ message: "请选择 .zip 备份文件。" });
+    return;
+  }
+  const limitMessage = `备份文件不能超过 ${Math.round(RESTORE_ZIP_UPLOAD_LIMIT_BYTES / MEBIBYTE)} MiB`;
+  const declared = Number(req.headers["content-length"]);
+  if (Number.isFinite(declared) && declared > RESTORE_ZIP_UPLOAD_LIMIT_BYTES) {
+    res.status(413).json({ message: limitMessage });
+    return;
+  }
+  if (restoreInProgress) {
+    res.status(409).json({ message: "已有备份恢复任务正在进行，请稍后重试" });
+    return;
+  }
+  restoreInProgress = true;
+  const state = req as RestoreRequest;
+  let handedOff = false;
+  let guardHeld = true;
+  const releaseGuard = (): void => {
+    if (!guardHeld) return;
+    guardHeld = false;
+    restoreInProgress = false;
+  };
+  state.releaseRestoreGuard = releaseGuard;
+
+  const target = path.join(os.tmpdir(), `projectx-restore-upload-${crypto.randomUUID()}.zip`);
+  const cleanup = (): void => { void rm(target, { force: true }).catch(() => undefined); };
+  const out = createWriteStream(target);
+  let received = 0;
+  let settled = false;
+  const abortUpload = (status: number, message: string): void => {
+    if (settled) return;
+    settled = true;
+    req.unpipe(out);
+    out.destroy();
+    req.resume();
+    if (!res.headersSent && !res.destroyed) res.status(status).json({ message });
+    cleanup();
+    releaseGuard();
+  };
+
+  // 上传阶段一旦断连就中止并释放闸门：不能留给稍后的 finish 再调用 next()，
+  // 否则第二份恢复可能已经拿到闸门，第一份却又继续执行。
+  res.once("close", () => {
+    if (handedOff) return;
+    abortUpload(400, "上传中断，请重新选择备份文件");
+  });
+  req.on("data", (chunk: Buffer) => {
+    received += chunk.length;
+    if (received > RESTORE_ZIP_UPLOAD_LIMIT_BYTES) abortUpload(413, limitMessage);
+  });
+  req.on("aborted", () => abortUpload(400, "上传中断，请重新选择备份文件"));
+  req.on("error", () => abortUpload(400, "上传中断，请重新选择备份文件"));
+  out.on("error", (err) => {
+    console.error("[Restore] 备份文件落盘失败:", err);
+    abortUpload(500, "备份文件暂存失败，请稍后重试");
+  });
+  out.on("finish", () => {
+    if (settled) return;
+    settled = true;
+    handedOff = true;
+    state.restoreZipPath = target;
+    next();
+  });
+  req.pipe(out);
+};
+
+async function revokeAllRestoreSessions(): Promise<void> {
+  try {
+    const { authService } = await import("../services/AuthService");
+    authService.revokeAllTokens();
+  } catch (e) {
+    console.error("[Restore] 吊销恢复前会话失败:", e);
+  }
+}
+
+/**
+ * 先把备份里的 data 树复制到同卷暂存目录：复制失败（例如磁盘满）时数据库还没动，
+ * 直接中止恢复即可，不会出现「库已换、原卷 / 答案页 / 反馈附件缺失」。
+ */
+async function stageRestoredDataDir(bakDataDir: string, dataDir: string): Promise<string | null> {
+  if (!existsSync(bakDataDir)) return null;
+  const staging = path.join(path.dirname(dataDir), `answer-card.restore.${crypto.randomUUID()}`);
+  try {
+    await copyDirectory(bakDataDir, staging, () => true);
+    return staging;
+  } catch (err) {
+    await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+    throw err;
+  }
+}
+
+/** 库已经替换后用两次同卷 rename 换树；第二次失败时把旧树挪回去，避免只留下半套数据。 */
+async function swapRestoredDataDir(dataDir: string, staging: string | null, suffix: number): Promise<void> {
+  if (!staging) return;
+  const backupDir = path.join(path.dirname(dataDir), `answer-card.bak.${suffix}`);
+  const movedOld = existsSync(dataDir);
+  if (movedOld) await rename(dataDir, backupDir);
+  try {
+    await rename(staging, dataDir);
+  } catch (err) {
+    if (movedOld) {
+      try {
+        await rename(backupDir, dataDir);
+      } catch (restoreErr) {
+        console.error("[Restore] 换树失败后恢复旧数据目录也失败:", restoreErr);
+      }
+    }
+    throw err;
+  }
+}
+
+async function discardStagingDir(staging: string | null): Promise<void> {
+  if (!staging) return;
+  await rm(staging, { recursive: true, force: true }).catch((err) => {
+    console.warn("[Restore] 清理暂存数据目录失败:", err);
+  });
+}
+
+async function hasZipMagic(filePath: string): Promise<boolean> {
+  const handle = await open(filePath, "r");
+  try {
+    const head = Buffer.alloc(2);
+    const { bytesRead } = await handle.read(head, 0, 2, 0);
+    return bytesRead === 2 && head[0] === 0x50 && head[1] === 0x4b;
+  } finally {
+    await handle.close();
+  }
+}
 
 /**
  * 计算备份中包含的所有目录和文件大小
@@ -44,6 +189,29 @@ function getProjectXDbPath(): string {
 
 function getScannerDbPath(): string {
   return resolveScannerDbPath();
+}
+
+/** 只跳过已经单独备份的系统数据库及其 sidecar，不能按扩展名误伤反馈附件。 */
+function isSeparatelyBackedUpDbFile(filePath: string, dbPaths: string[]): boolean {
+  const resolved = path.resolve(filePath);
+  const comparable = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  return dbPaths.some((dbPath) => {
+    const db = path.resolve(dbPath);
+    const dbComparable = process.platform === "win32" ? db.toLowerCase() : db;
+    return comparable === dbComparable
+      || comparable === `${dbComparable}-shm`
+      || comparable === `${dbComparable}-wal`;
+  });
+}
+
+/** 任何 `_tmp` 临时目录与反馈 `_trash` 都不属于备份视图：前者可能有半截文件，
+ *  后者在备份前已按数据库收敛（仍存在的记录移回原位、无记录的残留删除）。 */
+function isDataTreeTransientPath(filePath: string, dataDir: string): boolean {
+  const rel = path.relative(path.resolve(dataDir), path.resolve(filePath));
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) return false;
+  const parts = rel.split(path.sep);
+  if (parts.includes("_tmp")) return true;
+  return parts[0] === "feedback" && parts[1] === "_trash";
 }
 
 /**
@@ -72,63 +240,74 @@ router.get("/backup", async (_req: Request, res: Response) => {
       files: [] as Array<{ name: string; size: number }>
     };
 
-    // 1. 备份 projectx.db（通过 VACUUM INTO 创建干净的副本）
     const projectxDbPath = getProjectXDbPath();
     const projectxBak = path.join(tmpDir, "projectx.db");
-    if (existsSync(projectxDbPath)) {
-      const db = getDatabase();
-      try {
-        const safeTarget = projectxBak.replace(/\\/g, "\\\\").replace(/'/g, "''");
-        db.exec(`VACUUM INTO '${safeTarget}'`);
-      } catch (err) {
-        // VACUUM INTO 可能不支持旧版 SQLite，降级为文件复制
-        console.warn("[Backup] VACUUM INTO failed, falling back to file copy:", err);
-        await copyFile(projectxDbPath, projectxBak);
-      }
-      const fstat = await stat(projectxBak);
-      metadata.files.push({ name: "projectx.db", size: fstat.size });
-    }
-
-    // 2. 备份 scanner.db
     const scannerDbPath = getScannerDbPath();
     const scannerBak = path.join(tmpDir, "scanner.db");
-    if (existsSync(scannerDbPath)) {
-      // scanner.db 使用独立连接，先关闭再复制
-      try {
-        closeDb();
-      } catch (err) {
-        console.warn("[Backup] 关闭 scanner DB 失败，继续备份（文件可能不一致）:", err);
-      }
-      await copyFile(scannerDbPath, scannerBak);
-      const fstat = await stat(scannerBak);
-      metadata.files.push({ name: "scanner.db", size: fstat.size });
-    }
-
-    // 3. 打包 data/answer-card/ 目录
     const dataDir = getDataDir();
     const dataBakDir = path.join(tmpDir, "data", "answer-card");
-    if (existsSync(dataDir)) {
-      await copyDirectory(dataDir, dataBakDir, (filePath: string) => {
-        // 跳过 .db 文件（已单独备份）
-        const base = path.basename(filePath);
-        if (base.endsWith(".db") || base.endsWith(".db-shm") || base.endsWith(".db-wal")) {
-          return false;
+
+    // 数据库快照与附件目录复制必须处于同一反馈视图：期间不允许提交或删除反馈，
+    // 否则快照里的附件记录可能在目录复制前被删除，备份成功却缺少文件。
+    await withFeedbackMutationLock(async () => {
+      // 先把 _trash 收敛到与数据库一致：仍存在的记录移回原位，已删记录的残骸清掉，
+      // 之后只复制正式附件目录，不会把删除残骸或悬空目录带进备份。
+      if (!(await reconcileFeedbackTrashLocked())) {
+        // 暂存目录没能与数据库对齐时直接中止：此时导出会留下指向缺失附件的元数据。
+        throw new Error("反馈暂存目录核对失败，已中止备份");
+      }
+
+      // 1. 备份 projectx.db（通过 VACUUM INTO 创建干净的副本）
+      if (existsSync(projectxDbPath)) {
+        const db = getDatabase();
+        try {
+          const safeTarget = projectxBak.replace(/\\/g, "\\\\").replace(/'/g, "''");
+          db.exec(`VACUUM INTO '${safeTarget}'`);
+        } catch (err) {
+          // VACUUM INTO 可能不支持旧版 SQLite，降级为文件复制
+          console.warn("[Backup] VACUUM INTO failed, falling back to file copy:", err);
+          await copyFile(projectxDbPath, projectxBak);
         }
-        return true;
-      });
-      const dirStat = await stat(dataBakDir);
-      // 估算大小
-      metadata.files.push({ name: "data/answer-card/", size: 0 });
-    }
+        const fstat = await stat(projectxBak);
+        metadata.files.push({ name: "projectx.db", size: fstat.size });
+      }
+
+      // 2. 备份 scanner.db
+      if (existsSync(scannerDbPath)) {
+        // scanner.db 使用独立连接，先关闭再复制
+        try {
+          closeDb();
+        } catch (err) {
+          console.warn("[Backup] 关闭 scanner DB 失败，继续备份（文件可能不一致）:", err);
+        }
+        await copyFile(scannerDbPath, scannerBak);
+        const fstat = await stat(scannerBak);
+        metadata.files.push({ name: "scanner.db", size: fstat.size });
+      }
+
+      // 3. 打包 data/answer-card/ 目录
+      if (existsSync(dataDir)) {
+        const separatelyBackedUp = [getProjectXDbPath(), getScannerDbPath()];
+        await copyDirectory(
+          dataDir,
+          dataBakDir,
+          (filePath: string) => !isSeparatelyBackedUpDbFile(filePath, separatelyBackedUp) && !isDataTreeTransientPath(filePath, dataDir)
+        );
+        metadata.files.push({ name: "data/answer-card/", size: 0 });
+      }
+    });
 
     // 4. 写入 metadata
     await writeFile(path.join(tmpDir, "metadata.json"), JSON.stringify(metadata, null, 2));
+    await assertBackupFitsRestoreBudget(tmpDir);
 
     // 5. 创建 ZIP（archiver v8 ESM: new ZipArchive）
     const archive = new ZipArchive({ zlib: { level: 6 } });
 
     archive.on("error", (err?: Error) => {
       console.error("[Backup] Archive error:", err?.message);
+      // 已经 pipe 到响应后无法再改状态码：直接销毁连接，避免客户端把截断 ZIP 当成功。
+      if (!res.destroyed) res.destroy(err);
     });
 
     // 将 archive 管道到响应
@@ -150,9 +329,11 @@ router.get("/backup", async (_req: Request, res: Response) => {
       archive.file(scannerBak, { name: "scanner.db" });
     }
 
-    // 添加 data 目录
+    // 添加 data 目录：只留一个数据根标记，恢复侧靠它判断备份是否包含 data/answer-card；
+    // 每个反馈 UUID 目录不再单独写条目，避免占用恢复条目预算。
     if (existsSync(dataBakDir)) {
-      archive.directory(dataBakDir, "data/answer-card");
+      archive.append(Buffer.alloc(0), { name: "data/answer-card/" });
+      await addFilesToArchive(archive, dataBakDir, "data/answer-card");
     }
 
     await archive.finalize();
@@ -164,6 +345,8 @@ router.get("/backup", async (_req: Request, res: Response) => {
     cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     if (!res.headersSent) {
       respondOpsFailure(res, error, "导出失败");
+    } else if (!res.destroyed) {
+      res.destroy(error instanceof Error ? error : undefined);
     }
   }
 });
@@ -172,31 +355,44 @@ router.get("/backup", async (_req: Request, res: Response) => {
  * POST /api/db/restore
  * 导入 ZIP 恢复数据（raw binary upload，不走 multipart）
  */
-router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
-  const dialect = detectDialect();
-  if (dialect === "mariadb") {
-    await restoreMariadb(req, res);
-    return;
+router.post("/restore", receiveRestoreZip, async (req, res) => {
+  try {
+    await restoreUploadedZip(req, res);
+  } finally {
+    (req as RestoreRequest).releaseRestoreGuard?.();
   }
+});
 
-  const zipBuffer = req.body as Buffer;
-  if (!zipBuffer || !Buffer.isBuffer(zipBuffer) || zipBuffer.length === 0) {
+async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
+  const zipPath = (req as RestoreRequest).restoreZipPath;
+  if (!zipPath) {
     res.status(400).json({ message: "请选择 .zip 备份文件。" });
     return;
   }
+  const dialect = detectDialect();
+  if (dialect === "mariadb") {
+    await restoreMariadb(req, res, zipPath);
+    return;
+  }
 
-  // 快速校验 ZIP 魔数
-  if (zipBuffer[0] !== 0x50 || zipBuffer[1] !== 0x4b) {
+  if (!(await hasZipMagic(zipPath).catch(() => false))) {
+    await rm(zipPath, { force: true }).catch(() => undefined);
     res.status(400).json({ message: "所选文件不是有效的 ZIP 备份，请重新选择。" });
     return;
   }
 
   const tmpDir = path.join(os.tmpdir(), `projectx-restore-${crypto.randomUUID()}`);
+  const dataDir = getDataDir();
+  const bakDataDir = path.join(tmpDir, "data", "answer-card");
+  let staging: string | null = null;
+  let dbReplaced = false;
+  let endMaintenance: (() => void) | null = null;
   try {
     await mkdir(tmpDir, { recursive: true });
 
-    // 使用 adm-zip 解压（条目名越界与解压预算见 services/restoreZip.ts，安全 R43）
-    extractZipWithinBudget(zipBuffer, tmpDir);
+    // 逐条目流式解压（条目名越界与解压预算见 services/restoreZip.ts，安全 R43）
+    await extractZipFileWithinBudget(zipPath, tmpDir);
+    await rm(zipPath, { force: true }).catch(() => undefined);
 
     // 验证 metadata
     const metadataPath = path.join(tmpDir, "metadata.json");
@@ -212,79 +408,97 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
       return;
     }
 
-    // 1. 备份当前数据
-    const backupSuffix = Date.now();
-    const projectxDbPath = getProjectXDbPath();
-    const scannerDbPath = getScannerDbPath();
-    const dataDir = getDataDir();
+    // 先把备份里的 data 树复制到同卷暂存目录；复制失败时数据库还没动，整体中止即可。
+    staging = await stageRestoredDataDir(bakDataDir, dataDir);
 
-    // 备份现有 projectx.db
-    if (existsSync(projectxDbPath)) {
-      await copyFile(projectxDbPath, projectxDbPath + `.bak.${backupSuffix}`);
+    // 恢复会替换数据库与 data/answer-card（含 feedback/）：与反馈提交 / 删除共用同一把锁，
+    // 避免并发上传把附件写进即将被移走的目录，或删除在恢复中途改动附件树。
+    // 同时关闭新的 multipart 上传；已经在写 _tmp 的请求等它结束后再恢复。
+    endMaintenance = beginFeedbackMaintenance();
+    if (activeFeedbackTempFiles().size > 0) {
+      await cleanupDir(tmpDir);
+      res.status(409).json({ message: "有反馈附件正在上传，请稍后重试恢复" });
+      return;
     }
+    await withFeedbackMutationLock(async () => {
+      // 1. 备份当前数据
+      const backupSuffix = Date.now();
+      const projectxDbPath = getProjectXDbPath();
+      const scannerDbPath = getScannerDbPath();
 
-    // 备份现有 scanner.db
-    if (existsSync(scannerDbPath)) {
-      await copyFile(scannerDbPath, scannerDbPath + `.bak.${backupSuffix}`);
-    }
+      // 备份现有 projectx.db
+      if (existsSync(projectxDbPath)) {
+        await copyFile(projectxDbPath, projectxDbPath + `.bak.${backupSuffix}`);
+      }
 
-    // 2. 关闭数据库连接（关键路径：主 DB 关闭失败必须中止，否则后续 copyFile 会读到锁定/不一致的 DB）
-    try {
-      closeDatabase();  // 主 DB
-    } catch (e) {
-      console.error("[Restore] closeDatabase 失败，中止恢复:", e);
-      throw new Error(`关闭主数据库失败，无法安全恢复: ${e instanceof Error ? e.message : e}`);
-    }
-    try {
-      closeDb();  // scanner DB（非核心，失败仅 warn 继续）
-    } catch (e) {
-      console.warn("[Restore] 关闭 scanner DB 失败（继续恢复）:", e);
-    }
+      // 备份现有 scanner.db
+      if (existsSync(scannerDbPath)) {
+        await copyFile(scannerDbPath, scannerDbPath + `.bak.${backupSuffix}`);
+      }
 
-    // 3. 替换文件（先清理旧 WAL/SHM，避免残留日志污染新库）
-    for (const suffix of ["-wal", "-shm"]) {
-      const sidecar = projectxDbPath + suffix;
-      if (existsSync(sidecar)) {
-        try { rmSync(sidecar, { force: true }); } catch (e) {
-          console.warn(`[Restore] 清理 ${suffix} 失败（继续）:`, e);
+      // 2. 关闭数据库连接（关键路径：主 DB 关闭失败必须中止，否则后续 copyFile 会读到锁定/不一致的 DB）
+      try {
+        closeDatabase();  // 主 DB
+      } catch (e) {
+        console.error("[Restore] closeDatabase 失败，中止恢复:", e);
+        throw new Error(`关闭主数据库失败，无法安全恢复: ${e instanceof Error ? e.message : e}`);
+      }
+      try {
+        closeDb();  // scanner DB（非核心，失败仅 warn 继续）
+      } catch (e) {
+        console.warn("[Restore] 关闭 scanner DB 失败（继续恢复）:", e);
+      }
+
+      // 3. 替换文件（先清理旧 WAL/SHM，避免残留日志污染新库）
+      for (const suffix of ["-wal", "-shm"]) {
+        const sidecar = projectxDbPath + suffix;
+        if (existsSync(sidecar)) {
+          try { rmSync(sidecar, { force: true }); } catch (e) {
+            console.warn(`[Restore] 清理 ${suffix} 失败（继续）:`, e);
+          }
         }
       }
-    }
-    await copyFile(projectxBak, projectxDbPath);
+      await copyFile(projectxBak, projectxDbPath);
+      dbReplaced = true;
 
-    // 恢复后重新引导管理员账号（#185 安全模型 + R01 整改）：先删掉当前引导文件，
-    // 让 ensureDefaultAdmin() 以「文件缺失」判定口令事实源不可用——
-    // 还原出的库若仍停留在引导态，会换发一个新的随机一次性口令并写入 bootstrap-admin.txt；
-    // 若还原出的库已完成首次改密，则口令与改密标记都不受影响（只清理泄露过的引导文件）。
-    try {
-      removeBootstrapAdminFile();
-      const rebootstrap = await ensureDefaultAdmin();
-      if (rebootstrap.rotated) {
-        // 换发了新口令，说明还原前的管理员会话已不再可信，全部吊销（与启动时的处理一致）。
-        const { authService } = await import("../services/AuthService");
-        authService.revokeUserTokens(rebootstrap.adminId);
+      // 恢复后重新引导管理员账号（#185 安全模型 + R01 整改）：先删掉当前引导文件，
+      // 让 ensureDefaultAdmin() 以「文件缺失」判定口令事实源不可用——
+      // 还原出的库若仍停留在引导态，会换发一个新的随机一次性口令并写入 bootstrap-admin.txt；
+      // 若还原出的库已完成首次改密，则口令与改密标记都不受影响（只清理泄露过的引导文件）。
+      try {
+        removeBootstrapAdminFile();
+        await ensureDefaultAdmin();
+      } catch (e) {
+        console.warn("[Restore] 管理员再引导失败（可重启服务自动修复）:", e);
       }
-    } catch (e) {
-      console.warn("[Restore] 管理员再引导失败（可重启服务自动修复）:", e);
-    }
 
-    // 恢复 scanner.db（如果有）
-    const scannerBak = path.join(tmpDir, "scanner.db");
-    if (existsSync(scannerBak)) {
-      await copyFile(scannerBak, scannerDbPath);
-    }
+      // 恢复替换了整库账号，恢复前的 Token / 媒体票据会按数字 userId 命中新账号：
+      // 无条件吊销全部会话与票据，所有用户都必须重新登录。
+      await revokeAllRestoreSessions();
 
-    // 恢复 data/answer-card/ 目录
-    const bakDataDir = path.join(tmpDir, "data", "answer-card");
-    if (existsSync(bakDataDir)) {
-      // 先备份当前 data
-      const dataBakDir = path.join(path.dirname(dataDir), `answer-card.bak.${backupSuffix}`);
-      if (existsSync(dataDir)) {
-        await moveDir(dataDir, dataBakDir);
+      // 恢复 scanner.db（如果有）
+      const scannerBak = path.join(tmpDir, "scanner.db");
+      if (existsSync(scannerBak)) {
+        await copyFile(scannerBak, scannerDbPath);
       }
-      // 复制新 data
-      await copyDirectory(bakDataDir, dataDir, () => true);
-    }
+
+      // 恢复 data/answer-card/ 目录：暂存树已在库替换前复制并校验，这里只做两次同卷 rename。
+      await swapRestoredDataDir(dataDir, staging, backupSuffix);
+      // 备份不含 feedback/_tmp：替换数据树后让反馈模块按新目录重新初始化。
+      resetFeedbackRuntimeStateAfterRestore();
+
+      // 恢复可能替换 roles 表：先清空启动时的权限缓存，再按新库重载；失败时缓存保持为空，
+      // 回落到内置默认角色，不会继续用旧权限矩阵放行。
+      invalidatePermissionCache();
+      try {
+        await initPermissionCache();
+      } catch (e) {
+        console.error("[Restore] 重新加载角色权限失败，已回落到默认权限:", e);
+      }
+
+      // 在锁内失效：放开锁之前新基线已经生效，后到的上传不会读到恢复前的占盘。
+      invalidateFeedbackStorageUsage();
+    });
 
     // 清理临时文件
     await cleanupDir(tmpDir);
@@ -297,8 +511,17 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
     console.error("[Restore] Import failed:", error);
     await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     respondOpsFailure(res, error, "导入失败");
+  } finally {
+    // 校验失败（缺 metadata / projectx.db）、维护闸门 409 与异常路径都要清掉解压目录。
+    await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
+    await discardStagingDir(staging);
+    await rm(zipPath, { force: true }).catch(() => undefined);
+    endMaintenance?.();
+    if (dbReplaced) await revokeAllRestoreSessions();
+    // 附件树已被替换（或可能被部分移动），用量基线必须重扫。
+    invalidateFeedbackStorageUsage();
   }
-});
+}
 
 /**
  * POST /api/db/import-demo
@@ -422,35 +645,47 @@ async function backupMariadb(res: Response): Promise<void> {
       args.push(`--password=${password}`);
     }
 
-    try {
-      await execFileAsync("mysqldump", args, { timeout: 300_000 });
-    } catch (err: any) {
-      // 也尝试 mariadb-dump
-      console.warn("[Backup] mysqldump failed, trying mariadb-dump:", err.message);
-      try {
-        await execFileAsync("mariadb-dump", args, { timeout: 300_000 });
-      } catch (err2: any) {
-        res.status(500).json({
-          // 报错里的 `--result-file=<绝对路径>` 与账号信息不外发（安全 R25）
-          message: `mysqldump 执行失败: ${sanitizeOpsMessage(err2?.message, { fallback: "导出失败" })}。请确保已安装 MariaDB 客户端工具。`,
-        });
-        return;
-      }
-    }
-
-    const fstat = await stat(dumpFile);
-    console.log(`[Backup] MariaDB dump: ${(fstat.size / 1024 / 1024).toFixed(1)} MB`);
-
     // MariaDB 模式下答题卡原卷（papers/）与教师答案页（answer-keys/）仍落磁盘，
     // 只导 dump.sql 会让恢复后的 exams 指向已不存在的文件（学生端原卷/答案页全空）。
     const dataDir = getDataDir();
     const dataBakDir = path.join(tmpDir, "data", "answer-card");
-    if (existsSync(dataDir)) {
-      await copyDirectory(dataDir, dataBakDir, (filePath: string) => {
-        const base = path.basename(filePath);
-        return !(base.endsWith(".db") || base.endsWith(".db-shm") || base.endsWith(".db-wal"));
-      });
-    }
+
+    // mysqldump 与附件目录复制必须处于同一反馈视图：期间不允许提交或删除反馈，
+    // 否则 dump 里的附件记录可能在目录复制前被删除，备份成功却缺少文件。
+    await withFeedbackMutationLock(async () => {
+      if (!(await reconcileFeedbackTrashLocked())) {
+        // 暂存目录没能与数据库对齐时直接中止：此时导出会留下指向缺失附件的元数据。
+        throw new Error("反馈暂存目录核对失败，已中止备份");
+      }
+      try {
+        await execFileAsync("mysqldump", args, { timeout: 300_000 });
+      } catch (err: any) {
+        // 也尝试 mariadb-dump
+        console.warn("[Backup] mysqldump failed, trying mariadb-dump:", err.message);
+        try {
+          await execFileAsync("mariadb-dump", args, { timeout: 300_000 });
+        } catch (err2: any) {
+          res.status(500).json({
+            // 报错里的 `--result-file=<绝对路径>` 与账号信息不外发（安全 R25）
+            message: `mysqldump 执行失败: ${sanitizeOpsMessage(err2?.message, { fallback: "导出失败" })}。请确保已安装 MariaDB 客户端工具。`,
+          });
+          return;
+        }
+      }
+
+      if (existsSync(dataDir)) {
+        const separatelyBackedUp = [getProjectXDbPath(), getScannerDbPath()];
+        await copyDirectory(
+          dataDir,
+          dataBakDir,
+          (filePath: string) => !isSeparatelyBackedUpDbFile(filePath, separatelyBackedUp) && !isDataTreeTransientPath(filePath, dataDir)
+        );
+      }
+    });
+    if (res.headersSent) return;
+
+    const fstat = await stat(dumpFile);
+    console.log(`[Backup] MariaDB dump: ${(fstat.size / 1024 / 1024).toFixed(1)} MB`);
 
     // 元数据
     const metadata = {
@@ -463,18 +698,23 @@ async function backupMariadb(res: Response): Promise<void> {
       ]
     };
     await writeFile(path.join(tmpDir, "metadata.json"), JSON.stringify(metadata, null, 2));
+    await assertBackupFitsRestoreBudget(tmpDir);
 
     // 创建 ZIP 响应
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''ProjectX_backup_${timestamp}.zip`);
 
     const archive = new ZipArchive({ zlib: { level: 6 } });
-    archive.on("error", (err?: Error) => { console.error("[Backup] Archive error:", err?.message); });
+    archive.on("error", (err?: Error) => {
+      console.error("[Backup] Archive error:", err?.message);
+      if (!res.destroyed) res.destroy(err);
+    });
     archive.pipe(res);
     archive.file(path.join(tmpDir, "metadata.json"), { name: "metadata.json" });
     archive.file(dumpFile, { name: "dump.sql" });
     if (existsSync(dataBakDir)) {
-      archive.directory(dataBakDir, "data/answer-card");
+      archive.append(Buffer.alloc(0), { name: "data/answer-card/" });
+      await addFilesToArchive(archive, dataBakDir, "data/answer-card");
     }
     await archive.finalize();
 
@@ -484,6 +724,8 @@ async function backupMariadb(res: Response): Promise<void> {
     cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     if (!res.headersSent) {
       respondOpsFailure(res, error, "导出失败");
+    } else if (!res.destroyed) {
+      res.destroy(error instanceof Error ? error : undefined);
     }
   }
 }
@@ -491,13 +733,9 @@ async function backupMariadb(res: Response): Promise<void> {
 /**
  * MariaDB 恢复 — 上传 ZIP 含 dump.sql → mysql 导入
  */
-async function restoreMariadb(req: Request, res: Response): Promise<void> {
-  const zipBuffer = req.body as Buffer;
-  if (!zipBuffer || !Buffer.isBuffer(zipBuffer) || zipBuffer.length === 0) {
-    res.status(400).json({ message: "请选择 .zip 备份文件。" });
-    return;
-  }
-  if (zipBuffer[0] !== 0x50 || zipBuffer[1] !== 0x4b) {
+async function restoreMariadb(req: Request, res: Response, zipPath: string): Promise<void> {
+  if (!(await hasZipMagic(zipPath).catch(() => false))) {
+    await rm(zipPath, { force: true }).catch(() => undefined);
     res.status(400).json({ message: "所选文件不是有效的 ZIP 备份，请重新选择。" });
     return;
   }
@@ -505,7 +743,8 @@ async function restoreMariadb(req: Request, res: Response): Promise<void> {
   const tmpDir = path.join(os.tmpdir(), `projectx-restore-${crypto.randomUUID()}`);
   try {
     await mkdir(tmpDir, { recursive: true });
-    extractZipWithinBudget(zipBuffer, tmpDir);
+    await extractZipFileWithinBudget(zipPath, tmpDir);
+    await rm(zipPath, { force: true }).catch(() => undefined);
 
     const dumpFile = path.join(tmpDir, "dump.sql");
     if (!existsSync(dumpFile)) {
@@ -525,44 +764,75 @@ async function restoreMariadb(req: Request, res: Response): Promise<void> {
     if (password) args.push(`--password=${password}`);
     args.push(database);
 
-    const dumpContent = await import("node:fs").then(fs => fs.promises.readFile(dumpFile, "utf8"));
-
-    // 使用 mysql 客户端导入
+    // 使用 mysql 客户端导入；dump.sql 逐块送入 stdin，不再先把整份 SQL 读进内存。
     const { execFile } = await import("node:child_process");
 
+    const dataDir = getDataDir();
+    const bakDataDir = path.join(tmpDir, "data", "answer-card");
+    let staging: string | null = null;
+    let restoreImportStarted = false;
+    let endMaintenance: (() => void) | null = null;
     try {
-      // 将 dump.sql 通过 stdin 传给 mysql（使用参数数组，避免 shell 命令注入）
-      await new Promise<void>((resolve, reject) => {
-        const child = execFile("mysql", args, { maxBuffer: 512 * 1024 * 1024 }, (err) => {
-          if (err) reject(err); else resolve();
+      // 先把备份里的 data 树复制到同卷暂存目录：复制失败（磁盘满等）时 SQL 还没导入，
+      // 直接中止即可，不会出现「库已换、原卷 / 答案页 / 反馈附件缺失」。
+      staging = await stageRestoredDataDir(bakDataDir, dataDir);
+
+      // 导入数据库与替换 data 目录同样与反馈写操作互斥：否则并发提交可能在 SQL 导入后
+      // 再写入附件行，随后其目录被换走，留下指向缺失文件的元数据。
+      // 同时关闭新的 multipart 上传；已经在写 _tmp 的请求等它结束后再恢复。
+      endMaintenance = beginFeedbackMaintenance();
+      if (activeFeedbackTempFiles().size > 0) {
+        await cleanupDir(tmpDir);
+        res.status(409).json({ message: "有反馈附件正在上传，请稍后重试恢复" });
+        return;
+      }
+      await withFeedbackMutationLock(async () => {
+        // 将 dump.sql 通过 stdin 传给 mysql（使用参数数组，避免 shell 命令注入）
+        restoreImportStarted = true;
+        await new Promise<void>((resolve, reject) => {
+          const child = execFile("mysql", args, { timeout: 300_000, killSignal: "SIGKILL" }, (err) => {
+            if (err) reject(err); else resolve();
+          });
+          const input = createReadStream(dumpFile);
+          input.on("error", (err) => {
+            child.kill();
+            reject(err);
+          });
+          // mysql 提前退出时 stdin 会 EPIPE；真正的失败原因由 execFile 回调报告。
+          child.stdin!.on("error", () => undefined);
+          input.pipe(child.stdin!);
         });
-        child.stdin!.write(dumpContent);
-        child.stdin!.end();
+
+        // SQL 导入成功即已替换账号库：先吊销恢复前的全部会话，再做可失败的换树 / 再引导。
+        await revokeAllRestoreSessions();
+
+        // 恢复磁盘资产（原卷 / 教师答案页）：暂存树已在 SQL 导入前复制完成，
+        // 这里只做两次同卷 rename；备份里没有该目录时保持现状（兼容旧备份）。
+        await swapRestoredDataDir(dataDir, staging, Date.now());
+        // 备份不含 feedback/_tmp：替换数据树后让反馈模块按新目录重新初始化。
+        resetFeedbackRuntimeStateAfterRestore();
+
+        // 与 SQLite 还原分支同口径（#185 + R01）：还原出来的库可能带着另一台机器的
+        // 引导态口令，本机 bootstrap-admin.txt 会对不上而把管理员锁死。这里主动清理并
+        // 重新引导：引导态库换发新的随机口令写回引导文件；已改密库口令与标记都不受影响。
+        try {
+          removeBootstrapAdminFile();
+          await ensureDefaultAdmin();
+        } catch (e) {
+          console.warn("[Restore] MariaDB 管理员再引导失败（可重启服务自动修复）:", e);
+        }
+
+        // 恢复可能替换 roles 表：清空启动时的权限缓存并按新库重载。
+        invalidatePermissionCache();
+        try {
+          await initPermissionCache();
+        } catch (e) {
+          console.error("[Restore] MariaDB 重新加载角色权限失败，已回落到默认权限:", e);
+        }
+
+        // 在锁内失效：放开锁之前新基线已经生效，后到的上传不会读到恢复前的占盘。
+        invalidateFeedbackStorageUsage();
       });
-
-      // 恢复磁盘资产（原卷 / 教师答案页）：备份里没有该目录时保持现状（兼容旧备份）
-      const bakDataDir = path.join(tmpDir, "data", "answer-card");
-      if (existsSync(bakDataDir)) {
-        const dataDir = getDataDir();
-        if (existsSync(dataDir)) {
-          await moveDir(dataDir, path.join(path.dirname(dataDir), `answer-card.bak.${Date.now()}`));
-        }
-        await copyDirectory(bakDataDir, dataDir, () => true);
-      }
-
-      // 与 SQLite 还原分支同口径（#185 + R01）：还原出来的库可能带着另一台机器的
-      // 引导态口令，本机 bootstrap-admin.txt 会对不上而把管理员锁死。这里主动清理并
-      // 重新引导：引导态库换发新的随机口令写回引导文件；已改密库口令与标记都不受影响。
-      try {
-        removeBootstrapAdminFile();
-        const rebootstrap = await ensureDefaultAdmin();
-        if (rebootstrap.rotated) {
-          const { authService } = await import("../services/AuthService");
-          authService.revokeUserTokens(rebootstrap.adminId);
-        }
-      } catch (e) {
-        console.warn("[Restore] MariaDB 管理员再引导失败（可重启服务自动修复）:", e);
-      }
 
       await cleanupDir(tmpDir);
       res.json({ ok: true, message: "数据已恢复！请重启服务器以使更改完全生效。" });
@@ -571,11 +841,83 @@ async function restoreMariadb(req: Request, res: Response): Promise<void> {
       await cleanupDir(tmpDir).catch((e) => console.warn("[Backup] cleanupDir 异常:", e));
       // mysql 客户端的报错自带 dump 文件绝对路径与 `user@host`，只进日志（安全 R25）
       respondOpsFailure(res, err, "数据库导入失败，请查看服务端日志中的 [Restore] 记录");
+    } finally {
+      await discardStagingDir(staging);
+      if (restoreImportStarted) await revokeAllRestoreSessions();
+      endMaintenance?.();
+      // 附件树可能已被部分替换，缓存基线一律重扫。
+      invalidateFeedbackStorageUsage();
     }
   } catch (error) {
     console.error("[Restore] MariaDB import failed:", error);
     await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     respondOpsFailure(res, error, "导入失败");
+  } finally {
+    // 缺 dump.sql 的 400 与解压失败路径同样不能留下解压目录。
+    await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
+    // 交出请求后 ZIP 由恢复任务负责删除：客户端中途断开不会提前把文件删掉。
+    await rm(zipPath, { force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * 备份预算前置校验：导出成功但恢复时被条目数 / 体积 / 单条上限拒绝的 ZIP 没有意义。
+ * 答案页、答题卡资源、版式与数据库没有独立聚合配额，只能在导出前按实际产出兜底。
+ */
+type BackupMeasure = { files: number; bytes: number; largest: number };
+
+async function measureFilesInDir(dir: string): Promise<BackupMeasure> {
+  const out: BackupMeasure = { files: 0, bytes: 0, largest: 0 };
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const child = await measureFilesInDir(full);
+      out.files += child.files;
+      out.bytes += child.bytes;
+      out.largest = Math.max(out.largest, child.largest);
+    } else if (entry.isFile()) {
+      const size = (await stat(full)).size;
+      out.files += 1;
+      out.bytes += size;
+      out.largest = Math.max(out.largest, size);
+    }
+  }
+  return out;
+}
+
+async function assertBackupFitsRestoreBudget(stagingDir: string): Promise<void> {
+  const measure = await measureFilesInDir(stagingDir);
+  const entries = measure.files + 1; // data/answer-card/ 根目录标记
+  if (entries > MAX_RESTORE_ZIP_ENTRIES) {
+    throw new Error(
+      `备份将包含 ${entries} 个条目，超过恢复预算 ${MAX_RESTORE_ZIP_ENTRIES} 个；请先清理原卷、答案页或反馈附件后再导出`
+    );
+  }
+  if (measure.largest > MAX_RESTORE_ZIP_ENTRY_BYTES) {
+    throw new Error(
+      `备份内单个文件 ${Math.round(measure.largest / MEBIBYTE)} MiB，超过恢复单条预算 `
+      + `${Math.round(MAX_RESTORE_ZIP_ENTRY_BYTES / MEBIBYTE)} MiB；请先清理或拆分该文件后再导出`
+    );
+  }
+  if (measure.bytes > MAX_RESTORE_ZIP_TOTAL_BYTES) {
+    throw new Error(
+      `备份累计约 ${Math.round(measure.bytes / MEBIBYTE)} MiB，超过恢复预算 `
+      + `${Math.round(MAX_RESTORE_ZIP_TOTAL_BYTES / MEBIBYTE)} MiB；请先清理数据或多留恢复预算后再导出`
+    );
+  }
+}
+
+/**
+ * 只把文件加入 ZIP：目录条目会额外占用恢复侧的条目预算，而解压会自行创建父目录。
+ * 这样反馈附件数上限才真正等于备份里的反馈条目数。
+ */
+async function addFilesToArchive(archive: ZipArchive, dir: string, dest: string): Promise<void> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    const name = `${dest}/${entry.name}`;
+    if (entry.isDirectory()) await addFilesToArchive(archive, full, name);
+    else if (entry.isFile()) archive.file(full, { name });
   }
 }
 
@@ -598,20 +940,6 @@ async function copyDirectory(
     } else if (entry.isFile()) {
       await copyFile(srcPath, destPath);
     }
-  }
-}
-
-/**
- * 移动目录（重命名）
- */
-async function moveDir(src: string, dest: string): Promise<void> {
-  try {
-    await copyDirectory(src, dest, () => true);
-    await rm(src, { recursive: true, force: true });
-  } catch (err) {
-    // 移动失败：保留原目录，但向上抛错让调用方感知（恢复流程中 moveDir 失败应中止）
-    console.warn(`[Backup] moveDir 失败 (src=${src}, dest=${dest}):`, err);
-    throw err;
   }
 }
 

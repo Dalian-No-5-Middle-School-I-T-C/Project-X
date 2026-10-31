@@ -1,0 +1,371 @@
+/**
+ * 反馈附件聚合容量（#357）。
+ *
+ * 单次请求的 15 × 100 MiB 只是「一次」的上限：管理员可以反复提交，每次都永久占盘。
+ * 这里按 `data/answer-card/feedback/` 整个目录的实际占盘做聚合闸门（排除 `_tmp` 暂存）。
+ * 每个请求初始预留为 0；multer 存储引擎在写入文件字节时按进度申请预留，文本字段不占配额，
+ * 文件写入受预留背压，声明了 Content-Length 也不会提前锁住整包额度。「测容量 → 移动/入库」
+ * 串行执行，避免两个并发上传各自看到旧容量后一起越界。
+ *
+ * 默认 8 GiB，可用 PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB 调整，天花板 100 GiB。
+ */
+import { readdir, stat } from "node:fs/promises";
+import path from "node:path";
+import { resolveFeedbackAttachmentFileLimit, resolveFeedbackStorageMib } from "../../shared/feedbackLimits";
+import { withAnswerCardDataMutationLock } from "./answerCardDataLock";
+
+const MEBIBYTE = 1024 * 1024;
+const MIN_CHUNKED_STEP_BYTES = 256 * 1024;
+const MAX_CHUNKED_STEP_BYTES = 8 * MEBIBYTE;
+
+const resolvedStorage = resolveFeedbackStorageMib(process.env);
+for (const notice of resolvedStorage.notices) console.warn(`[feedback-storage] ${notice}`);
+const resolvedFileLimit = resolveFeedbackAttachmentFileLimit(process.env);
+for (const notice of resolvedFileLimit.notices) console.warn(`[feedback-storage] ${notice}`);
+
+export const MAX_FEEDBACK_STORAGE_BYTES = resolvedStorage.mib * MEBIBYTE;
+/** 附件总数上限：与恢复侧的条目预算对齐，避免合法备份条目数超出解压预算。 */
+export const MAX_FEEDBACK_ATTACHMENT_FILES = resolvedFileLimit.files;
+
+let feedbackMaintenanceDepth = 0;
+
+/**
+ * 恢复备份期间关闭新的 multipart 上传：恢复会替换整个 data 目录，正在写入的 `_tmp`
+ * 不能被连同旧目录一起移走。返回幂等释放函数，调用方必须在 finally 里释放。
+ */
+export function beginFeedbackMaintenance(): () => void {
+  feedbackMaintenanceDepth += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    feedbackMaintenanceDepth = Math.max(0, feedbackMaintenanceDepth - 1);
+  };
+}
+
+export function isFeedbackMaintenanceActive(): boolean {
+  return feedbackMaintenanceDepth > 0;
+}
+
+/** 保留旧名字给反馈路由使用；底层与原卷 / 答案页删除、备份 / 恢复共用同一把锁。 */
+export const withFeedbackMutationLock = withAnswerCardDataMutationLock;
+
+/** chunked 每次追加预留的步长：约为总配额的 1/32，最小 256 KiB、最大 8 MiB。 */
+export function chunkedReservationStep(): number {
+  return Math.min(
+    MAX_CHUNKED_STEP_BYTES,
+    Math.max(MIN_CHUNKED_STEP_BYTES, Math.floor(MAX_FEEDBACK_STORAGE_BYTES / 32))
+  );
+}
+
+export class FeedbackStorageQuotaError extends Error {
+  readonly code = "FEEDBACK_STORAGE_QUOTA_EXCEEDED";
+
+  constructor() {
+    super("反馈附件总容量已达上限，暂时无法上传附件；可以先提交不带附件的内容");
+    this.name = "FeedbackStorageQuotaError";
+  }
+}
+
+/** 目录读不出来时不能当成 0：宁可拒绝上传，也不能在错误基线上放行。 */
+export class FeedbackStorageUnavailableError extends Error {
+  readonly code = "FEEDBACK_STORAGE_UNAVAILABLE";
+
+  constructor() {
+    super("无法统计反馈附件容量，已拒绝本次上传，请稍后重试");
+    this.name = "FeedbackStorageUnavailableError";
+  }
+}
+
+export interface FeedbackStorageReservation {
+  /** 当前已预留的字节数；chunked 上传会随接收进度增长。 */
+  readonly bytes: number;
+  /** 本请求最多可预留的字节数。 */
+  readonly limit: number;
+  /** 保证预留至少覆盖到 totalBytes（并发文件共用同一请求时按累计目标幂等补齐）。
+   *  容量不够时抛 FeedbackStorageQuotaError；没有可追加容量但已覆盖时返回 false/true。 */
+  ensureBytes(totalBytes: number): Promise<boolean>;
+  /** 幂等释放；必须在本请求的 _tmp 文件全部移走或删除之后调用。 */
+  release(): void;
+}
+
+async function directoryBytes(dir: string, skipDir?: string): Promise<number> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (err: any) {
+    if (err?.code === "ENOENT") return 0; // 目录还不存在（尚未上传过附件）
+    throw new FeedbackStorageUnavailableError();
+  }
+  const skip = skipDir ? path.resolve(skipDir) : null;
+  let total = 0;
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
+    const full = path.join(dir, entry.name);
+    if (skip && path.resolve(full) === skip) continue;
+    if (entry.isDirectory()) {
+      total += await directoryBytes(full, skipDir);
+    } else if (entry.isFile()) {
+      try {
+        total += (await stat(full)).size;
+      } catch (err: any) {
+        if (err?.code === "ENOENT") continue; // 统计期间被并发删除
+        throw new FeedbackStorageUnavailableError();
+      }
+    }
+  }
+  return total;
+}
+
+const ORPHAN_TMP_GRACE_MS = 10 * 60_000;
+
+/** 清理失败、预留已经释放的临时文件：按实际占盘继续计入准入，直到确认删除。 */
+const leakedTempFiles = new Set<string>();
+const activeTempFiles = new Set<string>();
+
+export function markActiveFeedbackTempFile(filePath: string): void {
+  activeTempFiles.add(path.resolve(filePath));
+}
+
+export function unmarkActiveFeedbackTempFile(filePath: string): void {
+  activeTempFiles.delete(path.resolve(filePath));
+}
+
+export function activeFeedbackTempFiles(): ReadonlySet<string> {
+  return activeTempFiles;
+}
+
+export function markFeedbackTempFileLeaked(filePath: string): void {
+  const resolved = path.resolve(filePath);
+  activeTempFiles.delete(resolved);
+  leakedTempFiles.add(resolved);
+  invalidateFeedbackStorageUsage();
+}
+
+async function leakedTempBytes(): Promise<number> {
+  let total = 0;
+  for (const filePath of [...leakedTempFiles]) {
+    try {
+      total += (await stat(filePath)).size;
+    } catch (err: any) {
+      if (err?.code === "ENOENT") {
+        leakedTempFiles.delete(filePath);
+        continue;
+      }
+      throw new FeedbackStorageUnavailableError();
+    }
+  }
+  return total;
+}
+
+/** 准入核算：永久占盘 + 超过宽限期的孤儿临时件 + 清理失败的临时件 + 其他请求的预留。
+ *  在途 _tmp 由各自的预留覆盖，不论修改时间都不再按占盘加一次。
+ *  上传没有请求体超时，不能靠 10 分钟宽限期把慢请求当成孤儿。 */
+async function admissionUsage(feedbackRoot: string, tmpDir: string): Promise<number> {
+  let total = await directoryBytes(feedbackRoot, tmpDir);
+  total += await leakedTempBytes();
+  let entries;
+  try {
+    entries = await readdir(tmpDir, { withFileTypes: true });
+  } catch (err: any) {
+    if (err?.code === "ENOENT") return total;
+    throw new FeedbackStorageUnavailableError();
+  }
+  const now = Date.now();
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const full = path.join(tmpDir, entry.name);
+    const resolved = path.resolve(full);
+    if (leakedTempFiles.has(resolved)) continue;
+    if (activeTempFiles.has(resolved)) continue; // 活跃上传由各自预留覆盖
+    try {
+      const info = await stat(full);
+      if (now - info.mtimeMs >= ORPHAN_TMP_GRACE_MS) total += info.size;
+    } catch (err: any) {
+      if (err?.code === "ENOENT") continue;
+      throw new FeedbackStorageUnavailableError();
+    }
+  }
+  return total;
+}
+
+let reservedBytes = 0;
+let quotaQueue: Promise<void> = Promise.resolve();
+let reservationSeq = 0;
+type ReservationLedgerEntry = { held: number; target: number; expected: number; released: boolean };
+const reservationLedger = new Map<number, ReservationLedgerEntry>();
+const waitingReservations = new Set<number>();
+const USAGE_CACHE_TTL_MS = 15_000;
+const usageCache = new Map<string, { bytes: number; at: number }>();
+
+/** 删除、孤儿清理、泄漏登记等树外变更后清空缓存；下次申请预留重新扫描。 */
+export function invalidateFeedbackStorageUsage(): void {
+  usageCache.clear();
+}
+
+async function cachedAdmissionUsage(feedbackRoot: string, tmpDir: string): Promise<number> {
+  const key = path.resolve(feedbackRoot);
+  const cached = usageCache.get(key);
+  if (cached && Date.now() - cached.at < USAGE_CACHE_TTL_MS) return cached.bytes;
+  const bytes = await admissionUsage(feedbackRoot, tmpDir);
+  usageCache.set(key, { bytes, at: Date.now() });
+  return bytes;
+}
+
+function makeReservation(
+  feedbackRoot: string,
+  tmpDir: string,
+  initialBytes: number,
+  limitBytes: number,
+  expectedBytes = 0
+): FeedbackStorageReservation {
+  let held = initialBytes;
+  let released = false;
+  const id = ++reservationSeq;
+  // 从创建时就算排队：即使还没写入第一个字节，更早的请求也保有优先权。
+  const ledger = {
+    held: initialBytes,
+    target: initialBytes,
+    // 请求体声明长度：早到的慢请求即使暂时没送新 chunk，也要为它剩余的 body 留容量。
+    expected: Math.min(limitBytes, Math.max(initialBytes, Math.floor(expectedBytes))),
+    released: false,
+  };
+  reservationLedger.set(id, ledger);
+  const ensure = async (target: number, attempt: number): Promise<boolean> => {
+    const run = quotaQueue.then(async (): Promise<boolean | "yield" | "persist"> => {
+      if (released) return false;
+      ledger.target = Math.max(ledger.target, target);
+      if (held >= target) { waitingReservations.delete(id); return true; }
+      if (held >= limitBytes) { waitingReservations.delete(id); return false; }
+      const used = await cachedAdmissionUsage(feedbackRoot, tmpDir);
+      if (released) return false;
+      if (held >= target) { waitingReservations.delete(id); return true; } // 并发文件已经把这个目标补上了
+      const minimum = target - held;
+      const available = MAX_FEEDBACK_STORAGE_BYTES - used - reservedBytes;
+      // 先到先得：为更早请求尚未满足的目标 / 已声明 body 预留容量，且更早请求正在等待时
+      // 后到者不再增长。
+      const earlier = [...reservationLedger.entries()].filter(([otherId, entry]) => otherId < id && !entry.released);
+      const earlierWaiting = earlier.some(([otherId]) => waitingReservations.has(otherId));
+      // 只给「已经开始写文件字节」的早到请求预留剩余 body：只声明了长度、还没写任何
+      // 文件数据的慢请求不能把整包额度锁死（Prior review 明确要求声明长度不提前锁配额）。
+      const earlierNeed = earlier.reduce((sum, [, entry]) => {
+        const reserveTarget = entry.held > 0 ? Math.max(entry.target, entry.expected) : entry.target;
+        return sum + Math.max(0, reserveTarget - entry.held);
+      }, 0);
+      const availableForMe = available - earlierNeed;
+      if (available < minimum || earlierWaiting || availableForMe < minimum) {
+        waitingReservations.add(id);
+        return earlier.length > 0 ? "yield" : "persist";
+      }
+      const desired = Math.max(minimum, chunkedReservationStep());
+      const delta = Math.min(desired, availableForMe, limitBytes - held);
+      if (delta <= 0) {
+        waitingReservations.add(id);
+        return earlier.length > 0 ? "yield" : "persist";
+      }
+      reservedBytes += delta;
+      held += delta;
+      ledger.held = held;
+      if (held >= target) waitingReservations.delete(id);
+      return true;
+    });
+    quotaQueue = run.then(() => undefined, () => undefined);
+    const result = await run;
+    if (result === "yield" || result === "persist") {
+      const maxAttempts = result === "persist" ? 40 : 20;
+      if (attempt >= maxAttempts) {
+        waitingReservations.delete(id);
+        throw new FeedbackStorageQuotaError();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return ensure(target, attempt + 1);
+    }
+    return result;
+  };
+  return {
+    get bytes() { return held; },
+    get limit() { return limitBytes; },
+    ensureBytes(totalBytes: number): Promise<boolean> {
+      const target = Math.max(0, Math.floor(totalBytes));
+      ledger.target = Math.max(ledger.target, target);
+      ledger.expected = Math.max(ledger.expected, target);
+      return ensure(target, 0);
+    },
+    release() {
+      if (released) return;
+      released = true;
+      ledger.released = true;
+      reservationLedger.delete(id);
+      waitingReservations.delete(id);
+      reservedBytes = Math.max(0, reservedBytes - held);
+      held = 0;
+    },
+  };
+}
+
+/** 每次反馈请求的零预留：只有 multer 真正写文件字节时才申请预留，文本字段不占配额。 */
+export function createFeedbackStorageReservation(
+  feedbackRoot: string,
+  tmpDir: string,
+  limitBytes: number,
+  expectedBytes = 0
+): FeedbackStorageReservation {
+  return makeReservation(feedbackRoot, tmpDir, 0, limitBytes, expectedBytes);
+}
+
+/** 上传完成/失败时把预留换成实际占用，再串行执行「测容量 → 移动/入库」。
+ *  失败时在同一串行队列里先执行调用方的清理（删目录、清临时文件），再释放预留，
+ *  避免下一个并发请求同时看到残留目录和未释放的预留。 */
+export function settleFeedbackStorage<T>(
+  feedbackRoot: string,
+  reservation: FeedbackStorageReservation | null,
+  incomingBytes: number,
+  task: () => Promise<T>,
+  onError?: () => Promise<void>
+): Promise<T> {
+  if (incomingBytes <= 0) {
+    reservation?.release();
+    // 纯文本与「全零字节附件」都不占容量，但同样可能创建附件目录 / 写库：
+    // 失败时也要走 onError 清理，不能把没有元数据的目录留在磁盘上。
+    return task().catch(async (err) => {
+      if (onError) {
+        try {
+          await onError();
+        } catch (cleanupErr) {
+          console.error("[feedback-storage] 结算失败后的清理也失败:", cleanupErr);
+        }
+      }
+      throw err;
+    });
+  }
+  const run = quotaQueue.then(async () => {
+    try {
+      // used 已包含本请求以及已经缓冲完成的并发请求的 _tmp 文件；再叠加 reservedBytes
+      // 会把同一批字节算两遍。串行队列保证前一个请求移动完成后，后一个才看到它的永久占用。
+      const used = await directoryBytes(feedbackRoot);
+      if (used > MAX_FEEDBACK_STORAGE_BYTES) {
+        throw new FeedbackStorageQuotaError();
+      }
+      const result = await task();
+      const cached = usageCache.get(path.resolve(feedbackRoot));
+      if (cached) {
+        cached.bytes += incomingBytes;
+        cached.at = Date.now();
+      }
+      return result;
+    } catch (err) {
+      if (onError) {
+        try {
+          await onError();
+        } catch (cleanupErr) {
+          console.error("[feedback-storage] 结算失败后的清理也失败:", cleanupErr);
+        }
+      }
+      throw err;
+    } finally {
+      reservation?.release();
+    }
+  });
+  quotaQueue = run.then(() => undefined, () => undefined);
+  return run;
+}

@@ -1183,6 +1183,45 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE answer_overrides MODIFY question_number DOUBLE",
   ] });
 
+  // v66: 问题反馈（#357），与 SQLite v66 对齐。放在 v65 之后，保持版本号递增。
+  mariadbMigrations.push({ version: 66, name: "feedback-reports", sqls: [
+    `CREATE TABLE IF NOT EXISTS feedback_reports (
+      id           INT AUTO_INCREMENT PRIMARY KEY,
+      user_id      INT NULL,
+      username     VARCHAR(100) NOT NULL DEFAULT '',
+      display_name VARCHAR(100) NOT NULL DEFAULT '',
+      role_name    VARCHAR(32) NOT NULL DEFAULT '',
+      category     VARCHAR(20) NOT NULL DEFAULT 'problem',
+      title        VARCHAR(200) NOT NULL,
+      content      TEXT NOT NULL,
+      contact      VARCHAR(200),
+      context_json LONGTEXT,
+      status       VARCHAR(16) NOT NULL DEFAULT 'open',
+      resolved_at  DATETIME,
+      resolved_by  INT NULL,
+      created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_feedback_status (status, created_at),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+      FOREIGN KEY (resolved_by) REFERENCES users(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ] });
+
+  // v67: 反馈附件元数据（#357），与 SQLite v67 对齐。
+  mariadbMigrations.push({ version: 67, name: "feedback-attachments", sqls: [
+    `CREATE TABLE IF NOT EXISTS feedback_attachments (
+      id           INT AUTO_INCREMENT PRIMARY KEY,
+      feedback_id  INT NOT NULL,
+      filename     VARCHAR(255) NOT NULL,
+      stored_path  VARCHAR(500) NOT NULL,
+      mime         VARCHAR(150),
+      size_bytes   BIGINT NOT NULL,
+      created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_feedback_attachments_feedback (feedback_id),
+      FOREIGN KEY (feedback_id) REFERENCES feedback_reports(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ] });
+
   // v68: 「本次正确答案」展示模式（与 SQLite v68 对齐）。
   // v66/v67 留给反馈表（#358），避免两支合并后按版本号互相跳过。
   // text=学生看逐题文字答案（v54 行为），file=学生看教师上传的答案原文件。

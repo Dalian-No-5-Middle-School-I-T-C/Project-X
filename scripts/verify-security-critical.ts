@@ -60,6 +60,9 @@ for (const key of [
   "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST",
   // R01 逃生阀：宿主机若已设置该变量会污染随机口令断言，测试内自行显式设置/清除
   "PROJECTX_ADMIN_PASSWORD",
+  // 恢复默认累计预算跟随反馈附件配额，宿主机变量同样会污染默认档位断言
+  "PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB",
+  "PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES",
   ...uploadEnvVarsClearedHere,
   ...reviewPoolEnvVarsClearedHere,
   ...restoreZipEnvVarsClearedHere,
@@ -868,14 +871,31 @@ async function main(): Promise<void> {
       && RESTORE_ZIP_ENV_VARS.every((name) => !(name in process.env)),
       "脚本清理的 PROJECTX_RESTORE_ZIP_* 名单与解压预算表逐一对应，宿主机变量不会渗入默认预算断言");
     check(MAX_RESTORE_ZIP_ENTRIES === DEFAULT_RESTORE_ZIP_LIMITS.maxZipEntries && MAX_RESTORE_ZIP_ENTRIES === 20000
-      && MAX_RESTORE_ZIP_ENTRY_BYTES === 1024 * 1024 * 1024 && MAX_RESTORE_ZIP_TOTAL_BYTES === 6144 * 1024 * 1024,
-      "未配置时按默认解压预算生效（2 万条目 / 单条 1GiB / 累计 6GiB），上传侧 128MiB 不再是唯一的闸");
+      && MAX_RESTORE_ZIP_ENTRY_BYTES === 1024 * 1024 * 1024
+      && MAX_RESTORE_ZIP_TOTAL_BYTES === (20480 + 32768 + 8192) * 1024 * 1024,
+      "未配置时按默认解压预算生效（2 万条目 / 单条 1GiB / 累计 20GiB 原卷 + 32GiB 辅助数据预留 + 8GiB 反馈附件），上传侧不再受 128MiB 全量缓冲限制");
     check(resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_ENTRIES: "100" }).limits.maxZipEntries === 100
       && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB: "abc" }).limits.maxTotalUncompressedBytes
         === DEFAULT_RESTORE_ZIP_LIMITS.maxTotalUncompressedBytes
       && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_ENTRY_MIB: "999999" }).limits.maxEntryUncompressedBytes
         === 8192 * 1024 * 1024,
       "解压预算可收紧、非法值回落默认、超天花板被夹紧（一个拼错的数字关不掉保护）");
+    const wideFeedback = resolveRestoreZipLimits({ PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB: "102400" });
+    check(wideFeedback.limits.maxTotalUncompressedBytes === (20480 + 32768 + 102400) * 1024 * 1024
+      && wideFeedback.notices.every((notice) => !notice.includes("天花板")),
+      "反馈配额调到天花板时恢复累计预算同步放宽，不再夹在更低的天花板上");
+    const widePaper = resolveRestoreZipLimits({ PROJECTX_PAPER_MAX_TOTAL_MIB: "30000" });
+    check(widePaper.limits.maxTotalUncompressedBytes === (30000 + 32768 + 8192) * 1024 * 1024,
+      "原卷目录配额同样计入恢复累计预算，不能让合法备份卡在 6GiB 基础预留上");
+    const miBOverride = resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB: "20000" });
+    check(miBOverride.limits.maxTotalUncompressedBytes === 20000 * 1024 * 1024
+      && miBOverride.notices.some((notice) => notice.includes("20000 MiB"))
+      && miBOverride.notices.every((notice) => !notice.includes("20971520000")),
+      "覆盖日志按 MiB 打印生效值，不再把字节数当成 MiB");
+    const clampedTotal = resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB: "999999" });
+    check(clampedTotal.limits.maxTotalUncompressedBytes === (204800 + 32768 + 102400) * 1024 * 1024
+      && clampedTotal.notices.some((notice) => notice.includes(`${204800 + 32768 + 102400} MiB`)),
+      "累计预算的超天花板夹紧值与原卷 / 辅助数据 / 反馈三项配额天花板之和一致");
     check(MAX_RESTORE_ZIP_RATIO === DEFAULT_RESTORE_ZIP_LIMITS.maxCompressionRatio
       && MAX_RESTORE_ZIP_RATIO === 1032
       && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_RATIO: "8" }).limits.maxCompressionRatio === 8
@@ -884,11 +904,27 @@ async function main(): Promise<void> {
       && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_RATIO: "999999" }).limits.maxCompressionRatio === 1032
       && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_RATIO: "999999" }).notices[0].includes("天花板"),
       "最坏展开比同样三档：可收紧、设 0 与非法值不会关掉预估、超天花板被夹紧（1032:1 是 DEFLATE 的物理上界，放宽没有意义）");
-    check(describeRestoreZipLimits().includes("≤20000") && describeRestoreZipLimits().includes("6144MiB")
+    check(describeRestoreZipLimits().includes("≤20000") && describeRestoreZipLimits().includes("61440MiB")
       && describeRestoreZipLimits().includes("1032"),
       "解压预算与最坏展开比进入启动摘要");
     const {
-      classifyEntryName, resolveEntryDest, checkEntryBudget, worstCaseEntryBytes, extractZipWithinBudget, RestoreZipError
+      DEFAULT_FEEDBACK_ATTACHMENT_FILES, MAX_FEEDBACK_ATTACHMENT_FILES, resolveFeedbackAttachmentFileLimit,
+      boundFeedbackAttachmentFiles, FEEDBACK_BACKUP_ENTRY_RESERVE,
+    } = await import("../src/shared/feedbackLimits");
+    check(DEFAULT_FEEDBACK_ATTACHMENT_FILES === 8000 && MAX_FEEDBACK_ATTACHMENT_FILES === 12000
+      && resolveFeedbackAttachmentFileLimit({}).files === 8000
+      && resolveFeedbackAttachmentFileLimit({ PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES: "200" }).files === 200
+      && resolveFeedbackAttachmentFileLimit({ PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES: "0" }).files === 8000
+      && resolveFeedbackAttachmentFileLimit({ PROJECTX_FEEDBACK_ATTACHMENT_MAX_FILES: "999999" }).files === 12000,
+      "附件总数上限三档：默认 8000、可收紧、非法值回落、超天花板夹紧（保证备份条目不超出恢复预算）");
+    check(FEEDBACK_BACKUP_ENTRY_RESERVE === 4000
+      && boundFeedbackAttachmentFiles(8000, MAX_RESTORE_ZIP_ENTRIES) === 8000
+      && boundFeedbackAttachmentFiles(12000, 10000) === 6000
+      && boundFeedbackAttachmentFiles(12000, 3000) === 0,
+      "反馈附件上限同时受恢复条目预算约束：恢复条目调低时附件上限同步收紧");
+    const {
+      classifyEntryName, resolveEntryDest, checkEntryBudget, worstCaseEntryBytes,
+      extractZipWithinBudget, extractZipFileWithinBudget, RestoreZipError
     } = await import("../src/server/services/restoreZip");
     const { sanitizeOpsMessage, containsHostPath } = await import("../src/server/lib/opsErrorMessage");
     const AdmZip = (await import("adm-zip")).default;
@@ -933,6 +969,19 @@ async function main(): Promise<void> {
       && !existsSync(path.join(tempDir, "r43esc.png")),
       "含 .. 越界条目的备份被 400 整体拒绝，而不是跳过该条目后继续恢复出半成品");
     check(rejectStatus(() => resolveEntryDest(r43Dir, "C:\\Windows\\x.db")) === 400, "盘符绝对路径条目被拒绝");
+    const streamingZip = path.join(tempDir, "r43-streaming.zip");
+    const streamingDir = path.join(tempDir, "r43-streaming");
+    writeFileSync(streamingZip, goodZip.toBuffer());
+    const streamingStatus = await extractZipFileWithinBudget(streamingZip, streamingDir)
+      .then(() => 0, (err) => err instanceof RestoreZipError ? err.status : -1);
+    check(streamingStatus === 0 && existsSync(path.join(streamingDir, "data", "answer-card", "papers", "p1.png")),
+      "恢复接口的流式解压逐条写盘，正常备份不再受 128MiB 全量缓冲限制");
+    const streamingSlip = path.join(tempDir, "r43-streaming-slip.zip");
+    writeFileSync(streamingSlip, slipBody);
+    const streamingSlipStatus = await extractZipFileWithinBudget(streamingSlip, path.join(tempDir, "r43-streaming-slip-out"))
+      .then(() => 0, (err) => err instanceof RestoreZipError ? err.status : -1);
+    check(streamingSlipStatus === 400 && !existsSync(path.join(tempDir, "r43esc.png")),
+      "流式解压同样整体拒绝越界条目，而不是跳过后续写出半成品");
     check(rejectStatus(() => checkEntryBudget({ entries: 0, bytes: 0 }, MAX_RESTORE_ZIP_ENTRIES + 1, 0, 0)) === 413
       && rejectStatus(() => checkEntryBudget({ entries: 0, bytes: 0 }, 1, MAX_RESTORE_ZIP_ENTRY_BYTES + 1, 0)) === 413
       && rejectStatus(() => checkEntryBudget(
@@ -2069,8 +2118,10 @@ async function main(): Promise<void> {
       const parallelBackups = (): string[] => existsSync(backupDir)
         ? readdirSync(backupDir).filter((name) => name.startsWith(`projectx_exam${parallelExam}_`))
         : [];
-      for (let i = 0; i < 40 && parallelBackups().length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
-      // 备份是 fire-and-forget：再等一拍，让可能出现的重复备份有机会落盘
+      // 结考备份是 fire-and-forget；CI 高负载下 Online Backup 可能超过 2 秒，
+      // 这里只断言「最终只有 1 份」，不把落盘耗时当成失败。
+      for (let i = 0; i < 200 && parallelBackups().length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+      // 再等一拍，让可能出现的重复备份有机会落盘
       await new Promise((resolve) => setTimeout(resolve, 400));
       check(parallelBackups().length === 1,
         `并发判分只产生 1 份结考备份（实际 ${parallelBackups().length}：${parallelBackups().join(",") || "无"}）`);
@@ -2084,8 +2135,8 @@ async function main(): Promise<void> {
         ? readdirSync(backupDir).filter((name) => name.startsWith(`projectx_exam${rerunExam}_`))
         : [];
       const waitForBackup = async (): Promise<void> => {
-        for (let i = 0; i < 40 && rerunBackups().length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
-        // 备份是 fire-and-forget：再等一拍，让可能出现的重复备份有机会落盘
+        for (let i = 0; i < 200 && rerunBackups().length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+        // 再等一拍，让可能出现的重复备份有机会落盘
         await new Promise((resolve) => setTimeout(resolve, 400));
       };
 

@@ -17,15 +17,16 @@
  *
  * 用法: npm run verify:permission-scope
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
-import { createServer, type Server } from "node:http";
+import { createServer, request as httpRequest, type Server } from "node:http";
 
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-perm-scope-"));
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "verify.db");
 process.env.PROJECTX_TOKEN_DIR = path.join(tmpDir, "tokens");
+process.env.ANSWER_CARD_DATA_DIR = path.join(tmpDir, "answer-card-data");
 for (const key of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
   "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST",
@@ -36,8 +37,12 @@ for (const key of [
   "PROJECTX_UPLOAD_MAX_CROPS_PER_REQUEST", "PROJECTX_UPLOAD_MAX_CROP_IMAGE_MIB",
   "PROJECTX_UPLOAD_MAX_CROPS_TOTAL_MIB", "PROJECTX_UPLOAD_MAX_PAGE_REQUEST_TOTAL_MIB",
   "PROJECTX_UPLOAD_MAX_BATCH_FILES", "PROJECTX_UPLOAD_MAX_BATCH_TOTAL_MIB",
-  "PROJECTX_REVIEW_MAX_HELD_PER_BLOCK", "PROJECTX_REVIEW_MAX_HELD_TOTAL", "PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS"
+  "PROJECTX_REVIEW_MAX_HELD_PER_BLOCK", "PROJECTX_REVIEW_MAX_HELD_TOTAL", "PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS",
+  // 原卷请求预算用 1 MiB 夹具验证「最后一个 chunk 越过预算」的拒绝路径，其余档位清掉避免宿主机污染
+  "PROJECTX_PAPER_MAX_FILE_MIB", "PROJECTX_PAPER_MAX_FILES_PER_REQUEST",
+  "PROJECTX_PAPER_MAX_PAGES_PER_CARD", "PROJECTX_PAPER_MAX_BYTES_PER_CARD_MIB", "PROJECTX_PAPER_MAX_TOTAL_MIB"
 ]) delete process.env[key];
+process.env.PROJECTX_PAPER_MAX_REQUEST_MIB = "1";
 
 let passed = 0;
 let failed = 0;
@@ -49,7 +54,7 @@ function ok(cond: boolean, label: string): void {
 async function main(): Promise<void> {
   const { initializeDatabase, ensureDefaultAdmin, getDatabase, closeDatabase } = await import("../src/server/db/index");
   initializeDatabase();
-  await ensureDefaultAdmin();
+  const bootstrap = await ensureDefaultAdmin();
   const db = getDatabase();
   const { createApp } = await import("../src/apps/answer-card/server/index");
   const { UserRepository } = await import("../src/server/repositories/UserRepository");
@@ -111,6 +116,11 @@ async function main(): Promise<void> {
   const tokenA = (await authService.login(teacherA.username, "pass-1234")).token!;
   const tokenB = (await authService.login(teacherB.username, "pass-1234")).token!;
   const tokenS1 = (await authService.login("s-9001", "pass-1234")).token!;
+  const adminPassword = readFileSync(bootstrap.passwordFile, "utf8").trim();
+  const adminChangedPassword = "PermScopeAdmin-2026!";
+  const changed = await authService.changePassword(adminId, adminPassword, adminChangedPassword);
+  assert.equal(changed.success, true, "测试管理员必须完成首次改密");
+  const adminToken = (await authService.login("admin", adminChangedPassword)).token!;
   const json = async (urlPath: string, init?: RequestInit): Promise<{ status: number; body: any }> => {
     const r = await fetch(`${base}${urlPath}`, init);
     return { status: r.status, body: await r.json().catch(() => ({})) };
@@ -124,6 +134,218 @@ async function main(): Promise<void> {
        VALUES (?, NULL, NULL, ?, ?, ?, 0, ?, ?, 0)`
     ).run(teacherId, extra.class_id ?? null, extra.block_id ?? null, extra.can_view_scores ?? 1, extra.can_view_students ?? 1, extra.can_grade ?? 1);
   const clearMatrix = (teacherId: number) => db.prepare("DELETE FROM teacher_permissions WHERE teacher_id = ?").run(teacherId);
+
+  console.log("\n== 数据目录上传与备份 / 恢复共享锁 ==");
+  const { withAnswerCardDataMutationLock } = await import("../src/server/lib/answerCardDataLock");
+  const tinyPng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=",
+    "base64",
+  );
+  async function assertUploadWaitsForDataLock(urlPath: string, label: string): Promise<void> {
+    let release!: () => void;
+    const held = withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => { release = resolve; }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(typeof release, "function", `${label}应排在上一笔数据变更之后取得锁`);
+    const form = new FormData();
+    form.append("file", new Blob([tinyPng], { type: "image/png" }), "locked.png");
+    let settled = false;
+    const pending = fetch(`${base}${urlPath}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: form,
+    });
+    pending.then(() => { settled = true; }, () => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    ok(!settled, `${label}在数据锁释放前不能完成`);
+    release();
+    await held;
+    const response = await pending;
+    ok(response.ok, `${label}取得数据锁后正常完成（实际 ${response.status}）`);
+  }
+  await assertUploadWaitsForDataLock(`/api/cards/${cardId}/assets`, "答题卡资源上传");
+  await assertUploadWaitsForDataLock("/api/users/me/background", "自定义背景上传");
+  {
+    const { dataDir } = await import("../src/apps/answer-card/server/storage");
+    const teacherBackground = path.join(dataDir, "backgrounds", `${teacherA.id}.jpg`);
+    assert.equal(existsSync(teacherBackground), false, "降权测试前教师背景文件不应存在");
+    let release!: () => void;
+    const held = withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => { release = resolve; }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const form = new FormData();
+    form.append("file", new Blob([tinyPng], { type: "image/png" }), "demoted.png");
+    const pending = fetch(`${base}/api/users/me/background`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${tokenA}` },
+      body: form,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    db.prepare("UPDATE users SET role_id = ? WHERE id = ?").run(3, teacherA.id);
+    release();
+    await held;
+    const response = await pending;
+    ok(response.status === 403, `等锁期间账号被降权后，背景上传按新角色拒绝（实际 ${response.status}）`);
+    ok(!existsSync(teacherBackground), "降权后的背景上传不得落盘");
+    db.prepare("UPDATE users SET role_id = ? WHERE id = ?").run(2, teacherA.id);
+  }
+
+  console.log("\n== 答题卡写入、背景删除与恢复串行 ==");
+  {
+    // POST /api/cards：等锁期间管理员被恢复替换为其它角色，必须按新角色拒绝且不落库。
+    let releasePost!: () => void;
+    const postHeld = withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => { releasePost = resolve; }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    let postSettled = false;
+    const pendingPost = fetch(`${base}/api/cards`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ subject: "math", title: "锁内新建卡", examDate: "2026-09-01" }),
+    }).then((response) => { postSettled = true; return response; });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    ok(!postSettled, "新建答题卡在数据锁释放前不能完成");
+    db.prepare("UPDATE users SET role_id = 3 WHERE id = ?").run(adminId);
+    releasePost();
+    await postHeld;
+    const postResponse = await pendingPost;
+    ok(postResponse.status === 403, `等锁期间管理员被降级后，新建答题卡按新角色拒绝（实际 ${postResponse.status}）`);
+    ok(db.prepare("SELECT 1 FROM answer_cards WHERE title = '锁内新建卡'").get() === undefined,
+      "降级后的新建答题卡不得落库");
+    db.prepare("UPDATE users SET role_id = 1 WHERE id = ?").run(adminId);
+
+    // PUT /api/cards/:cardId：同一把锁 + 锁内重校验，避免把旧身份下的保存写进恢复后的库。
+    const originalCard = await get(`/api/cards/${cardId}`, adminToken);
+    let releasePut!: () => void;
+    const putHeld = withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => { releasePut = resolve; }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    let putSettled = false;
+    const pendingPut = fetch(`${base}/api/cards/${cardId}`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${adminToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ ...originalCard.body, title: "锁内改名" }),
+    }).then((response) => { putSettled = true; return response; });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    ok(!putSettled, "保存答题卡在数据锁释放前不能完成");
+    db.prepare("UPDATE users SET role_id = 3 WHERE id = ?").run(adminId);
+    releasePut();
+    await putHeld;
+    const putResponse = await pendingPut;
+    ok(putResponse.status === 403, `等锁期间管理员被降级后，保存答题卡按新角色拒绝（实际 ${putResponse.status}）`);
+    ok((db.prepare("SELECT title FROM answer_cards WHERE id = ?").get(cardId) as { title?: string } | undefined)?.title === "权限卡",
+      "降级后的保存不得改写答题卡");
+    db.prepare("UPDATE users SET role_id = 1 WHERE id = ?").run(adminId);
+
+    // GET /api/cards/:cardId/layout 会写盘：同样要与备份 / 恢复串行。
+    let releaseLayout!: () => void;
+    const layoutHeld = withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => { releaseLayout = resolve; }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    let layoutSettled = false;
+    const pendingLayout = get(`/api/cards/${cardId}/layout`, adminToken).then((result) => {
+      layoutSettled = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    ok(!layoutSettled, "读取并写盘 layout 在数据锁释放前不能完成");
+    releaseLayout();
+    await layoutHeld;
+    ok((await pendingLayout).status === 200, "layout 取得数据锁后正常返回");
+
+    // 背景删除：文件删除与透明度归零都必须落在同一把锁内。
+    const backgroundForm = new FormData();
+    backgroundForm.append("file", new Blob([tinyPng], { type: "image/png" }), "teacher.png");
+    const backgroundUpload = await fetch(`${base}/api/users/me/background`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${tokenA}` },
+      body: backgroundForm,
+    });
+    ok(backgroundUpload.ok, "教师上传背景图供删除锁测试");
+    const { dataDir } = await import("../src/apps/answer-card/server/storage");
+    const teacherBackground = path.join(dataDir, "backgrounds", `${teacherA.id}.jpg`);
+    let releaseDelete!: () => void;
+    const deleteHeld = withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => { releaseDelete = resolve; }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    let deleteSettled = false;
+    const pendingDelete = fetch(`${base}/api/users/me/background`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${tokenA}` },
+    }).then((response) => { deleteSettled = true; return response; });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    ok(!deleteSettled, "删除背景图在数据锁释放前不能完成");
+    releaseDelete();
+    await deleteHeld;
+    const deleteResponse = await pendingDelete;
+    ok(deleteResponse.status === 200 && !existsSync(teacherBackground), "背景删除取得数据锁后完成文件与透明度清理");
+
+    // 管理员清退学生背景同样持有数据锁。
+    let releasePurge!: () => void;
+    const purgeHeld = withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => { releasePurge = resolve; }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    let purgeSettled = false;
+    const pendingPurge = fetch(`${base}/api/admin/backgrounds/purge-students`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}` },
+    }).then((response) => { purgeSettled = true; return response; });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    ok(!purgeSettled, "清退学生背景在数据锁释放前不能完成");
+    releasePurge();
+    await purgeHeld;
+    ok((await pendingPurge).status === 200, "清退学生背景取得数据锁后正常完成");
+
+    // 资源上传在答题卡不存在时的 404 分支：Multer 已建目录并落盘，必须把无主文件与空目录一起回收。
+    const missingCardId = "missing-card-404";
+    const assetForm = new FormData();
+    assetForm.append("file", new Blob([tinyPng], { type: "image/png" }), "orphan.png");
+    const orphanAsset = await fetch(`${base}/api/cards/${missingCardId}/assets`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: assetForm,
+    });
+    ok(orphanAsset.status === 404, `不存在的答题卡上传资源返回 404（实际 ${orphanAsset.status}）`);
+    ok(!existsSync(path.join(dataDir, "assets", missingCardId)), "404 分支回收 Multer 已落盘的资源文件与空目录");
+
+    // 原卷上传最后一个 chunk 越过请求预算：Multer 按成功回调，但业务 handler 不得继续落库 / 建目录。
+    const paperCardDir = path.join(dataDir, "papers", cardId);
+    const paperTmp = path.join(dataDir, "papers", "_tmp");
+    const boundary = `----paperbudget${Date.now()}`;
+    const partHead = Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="over.png"\r\nContent-Type: image/png\r\n\r\n`
+    );
+    const partTail = Buffer.from(`\r\n--${boundary}--\r\n`);
+    const budgetResult = await new Promise<{ status: number; text: string }>((resolve) => {
+      const outbound = httpRequest({
+        hostname: "127.0.0.1",
+        port: Number(new URL(base).port),
+        path: `/api/cards/${cardId}/paper`,
+        method: "POST",
+        agent: false,
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+          "Transfer-Encoding": "chunked",
+        },
+      }, (incoming) => {
+        let text = "";
+        incoming.setEncoding("utf8");
+        incoming.on("data", (chunk) => { text += chunk; });
+        incoming.on("end", () => resolve({ status: incoming.statusCode ?? 0, text }));
+      });
+      outbound.on("error", (error) => resolve({ status: 0, text: String(error) }));
+      // 先发一段接近预算上限的正文，最后一段小 chunk 才越过 1 MiB 并同时结束请求：
+      // 这样服务端判负时请求体已经读完，才能复现「Multer 按成功回调」的时序。
+      outbound.write(partHead);
+      outbound.write(Buffer.alloc(1_020_000, 97), () => {
+        setTimeout(() => {
+          outbound.write(Buffer.alloc(30 * 1024, 98));
+          outbound.end(partTail);
+        }, 30);
+      });
+    });
+    let budgetBody: { code?: string } = {};
+    try { budgetBody = JSON.parse(budgetResult.text || "{}") as { code?: string }; } catch { /* 连接被断开时不是 JSON */ }
+    ok(budgetResult.status === 413 && budgetBody.code === "UPLOAD_BUDGET_EXCEEDED",
+      `最后一个 chunk 越过预算仍只返回一次 413（实际 ${budgetResult.status}/${budgetBody.code || budgetResult.text.slice(0, 60)}）`);
+    ok(!existsSync(paperCardDir), "被 413 拒绝的原卷请求不得进入业务 handler 建立 papers/<cardId>");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    ok(!existsSync(paperTmp) || readdirSync(paperTmp).length === 0, "被 413 拒绝的原卷请求不在临时目录残留文件");
+  }
 
   console.log("\n== R21 花名册按可访问班级收敛 ==");
   db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, '数学')").run(teacherA.id, classA);
@@ -748,6 +970,28 @@ async function main(): Promise<void> {
   ok(limits.describeReviewPoolLimits().includes("claimLockTimeoutMs=3000"), "锁预算进入启动摘要");
 
   console.log("\n== R06 删除答题卡不得改写/点名范围外考试（破坏性步骤，放在最后） ==");
+  // P1 回归：原卷上传中途断连时，multer 错误分支会跳过响应；数据锁必须在清理后释放，
+  // 否则下面第一个 DELETE 会永远排不到锁。
+  const dropBoundary = `----lockdrop${Date.now()}`;
+  await new Promise<void>((resolve) => {
+    const drop = httpRequest({
+      hostname: "127.0.0.1",
+      port: Number(new URL(base).port),
+      path: `/api/cards/${cardId}/paper`,
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${tokenA}`,
+        "Content-Type": `multipart/form-data; boundary=${dropBoundary}`,
+        "Content-Length": String(1024 * 1024),
+      },
+    }, (response) => { response.resume(); });
+    drop.on("error", () => resolve());
+    drop.write(`--${dropBoundary}\r\nContent-Disposition: form-data; name="files"; filename="drop.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`);
+    drop.write(Buffer.alloc(64 * 1024));
+    setTimeout(() => { drop.destroy(); resolve(); }, 100);
+  });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  ok(true, "原卷上传中途断连后继续执行后续取锁请求");
   const referencedCount = (db.prepare("SELECT COUNT(*) AS n FROM exams WHERE card_id = ?").get(cardId) as { n: number }).n;
   ok(referencedCount >= 2, `夹具自校验：本卡被多场考试引用（实际 ${referencedCount}）`);
   const preflightOwn = await json(`/api/cards/${cardId}`, {

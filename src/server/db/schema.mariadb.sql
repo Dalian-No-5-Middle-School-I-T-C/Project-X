@@ -979,3 +979,39 @@ CREATE TABLE IF NOT EXISTS scan_correction_pages (
  layout_json LONGTEXT NOT NULL, recognition_json LONGTEXT NOT NULL, revision BIGINT NOT NULL DEFAULT 0,
  modified_by INTEGER, modified_at VARCHAR(32), recovery_fingerprint VARCHAR(64), PRIMARY KEY (source_type, source_id)
 );
+
+-- v66: 问题反馈（#357）。反馈落本系统数据库，不依赖 GitHub；
+-- 用户被删除后保留反馈正文，账号信息以快照列留存。
+CREATE TABLE IF NOT EXISTS feedback_reports (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    user_id      INT NULL,
+    username     VARCHAR(100) NOT NULL DEFAULT '',
+    display_name VARCHAR(100) NOT NULL DEFAULT '',
+    role_name    VARCHAR(32) NOT NULL DEFAULT '',
+    category     VARCHAR(20) NOT NULL DEFAULT 'problem',
+    title        VARCHAR(200) NOT NULL,
+    content      TEXT NOT NULL,
+    contact      VARCHAR(200),
+    context_json LONGTEXT,
+    status       VARCHAR(16) NOT NULL DEFAULT 'open',
+    resolved_at  DATETIME,
+    resolved_by  INT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_feedback_status (status, created_at),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (resolved_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- v67: 反馈附件元数据（#357）。文件本体在 data/answer-card/feedback/<uuid>/，随数据目录备份。
+CREATE TABLE IF NOT EXISTS feedback_attachments (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    feedback_id  INT NOT NULL,
+    filename     VARCHAR(255) NOT NULL,
+    stored_path  VARCHAR(500) NOT NULL,
+    mime         VARCHAR(150),
+    size_bytes   BIGINT NOT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_feedback_attachments_feedback (feedback_id),
+    FOREIGN KEY (feedback_id) REFERENCES feedback_reports(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

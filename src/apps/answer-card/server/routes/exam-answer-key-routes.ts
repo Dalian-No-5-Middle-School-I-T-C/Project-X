@@ -18,6 +18,7 @@ import path from "node:path";
 import { unlinkSync } from "node:fs";
 import type { Request, Response } from "express";
 import { getMysqlDb, buildUpsertSQL } from "../../../../server/db/mysql";
+import { beginManualDataMutationLockRelease, holdAnswerCardDataMutationLock, releaseDataMutationLock, stopDisconnectedUpload } from "../../../../server/lib/answerCardDataLock";
 import {
   listAnswerKeyPages,
   listExamAnswerKeys,
@@ -35,6 +36,8 @@ import { extractDocxText, extractPdfText, extractImageText } from "../paper-ocr"
 import { MAX_ANSWER_TEXT_LENGTH, MAX_QUESTION_NUMBER, parseAnswerKeyText } from "../answer-key-ocr";
 import { normalizeAnswerKeyMode } from "../../../../shared/answerKeyMode";
 import { requireExamAccess } from "../middleware";
+import { refreshAuthenticatedUser, recheckWritePermission } from "../../../../server/middleware/auth";
+import { PERMISSIONS } from "../../../../server/auth/permissions";
 
 /** 答案页上限：既是单批上传上限，也是单场考试的累计上限（页码查看/重识别/删除接口只认 1..该值） */
 const MAX_ANSWER_KEY_PAGES = 10;
@@ -233,24 +236,28 @@ export function examAnswerKeyRoutes(): Router {
 
   // POST /api/exams/:examId/answer-key/pages — 上传「本次正确答案」并可顺带 OCR
   // ?ocr=0 只入库不识别；识别结果作为草稿返回，不落库（教师确认后 PUT 保存）
-  router.post("/api/exams/:examId/answer-key/pages", requireExamAccess, (req, res, next) => {
+  router.post("/api/exams/:examId/answer-key/pages", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.EXAM_WRITE), requireExamAccess, stopDisconnectedUpload, (req, res, next) => {
+    beginManualDataMutationLockRelease(req);
     answerKeyUpload.array("files", MAX_ANSWER_KEY_PAGES)(req, res, (err) => {
       if (err) {
         // 安全（R14）：数量/体积越界时 multer 直接报错，已落盘的兄弟文件不会经过
         // 下面带 `finally` 的处理函数——必须在这里清掉，否则越界重试会留下无人引用的副本。
-        const partial = (req.files as Express.Multer.File[] | undefined) ?? (req.file ? [req.file] : []);
+        const partial = ((req.files as Express.Multer.File[] | undefined) ?? (req.file ? [req.file] : []))
+          .filter(Boolean);
         for (const file of partial) {
           try { unlinkSync(file.path); } catch { /* multer 已回收或文件不存在 */ }
         }
+        // 断连时响应可能已被销毁、不会再走 res.end；清理完成后显式结算数据锁。
+        releaseDataMutationLock(req);
         res.status(400).json({ message: err.message || "答案文件上传失败" });
         return;
       }
       next();
     });
   }, async (req: Request, res: Response) => {
-    const db = getMysqlDb();
     const staged = ((req.files as Express.Multer.File[]) || []).filter(Boolean);
     try {
+      const db = getMysqlDb();
       if (invalidExamId(res, req.params.examId)) return;
       const exam = await loadExam(Number(req.params.examId));
       if (!exam) { res.status(404).json({ message: "考试不存在" }); return; }
@@ -389,6 +396,7 @@ export function examAnswerKeyRoutes(): Router {
       for (const file of staged) {
         try { unlinkSync(file.path); } catch {}
       }
+      releaseDataMutationLock(req);
     }
   });
 
@@ -433,7 +441,7 @@ export function examAnswerKeyRoutes(): Router {
   });
 
   // DELETE /api/exams/:examId/answer-key/pages/:pageIndex — 删除答案页（同页所有扩展名残留一并清理）
-  router.delete("/api/exams/:examId/answer-key/pages/:pageIndex", requireExamAccess, async (req: Request, res: Response) => {
+  router.delete("/api/exams/:examId/answer-key/pages/:pageIndex", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.EXAM_WRITE), requireExamAccess, async (req: Request, res: Response) => {
     try {
       if (invalidExamId(res, req.params.examId)) return;
       const examId = Number(req.params.examId);

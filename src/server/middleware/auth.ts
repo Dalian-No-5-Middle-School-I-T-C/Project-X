@@ -163,6 +163,53 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
 }
 
 /**
+ * 取得数据变更锁后刷新 `req.user`：恢复可能替换账号、角色与教师范围，
+ * 不能用等待前挂载的旧快照做权限判断。账号已不存在时按失效令牌处理。
+ */
+export async function refreshRequestUser(req: Request): Promise<boolean> {
+  if (!req.user) return false;
+  // 重新走完整认证链：恢复备份会清空 Token / 媒体票据，只按数字 id 查新库会把
+  // 旧会话映射到恢复后同 id 的另一个人。
+  const via = await authenticateRequest(req);
+  return (via === "token" || via === "ticket") && Boolean(req.user);
+}
+
+export async function refreshAuthenticatedUser(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (!req.user) {
+    next();
+    return;
+  }
+  try {
+    if (!(await refreshRequestUser(req))) {
+      res.status(401).json({ message: "认证令牌无效或已过期" });
+      return;
+    }
+    next();
+  } catch (err) {
+    next(err as Error);
+  }
+}
+
+/** 数据锁 + 刷新账号之后重跑写权限门（恢复可能已替换角色）。 */
+export function recheckWritePermission(permission: Permission) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!isAuthEnforced()) {
+      next();
+      return;
+    }
+    if (!req.user) {
+      res.status(401).json({ message: "未提供认证令牌" });
+      return;
+    }
+    if (!roleHasPermission(req.user.role_id, permission)) {
+      res.status(403).json({ message: `权限不足：缺少 ${permission}` });
+      return;
+    }
+    next();
+  };
+}
+
+/**
  * 角色鉴权中间件：要求用户属于允许的角色之一。
  * @param allowedRoles 角色名数组，如 ["admin", "teacher"]
  */

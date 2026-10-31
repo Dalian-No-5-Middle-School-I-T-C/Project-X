@@ -906,6 +906,11 @@ Project-X/
 > 非法值回落默认、超天花板夹紧，生效值打在 `[paper-storage-limits] …` 一行。
 > 送 AI 分析时同样有组包预算：一次最多 40 个文件 / 512 MiB，超出直接 **413** 拒绝而不是静默截断页
 > （截断后的原卷会让分析「自信地答错」）。
+>
+> 问题反馈附件（#357）：单次最多 15 个、单个 100 MiB；`data/answer-card/feedback/` 聚合容量默认
+> 8192 MiB，可用 `PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB` 调整（天花板 102400 MiB），并发上传在
+> 移动文件前串行核算。multer 按实际写入的文件字节流式预留，文本字段不占附件配额，声明了 Content-Length
+> 也不会提前锁住整包额度。
 
 > **AI 分析计费与并发配额**（安全 R11，单一来源 `src/shared/aiQuotaLimits.ts`）
 >
