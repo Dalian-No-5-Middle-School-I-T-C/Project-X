@@ -243,9 +243,9 @@ export function PostprocessResultsView({ groups, channel, onDelete, onOpen, onSa
         onOpenChange={open => { if (!open) { setConfirmOpen(false); setBlockedNotice(null); } }}
         title={`删除 ${selected.size} 张扫描卡？`}
         description={blockedNotice
-          ? `其中 ${blockedNotice.length} 张已有回执（组 ${blockedNotice.join("、")}）。删除只移除本机扫描记录与识别结果，服务器成绩保留且无法再从本机补传；确认知晓后继续。`
-          : "本机扫描记录与识别结果将被移除，不可恢复。已上传的服务器成绩不受影响。"}
-        confirmLabel={blockedNotice ? "知晓代价，仍删除" : "删除，不可恢复"}
+          ? `其中 ${blockedNotice.length} 张已有成绩记录或待处理，请先核对成绩状态。删除只会移除本机扫描记录和识别结果；服务器上已保存的成绩会保留，未保存的待处理记录将无法再从本机补传。`
+          : "本机扫描记录与识别结果将被移除，且无法恢复。已上传到服务器的成绩不受影响。"}
+        confirmLabel={blockedNotice ? "知晓代价，仍删除" : "删除"}
         loading={deleting}
         onConfirm={() => void runDelete(!!blockedNotice)}
       />

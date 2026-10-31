@@ -192,6 +192,25 @@ try {
   for (const name of ["electron:pack", "electron:pack:ia32"]) {
     ok(!(packageJson.scripts[name] ?? "").includes("release:hash"), `${name} 不接清单（--dir 产物是目录，不是分发物）`);
   }
+  ok(packageJson.scripts["electron:install"] === "node node_modules/electron/install.js",
+    "electron:install 调用 Electron 自带安装脚本，把二进制放到 node_modules/electron/dist");
+  for (const name of ["electron:pack", "electron:dist", "electron:msi"]) {
+    const script = packageJson.scripts[name] ?? "";
+    const installAt = script.indexOf("npm run electron:install");
+    const builderAt = script.indexOf("electron-builder");
+    ok(installAt >= 0 && builderAt > installAt, `${name} 在 electron-builder 之前安装本机 Electron 二进制`);
+    ok(script.includes("-c.electronDist=node_modules/electron/dist"), `${name} 仍复用 node_modules/electron/dist`);
+  }
+  {
+    const devScript = packageJson.scripts["electron:dev"] ?? "";
+    const installAt = devScript.indexOf("npm run electron:install");
+    const launchAt = devScript.indexOf("electron .");
+    ok(installAt >= 0 && launchAt > installAt,
+      "electron:dev 在启动 Electron 之前安装二进制（ignore-scripts 之后 dist 目录尚不存在）");
+  }
+  for (const name of ["electron:pack:ia32", "electron:dist:ia32", "electron:msi:ia32"]) {
+    ok(!(packageJson.scripts[name] ?? "").includes("electronDist"), `${name} 不把 electronDist 指到本机目录`);
+  }
 
   section("6. 签名处置的口径与守卫");
   ok(packageJson.build?.win?.signAndEditExecutable === false,

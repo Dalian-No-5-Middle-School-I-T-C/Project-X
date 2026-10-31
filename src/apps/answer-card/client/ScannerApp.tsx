@@ -34,6 +34,8 @@ function ScannerAppInner() {
   const [selectedCardTitle, setSelectedCardTitle] = useState<string>("");
   // v2.7.2：本卡已扫完的批次会话；返回工作台续扫后新批次累加进来，异常队列共用同一份
   const [postSessions, setPostSessions] = useState<Array<{ sessionId: string; pageCount: number }>>([]);
+  /** 后处理页点「继续扫描」→ 回到工作台并自动开下一批；工作台消费后清掉，避免再次进入重复开扫。 */
+  const [pendingContinueScan, setPendingContinueScan] = useState(false);
   // 安全 R35：离线用缓存卡进入时的工作台提示（版本 + 缓存时间），空串表示版本与服务器一致
   const [cardVersionNote, setCardVersionNote] = useState<string>("");
   // v2.1.0: 皮肤 = 风格维度（与明暗正交），同步策略与 web 端 App 保持一致。
@@ -112,7 +114,7 @@ function ScannerAppInner() {
             try { setSkin(localStorage.getItem("projectx-skin") || DEFAULT_SKIN); } catch { /* ignore */ }
             setShowOnboarding(false);
           }}
-          subtitle="请选择一套视觉风格后再进入登录；选定后将保存到本机并同步到账号偏好"
+          subtitle="请选择一套界面皮肤后再登录；选择会保存在本机并同步到账号。"
           footerNote="如需更改皮肤，可随时在登录页右上角的调色盘按钮切换；登录后也可在各页面顶栏右侧切换。"
         />
       );
@@ -127,6 +129,10 @@ function ScannerAppInner() {
         cardTitle={selectedCardTitle}
         sessions={postSessions}
         onBack={() => setPage("workspace")}
+        onContinueScan={() => {
+          setPendingContinueScan(true);
+          setPage("workspace");
+        }}
       />
     );
   }
@@ -138,6 +144,11 @@ function ScannerAppInner() {
         cardTitle={selectedCardTitle}
         cardVersionNote={cardVersionNote}
         onBack={() => setPage("select")}
+        autoStartScan={pendingContinueScan}
+        onAutoStartConsumed={() => setPendingContinueScan(false)}
+        onBatchArchived={(sid, pageCount) => {
+          setPostSessions(prev => [...prev.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }]);
+        }}
         onScansComplete={(sid, pageCount) => {
           setPostSessions(prev => [...prev.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }]);
           setPage("postprocess");

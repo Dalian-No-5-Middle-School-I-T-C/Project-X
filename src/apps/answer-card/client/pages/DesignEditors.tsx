@@ -503,7 +503,7 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
       )}
 
       <p className="rounded-md bg-secondary p-2.5 text-xs text-muted-foreground">
-        横向模式少于 15 题按行排列、15 题及以上按 5 题小组网格排列；竖向模式按高考 AB 卡式 4 题一组纵向排布，每题选项仍保持横向小组选项；选项竖排模式下每题的 A/B/C/D 在题号下方纵向堆叠。超过 5 个选项的题目独占一行。
+        横向排版下，少于 15 题按行排列，15 题及以上按 5 题一组排成网格；竖向排版按 4 题一组纵向排列，选项仍横向排列。选项竖排时，A/B/C/D 显示在题号下方。超过 5 个选项的题目独占一行。
       </p>
     </div>
   );}
@@ -629,7 +629,7 @@ export function SubjectiveEditor({
               />
             </Field>
             {layoutVersion === 2 && (block.questions[0]?.score ?? 0) <= 0 && (
-              <p className="rounded-md border border-warning-border bg-warning-soft p-2 text-xs text-warning-fg">满分为 0，V2 不会生成分数填涂格。请先设置满分。</p>
+              <p className="rounded-md border border-warning-border bg-warning-soft p-2 text-xs text-warning-fg">满分为 0，暂不生成分数格。请先设置满分。</p>
             )}
           </>
         )}
@@ -663,7 +663,7 @@ export function SubjectiveEditor({
               </Button>
             </div>
             {layoutVersion === 2 && !isFillBlankBlock && question.style === "manual_score_grid" && question.score <= 0 && (
-              <p className="rounded-md border border-warning-border bg-warning-soft p-2 text-xs text-warning-fg">分值为 0，V2 已隐藏 0/0.5 分数格；设置正分后会自动显示。</p>
+              <p className="rounded-md border border-warning-border bg-warning-soft p-2 text-xs text-warning-fg">分值为 0，分数格暂不显示；设置正分后会自动显示。</p>
             )}
             <div className="grid grid-cols-2 gap-2">
               <Field label="题号">
@@ -782,10 +782,10 @@ export function SubjectiveEditor({
                         显示"得分"标签
                       </label>
                     )}
-                    <p className="mt-1.5 text-xs text-muted-foreground">填空题块整块共用一组得分格，由块首题（计分题）与「填空题块满分」控制。</p>
+                    <p className="mt-1.5 text-xs text-muted-foreground">填空题块共用一组得分格，由块首题（计分题）和「填空题块满分」控制。</p>
                   </div>
                 ) : (
-                  <p className="border-l-2 border-border-subtle pl-2 text-xs text-muted-foreground">得分填涂格由块首题（计分题）统一控制，本题不单独显示。</p>
+                  <p className="border-l-2 border-border-subtle pl-2 text-xs text-muted-foreground">得分格由块首题统一控制，本题不单独显示。</p>
                 )}
                 <div className="flex flex-col gap-2 border-l-2 border-border-subtle pl-2">
                   {answerBlankItems(question).map((item, blankIndex) => (

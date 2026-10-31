@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowLeft } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Play } from "lucide-react";
 import { Badge, Button, SegmentedControl, Spinner, notify } from "./ui/v2";
 import { authFetch } from "../auth/api";
 import { fetchCardDetailSynced } from "../lib/scannerSync";
@@ -26,9 +26,11 @@ export interface ScannerPostprocessPageProps {
   cardTitle: string;
   sessions: Array<{ sessionId: string; pageCount: number }>;
   onBack: () => void;
+  /** 同一答题卡继续扫下一批：回到工作台并自动开扫，新批次累加到本页。 */
+  onContinueScan?: () => void;
 }
 
-export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: ScannerPostprocessPageProps) {
+export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, onContinueScan }: ScannerPostprocessPageProps) {
   const [view, setView] = useState<View>("results");
   const [localCard, setLocalCard] = useState<AnswerCard | null>(null);
   const [remoteCard, setRemoteCard] = useState<AnswerCard | null>(null);
@@ -210,7 +212,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
         if (!res.ok) throw new Error(data.message || "删除失败");
         deleted += data.deletedGroups ?? target.groupIds.length;
       }
-      if (blocked.length) throw Object.assign(new Error("所选卷包含已入库或待老师确认的回执"), { blocked });
+      if (blocked.length) throw Object.assign(new Error("所选卷中有已保存或待处理的记录，不能直接删除"), { blocked });
       notify.success(`已删除 ${deleted} 组扫描记录`);
       finished = true;
     } finally {
@@ -304,6 +306,11 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack }: 
             { value: "queue", label: <span className="flex items-center gap-1.5">异常处理{queue.length > 0 && <Badge tone="danger" className="h-[18px] px-1.5 text-[10.5px] tabular-nums">{queue.length}</Badge>}</span> },
           ]}
         />
+        {onContinueScan && (
+          <Button variant="primary" size="sm" icon={<Play size={15} />} onClick={onContinueScan}>
+            继续扫描
+          </Button>
+        )}
       </header>
       {sessionWarnings.length > 0 && (
         <div role="status" className="flex flex-col gap-2 border-b border-warning-border bg-warning-soft px-5 py-3 text-sm text-foreground">

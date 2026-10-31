@@ -181,13 +181,13 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
 
   const zipBuffer = req.body as Buffer;
   if (!zipBuffer || !Buffer.isBuffer(zipBuffer) || zipBuffer.length === 0) {
-    res.status(400).json({ message: "请上传 .zip 备份文件（需以 application/zip Content-Type 发送）" });
+    res.status(400).json({ message: "请选择 .zip 备份文件。" });
     return;
   }
 
   // 快速校验 ZIP 魔数
   if (zipBuffer[0] !== 0x50 || zipBuffer[1] !== 0x4b) {
-    res.status(400).json({ message: "上传的文件不是有效的 ZIP 格式（缺少 PK 文件头）" });
+    res.status(400).json({ message: "所选文件不是有效的 ZIP 备份，请重新选择。" });
     return;
   }
 
@@ -494,11 +494,11 @@ async function backupMariadb(res: Response): Promise<void> {
 async function restoreMariadb(req: Request, res: Response): Promise<void> {
   const zipBuffer = req.body as Buffer;
   if (!zipBuffer || !Buffer.isBuffer(zipBuffer) || zipBuffer.length === 0) {
-    res.status(400).json({ message: "请上传 .zip 备份文件" });
+    res.status(400).json({ message: "请选择 .zip 备份文件。" });
     return;
   }
   if (zipBuffer[0] !== 0x50 || zipBuffer[1] !== 0x4b) {
-    res.status(400).json({ message: "不是有效的 ZIP 格式" });
+    res.status(400).json({ message: "所选文件不是有效的 ZIP 备份，请重新选择。" });
     return;
   }
 

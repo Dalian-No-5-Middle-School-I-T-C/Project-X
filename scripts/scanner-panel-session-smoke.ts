@@ -298,14 +298,14 @@ try {
   }) as typeof scannerUploadManager.discardDamagedRecovery;
   await click("刷新汇总"); await settle();
   assert(!hasAction("放弃续传"), "损坏记录不提供放弃");
-  assert(hasAction("已核对服务器，清除损坏记录"), "损坏记录要给出核对后的清除入口");
+  assert(hasAction("清除损坏记录"), "损坏记录要给出核对后的清除入口");
   assert([...document.querySelectorAll("button")].filter(node => node.textContent?.trim() === "整卡改分")
     .every(node => node.disabled), "损坏记录同样禁止改分");
   dom.window.confirm = (() => false) as typeof dom.window.confirm;
-  await click("已核对服务器，清除损坏记录"); await settle();
+  await click("清除损坏记录"); await settle();
   assert.deepEqual(discardCalls, [], "没确认核对过就不清除记录");
   dom.window.confirm = (() => true) as typeof dom.window.confirm;
-  await click("已核对服务器，清除损坏记录"); await settle();
+  await click("清除损坏记录"); await settle();
   assert.equal(discardCalls.length, 1, "确认核对后清除这一组的损坏记录");
   assert.equal(discardCalls[0].split("/")[1], "0", "清除要点名到被点击的那一组");
   assert(document.body.textContent?.includes("待上传"), "清除后这一组回到待上传");
@@ -318,7 +318,7 @@ try {
   // 远端模式下这一卷已经随批次进入上传队列：从工作台改分必须当场说明改动不会回到服务器
   //（重复上传同一份卷子会被服务端当成第二份原卷，反而撤掉已保存的成绩）。
   await click("整卡改分"); await settle();
-  const cell = document.querySelector("svg polygon") as SVGElement | null;
+  const cell = document.querySelector("svg polygon[data-cell-id]") as SVGElement | null;
   assert(cell, "改分弹层渲染出可点选的填涂格");
   await act(async () => { cell.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
   await settle();
@@ -448,7 +448,18 @@ try {
   assert.equal(uploads.at(-1)?.examId, 13, "补上的考试 ID 就是本场，而不是上一场");
   assert(document.querySelector('[aria-label="搜索学生"]'), "考试信息到达后恢复姓名搜索");
 
-  console.log("PASS scanner panel React/SSE: session metadata; partial view/correction/save; terminal replay and reconnect hydrate persisted pages; hydration retry, zero-page and next-session recovery");
+  // issue #320：完成一批后「继续扫描」必须保留当前设置并立刻新建下一批，不用退回设置页。
+  assert(hasAction("继续扫描") && hasAction("开始新扫描"), "完成后同时提供开始新扫描与继续扫描");
+  const scansBeforeContinue = scans.length;
+  const uploadsBeforeContinue = uploads.length;
+  const previouslySelectedSource = scans.at(-1)?.sourceName;
+  await click("继续扫描"); await settle();
+  assert.equal(scans.length, scansBeforeContinue + 1, "继续扫描立即新建一个扫描会话");
+  assert.equal(scans.at(-1)?.sourceName, previouslySelectedSource, "继续扫描沿用上一次的数据源与设置");
+  assert(hasAction("停止扫描"), "继续扫描直接进入扫描中");
+  await act(async () => { streams.at(-1)?.done(); }); await settle();
+  assert.equal(uploads.length, uploadsBeforeContinue + 2, "继续扫出的批次完成后照常上传");
+  console.log("PASS scanner panel React/SSE: session metadata; partial view/correction/save; terminal replay and reconnect hydrate persisted pages; hydration retry, zero-page and next-session recovery; continue-scan");
 } finally {
   releaseCard();
   await act(async () => { root.unmount(); });

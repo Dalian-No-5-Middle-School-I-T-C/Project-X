@@ -53,6 +53,11 @@ import {
 interface ScannerPanelProps {
   cardId: string;
   onScansComplete?: (sessionId: string, pageCount: number) => void;
+  /** 继续扫描/重开前把当前会话交给后处理页：部分中断的批次不能因为离开面板就消失。 */
+  onBatchArchived?: (sessionId: string, pageCount: number) => void;
+  /** 从后处理页点「继续扫描」进入时自动开始下一批；消费后回调避免刷新重复触发。 */
+  autoStartScan?: boolean;
+  onAutoStartConsumed?: () => void;
   onClose?: () => void;
 }
 
@@ -81,22 +86,44 @@ type StudentResult = ScanBatchResult;
 const MAX_RECONNECT = 5;
 const RECONNECT_DELAY = 5000;
 
-export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelProps) {
+/** 扫描设置跨批次记忆：继续扫描会重挂载面板，DPI/色彩/纸型不该回到默认值。 */
+const SCAN_SETTINGS_KEY = "projectx-scanner-settings-v1";
+type StoredScanSettings = {
+  dpi: number;
+  colorMode: "gray" | "color" | "bw";
+  paperSize: "A4" | "Letter" | "A3";
+  maxSheets: number;
+  pageTimeoutSec: number;
+  showUi: boolean;
+  selectedSource: string;
+};
+
+function readStoredScanSettings(): Partial<StoredScanSettings> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SCAN_SETTINGS_KEY) || "null") as Partial<StoredScanSettings> | null;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, autoStartScan, onAutoStartConsumed, onClose }: ScannerPanelProps) {
+  const storedSettings = useRef(readStoredScanSettings()).current;
   const [state, setState] = useState<ScannerState>("idle");
   const [sources, setSources] = useState<string[]>([]);
-  const [selectedSource, setSelectedSource] = useState("");
-  const [dpi, setDpi] = useState(300);
+  const [selectedSource, setSelectedSource] = useState(storedSettings.selectedSource ?? "");
+  const [dpi, setDpi] = useState(storedSettings.dpi ?? 300);
   const [duplex, setDuplex] = useState(false);
   const [legacyIdentity, setLegacyIdentity] = useState(false);
   const [sessionLegacyIdentity, setSessionLegacyIdentity] = useState(false);
-  const [showUi, setShowUi] = useState(false);
-  const [colorMode, setColorMode] = useState<"gray" | "color" | "bw">("color");
-  const [paperSize, setPaperSize] = useState<"A4" | "Letter" | "A3">("A4");
+  const [showUi, setShowUi] = useState(storedSettings.showUi ?? false);
+  const [colorMode, setColorMode] = useState<"gray" | "color" | "bw">(storedSettings.colorMode ?? "color");
+  const [paperSize, setPaperSize] = useState<"A4" | "Letter" | "A3">(storedSettings.paperSize ?? "A4");
   // 单次批扫上限按「张」输入（0=不限，最高 400 张）；发给服务端时按单双面折算成页数
-  const [maxSheets, setMaxSheets] = useState(0);
+  const [maxSheets, setMaxSheets] = useState(storedSettings.maxSheets ?? 0);
   // 等纸空闲超时（秒）：0=用 native 默认 60s。厚纸/慢速 ADF 进纸间隔大时需要调高，
   // 否则会出现「扫到一半提前收尾」。历史默认 15s 对 300/600dpi ADF 偏短。
-  const [pageTimeoutSec, setPageTimeoutSec] = useState(0);
+  const [pageTimeoutSec, setPageTimeoutSec] = useState(storedSettings.pageTimeoutSec ?? 0);
   // 检测诊断（根因/建议/原始输出）：把「未检测到扫描仪」这一类笼统文案拆成可操作结论
   const [sourcesDiag, setSourcesDiag] = useState<ScannerSourcesResult | null>(null);
   const [sessionId, setSessionId] = useState("");
@@ -141,6 +168,12 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const [disconnected, setDisconnected] = useState(false);
   // v2.5.6：诊断复制反馈（老师现场无法翻日志，一键复制即可反馈）
   const [diagCopied, setDiagCopied] = useState(false);
+  /** 继续扫描自动开扫前，先等答题卡默认纸型/单双面读回来，避免用默认 A4/单面开第一批。 */
+  const [cardSettingsReady, setCardSettingsReady] = useState(false);
+  /** 自动续扫还要等数据源枚举结束：否则枚举晚到会把正在扫描的界面切回 ready，或覆盖上次选定的设备。 */
+  const [sourcesReady, setSourcesReady] = useState(false);
+  const detectAttemptRef = useRef(0);
+  const autoStartedRef = useRef(false);
 
   // v2.5.1: 扫描存储模式共享 hook（与导入阅卷卡片共用同一记忆）
   const [scannerMode, setScannerMode] = useScannerMode();
@@ -167,11 +200,30 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           setDuplex(card.sided === "double");
         }
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => { if (active) setCardSettingsReady(true); });
     return () => {
       active = false;
     };
   }, [cardId]);
+
+  // 扫描设置跨批次记忆：继续扫描重挂载后仍用上一次的 DPI/色彩/纸型/数据源。
+  useEffect(() => {
+    try {
+      const settings: StoredScanSettings = { dpi, colorMode, paperSize, maxSheets, pageTimeoutSec, showUi, selectedSource };
+      localStorage.setItem(SCAN_SETTINGS_KEY, JSON.stringify(settings));
+    } catch { /* 存储不可用不影响本次扫描 */ }
+  }, [dpi, colorMode, paperSize, maxSheets, pageTimeoutSec, showUi, selectedSource]);
+
+  // 从后处理页点「继续扫描」：面板挂载并读到答题卡设置后自动开下一批。
+  useEffect(() => {
+    if (!autoStartScan || !cardSettingsReady || !sourcesReady || autoStartedRef.current) return;
+    autoStartedRef.current = true;
+    onAutoStartConsumed?.();
+    void startScan();
+    // startScan 是组件内函数声明；只允许在进入时消费一次自动开扫标记。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStartScan, cardSettingsReady, sourcesReady]);
 
   // Detect sources on mount
   useEffect(() => {
@@ -184,15 +236,19 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   }, []);
 
   async function detectSources() {
+    const attempt = ++detectAttemptRef.current;
+    const scanAtStart = scanAttemptRef.current;
+    setSourcesReady(false);
     // 重新检测前丢弃上次枚举的列表；否则本次失败后仍会显示旧下拉框，
-    // 老师无法使用留空或手填数据源的兜底入口。
-    if (sources.length > 0) setSelectedSource("");
+    // 老师无法使用留空或手填数据源的兜底入口。已记忆的数据源先留着，成功后再判断是否仍有效。
     setSources([]);
     setState("detecting");
     setSourcesDiag(null);
     try {
       const res = await authFetch("/api/scanner/sources");
       const data = (await res.json()) as ScannerSourcesResult;
+      // 扫描已在本轮检测期间启动：晚到的检测结果不能把 scanning 改回 ready。
+      if (attempt !== detectAttemptRef.current || scanAttemptRef.current !== scanAtStart) return;
       // 先判 HTTP 状态：服务端异常时 body 可能没有 status 字段，
       // 旧代码直接读 data.status 会走到通用兜底文案，丢掉真正的错误
       if (!res.ok) {
@@ -206,7 +262,12 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         const kodak = data.sources.find(
           (s) => s.name.toLowerCase().includes("kodak") || s.name.toLowerCase().includes("i3000")
         );
-        setSelectedSource(kodak?.name || data.sources[0].name);
+        setSelectedSource((previous) => {
+          const remembered = previous.trim();
+          return remembered && data.sources.some((source) => source.name === remembered)
+            ? remembered
+            : kodak?.name || data.sources[0].name;
+        });
         setState("ready");
       } else {
         setSourcesDiag(data);
@@ -214,8 +275,11 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         setState("error");
       }
     } catch (err) {
+      if (attempt !== detectAttemptRef.current || scanAttemptRef.current !== scanAtStart) return;
       setErrorMessage(err instanceof Error ? err.message : "检测扫描仪失败");
       setState("error");
+    } finally {
+      if (attempt === detectAttemptRef.current) setSourcesReady(true);
     }
   }
 
@@ -415,9 +479,9 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     }
   }
 
-  async function readSessionExamId(sid: string): Promise<number | null> {
+  async function readSessionExamId(sid: string, signal?: AbortSignal): Promise<number | null> {
     try {
-      const metaResponse = await authFetch(`/api/scanner/scan/${sid}`);
+      const metaResponse = await authFetch(`/api/scanner/scan/${sid}`, signal ? { signal } : undefined);
       if (!metaResponse.ok) return null;
       const meta = await metaResponse.json();
       return typeof meta.examId === "number" ? meta.examId : null;
@@ -468,33 +532,24 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       applyResults(data);
       // 姓名联想只服务重复卷。先丢掉上一场的考试，避免新请求慢或失败时仍按旧名册填考号。
       assignSessionExamId(null);
-      const metaPromise = examFromSnapshot === undefined ? readSessionExamId(sid) : null;
-      let resolvedExamId: number | null = typeof examFromSnapshot === "number" ? examFromSnapshot : null;
-      if (metaPromise) {
-        // 已完成的读取走微任务，会先于下一拍定时器；卡住的读取不能挡住入队。
-        const pending = Symbol("session-exam-pending");
-        const winner = await Promise.race([
-          metaPromise,
-          new Promise<typeof pending>((resolve) => { setTimeout(() => resolve(pending), 0); }),
-        ]);
-        if (!current()) return;
-        if (winner !== pending) {
-          resolvedExamId = winner;
-          assignSessionExamId(resolvedExamId);
-        } else {
-          void metaPromise.then((id) => {
-            if (!current()) return;
-            assignSessionExamId(id);
-            if (id != null) scannerUploadManager.assignLocalSessionExamId(sid, id);
-          });
-        }
-      } else if (current()) {
-        assignSessionExamId(resolvedExamId);
+      const queuedExamId: number | null = examFromSnapshot !== undefined
+        ? (typeof examFromSnapshot === "number" ? examFromSnapshot : null)
+        : null;
+      if (examFromSnapshot !== undefined) {
+        assignSessionExamId(queuedExamId);
+        if (queuedExamId != null) scannerUploadManager.assignLocalSessionExamId(sid, queuedExamId);
       }
       if (!current()) return;
-      // 远端模式：成绩汇总一完成即自动后台上传。联想元数据失败或迟迟不回都不能挡住这一步。
+      // 远端模式：成绩汇总一完成即自动后台上传。考试元数据晚到或失败都不能挡住这一步。
       if (!partial && getScannerMode() === "remote" && isRemoteServerConfigured()) {
-        queueSuccessfulUploads(data, sid, resolvedExamId);
+        queueSuccessfulUploads(data, sid, queuedExamId);
+      }
+      if (examFromSnapshot === undefined) {
+        void (async () => {
+          const id = await readSessionExamId(sid, AbortSignal.timeout(3000));
+          if (id != null) scannerUploadManager.assignLocalSessionExamId(sid, id);
+          if (current()) assignSessionExamId(id);
+        })();
       }
     }
     catch (err) {
@@ -599,6 +654,11 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
 
   async function startScan() {
     const attempt = ++scanAttemptRef.current;
+    // 继续扫描/重开前先断开上一批的 SSE：旧批次在后台跑完时不能再把界面从新批次切走。
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+    setDisconnected(false);
     // v2.5.6：不再因「没选到数据源」静默 return——那会把老师直接挡在门外且毫无反馈。
     // 留空是合法输入：服务端 sourceName 缺省为 ""，桥接在枚举为空或名称无匹配时
     // 回退 MSG_GETDEFAULT（系统默认数据源）；真失败时由 bridge 返回可诊断的错误。
@@ -612,6 +672,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     pagesRef.current = [];
     setStudentResults([]);
     setFailures([]);
+    setReviewCards([]);
     setCorrections({});
     setUploadJobs({});
     uploadJobsRef.current = {};
@@ -621,6 +682,11 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     reconnectAttemptsRef.current = 0;
     completedRef.current = false;
     setDisconnected(false);
+    setActiveStudent(null);
+    setSessionLegacyIdentity(false);
+    assignSessionExamId(null);
+    setSessionId("");
+    sessionIdRef.current = "";
 
     try {
       // Fetch before starting OMR so even an early click has a nonempty, pinned
@@ -692,7 +758,22 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     }
   }
 
+  /** 把当前会话交给后处理页：继续扫描/开始新扫描离开面板后，部分中断的批次仍能回去处理。 */
+  function archiveCurrentBatch() {
+    const sid = sessionIdRef.current;
+    const pageCount = pagesRef.current.length;
+    if (sid && pageCount > 0) onBatchArchived?.(sid, pageCount);
+  }
+
+  /** 同一答题卡继续扫下一批：保留上一批结果，新批次完成后在「扫描后处理」里一起保存。 */
+  function continueScan() {
+    if (resultsBusyRef.current) return;
+    archiveCurrentBatch();
+    void startScan();
+  }
+
   function reset() {
+    archiveCurrentBatch();
     scanAttemptRef.current++;
     eventSourceRef.current?.close();
     if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
@@ -1110,12 +1191,12 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                             <>
                               <CardCorrectionButton disabled={resultsBusy || block !== null}
                                 disabledReason={block === "recovery-damaged"
-                                  ? "本机上传恢复记录已损坏，读不出远端会话与逐页进度；这一卷可能已经入库，改分或重传都会改写正式成绩。请先在服务器核对原上传会话，再点「已核对服务器，清除损坏记录」"
+                                  ? "本机上传记录已损坏，无法确认这卷是否已入库。请先在服务器核对原上传会话，再清除本机记录。"
                                   : block === "completion-pending"
-                                  ? "这一卷的页面都已上传、只差提交（重复学号这类冲突是服务器拒的）；现在改分会让服务器收到半旧半新的识别结果，请先「重试保存」或处理冲突卷"
+                                  ? "这卷的页面已上传，只差提交。现在改分可能与服务器已有记录冲突；请先重试保存或处理冲突卷。"
                                   : resumable
-                                  ? "这一卷已上传一部分、还有失败页可续传；现在改分会让服务器收到半旧半新的识别结果。请先「重试失败页」，或点「放弃续传」后再改分"
-                                  : "这一卷正在上传；现在改分会让服务器收到半旧半新的识别结果，请等它传完或先取消任务"}
+                                  ? "这卷还有失败页未传完。现在改分会让服务器收到新旧不一的识别结果；请先重试失败页，或放弃续传后再改。"
+                                  : "这卷正在上传。请等上传完成或取消任务后再改分。"}
                                 url={`/api/scanner/session/${sessionId}/groups/${sr.groupId}/correction`} onSaved={() => {
                                 // 远端模式下本机 saved 不会因上传完成而变化：这一卷已经交给服务器，
                                 // 工作台再改分只留本机，不提示就会静默分歧（与后处理页同一句话）。
@@ -1139,13 +1220,13 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                               {block === "recovery-damaged" && cardId && (
                                 <Button variant="ghost" size="sm" onClick={() => {
                                   const remoteSessionId = scannerUploadManager.damagedRecoverySessionId(cardId, sr.groupId, sessionId);
-                                  if (!window.confirm(`本机上传恢复记录已损坏，无法确认这份卷在服务器上是否已经入库${remoteSessionId ? `（原上传会话 ${remoteSessionId}）` : ""}。请先在成绩或异常卷列表里核对那一份：确认没有已保存的成绩之后，再清除本机记录；清除后这一卷会按新会话重新上传。确定已经核对过吗？`)) return;
+                                  if (!window.confirm(`本机上传记录已损坏，无法确认这份卷在服务器上是否已经入库${remoteSessionId ? `（原上传会话 ${remoteSessionId}）` : ""}。请先在成绩或异常卷列表里核对；确认没有已保存的成绩后，再清除本机记录并按新会话重新上传。确定已经核对过吗？`)) return;
                                   const result = scannerUploadManager.discardDamagedRecovery(cardId, sr.groupId, sessionId);
                                   if (!result.ok) { setResultMessage(result.message); return; }
                                   forgetQueuedMarker(sr.groupId);
-                                  setResultMessage("已清除损坏的恢复记录；请先把这一卷的填涂核对确认，再整卷重新上传。");
+                                  setResultMessage("已清除损坏记录。请先核对该卷的填涂，再整卷重新上传。");
                                 }}>
-                                  已核对服务器，清除损坏记录
+                                  清除损坏记录
                                 </Button>
                               )}
                             </>
@@ -1203,9 +1284,17 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
             </TableWrap>
           )}
 
-          <Button variant="primary" block disabled={resultsBusy} icon={<RefreshCw size={16} />} onClick={reset}>
-            开始新扫描
-          </Button>
+          <div className="flex flex-col gap-2">
+            <Button variant="primary" block disabled={resultsBusy} icon={<RefreshCw size={16} />} onClick={reset}>
+              开始新扫描
+            </Button>
+            <Button variant="outline" block disabled={resultsBusy} icon={<Play size={16} />} onClick={continueScan}>
+              继续扫描
+            </Button>
+            <p className="m-0 text-xs text-muted-foreground">
+              继续扫描会在同一张答题卡下再扫一批，已扫结果保留在「扫描后处理」，可一起核对和保存。
+            </p>
+          </div>
         </div>
       )}
 

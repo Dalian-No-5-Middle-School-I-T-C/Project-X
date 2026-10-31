@@ -328,7 +328,7 @@ export function GradeLadder() {
         <EmptyState
           icon={<TrendingUp />}
           title="年级前十"
-          description="请在上方选择考试范围，查看年级前十榜单；截断处的同分并列者会一并显示。"
+          description="请选择考试范围查看年级前十。分数相同的学生会一起显示。"
         />
       )}
 

@@ -577,7 +577,7 @@ export function AccountSettingsPage() {
                     />
                   }
                   label="明暗模式"
-                  description="亮色/暗色即时生效，为设备级偏好（仅皮肤随账号同步）"
+                  description="亮色/暗色即时生效，仅在本设备保存；界面皮肤会跟随账号。"
                 />
                 <ControlRow
                   reverse
@@ -592,7 +592,7 @@ export function AccountSettingsPage() {
                     />
                   }
                   label="侧边栏自动展开"
-                  description="收起后鼠标移到侧边栏时自动展开；关闭后仍可点击圆形按钮展开并正常导航（仅本机当前浏览器生效）"
+                  description="收起后，鼠标移到侧边栏会自动展开；关闭后可用圆形按钮展开。仅在本机浏览器生效。"
                 />
               </section>
 

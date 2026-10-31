@@ -814,16 +814,16 @@ if (j.cancelled) throw cancelledError(j);
    */
   function abandonGroupUpload(cardId: string, groupId: string, localSessionId: string): { ok: true } | { ok: false; message: string } {
     const block = groupUploadBlock(cardId, groupId, localSessionId);
-    if (block === "in-flight") return { ok: false, message: "这一卷正在上传，请等它传完或在进度卡里取消任务" };
+    if (block === "in-flight") return { ok: false, message: "这卷正在上传，请等上传完成或在进度卡里取消任务。" };
     if (block === "completion-pending") {
-      return { ok: false, message: "这一卷的页面都已上传，只差提交（重复学号这类冲突由服务器拒的）；请点「重试保存」或先处理冲突卷，放弃会再传出一份原卷" };
+      return { ok: false, message: "这卷的页面已上传，只差提交。请先重试保存或处理冲突卷；放弃会再传出一份原卷。" };
     }
     if (block === "recovery-damaged") {
-      return { ok: false, message: "本机恢复记录已损坏，无法确认服务器上这份卷是否已经入库；请先核对原上传会话，再用「已核对服务器，清除损坏记录」" };
+      return { ok: false, message: "本机上传记录已损坏，无法确认服务器上这份卷是否已入库。请先核对原上传会话，再清除本机记录。" };
     }
     const groupJobs = lockableGroupJobs(cardId, groupId, localSessionId);
     const foreign = groupJobs.filter(job => job.pages.some(page => page.input.groupId !== groupId));
-    if (foreign.length > 0) return { ok: false, message: "这一条任务里还有其他试卷，请在进度卡里逐条重试或取消" };
+    if (foreign.length > 0) return { ok: false, message: "这条任务里还有其他试卷，请在进度卡里逐条重试或取消。" };
     for (const job of groupJobs) {
       for (const page of job.pages) releasePage(page);
       const index = jobs.indexOf(job);

@@ -683,7 +683,7 @@ flowchart LR
 | **扫描仪** | C++ TWAIN API + GDI+（子进程调用） |
 | **数据库** | SQLite via better-sqlite3（WAL + 外键约束） |
 | **PDF** | pdfkit（毫米级精确排版） |
-| **桌面** | Electron 39 + electron-builder + WiX Toolset |
+| **桌面** | Electron 43.8.3 + electron-builder + WiX Toolset |
 | **构建** | Vite（前端）+ esbuild（后端） |
 
 ---

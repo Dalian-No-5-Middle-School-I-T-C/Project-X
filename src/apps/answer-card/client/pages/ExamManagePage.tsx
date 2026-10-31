@@ -121,6 +121,7 @@ export function ExamManagePage() {
     examGroups,
     loadExams,
     loadExamGroups,
+    deleteCard,
     setExamDeleteTarget,
     setGroupDeleteTarget,
     setAssignedFormulaExamId,
@@ -141,6 +142,8 @@ export function ExamManagePage() {
   const [examView, setExamView] = useState<ExamView>("list");
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => todayDateString());
   const [creating, setCreating] = useState(false);
+  /** 批量删除选中考试关联的答题卡：逐张调用统一删除入口，遇到引用冲突就停下并交给全局确认框。 */
+  const [deletingSelectedCards, setDeletingSelectedCards] = useState(false);
   const [newExamMode, setNewExamMode] = useState<ExamMode>("formal");
   // 评审 P1-2：创建考试必须确定应考范围（年级或班级至少其一）
   const [newExamGradeId, setNewExamGradeId] = useState<string>(CARD_PLACEHOLDER);
@@ -293,7 +296,7 @@ export function ExamManagePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ studentIds: ids }),
       });
-      setStatus("应考名单已保存（用于扫描入库身份校验与名单展示，公布不再要求名单齐全）");
+      setStatus("应考名单已保存。");
       setRosterExam(null);
     } catch (err) {
       setRosterErr(err instanceof Error ? err.message : "保存名单失败");
@@ -309,7 +312,7 @@ export function ExamManagePage() {
     setRosterErr(null);
     try {
       await fetchJson(`/api/exams/${rosterExam.id}/participants`, { method: "DELETE" });
-      setStatus("显式应考名单已清除（已回落年级/班级名册快照）");
+      setStatus("已恢复为年级/班级名册。");
       await openRosterModal(rosterExam);
     } catch (err) {
       setRosterErr(err instanceof Error ? err.message : "恢复班级/年级名册失败");
@@ -344,6 +347,82 @@ export function ExamManagePage() {
     const next = new Set(selectedExamIds);
     if (next.has(examId)) next.delete(examId); else next.add(examId);
     setSelectedExamIds(next);
+  }
+
+  /** 删除勾选考试所用的答题卡：先只读预检引用，确认后再解绑删除。 */
+  async function deleteSelectedCards() {
+    if (deletingSelectedCards) return;
+    const selected = exams.filter((exam) => selectedExamIds.has(exam.id));
+    const uniqueCards = new Map<string, string>();
+    for (const exam of selected) {
+      if (exam.card_id && !uniqueCards.has(exam.card_id)) {
+        uniqueCards.set(exam.card_id, cards.find((item) => item.id === exam.card_id)?.title || exam.card_id);
+      }
+    }
+    if (uniqueCards.size === 0) {
+      setStatus("选中的考试没有关联答题卡");
+      return;
+    }
+
+    setDeletingSelectedCards(true);
+    try {
+      // 关键：不能拿 unlinkExams:true 当预检。先逐张做只读预检，把共享卡会牵连的考试
+      // 与范围外引用都摆到确认框里，再决定是否真正删除。
+      const preflights: Array<{
+        cardId: string;
+        title: string;
+        referencedExamCount: number;
+        referencedExamNames: string[];
+        outOfScopeExamCount: number;
+      }> = [];
+      for (const [cardId, title] of uniqueCards) {
+        const result = await fetchJson<{
+          referencedExamCount?: number;
+          referencedExamNames?: string[];
+          outOfScopeExamCount?: number;
+        }>(`/api/cards/${encodeURIComponent(cardId)}`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ preflight: true }),
+        });
+        preflights.push({
+          cardId,
+          title,
+          referencedExamCount: Number(result.referencedExamCount ?? 0),
+          referencedExamNames: Array.isArray(result.referencedExamNames) ? result.referencedExamNames : [],
+          outOfScopeExamCount: Number(result.outOfScopeExamCount ?? 0),
+        });
+      }
+      const blocked = preflights.filter((item) => item.outOfScopeExamCount > 0);
+      if (blocked.length > 0) {
+        setStatus(`有 ${blocked.length} 张答题卡关联了范围外的考试，请先由对应教师处理`);
+        return;
+      }
+      const referenced = preflights.filter((item) => item.referencedExamCount > 0);
+      const referencedNames = [...new Set(referenced.flatMap((item) => item.referencedExamNames))];
+      const totalReferences = referenced.reduce((sum, item) => sum + item.referencedExamCount, 0);
+      const message = referenced.length > 0
+        ? `将删除这 ${uniqueCards.size} 张答题卡。其中 ${referenced.length} 张仍被 ${totalReferences} 场考试引用${referencedNames.length ? `（${referencedNames.join("、")}）` : ""}；删除后会解除这些考试与答题卡的关联，考试本身和成绩保留。未勾选的考试如共用同一张卡也会一并解除关联。\n\n此操作不可恢复，确定继续吗？`
+        : `将删除这 ${uniqueCards.size} 张未关联考试的答题卡。此操作不可恢复，确定继续吗？`;
+      if (!window.confirm(message)) return;
+
+      for (const item of preflights) {
+        const ok = item.referencedExamCount > 0
+          ? await deleteCard(item.cardId, { unlinkExams: true })
+          : await deleteCard(item.cardId);
+        if (!ok) {
+          setStatus(`删除答题卡「${item.title}」未完成，请先处理引用冲突`);
+          return;
+        }
+      }
+      setSelectedExamIds(new Set());
+      setStatus(`已删除 ${uniqueCards.size} 张答题卡`);
+      await loadExams();
+    } catch (error) {
+      setStatus(`预检查询失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setDeletingSelectedCards(false);
+    }
   }
 
   /** 日历日期切换：清空勾选，避免此前日期的隐藏选中误入批量删除 */
@@ -687,6 +766,18 @@ export function ExamManagePage() {
                 删除选中 ({selectedExamIds.size})
               </Button>
             )}
+            {examManageMode === "single" && selectedExamIds.size > 0 && (
+              <Button
+                variant="ghost"
+                icon={<Trash2 />}
+                className="text-destructive-fg"
+                loading={deletingSelectedCards}
+                disabled={deletingSelectedCards}
+                onClick={() => void deleteSelectedCards()}
+              >
+                删除选中答题卡
+              </Button>
+            )}
             <span className="text-sm text-muted-foreground">
               共 <span className="tabular-nums">{examManageMode === "single" ? (examView === "calendar" ? exams.length : visibleExams.length) : examGroups.length}</span> {examManageMode === "single" ? "个考试" : "个大考"}
             </span>
@@ -950,7 +1041,7 @@ export function ExamManagePage() {
           <DialogHeader>
             <DialogTitle>公布分数</DialogTitle>
             <DialogDescription>
-              确认公布「{publishTarget?.name ?? ""}」的成绩？将公布当前已录入的成绩，无需等待所有应考学生出分；后续补录或改分默认保持公布并更新统计；管理员开启自动撤回时需重新公布。
+              确认公布「{publishTarget?.name ?? ""}」的成绩？将公布当前已录入的成绩，后续补录或改分默认保持公布。
             </DialogDescription>
           </DialogHeader>
           {/* v54: 公布表单的「公布后显示原卷」，勾选状态随本次公布写入 exams.show_original_paper */}
@@ -982,7 +1073,7 @@ export function ExamManagePage() {
           <DialogHeader>
             <DialogTitle>批量公布成绩</DialogTitle>
             <DialogDescription>
-              确认公布选中的 {selectedExamIds.size} 场考试的成绩？将公布当前已录入的成绩，无需等待所有应考学生出分；后续补录或改分默认保持公布并更新统计；管理员开启自动撤回时需重新公布。
+              确认公布选中的 {selectedExamIds.size} 场考试的成绩？将公布当前已录入的成绩，后续补录或改分默认保持公布。
             </DialogDescription>
           </DialogHeader>
           <DialogBody className="flex flex-col gap-3">
@@ -997,7 +1088,7 @@ export function ExamManagePage() {
                 />
               }
               label="公布后显示原卷"
-              description={`对本批 ${selectedExamIds.size} 场考试统一生效；未上传原卷的考试即使勾选，学生侧仍显示「原卷未上传」。`}
+              description={`对本批 ${selectedExamIds.size} 场考试统一生效；没有上传原卷的考试，学生仍会看到「原卷未上传」。`}
             />
           </DialogBody>
           <DialogFooter>
@@ -1039,8 +1130,8 @@ export function ExamManagePage() {
           <DialogHeader>
             <DialogTitle>应考名单 — {rosterExam?.name ?? ""}</DialogTitle>
             <DialogDescription>
-              名单外学号不允许扫描入库；公布只要求该场已有成绩，不再要求名单内学生全部出分。
-              来源：{rosterData?.source === "explicit" ? "管理员显式名单" : rosterData?.source === "roster" ? "年级/班级名册（自动）" : "未确定"}
+              名单外学号不能扫描入库。
+              来源：{rosterData?.source === "explicit" ? "管理员指定名单" : rosterData?.source === "roster" ? "年级/班级名册（自动）" : "未确定"}
               （共 {rosterData?.total ?? 0} 人{rosterData?.missing ? `，${rosterData.missing} 人无账号记录` : ""}）
             </DialogDescription>
           </DialogHeader>
@@ -1053,7 +1144,7 @@ export function ExamManagePage() {
             </p>
             {!rosterData?.known && (
               <div className="rounded border border-warning bg-warning/10 px-3 py-2 text-sm text-warning-fg">
-                该考试尚未设置应考范围，不影响公布已有成绩。可从下方添加学生并保存名单，用于核对后续录入的学生身份。
+                该考试尚未设置应考范围；不影响公布已有成绩。可以添加学生并保存名单，用于核对后续扫描录入的身份。
               </div>
             )}
 

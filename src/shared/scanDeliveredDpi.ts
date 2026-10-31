@@ -266,11 +266,10 @@ export function verifyDeliveredScanDpi(
       ...verdictAxes,
       source,
       samplePages: pairs.length,
-      message: `设定 ${requestedDpi} DPI，但${source === "device" ? "驱动回报" : "出图像素尺寸反查"}为`
-        + `${axisLabel[0]} ${axisA} DPI、${axisLabel[1]} ${axisB} DPI，两轴相差 ${Math.round(spread * 100)}%${geometryNote}。`
-        + `这是非等比例变形或回报自相矛盾，平均成 ${deliveredDpi} DPI 会把异常抵消掉，而识别坐标正是按两轴分别换算的。`
-        + `请先核对实际进纸的纸张与所选纸型（A4/A3、A4/A5 这类同比例纸张在尺寸上分不开）；`
-        + `纸型无误就按 ${axisA}×${axisB} 两轴分别核对版面，并检查驱动里「适应纸张尺寸 / 重采样」这类缩放选项后重扫。`
+      message: `设定 ${requestedDpi} DPI，实际为${axisLabel[0]} ${axisA} DPI、${axisLabel[1]} ${axisB} DPI（相差 ${Math.round(spread * 100)}%）。`
+        + `两轴比例不一致会让识别坐标失真，不能按平均值处理。`
+        + `请检查驱动中的纸张尺寸和缩放选项，确认纸型后重新扫描。`
+        + (geometryNote ? `（${geometryNote.replace(/^，/, "")}）` : "")
     };
   }
 

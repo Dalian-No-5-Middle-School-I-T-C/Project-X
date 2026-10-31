@@ -1453,7 +1453,7 @@ function layoutSubjectiveBlock(
   if (IS_LAYOUT_V2) {
     for (const question of block.questions) {
       if (question.style === "manual_score_grid" && question.score <= 0) {
-        ACTIVE_WARNINGS.push(`${block.title} 第 ${question.number} 题启用了分数填涂区，但分值为 0；V2 已隐藏分数格，请先设置分值。`);
+        ACTIVE_WARNINGS.push(`${block.title} 第 ${question.number} 题启用了分数格，但分值为 0；分数格暂不显示，请先设置分值。`);
       }
     }
   }

@@ -6,10 +6,12 @@ import { Button, Input } from "./ui/v2";
 import { ParticipantLookupField, type ParticipantSearchScope } from "./ParticipantLookupField";
 import { ScanPreviewModal, type ScanPage } from "./ScanPreviewModal";
 
-export function ScannerConflictCards({ cards, remote = false, examId = null, request = authFetch, saveSession, onChanged }: {
+export function ScannerConflictCards({ cards, remote = false, examId = null, remoteSessionId = null, request = authFetch, saveSession, onChanged }: {
   cards: ScanConflictCard[]; remote?: boolean;
   /** 本场考试 ID；有值时可用姓名/考号联想填入订正学号 */
   examId?: number | null;
+  /** 本地上传任务绑定的远端会话；legacy 冲突卡不能当作 participant-search 范围 */
+  remoteSessionId?: string | null;
   request?: (url: string, init?: RequestInit) => Promise<Response>;
   saveSession?: (sessionId: string, groupId: string) => Promise<Response>;
   onChanged: (sessionId: string) => void | Promise<void>;
@@ -19,8 +21,11 @@ export function ScannerConflictCards({ cards, remote = false, examId = null, req
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [preview, setPreview] = useState<ScanPage[]>([]);
-  const lookupScope: ParticipantSearchScope | null = remote && cards[0]?.sessionId
-    ? { type: "uploadSession", sessionId: cards[0].sessionId }
+  const uploadSessionId = remote
+    ? cards.find(c => c.sessionId && !c.sessionId.startsWith("legacy:"))?.sessionId ?? remoteSessionId
+    : null;
+  const lookupScope: ParticipantSearchScope | null = remote && uploadSessionId
+    ? { type: "uploadSession", sessionId: uploadSessionId }
     : examId != null
       ? { type: "exam", examId }
       : null;
