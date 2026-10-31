@@ -545,7 +545,11 @@ router.get("/records/:recordId/image", dualAuth, async (req, res, next) => {
 // GET /sessions/:sessionId/participant-search — 扫描端凭据在应考快照内按姓名/考号联想（#362）
 router.get("/sessions/:sessionId/participant-search", dualAuth, async (req, res, next) => {
   try {
-    const q = (req.query.q as string ?? "").trim();
+    if (Array.isArray(req.query.q) || (req.query.q != null && typeof req.query.q !== "string")) {
+      res.status(400).json({ message: "搜索关键词只能有一个" });
+      return;
+    }
+    const q = String(req.query.q ?? "").trim();
     if (!q) {
       res.json({ ok: true, students: [] });
       return;

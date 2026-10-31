@@ -73,6 +73,8 @@ try {
   assert.equal(rosterSearch.status, 200, "upload session participant-search accepts scanner API key");
   const rosterHits = (await rosterSearch.json()).students as Array<{ student_number: string | null }>;
   assert.ok(rosterHits.some(s => s.student_number?.startsWith("910")), "roster search returns exam participants");
+  const duplicateQuery = await request(`/api/scanner/upload/sessions/${originalSession}/participant-search?q=910&q=911`);
+  assert.equal(duplicateQuery.status, 400, "repeated q parameters are rejected instead of crashing");
   const teacherOnly = await request("/api/exams/1/participant-search?q=910");
   assert.ok(!teacherOnly.ok, "scanner key must not read /api/exams participant-search");
   const reupload = enqueue("original");
