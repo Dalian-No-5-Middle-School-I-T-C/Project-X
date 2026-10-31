@@ -57,6 +57,44 @@ export async function searchStudentsForExam(
 }
 
 /**
+ * 在单场考试的应考快照内搜索（扫描端 API Key 订正重复考号用）。
+ * 只返回已冻结进 exam_participants 的学生，不枚举全校名册。
+ * 有效行与 listParticipants / isExamParticipant 相同：已有 explicit 时忽略残留 roster。
+ * 停用账号仍保留：快照是开考时的应考事实，不按当前 is_active 再剔一遍。
+ */
+export async function searchExamParticipantRoster(
+  db: DbAdapter,
+  examId: number,
+  q: string,
+): Promise<Array<{ id: number; name: string; student_number: string | null }>> {
+  const keyword = (q ?? "").trim();
+  if (!keyword) return [];
+  await ensureExamParticipants(db, examId);
+  const escaped = keyword.replace(/[!%_]/g, (m) => `!${m}`);
+  const rows = await db.all(
+    `SELECT u.id, u.name, u.student_number
+     FROM exam_participants ep
+     JOIN users u ON u.id = ep.student_id
+     WHERE ep.exam_id = ? AND u.role_id = ?
+       AND (
+         ep.source = 'explicit'
+         OR NOT EXISTS (
+           SELECT 1 FROM exam_participants ep_exp
+           WHERE ep_exp.exam_id = ep.exam_id AND ep_exp.source = 'explicit'
+         )
+       )
+       AND (u.student_number LIKE ? ESCAPE '!' OR u.name LIKE ? ESCAPE '!')
+     ORDER BY u.student_number
+     LIMIT 20`,
+    examId,
+    ROLE_IDS.STUDENT,
+    `${escaped}%`,
+    `%${escaped}%`,
+  ) as Array<{ id: number; name: string; student_number: string | null }>;
+  return rows.map((r) => ({ id: r.id, name: r.name, student_number: r.student_number }));
+}
+
+/**
  * 显式应考名单写入前的范围校验（安全 R29）。
  *
  * 显式名单是**权威应考名单**：写入即决定谁能参加这场考试并出成绩。此前 PUT 只确认目标 ID

@@ -361,15 +361,22 @@ try {
   assert.match(text(), /考号问题/, "考号未识别进队列");
   assert.match(text(), /第 1 \/ 2 条/);
   const studentInput = document.querySelector('input[aria-label="考号"]') as HTMLInputElement | null;
+  const rosterSearch = document.querySelector('input[aria-label="搜索学生"]') as HTMLInputElement | null;
   assert(studentInput, "改考号必须有独立输入入口");
+  assert(rosterSearch, "改考号必须有姓名/考号搜索入口");
   assert.equal(studentInput.value, "10001", "初值取自卡面 digit 格选");
   const valueSetter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")!.set!;
   await act(async () => {
-    valueSetter.call(studentInput, "10002");
-    studentInput.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    valueSetter.call(rosterSearch, "张三");
+    rosterSearch.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   });
   await settle(700);
   assert.match(text(), /张三/, "花名册联想给出考号+姓名");
+  const rosterPick = [...document.querySelectorAll("button")].find(el => el.textContent?.includes("张三") && el.textContent?.includes("10002"));
+  assert(rosterPick, "可按姓名点选联想结果");
+  await act(async () => { rosterPick!.click(); });
+  await settle();
+  assert.equal((document.querySelector('input[aria-label="考号"]') as HTMLInputElement).value, "10002", "选中后考号写入 digit 格");
   assert.match(text(), /该考号不在应考名单/, "应考名单来自 participants，联想命中也不能当成在名单里");
   assert.ok(participantUrls.some(entry => entry.includes("/api/exams/7/participants")), "应考名单必须打到当前会话的考试");
   assert.ok(!participantUrls.some(entry => entry.includes("/api/exams/99/")), "不能拿先加载的另一场会话的 examId 查名单");
@@ -494,6 +501,14 @@ try {
   await clickText("异常处理");
   await settle();
   assert.match(text(), /考号重复/, "重卡排在队首");
+  const fixButtons = [...document.querySelectorAll("button")].filter(el => el.textContent?.includes("改考号"));
+  assert(fixButtons.length >= 1, "重卡必须能进入改考号/按姓名匹配");
+  await act(async () => { fixButtons[0].click(); });
+  await settle();
+  assert(document.querySelector('input[aria-label="搜索学生"]'), "重卡改考号页提供姓名搜索");
+  assert(document.querySelector('input[aria-label="考号"]'), "重卡改考号页提供考号手输");
+  await clickText("返回重卡对比");
+  await settle();
   const keepButtons = [...document.querySelectorAll("button")].filter(el => el.textContent?.trim() === "保留这份");
   assert.equal(keepButtons.length, 2, "两份副本并排定性");
   const uploadsBeforeKeep = uploads.length;
@@ -680,6 +695,53 @@ try {
   assert.notEqual(scoreCell()!.getAttribute("aria-pressed"), pressedBefore, "旋转后点选仍命中同一格");
   await clickNode(scoreCell());await settle();
   assert.equal(scoreCell()!.getAttribute("aria-pressed"), pressedBefore, "再点一次回到原状态");
+
+  // 其他上传任务的进度会让父组件反复渲染。搜索不能被新的 request 函数取消。
+  const React = await import("react");
+  const { ParticipantLookupField } = await import("../src/apps/answer-card/client/components/ParticipantLookupField");
+  const lookupUrls: string[] = [];
+  function ProgressParent() {
+    const [tick, setTick] = React.useState(0);
+    React.useEffect(() => {
+      const timer = setInterval(() => setTick((value) => value + 1), 100);
+      return () => clearInterval(timer);
+    }, []);
+    return createElement("div", null,
+      createElement("span", { "data-progress-tick": String(tick) }),
+      createElement(ParticipantLookupField, {
+        scope: { type: "uploadSession", sessionId: "sess-progress" },
+        request: async (url: string) => {
+          lookupUrls.push(url);
+          return Response.json({ ok: true, students: [{ id: 1, name: "张三", student_number: "10001" }] });
+        },
+        onPick: () => {},
+      }),
+    );
+  }
+  const lookupHost = document.createElement("div");
+  document.body.append(lookupHost);
+  const lookupRoot = createRoot(lookupHost);
+  await act(async () => { lookupRoot.render(createElement(ProgressParent)); });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+  const lookupInput = lookupHost.querySelector("input");
+  assert.ok(lookupInput, "姓名搜索框已挂上");
+  const setInput = (value: string) => {
+    const proto = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+    proto?.set?.call(lookupInput, value);
+    lookupInput?.dispatchEvent(new window.Event("input", { bubbles: true }));
+    lookupInput?.dispatchEvent(new window.Event("change", { bubbles: true }));
+  };
+  await act(async () => { setInput("张三"); });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1200)); });
+  assert.equal(lookupUrls.length, 1, "进度持续更新时姓名搜索仍只发出一次");
+  assert.match(lookupUrls[0] ?? "", /sess-progress/);
+  assert.match(lookupHost.textContent ?? "", /10001/, "搜索完成后候选保持可选，不被下一帧进度清掉");
+  await act(async () => { setInput("李四"); });
+  assert.doesNotMatch(lookupHost.textContent ?? "", /10001/, "查询词变化时立刻清掉上一轮候选");
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
+  assert.equal(lookupUrls.length, 2, "查询词变化后重新搜索");
+  assert.match(lookupUrls[1] ?? "", new RegExp(encodeURIComponent("李四")));
+  await act(async () => { lookupRoot.unmount(); });
 
   console.log("PASS scanner-postprocess-ui-smoke");
 } catch (error) {

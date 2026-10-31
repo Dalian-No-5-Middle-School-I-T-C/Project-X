@@ -145,7 +145,7 @@ function UploadJobCard({
         )}
       </div>
 
-      {conflictCards.length > 0 && <ScannerConflictCards cards={conflictCards} remote
+      {conflictCards.length > 0 && <ScannerConflictCards cards={conflictCards} remote remoteSessionId={job.remoteSessionId ?? null} examId={job.examId ?? null}
         request={(url, init) => scannerUploadManager.requestJob(job.id, url, init)}
         saveSession={(sessionId, groupId) => scannerUploadManager.saveSession(job.id, sessionId, groupId)}
         onChanged={sessionId => scannerUploadManager.refreshResults(job.id, [sessionId])} />}
