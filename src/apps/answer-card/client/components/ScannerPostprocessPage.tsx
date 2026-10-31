@@ -49,6 +49,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   const [queueCurrent, setQueueCurrent] = useState<{ sessionId: string; groupId: string; itemId?: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [savingAll, setSavingAll] = useState(false);
+  const [queueRevision, setQueueRevision] = useState(0);
   const [error, setError] = useState("");
   /** 仍在扫描 / 识别、读不到结果的会话：崩溃重载后会走到这里，等它收尾而不是报加载失败。 */
   const [waitingSessions, setWaitingSessions] = useState<string[]>([]);
@@ -261,9 +262,17 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   const uploaded = useMemo(() => Object.values(batches).flatMap(b => b.results).filter(r => r.saved).length, [batches]);
   const remoteCancelledUploadCount = useMemo(() => sessions.reduce((count, { sessionId }) => {
     if (metas[sessionId]?.status !== "cancelled") return count;
+    const uploadCardId = card?.id ?? cardId;
     return count + (batches[sessionId]?.results ?? [])
-      .filter(result => !result.saved && result.needsReviewCount === 0).length;
-  }, 0), [batches, metas, sessions]);
+      .filter(result => {
+        const key = `${sessionId}/${result.groupId}`;
+        return !result.saved
+          && result.needsReviewCount === 0
+          && !queuedByPage.current.has(key)
+          && !isGroupQueued(cardId, sessionId, result.groupId)
+          && !scannerUploadManager.hasGroupUpload(uploadCardId, result.groupId, sessionId);
+      }).length;
+  }, 0), [batches, card?.id, cardId, metas, queueRevision, sessions]);
 
   /**
    * 仅本地模式的「保存成绩入库」：扫描完成后本页会自动接管工作台视图，
@@ -320,6 +329,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
       } else if (queued === 0) {
         notify.info("没有需要上传的正常卷");
       } else {
+        setQueueRevision(value => value + 1);
         notify.info(queued === 1 ? "已加入上传队列，图片后台续传" : `已加入上传队列（${queued} 份），图片后台续传`);
       }
     } finally {

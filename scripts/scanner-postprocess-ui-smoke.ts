@@ -1115,6 +1115,8 @@ try {
   assert.equal(uploads.length, cancelledUploadsBefore + 1, "显式上传只补传取消批次中保留的正常卷");
   assert.equal(uploads.at(-1)?.localSessionId, "scan-cancelled");
   assert.equal(uploads.at(-1)?.name, "扫描_30001");
+  assert(!cancelledHost.textContent?.includes("上传正常卷（1）"),
+    "已入队的取消批次正常卷不再继续显示待上传入口");
   await act(async () => { cancelledRoot.unmount(); });
   cancelledHost.remove();
 
