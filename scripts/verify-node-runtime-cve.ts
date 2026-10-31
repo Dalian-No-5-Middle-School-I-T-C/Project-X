@@ -461,11 +461,12 @@ cjs.trackChromiumWebContents(detached);
 cjs.configureChromiumBrotliRemoteGate({ retryDelayMs: 0 });
 check(cjs.isChromiumBrotliDecodeReady(detached) === true, "编码限制装上之后窗口标记为已保护");
 detached.calls.length = 0;
+const detachLogCount = detachLogs.length;
 detached.debugger.emit("detach", "target closed");
 check(
   cjs.isChromiumBrotliDecodeReady(detached) === false
     && !detached.stopped()
-    && detachLogs.length === 0,
+    && detachLogs.length === detachLogCount,
   "正常关窗 / 渲染进程退出触发的 target closed 不误报、不重连",
 );
 await cjs.installChromiumBrotliDecodeBlock(detached, (_level, message) => { detachLogs.push(message); });
