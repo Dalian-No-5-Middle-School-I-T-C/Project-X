@@ -20,6 +20,7 @@ export interface PostprocessChannel {
   saveResults(sessionId: string, groupIds: readonly string[]): Promise<ScanBatchResponse>;
   correctionUrl(sessionId: string, groupId: string): string;
   imageUrl(recordId: string): string;
+  thumbnailUrl(recordId: string): string;
   discardUrl(sessionId: string, groupId: string): string;
   retryUrl(sessionId: string): string;
   deleteGroupsUrl(sessionId: string): string;
@@ -58,6 +59,7 @@ export function localChannel(): PostprocessChannel {
     })),
     correctionUrl: (sessionId, groupId) => `/api/scanner/session/${sessionId}/groups/${groupId}/correction`,
     imageUrl: recordId => mediaUrl(`/api/scanner/scan-image/${recordId}`),
+    thumbnailUrl: recordId => mediaUrl(`/api/scanner/scan-image/${recordId}?thumb=1`),
     discardUrl: (sessionId, groupId) => `/api/scanner/session/${sessionId}/groups/${groupId}/discard`,
     retryUrl: sessionId => `/api/scanner/session/${sessionId}/retry`,
     deleteGroupsUrl: sessionId => `/api/scanner/session/${sessionId}/groups`,

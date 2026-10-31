@@ -104,6 +104,21 @@ const searchUrls: string[] = [];
 /** 第二批会话：groupId 与第一批重号，用来钉住「删除必须按会话下发」 */
 const batchFor = (sessionId: string): ScanBatchResponse => {
   const first = batch();
+  if (sessionId === "scan-cancelled") {
+    return {
+      results: [{
+        groupId: "cancel-0", studentId: "30001", totalScore: 10, maxScore: 10,
+        objectiveScore: 10, objectiveMaxScore: 10, subjectiveScore: 0, subjectiveMaxScore: 0,
+        needsReviewCount: 0, pageCount: 1, saved: false,
+        pages: [{
+          recordId: "rec-cancel", pageNum: 1, side: "front", layoutPage: 1,
+          objectiveScore: 10, subjectiveScore: 0, totalScore: 10, totalMaxScore: 10,
+        }],
+      }],
+      failures: [],
+      reviewCards: [],
+    };
+  }
   if (sessionId === "scan-3") {
     const kept = { ...first.results[1], groupId: "1", studentId: "20002",
       pages: first.results[1].pages.map(page => ({ ...page, recordId: "rec-6", pageNum: 6 })) };
@@ -137,6 +152,7 @@ const busySessionId = "scan-busy";
 let busyCancelled = false;
 let busyCancels = 0;
 let busyCancelStatus = 200;
+let busyCancelLeavesDraining = false;
 /** 等待轮询夹具：首次 409，第二次临时 503，之后收尾成功。 */
 const flakySessionId = "scan-flaky";
 let flakyCalls = 0;
@@ -160,7 +176,7 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
       if (flakyCalls === 2) return Response.json({ message: "临时刷新失败" }, { status: 503 });
       return Response.json(batchFor(flakySessionId));
     }
-    if (sessionMatch[1] === busySessionId && !busyCancelled) {
+    if (sessionMatch[1] === busySessionId && (!busyCancelled || busyCancelLeavesDraining)) {
       return Response.json({ message: "请等待扫描和识别全部完成" }, { status: 409 });
     }
     // 仅本地模式的「保存成绩入库」= POST results（save 模式），与 validate 演算不是一条路
@@ -177,7 +193,9 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
     const warnings_json = sessionId === "scan-1"
       ? JSON.stringify(["本批未识别到红笔分数，请检查彩色设置"])
       : null;
-    const status = sessionId === busySessionId ? (busyCancelled ? "cancelled" : "scanning") : "completed";
+    const status = sessionId === busySessionId
+      ? (busyCancelled ? "cancelled" : "scanning")
+      : sessionId === "scan-cancelled" ? "cancelled" : "completed";
     return Response.json({ session: { identity_mode: "strict", dpi: 300, paper_size: "A4", card_version, warnings_json, status }, records: [], examId });
   }
   if (/\/api\/scanner\/card\/[^/]+\/scans$/.test(url)) {
@@ -300,6 +318,18 @@ try {
   const tiles = document.querySelectorAll('[aria-label^="打开 "]');
   assert.equal(tiles.length, 3, "三组卷子各一个方块");
   assert.equal(tiles[2].getAttribute("aria-label"), "打开 10003", "无异常卷排到最后（异常置顶）");
+  const resultImages = [...tiles].map(tile => tile.querySelector("img")).filter((image): image is HTMLImageElement => Boolean(image));
+  assert(resultImages.length > 0 && resultImages.every(image =>
+    image.getAttribute("loading") === "lazy"
+    && image.getAttribute("decoding") === "async"
+    && image.getAttribute("src")?.includes("?thumb=1")),
+  "结果网格只加载缩略图并启用浏览器懒解码");
+  await clickSelector('[aria-label="打开 组 1"]');
+  await settle();
+  assert(!document.querySelector("[data-postprocess-correction]"),
+    "打开异常队列不能后台挂载改分页并额外解码 300 DPI 原图");
+  await clickText("扫描结果");
+  await settle();
 
   // ── 仅本地模式必须留有人库入口（自动跳页会卸载 ScannerPanel 的 done 视图）──
   assert(saveCalls.length === 0, "进页面本身只演算，不写成绩");
@@ -1025,10 +1055,17 @@ try {
   assert.equal(busyCancels, 1, "返回扫描要先发停止请求");
   assert.equal(leaveCalls, 0, "停止失败时不能返回工作台");
   busyCancelStatus = 200;
+  busyCancelLeavesDraining = true;
   const allowedBack = [...leaveHost.querySelectorAll("button")].find(el => el.textContent?.trim() === "返回扫描");
   await act(async () => { allowedBack!.click(); });
   await settle(40);
-  assert.equal(busyCancels, 2, "确认停止成功后才离开");
+  assert.equal(busyCancels, 2, "确认停止成功后才尝试离开");
+  assert.equal(leaveCalls, 0, "取消状态写入后 worker 仍在收尾时不能提前离开");
+  busyCancelLeavesDraining = false;
+  const finishedBack = [...leaveHost.querySelectorAll("button")].find(el => el.textContent?.trim() === "返回扫描");
+  await act(async () => { finishedBack!.click(); });
+  await settle(40);
+  assert.equal(busyCancels, 3, "worker 收尾后再确认才离开");
   assert.equal(leaveCalls, 1, "停设备成功后仍要返回工作台");
   await act(async () => { leaveRoot.unmount(); });
   leaveHost.remove();
@@ -1055,6 +1092,31 @@ try {
   assert(!flakyHost.textContent?.includes("上一批扫描还没有结束"), "会话收尾后要打开后处理，不能停在等待页");
   await act(async () => { flakyRoot.unmount(); });
   flakyHost.remove();
+
+  // 远端模式下老师主动取消的批次不会自动首传；保留的正常卷必须有显式上传入口。
+  localStorage.setItem("projectx_scanner_mode", "remote");
+  localStorage.setItem("projectx_server_url", "https://remote.test");
+  const cancelledUploadsBefore = uploads.length;
+  const cancelledHost = document.createElement("div");
+  document.body.appendChild(cancelledHost);
+  const cancelledRoot = createRoot(cancelledHost);
+  await act(async () => {
+    cancelledRoot.render(createElement(TooltipProvider, null, createElement(ScannerPostprocessPage, {
+      cardId: card.id, cardTitle: card.title, userId: 7,
+      sessions: [{ sessionId: "scan-cancelled", pageCount: 1 }],
+      onBack: () => {},
+    })));
+  });
+  await settle(30);
+  assert.equal(uploads.length, cancelledUploadsBefore, "取消批次加载时不自动补传");
+  assert(cancelledHost.textContent?.includes("上传正常卷（1）"), "取消批次的正常卷提供显式上传入口");
+  await clickText("上传正常卷（1）");
+  await settle();
+  assert.equal(uploads.length, cancelledUploadsBefore + 1, "显式上传只补传取消批次中保留的正常卷");
+  assert.equal(uploads.at(-1)?.localSessionId, "scan-cancelled");
+  assert.equal(uploads.at(-1)?.name, "扫描_30001");
+  await act(async () => { cancelledRoot.unmount(); });
+  cancelledHost.remove();
 
   console.log("PASS scanner-postprocess-ui-smoke");
 } catch (error) {

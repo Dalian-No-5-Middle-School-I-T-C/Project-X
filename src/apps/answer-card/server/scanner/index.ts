@@ -41,6 +41,7 @@ import { findCardForLayout } from "../card-layout";
 import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
 import { collectSessionResults, groupSessionPages } from "./session-results";
 import { filterDeletableGroups } from "../../../../shared/scanPostprocess";
+import sharp from "sharp";
 
 // persistScannerResultToMainDb 的串行队列（模块级，跨请求生效）：
 // better-sqlite3 是单连接,并发事务会在 BEGIN/COMMIT 之间互相穿插（见 SqliteAdapter.transaction 注释），
@@ -769,6 +770,19 @@ export function createScannerRouter(twainEnabled = true): Router {
       }
       if (!existsSync(imagePath)) {
         res.status(404).json({ message: "图片文件不存在" });
+        return;
+      }
+      if (req.query.thumb === "1") {
+        // 32 位扫描端一次展示上百份卷时，直接解码 300 DPI 原图会耗尽渲染进程地址空间。
+        // 列表只取长边约 480px 的 JPEG；原图仍由无 thumb 参数的路由提供。
+        const thumbnail = await sharp(imagePath, { failOn: "error" })
+          .rotate()
+          .resize({ width: 360, height: 480, fit: "inside", withoutEnlargement: true })
+          .jpeg({ quality: 72 })
+          .toBuffer();
+        res.setHeader("Content-Type", "image/jpeg");
+        res.setHeader("Cache-Control", "private, max-age=3600");
+        res.send(thumbnail);
         return;
       }
       const ext = path.extname(imagePath).toLowerCase();

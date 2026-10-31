@@ -1,10 +1,11 @@
 /** Isolated HTTP/DB regression. Set SCANNER_BATCH_MARIADB=1 with a fresh
  * projectx_scanner_batch_* database to exercise MariaDB; otherwise uses temp SQLite. */
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, unlink } from "node:fs/promises";
+import { mkdtemp, mkdir, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import express from "express";
+import sharp from "sharp";
 import { createDefaultCard } from "../src/shared/defaultCard";
 import { buildLayout } from "../src/shared/layout";
 import { collectSessionResults } from "../src/apps/answer-card/server/scanner/session-results";
@@ -114,6 +115,23 @@ try {
   assert.equal(preview.results.length, 3);
   assert.equal(preview.results[0].totalScore, 5);
   assert.equal(await scoreCount(), 0, "Remote upload preview must not save grades");
+  await mkdir(process.env.ANSWER_CARD_DATA_DIR!, { recursive: true });
+  const thumbnailSourcePath = path.join(process.env.ANSWER_CARD_DATA_DIR!, "thumbnail-source.png");
+  await writeFile(thumbnailSourcePath, await sharp({
+    create: { width: 1200, height: 1600, channels: 3, background: { r: 240, g: 245, b: 250 } },
+  }).png().toBuffer());
+  await db.run("UPDATE twain_scan_records SET image_path = ? WHERE id = ?", thumbnailSourcePath, records[0].id);
+  const fullImageResponse = await fetch(`http://127.0.0.1:${address.port}/api/scanner/scan-image/${records[0].id}`);
+  const fullImageBytes = Buffer.from(await fullImageResponse.arrayBuffer());
+  const thumbnailResponse = await fetch(`http://127.0.0.1:${address.port}/api/scanner/scan-image/${records[0].id}?thumb=1`);
+  const thumbnailBytes = Buffer.from(await thumbnailResponse.arrayBuffer());
+  assert.equal(fullImageResponse.status, 200);
+  assert.equal(thumbnailResponse.status, 200);
+  const thumbnailMeta = await sharp(thumbnailBytes).metadata();
+  assert.match(thumbnailResponse.headers.get("content-type") ?? "", /image\/jpeg/);
+  assert.equal(thumbnailMeta.width, 360);
+  assert(thumbnailMeta.height! <= 480);
+  assert(thumbnailBytes.length < fullImageBytes.length, "列表缩略图字节数必须明显小于 300 DPI 原图");
   const retryResponse = await fetch(`http://127.0.0.1:${address.port}/twain/scanner/session/${session.id}/retry`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupId: "missing" }),
   });
@@ -652,7 +670,6 @@ try {
   // Remote ingress rejects missing/wrong evidence and invalidates a previous successful upload.
   const uploadSession = await store.createSession(card.id, "qr-upload");
   const uploadRecord = await createVerifiedRecord({ sessionId: uploadSession.id, cardId: card.id, pageNum: 1, imagePath: "pending.png" });
-  const { default: sharp } = await import("sharp");
   const image = await sharp({ create: { width: 20, height: 20, channels: 3, background: "white" } }).png().toBuffer();
   async function uploadIdentity(identity: unknown) {
     const form = new FormData();

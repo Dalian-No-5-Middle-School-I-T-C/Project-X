@@ -71,7 +71,13 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   const isRemoteUploadOn = useCallback(() => getScannerMode() === "remote" && isRemoteServerConfigured(), []);
 
   /** 返回本轮拉到的快照：补传判定必须用重拉后的数据，闭包里的旧 batches 会漏掉刚处理好的组 */
-  const reload = useCallback(async (): Promise<{ batches: Record<string, ScanBatchResponse>; metas: Record<string, SessionMeta>; card: AnswerCard | null }> => {
+  const reload = useCallback(async (): Promise<{
+    batches: Record<string, ScanBatchResponse>;
+    metas: Record<string, SessionMeta>;
+    card: AnswerCard | null;
+    waitingSessions: string[];
+    confirmed: boolean;
+  }> => {
     setLoading(true);
     setError("");
     try {
@@ -99,7 +105,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
         // 批次不完整时先不展示（组会缺卷）：把卡挂上，渲染等待界面并在收尾后重拉。
         setLocalCard(loaded.local);
         setRemoteCard(loaded.remote);
-        return { batches: {}, metas: {}, card: display };
+        return { batches: {}, metas: {}, card: display, waitingSessions: stillRunning, confirmed: false };
       }
       // 记入学号、判分成功的卷（含仍带存疑标记的）都已随批上传，存疑状态随回执返回；
       // 失败组与冲突副本还没有学号或归属，服务端无处挂这份成绩，继续留在本机处理，
@@ -129,10 +135,10 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
         const rows = (await scanList.json()) as Array<{ recordId: string; createdAt: string; scanQuality: number | null }>;
         setScans(rows.map(row => ({ recordId: row.recordId, createdAt: row.createdAt, scanQuality: row.scanQuality })));
       }
-      return { batches: nextBatches, metas: nextMetas, card: display };
+      return { batches: nextBatches, metas: nextMetas, card: display, waitingSessions: [], confirmed: true };
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败");
-      return { batches: {}, metas: {}, card: null };
+      return { batches: {}, metas: {}, card: null, waitingSessions: [], confirmed: false };
     } finally {
       setLoading(false);
     }
@@ -172,7 +178,11 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
         }
       }
       // 取消后服务端保留已扫页面，按收尾会话重新加载即可继续查看。
-      await reload();
+      const refreshed = await reload();
+      if (!refreshed.confirmed || refreshed.waitingSessions.length > 0) {
+        notify.info("扫描仪仍在收尾，请稍候再返回");
+        return false;
+      }
       return true;
     } finally {
       setStoppingWait(false);
@@ -249,6 +259,11 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   }, [view]);
   const issueGroups = useMemo(() => new Set(queue.map(item => `${item.sessionId}/${item.groupId}`)).size, [queue]);
   const uploaded = useMemo(() => Object.values(batches).flatMap(b => b.results).filter(r => r.saved).length, [batches]);
+  const remoteCancelledUploadCount = useMemo(() => sessions.reduce((count, { sessionId }) => {
+    if (metas[sessionId]?.status !== "cancelled") return count;
+    return count + (batches[sessionId]?.results ?? [])
+      .filter(result => !result.saved && result.needsReviewCount === 0).length;
+  }, 0), [batches, metas, sessions]);
 
   /**
    * 仅本地模式的「保存成绩入库」：扫描完成后本页会自动接管工作台视图，
@@ -279,6 +294,34 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
       await reload();
     } catch (e) {
       notify.error(e instanceof Error ? e.message : "保存成绩失败");
+    } finally {
+      setSavingAll(false);
+    }
+  }
+
+  /** 远端取消批次不会自动首传：老师点按钮后只补传已完成识别且没有异常的正常卷。 */
+  async function saveAllRemote() {
+    setSavingAll(true);
+    try {
+      const uploadCardId = card?.id ?? cardId;
+      let queued = 0;
+      let missingVersion = false;
+      for (const { sessionId } of sessions) {
+        if (metas[sessionId]?.status !== "cancelled") continue;
+        for (const result of batches[sessionId]?.results ?? []) {
+          if (result.saved || result.needsReviewCount > 0) continue;
+          const outcome = queueCleanGroup(cardId, uploadCardId, sessionId, metas[sessionId], result, queuedByPage.current);
+          if (outcome === "queued") queued += 1;
+          if (outcome === "missing-version") missingVersion = true;
+        }
+      }
+      if (missingVersion) {
+        notify.error("本机会话没有扫描时的答题卡版本，已停止补传，避免按新版面上传旧识别结果");
+      } else if (queued === 0) {
+        notify.info("没有需要上传的正常卷");
+      } else {
+        notify.info(queued === 1 ? "已加入上传队列，图片后台续传" : `已加入上传队列（${queued} 份），图片后台续传`);
+      }
     } finally {
       setSavingAll(false);
     }
@@ -396,7 +439,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           {error && <p role="alert" className="m-0 text-xs text-destructive-fg">上次自动刷新失败：{error}（会继续重试）</p>}
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" icon={<ArrowLeft size={16} />} onClick={() => void leavePage()}>返回扫描</Button>
+          <Button variant="outline" icon={<ArrowLeft size={16} />} onClick={() => void leavePage()} disabled={stoppingWait}>返回扫描</Button>
           <Button onClick={() => void stopWaitingScan()} disabled={stoppingWait}>停止这一批</Button>
           {error && <Button variant="outline" onClick={() => void reload()} disabled={loading}>重试</Button>}
         </div>
@@ -469,8 +512,15 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           groups={groups}
           channel={channel}
           onDelete={handleDelete}
-          onSaveAll={isRemoteUploadOn() ? undefined : saveAllLocal}
+          onSaveAll={isRemoteUploadOn()
+            ? (remoteCancelledUploadCount > 0 ? saveAllRemote : undefined)
+            : saveAllLocal}
           saveAllBusy={savingAll}
+          saveAllLabel={isRemoteUploadOn() ? "上传正常卷" : "保存成绩入库"}
+          saveAllTip={isRemoteUploadOn()
+            ? `把 ${remoteCancelledUploadCount} 份取消批次中的正常卷加入远端上传队列`
+            : undefined}
+          saveAllCount={isRemoteUploadOn() ? remoteCancelledUploadCount : undefined}
           onOpen={group => {
             setActive(group);
             if (group.issues.length) {
@@ -482,8 +532,8 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           }}
         />
       )}
-      {active && (
-        <div className={view === "correction" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
+      {active && view === "correction" && (
+        <div className="flex min-h-0 flex-1 flex-col" data-postprocess-correction>
           <PostprocessCorrectionView
             key={`${active.sessionId}/${active.groupId}`}
             channel={channel}
