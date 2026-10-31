@@ -2195,7 +2195,7 @@ export async function createApp(): Promise<express.Express> {
   });
 
   // POST: 导入答题卡
-  app.post("/api/cards/import", async (req, res, next) => {
+  app.post("/api/cards/import", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
     try {
       const imported = req.body as {
         format?: string; version?: number;
@@ -3287,7 +3287,10 @@ export async function createApp(): Promise<express.Express> {
     const typed = error as { status?: unknown; code?: unknown; message?: unknown; retryAfterSeconds?: unknown };
     const status = typeof typed?.status === "number" && typed.status >= 400 && typed.status < 600 ? typed.status : 500;
     const code = typeof typed?.code === "string" ? typed.code : ApiError.INTERNAL;
-    const message = typeof typed?.message === "string" ? typed.message : "服务器内部错误";
+    // 5xx 不把底层 message 交给客户端：Node/SQL 异常常带临时目录或数据库细节。
+    const message = status >= 500
+      ? "服务器内部错误"
+      : (typeof typed?.message === "string" ? typed.message : "服务器内部错误");
     // 安全（R11）：配额类错误自带建议重试间隔，转成标准 Retry-After 头，
     // 客户端（含扫描端、学生端）据此退避，而不是把它当 500 反复重试打爆模型。
     const retryAfter = Number(typed?.retryAfterSeconds);

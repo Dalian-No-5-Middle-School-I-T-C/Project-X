@@ -30,7 +30,7 @@ export function holdAnswerCardDataMutationLock(req: Request, res: Response, next
 
   void withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => {
     let released = false;
-    const release = (): void => {
+    const finish = (): void => {
       if (released) return;
       released = true;
       delete (req as LockRequest).releaseDataMutationLock;
@@ -38,12 +38,17 @@ export function holdAnswerCardDataMutationLock(req: Request, res: Response, next
       res.off("close", onResponseClose);
       resolve();
     };
-    (req as LockRequest).releaseDataMutationLock = release;
+    const releaseOnResponseEnd = (): void => {
+      // 进入 Multer 后由路由手动结算：413 / Multer 错误要先清完临时件再释放锁。
+      if ((req as LockRequest).manualDataMutationRelease) return;
+      finish();
+    };
+    (req as LockRequest).releaseDataMutationLock = finish;
     if (disconnected || res.destroyed) {
-      release();
+      finish();
       return;
     }
-    res.once("finish", release);
+    res.once("finish", releaseOnResponseEnd);
     // 客户端在 handler 运行中断连时 close 会先到，但异步 handler 仍在写文件 / 库；
     // 锁必须等它真正结束响应（res.end）后再释放，不能跟着 close 提前放行备份 / 恢复。
     const originalEnd = res.end.bind(res);
@@ -51,16 +56,33 @@ export function holdAnswerCardDataMutationLock(req: Request, res: Response, next
       try {
         return originalEnd(...(args as Parameters<typeof res.end>));
       } finally {
-        release();
+        releaseOnResponseEnd();
       }
     };
     next();
   })).catch(next);
 }
 
-type LockRequest = Request & { releaseDataMutationLock?: () => void };
+type LockRequest = Request & {
+  releaseDataMutationLock?: () => void;
+  manualDataMutationRelease?: boolean;
+};
+
+/** 上传进入 Multer 后由路由手动结算锁：避免 413 / Multer 错误在临时件清理前提前释放。 */
+export function beginManualDataMutationLockRelease(req: Request): void {
+  (req as LockRequest).manualDataMutationRelease = true;
+}
 
 /** 断连后跳过响应的终止分支必须显式调用：把锁的释放绑定到清理任务完成。 */
 export function releaseDataMutationLock(req: Request): void {
   (req as LockRequest).releaseDataMutationLock?.();
+}
+
+/** 异步鉴权之后、进入 Multer 之前复查断连：请求已销毁时不要再 pipe busboy。 */
+export function stopDisconnectedUpload(req: Request, res: Response, next: NextFunction): void {
+  if (res.destroyed || req.socket?.destroyed === true || req.aborted) {
+    releaseDataMutationLock(req);
+    return;
+  }
+  next();
 }

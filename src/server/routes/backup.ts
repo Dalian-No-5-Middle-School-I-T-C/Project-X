@@ -113,6 +113,15 @@ const receiveRestoreZip: RequestHandler = (req, res, next) => {
   req.pipe(out);
 };
 
+async function revokeAllRestoreSessions(): Promise<void> {
+  try {
+    const { authService } = await import("../services/AuthService");
+    authService.revokeAllTokens();
+  } catch (e) {
+    console.error("[Restore] 吊销恢复前会话失败:", e);
+  }
+}
+
 /**
  * 先把备份里的 data 树复制到同卷暂存目录：复制失败（例如磁盘满）时数据库还没动，
  * 直接中止恢复即可，不会出现「库已换、原卷 / 答案页 / 反馈附件缺失」。
@@ -376,6 +385,7 @@ async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
   const dataDir = getDataDir();
   const bakDataDir = path.join(tmpDir, "data", "answer-card");
   let staging: string | null = null;
+  let dbReplaced = false;
   let endMaintenance: (() => void) | null = null;
   try {
     await mkdir(tmpDir, { recursive: true });
@@ -449,6 +459,7 @@ async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
         }
       }
       await copyFile(projectxBak, projectxDbPath);
+      dbReplaced = true;
 
       // 恢复后重新引导管理员账号（#185 安全模型 + R01 整改）：先删掉当前引导文件，
       // 让 ensureDefaultAdmin() 以「文件缺失」判定口令事实源不可用——
@@ -456,15 +467,14 @@ async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
       // 若还原出的库已完成首次改密，则口令与改密标记都不受影响（只清理泄露过的引导文件）。
       try {
         removeBootstrapAdminFile();
-        const rebootstrap = await ensureDefaultAdmin();
-        if (rebootstrap.rotated) {
-          // 换发了新口令，说明还原前的管理员会话已不再可信，全部吊销（与启动时的处理一致）。
-          const { authService } = await import("../services/AuthService");
-          authService.revokeUserTokens(rebootstrap.adminId);
-        }
+        await ensureDefaultAdmin();
       } catch (e) {
         console.warn("[Restore] 管理员再引导失败（可重启服务自动修复）:", e);
       }
+
+      // 恢复替换了整库账号，恢复前的 Token / 媒体票据会按数字 userId 命中新账号：
+      // 无条件吊销全部会话与票据，所有用户都必须重新登录。
+      await revokeAllRestoreSessions();
 
       // 恢复 scanner.db（如果有）
       const scannerBak = path.join(tmpDir, "scanner.db");
@@ -507,6 +517,7 @@ async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
     await discardStagingDir(staging);
     await rm(zipPath, { force: true }).catch(() => undefined);
     endMaintenance?.();
+    if (dbReplaced) await revokeAllRestoreSessions();
     // 附件树已被替换（或可能被部分移动），用量基线必须重扫。
     invalidateFeedbackStorageUsage();
   }
@@ -759,6 +770,7 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
     const dataDir = getDataDir();
     const bakDataDir = path.join(tmpDir, "data", "answer-card");
     let staging: string | null = null;
+    let restoreImportStarted = false;
     let endMaintenance: (() => void) | null = null;
     try {
       // 先把备份里的 data 树复制到同卷暂存目录：复制失败（磁盘满等）时 SQL 还没导入，
@@ -776,6 +788,7 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
       }
       await withFeedbackMutationLock(async () => {
         // 将 dump.sql 通过 stdin 传给 mysql（使用参数数组，避免 shell 命令注入）
+        restoreImportStarted = true;
         await new Promise<void>((resolve, reject) => {
           const child = execFile("mysql", args, { timeout: 300_000, killSignal: "SIGKILL" }, (err) => {
             if (err) reject(err); else resolve();
@@ -790,6 +803,9 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
           input.pipe(child.stdin!);
         });
 
+        // SQL 导入成功即已替换账号库：先吊销恢复前的全部会话，再做可失败的换树 / 再引导。
+        await revokeAllRestoreSessions();
+
         // 恢复磁盘资产（原卷 / 教师答案页）：暂存树已在 SQL 导入前复制完成，
         // 这里只做两次同卷 rename；备份里没有该目录时保持现状（兼容旧备份）。
         await swapRestoredDataDir(dataDir, staging, Date.now());
@@ -801,11 +817,7 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
         // 重新引导：引导态库换发新的随机口令写回引导文件；已改密库口令与标记都不受影响。
         try {
           removeBootstrapAdminFile();
-          const rebootstrap = await ensureDefaultAdmin();
-          if (rebootstrap.rotated) {
-            const { authService } = await import("../services/AuthService");
-            authService.revokeUserTokens(rebootstrap.adminId);
-          }
+          await ensureDefaultAdmin();
         } catch (e) {
           console.warn("[Restore] MariaDB 管理员再引导失败（可重启服务自动修复）:", e);
         }
@@ -831,6 +843,7 @@ async function restoreMariadb(req: Request, res: Response, zipPath: string): Pro
       respondOpsFailure(res, err, "数据库导入失败，请查看服务端日志中的 [Restore] 记录");
     } finally {
       await discardStagingDir(staging);
+      if (restoreImportStarted) await revokeAllRestoreSessions();
       endMaintenance?.();
       // 附件树可能已被部分替换，缓存基线一律重扫。
       invalidateFeedbackStorageUsage();

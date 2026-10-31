@@ -168,10 +168,10 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
  */
 export async function refreshRequestUser(req: Request): Promise<boolean> {
   if (!req.user) return false;
-  const current = await authService.getActiveUserById(req.user.id);
-  if (!current) return false;
-  attachUserSnapshot(req, current);
-  return true;
+  // 重新走完整认证链：恢复备份会清空 Token / 媒体票据，只按数字 id 查新库会把
+  // 旧会话映射到恢复后同 id 的另一个人。
+  const via = await authenticateRequest(req);
+  return (via === "token" || via === "ticket") && Boolean(req.user);
 }
 
 export async function refreshAuthenticatedUser(req: Request, res: Response, next: NextFunction): Promise<void> {

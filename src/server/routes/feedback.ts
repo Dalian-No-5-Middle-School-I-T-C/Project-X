@@ -911,7 +911,8 @@ async function listFeedback(req: Request, res: Response, ownerId?: number): Prom
       nextCursor,
     });
   } catch (err: any) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[feedback] 列表读取失败:", err);
+    res.status(500).json({ ok: false, error: "读取反馈失败，请稍后重试" });
   }
 }
 
@@ -1076,7 +1077,8 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
       }
       return;
     }
-    if (!res.headersSent) res.status(500).json({ ok: false, error: err.message });
+    console.error("[feedback] 提交失败:", err);
+    if (!res.headersSent) res.status(500).json({ ok: false, error: "提交反馈失败，请稍后重试" });
   }
 });
 
@@ -1118,35 +1120,49 @@ router.get("/:id/attachments/:attachmentId", requireTeacher, async (req, res) =>
       }
     });
   } catch (err: any) {
-    res.status(500).json({ ok: false, error: err.message });
+    console.error("[feedback] 附件下载失败:", err);
+    res.status(500).json({ ok: false, error: "附件下载失败" });
   }
 });
 
 // PATCH /api/feedback/:id — 标记已处理 / 重新打开（管理员）
 router.patch("/:id", requireAdmin, async (req, res) => {
   try {
-    const id = parsePositiveId(req.params.id);
-    if (!id) return res.status(400).json({ ok: false, error: "无效的反馈 ID" });
-    const status = (req.body ?? {}).status;
-    if (status !== "open" && status !== "resolved") {
-      return res.status(400).json({ ok: false, error: "状态只能是 open 或 resolved" });
-    }
-    const db = getMysqlDb();
-    const now = databaseTimestamp();
-    const result = await db.run(
-      `UPDATE feedback_reports
-          SET status = ?, resolved_at = ?, resolved_by = ?, updated_at = ?
-        WHERE id = ?`,
-      status,
-      status === "resolved" ? now : null,
-      status === "resolved" ? req.user!.id : null,
-      now,
-      id
-    );
-    if (result.changes === 0) return res.status(404).json({ ok: false, error: "反馈不存在" });
-    res.json({ ok: true, message: status === "resolved" ? "已标记为已处理" : "已重新打开" });
+    await withFeedbackMutationLock(async () => {
+      if (!(await refreshRequestUser(req))) throw new FeedbackSessionStaleError();
+      if (!roleHasPermission(req.user!.role_id, PERMISSIONS.SYSTEM_MANAGE)) throw new FeedbackForbiddenError();
+      const id = parsePositiveId(req.params.id);
+      if (!id) return res.status(400).json({ ok: false, error: "无效的反馈 ID" });
+      const status = (req.body ?? {}).status;
+      if (status !== "open" && status !== "resolved") {
+        return res.status(400).json({ ok: false, error: "状态只能是 open 或 resolved" });
+      }
+      const db = getMysqlDb();
+      const now = databaseTimestamp();
+      const result = await db.run(
+        `UPDATE feedback_reports
+            SET status = ?, resolved_at = ?, resolved_by = ?, updated_at = ?
+          WHERE id = ?`,
+        status,
+        status === "resolved" ? now : null,
+        status === "resolved" ? req.user!.id : null,
+        now,
+        id
+      );
+      if (result.changes === 0) return res.status(404).json({ ok: false, error: "反馈不存在" });
+      res.json({ ok: true, message: status === "resolved" ? "已标记为已处理" : "已重新打开" });
+    });
   } catch (err: any) {
-    res.status(500).json({ ok: false, error: err.message });
+    if (err instanceof FeedbackSessionStaleError) {
+      if (!res.headersSent) res.status(401).json({ ok: false, code: err.code, error: err.message });
+      return;
+    }
+    if (err instanceof FeedbackForbiddenError) {
+      if (!res.headersSent) res.status(403).json({ ok: false, code: err.code, error: err.message });
+      return;
+    }
+    console.error("[feedback] 更新状态失败:", err);
+    if (!res.headersSent) res.status(500).json({ ok: false, error: "更新反馈失败，请稍后重试" });
   }
 });
 
@@ -1245,11 +1261,12 @@ router.delete("/:id", requireAdmin, async (req, res) => {
           if (!res.headersSent) res.status(403).json({ ok: false, code: err.code, error: err.message });
           return;
         }
-        if (!res.headersSent) res.status(500).json({ ok: false, error: err.message });
+        if (!res.headersSent) res.status(500).json({ ok: false, error: "删除反馈失败，请稍后重试" });
       }
     });
   } catch (err: any) {
-    if (!res.headersSent) res.status(500).json({ ok: false, error: err.message });
+    console.error("[feedback] 删除失败:", err);
+    if (!res.headersSent) res.status(500).json({ ok: false, error: "删除反馈失败，请稍后重试" });
   }
 });
 

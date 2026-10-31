@@ -15,7 +15,7 @@ import path from "node:path";
 import { existsSync, unlinkSync } from "node:fs";
 import type { Request, Response } from "express";
 import { getMysqlDb, buildUpsertSQL } from "../../../../server/db/mysql";
-import { holdAnswerCardDataMutationLock, releaseDataMutationLock } from "../../../../server/lib/answerCardDataLock";
+import { beginManualDataMutationLockRelease, holdAnswerCardDataMutationLock, releaseDataMutationLock, stopDisconnectedUpload } from "../../../../server/lib/answerCardDataLock";
 import {
   ANSWER_KEY_EXTENSIONS,
   answerKeyBaseName,
@@ -243,7 +243,8 @@ export function examAnswerKeyRoutes(): Router {
 
   // POST /api/exams/:examId/answer-key/pages — 上传「本次正确答案」并可顺带 OCR
   // ?ocr=0 只入库不识别；识别结果作为草稿返回，不落库（教师确认后 PUT 保存）
-  router.post("/api/exams/:examId/answer-key/pages", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.EXAM_WRITE), requireExamAccess, (req, res, next) => {
+  router.post("/api/exams/:examId/answer-key/pages", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.EXAM_WRITE), requireExamAccess, stopDisconnectedUpload, (req, res, next) => {
+    beginManualDataMutationLockRelease(req);
     answerKeyUpload.array("files", MAX_ANSWER_KEY_PAGES)(req, res, (err) => {
       if (err) {
         // 安全（R14）：数量/体积越界时 multer 直接报错，已落盘的兄弟文件不会经过
@@ -261,9 +262,9 @@ export function examAnswerKeyRoutes(): Router {
       next();
     });
   }, async (req: Request, res: Response) => {
-    const db = getMysqlDb();
     const staged = ((req.files as Express.Multer.File[]) || []).filter(Boolean);
     try {
+      const db = getMysqlDb();
       if (invalidExamId(res, req.params.examId)) return;
       const exam = await loadExam(Number(req.params.examId));
       if (!exam) { res.status(404).json({ message: "考试不存在" }); return; }
@@ -394,6 +395,7 @@ export function examAnswerKeyRoutes(): Router {
       for (const file of staged) {
         try { unlinkSync(file.path); } catch {}
       }
+      releaseDataMutationLock(req);
     }
   });
 

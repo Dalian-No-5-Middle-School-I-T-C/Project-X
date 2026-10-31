@@ -1497,6 +1497,11 @@ async function main(): Promise<void> {
     }
   }
 
+  // 恢复备份会整体替换账号库：调用方必须无条件吊销全部 Token，旧数字 userId 不能继承新身份。
+  auth.revokeAllTokens();
+  ok((await call("GET", "?limit=1", adminToken)).status === 401,
+    "吊销全部会话后旧管理员 Token 立即失效");
+
   server.close();
 }
 

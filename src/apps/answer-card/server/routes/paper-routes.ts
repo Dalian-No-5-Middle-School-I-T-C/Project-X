@@ -3,7 +3,7 @@ import multer from "multer";
 import path from "node:path";
 import { existsSync, unlinkSync } from "node:fs";
 import { ensurePaperDir, paperDir, paperTmpDir, safeId } from "../storage";
-import { holdAnswerCardDataMutationLock, releaseDataMutationLock } from "../../../../server/lib/answerCardDataLock";
+import { beginManualDataMutationLockRelease, holdAnswerCardDataMutationLock, releaseDataMutationLock, stopDisconnectedUpload } from "../../../../server/lib/answerCardDataLock";
 import { refreshAuthenticatedUser, recheckWritePermission } from "../../../../server/middleware/auth";
 import { PERMISSIONS } from "../../../../server/auth/permissions";
 import {
@@ -169,8 +169,10 @@ export function paperRoutes(): Router {
     holdAnswerCardDataMutationLock,
     refreshAuthenticatedUser,
     recheckWritePermission(PERMISSIONS.GRADE_WRITE),
+    stopDisconnectedUpload,
     requestUploadBudget({ maxTotalBytes: MAX_PAPER_REQUEST_BYTES, label: "原卷上传" }),
     (req: Request, res: Response, next) => {
+      beginManualDataMutationLockRelease(req);
       paperUpload.array("files", MAX_PAPER_FILES_PER_REQUEST)(req, res, (err) => {
         if (err) {
           // 安全（R14）：数量/体积越界时 multer 直接报错，已落盘的兄弟文件不会经过
@@ -347,6 +349,7 @@ export function paperRoutes(): Router {
         for (const file of staged) {
           try { unlinkSync(file.path); } catch {}
         }
+        releaseDataMutationLock(req);
         // 评审 A2：这里**不再**无条件作废用量缓存——`_tmp` 本来就不计入长期占盘，
         // 清临时文件不需要重扫 `papers/`；缓存的增减由上面的写入增量与下面的删除路径负责。
       }

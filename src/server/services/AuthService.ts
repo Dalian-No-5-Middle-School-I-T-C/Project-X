@@ -2,7 +2,7 @@ import { UserRepository, type UserRecord } from "../repositories/UserRepository"
 import { verifyPassword, hashPassword, getMysqlDb, removeBootstrapAdminFile } from "../db";
 import { permissionsForRole } from "../auth/permissions";
 import { validateUserChosenPassword } from "../auth/passwordPolicy";
-import { revokeMediaTicketsForUser } from "./mediaTicket";
+import { revokeAllMediaTickets, revokeMediaTicketsForUser } from "./mediaTicket";
 import { randomBytes, createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
@@ -54,6 +54,7 @@ function hashToken(token: string): string {
 export class AuthService {
   private userRepo: UserRepository;
   private tokenStore = new Map<string, TokenRecord>();
+  private sessionEpoch = 0;
   private saveScheduled = false;
 
   constructor() {
@@ -117,6 +118,7 @@ export class AuthService {
    * 支持用户名（学号/职工号）登录
    */
   async login(identifier: string, password: string, isPersistent = false): Promise<LoginResult> {
+    const epochAtLogin = this.sessionEpoch;
     // 查找用户：先按 username，纯数字再按 student_number
     let user = await this.userRepo.findByUsername(identifier);
 
@@ -153,6 +155,11 @@ export class AuthService {
 
     // 更新最后登录时间
     await this.userRepo.updateLastLogin(user.id);
+
+    // 会话代际在异步校验期间被恢复备份等操作推进：旧库读出的用户不能拿到新库的 Token。
+    if (epochAtLogin !== this.sessionEpoch) {
+      return { success: false, message: "登录状态已变更，请重试" };
+    }
 
     // 生成 token
     const token = randomBytes(32).toString("hex");
@@ -230,6 +237,15 @@ export class AuthService {
     }
     if (changed) this.scheduleSave();
     revokeMediaTicketsForUser(userId);
+  }
+
+  /** 恢复备份整体替换账号库后：清空全部会话与媒体票据，避免数字 userId 复用继承旧凭据。 */
+  revokeAllTokens(): void {
+    this.sessionEpoch += 1;
+    const changed = this.tokenStore.size > 0;
+    this.tokenStore.clear();
+    revokeAllMediaTickets();
+    if (changed) this.scheduleSave();
   }
 
   /**
