@@ -17,7 +17,7 @@
  *
  * 用法: npm run verify:permission-scope
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
@@ -26,6 +26,7 @@ import { createServer, request as httpRequest, type Server } from "node:http";
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-perm-scope-"));
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "verify.db");
 process.env.PROJECTX_TOKEN_DIR = path.join(tmpDir, "tokens");
+process.env.ANSWER_CARD_DATA_DIR = path.join(tmpDir, "answer-card-data");
 for (const key of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
   "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST",
@@ -159,6 +160,29 @@ async function main(): Promise<void> {
   }
   await assertUploadWaitsForDataLock(`/api/cards/${cardId}/assets`, "答题卡资源上传");
   await assertUploadWaitsForDataLock("/api/users/me/background", "自定义背景上传");
+  {
+    const { dataDir } = await import("../src/apps/answer-card/server/storage");
+    const teacherBackground = path.join(dataDir, "backgrounds", `${teacherA.id}.jpg`);
+    assert.equal(existsSync(teacherBackground), false, "降权测试前教师背景文件不应存在");
+    let release!: () => void;
+    const held = withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => { release = resolve; }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const form = new FormData();
+    form.append("file", new Blob([tinyPng], { type: "image/png" }), "demoted.png");
+    const pending = fetch(`${base}/api/users/me/background`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${tokenA}` },
+      body: form,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    db.prepare("UPDATE users SET role_id = ? WHERE id = ?").run(3, teacherA.id);
+    release();
+    await held;
+    const response = await pending;
+    ok(response.status === 403, `等锁期间账号被降权后，背景上传按新角色拒绝（实际 ${response.status}）`);
+    ok(!existsSync(teacherBackground), "降权后的背景上传不得落盘");
+    db.prepare("UPDATE users SET role_id = ? WHERE id = ?").run(2, teacherA.id);
+  }
 
   console.log("\n== R21 花名册按可访问班级收敛 ==");
   db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, '数学')").run(teacherA.id, classA);
