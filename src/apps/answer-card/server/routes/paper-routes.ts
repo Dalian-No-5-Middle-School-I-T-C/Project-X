@@ -188,6 +188,16 @@ export function paperRoutes(): Router {
           res.status(400).json({ error: err.message || "原卷上传失败" });
           return;
         }
+        // 最后一个 chunk 触发预算 413 时 req 已读完，busboy / Multer 会按成功回调，
+        // 这里必须挡住业务 handler：响应已发送，再落库 / 写 papers 只会在 res.status 处报错。
+        if (isUploadAlreadyRejected(req, res)) {
+          const partial = ((req.files as Express.Multer.File[] | undefined) ?? (req.file ? [req.file] : []))
+            .filter(Boolean);
+          void discardStoredPaths(partial.map((f) => f.path).filter(Boolean))
+            .catch(() => undefined)
+            .finally(() => releaseDataMutationLock(req));
+          return;
+        }
         next();
       });
     },

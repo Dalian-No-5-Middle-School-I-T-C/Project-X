@@ -1191,23 +1191,36 @@ export async function createApp(): Promise<express.Express> {
 
   // #336：本人删除自己的背景文件，并把透明度归零。学生也可以调——
   // 禁的是「使用/上传」自定义背景，不是「清掉自己留下的文件」。设置页不给学生摆按钮。
-  app.delete("/api/users/me/background", authMiddleware, async (req, res, next) => {
-    try {
-      const userId = req.user?.id;
-      if (userId == null || resolveUserBackgroundPath(backgroundsDir, userId) == null) {
-        res.status(401).json({ message: "删除背景图需要已登录用户" });
-        return;
+  app.delete(
+    "/api/users/me/background",
+    authMiddleware,
+    holdAnswerCardDataMutationLock,
+    refreshAuthenticatedUser,
+    async (req, res, next) => {
+      try {
+        const userId = req.user?.id;
+        if (userId == null || resolveUserBackgroundPath(backgroundsDir, userId) == null) {
+          res.status(401).json({ message: "删除背景图需要已登录用户" });
+          return;
+        }
+        // 文件删除与透明度归零同备份 / 恢复串行：否则快照可能保留非零透明度却缺少文件。
+        // 先归零再删文件：删文件失败只会留下一个不再被引用的孤立文件，不会出现「图没了但仍启用」。
+        const updated = await getMysqlDb().run(
+          "UPDATE users SET background_opacity = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND COALESCE(background_opacity, 0) != 0",
+          userId
+        );
+        let removed = false;
+        try {
+          removed = await removeUserBackgroundFile(backgroundsDir, userId);
+        } catch (err) {
+          console.warn("[background] 删除背景文件失败，透明度已归零:", err);
+        }
+        res.json({ ok: true, removed, opacityReset: updated.changes > 0 });
+      } catch (error) {
+        next(error);
       }
-      const removed = await removeUserBackgroundFile(backgroundsDir, userId);
-      const updated = await getMysqlDb().run(
-        "UPDATE users SET background_opacity = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND COALESCE(background_opacity, 0) != 0",
-        userId
-      );
-      res.json({ ok: true, removed, opacityReset: updated.changes > 0 });
-    } catch (error) {
-      next(error);
     }
-  });
+  );
 
   // #336：管理员一次性清退学生历史背景。不在启动时做，避免老师发现图突然没了。
   // 只删 role=student 的 <id>.jpg，并只把这些账号的透明度归零。教师/管理员文件不动。
@@ -1215,6 +1228,9 @@ export async function createApp(): Promise<express.Express> {
   app.post(
     "/api/admin/backgrounds/purge-students",
     authMiddleware,
+    requirePermissionCompat(PERMISSIONS.SYSTEM_MANAGE),
+    holdAnswerCardDataMutationLock,
+    refreshAuthenticatedUser,
     requirePermissionCompat(PERMISSIONS.SYSTEM_MANAGE),
     async (req, res, next) => {
       try {
@@ -1227,13 +1243,14 @@ export async function createApp(): Promise<express.Express> {
           "SELECT id FROM users WHERE role_id = ?",
           ROLE_IDS.STUDENT
         );
-        const removedFiles = await removeStudentBackgroundFiles(
-          backgroundsDir,
-          students.map((row) => row.id)
-        );
+        // 先统一归零，再逐个删文件：单个文件被占用时仍能完成清退，不会留下「图没了但仍启用」。
         const updated = await db.run(
           "UPDATE users SET background_opacity = 0, updated_at = CURRENT_TIMESTAMP WHERE role_id = ? AND COALESCE(background_opacity, 0) != 0",
           ROLE_IDS.STUDENT
+        );
+        const removedFiles = await removeStudentBackgroundFiles(
+          backgroundsDir,
+          students.map((row) => row.id)
         );
         res.json({ ok: true, removedFiles, opacityReset: updated.changes });
       } catch (error) {
@@ -1425,56 +1442,63 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards", validateBody(CreateCardSchema), async (req, res, next) => {
-    try {
-      const subject = (req.body?.subject ?? "").trim();
-      const title = (req.body?.title ?? "").trim();
-      const subjectLabel = (req.body?.subjectLabel ?? "").trim();
-      const examDate = (req.body?.examDate ?? "").trim();
-      const englishListening = req.body?.englishListening !== false;
-      const chineseChoicePlacement = req.body?.chineseChoicePlacement === "inline" ? "inline" : "front";
-      const paperSize = req.body?.paperSize === "A3" ? "A3" : "A4";
-      if (!subject) {
-        res.status(400).json({ error: "科目（subject）为必填项" });
-        return;
-      }
-      if (!title) {
-        res.status(400).json({ error: "考试名称为必填项" });
-        return;
-      }
-      if (!isValidExamDate(examDate)) {
-        res.status(400).json({ error: `考试时间为必填项，需为 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效日期（YYYY-MM-DD）` });
-        return;
-      }
-      // 257-08: 后端兜底自动后缀“空格+数字”，避免并发/旧前端 409（与 DesignPage 前端去重一致）
-      let finalTitle = title;
-      if (await cardRepo.findByTitle(finalTitle)) {
-        let seq = 2;
-        while (await cardRepo.findByTitle(`${title} ${seq}`) && seq < 1000) seq++;
-        if (seq < 1000 && !(await cardRepo.findByTitle(`${title} ${seq}`))) {
-          finalTitle = `${title} ${seq}`;
-        } else {
-          res.status(409).json({ error: `已存在同名答题卡「${title}」，请修改名称后重试` });
+  app.post(
+    "/api/cards",
+    validateBody(CreateCardSchema),
+    holdAnswerCardDataMutationLock,
+    refreshAuthenticatedUser,
+    recheckWritePermission(PERMISSIONS.GRADE_WRITE),
+    async (req, res, next) => {
+      try {
+        const subject = (req.body?.subject ?? "").trim();
+        const title = (req.body?.title ?? "").trim();
+        const subjectLabel = (req.body?.subjectLabel ?? "").trim();
+        const examDate = (req.body?.examDate ?? "").trim();
+        const englishListening = req.body?.englishListening !== false;
+        const chineseChoicePlacement = req.body?.chineseChoicePlacement === "inline" ? "inline" : "front";
+        const paperSize = req.body?.paperSize === "A3" ? "A3" : "A4";
+        if (!subject) {
+          res.status(400).json({ error: "科目（subject）为必填项" });
           return;
         }
+        if (!title) {
+          res.status(400).json({ error: "考试名称为必填项" });
+          return;
+        }
+        if (!isValidExamDate(examDate)) {
+          res.status(400).json({ error: `考试时间为必填项，需为 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效日期（YYYY-MM-DD）` });
+          return;
+        }
+        // 257-08: 后端兜底自动后缀“空格+数字”，避免并发/旧前端 409（与 DesignPage 前端去重一致）
+        let finalTitle = title;
+        if (await cardRepo.findByTitle(finalTitle)) {
+          let seq = 2;
+          while (await cardRepo.findByTitle(`${title} ${seq}`) && seq < 1000) seq++;
+          if (seq < 1000 && !(await cardRepo.findByTitle(`${title} ${seq}`))) {
+            finalTitle = `${title} ${seq}`;
+          } else {
+            res.status(409).json({ error: `已存在同名答题卡「${title}」，请修改名称后重试` });
+            return;
+          }
+        }
+        let id = generateCardId(subject);
+        let retry = 0;
+        while (await cardRepo.findById(id) && retry < 100) {
+          id = generateCardId(subject + "_" + String(retry++));
+        }
+        let card = createDefaultCard(id, subject, paperSize);
+        card.title = finalTitle;
+        card.subjectLabel = subjectLabel || undefined;
+        card.examDate = examDate;
+        card = applySubjectTemplate(card, { englishListening, chineseChoicePlacement });
+        const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
+        await recordLifecycleEvent({ entityType: "answer_card", entityId: saved.id, action: "create", actorId: req.user?.id });
+        res.status(201).json(saved);
+      } catch (error) {
+        next(error);
       }
-      let id = generateCardId(subject);
-      let retry = 0;
-      while (await cardRepo.findById(id) && retry < 100) {
-        id = generateCardId(subject + "_" + String(retry++));
-      }
-      let card = createDefaultCard(id, subject, paperSize);
-      card.title = finalTitle;
-      card.subjectLabel = subjectLabel || undefined;
-      card.examDate = examDate;
-      card = applySubjectTemplate(card, { englishListening, chineseChoicePlacement });
-      const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
-      await recordLifecycleEvent({ entityType: "answer_card", entityId: saved.id, action: "create", actorId: req.user?.id });
-      res.status(201).json(saved);
-    } catch (error) {
-      next(error);
     }
-  });
+  );
 
   app.get("/api/cards/:cardId", async (req, res, next) => {
     try {
@@ -1489,22 +1513,28 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.put("/api/cards/:cardId", async (req, res, next) => {
-    try {
-      const examDate = fieldValue((req.body as AnswerCard)?.examDate).trim();
-      if (examDate && !isValidExamDate(examDate)) {
-        res.status(400).json({ message: `考试时间需为 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效日期（YYYY-MM-DD）` });
-        return;
+  app.put(
+    "/api/cards/:cardId",
+    holdAnswerCardDataMutationLock,
+    refreshAuthenticatedUser,
+    recheckWritePermission(PERMISSIONS.GRADE_WRITE),
+    async (req, res, next) => {
+      try {
+        const examDate = fieldValue((req.body as AnswerCard)?.examDate).trim();
+        if (examDate && !isValidExamDate(examDate)) {
+          res.status(400).json({ message: `考试时间需为 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效日期（YYYY-MM-DD）` });
+          return;
+        }
+        const card = normalizeCard(req.body as AnswerCard, paramValue(req.params.cardId));
+        const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
+        res.json(saved);
+      } catch (error) {
+        next(error);
       }
-      const card = normalizeCard(req.body as AnswerCard, paramValue(req.params.cardId));
-      const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
-      res.json(saved);
-    } catch (error) {
-      next(error);
     }
-  });
+  );
 
-  app.get("/api/cards/:cardId/layout", async (req, res, next) => {
+  app.get("/api/cards/:cardId/layout", holdAnswerCardDataMutationLock, async (req, res, next) => {
     try {
       const card = await cardRepo.findById(safeId(paramValue(req.params.cardId)));
       if (!card) {
@@ -2017,6 +2047,24 @@ export async function createApp(): Promise<express.Express> {
         const cardId = safeId(paramValue(req.params.cardId));
         const card = await cardRepo.findById(cardId);
         if (!card) {
+          // Multer 在查库前就按 cardId 建目录并落盘；答题卡不存在（或等待数据锁期间被恢复移除）
+          // 时必须回收这份无主文件，否则会残留并被打进后续备份。
+          if (req.file?.path) {
+            const assetDir = path.dirname(req.file.path);
+            try {
+              await rm(req.file.path, { force: true });
+            } catch (err) {
+              console.warn("[card-assets] 清理无效答题卡的上传文件失败:", err);
+            }
+            // 答题卡不存在时该目录下不会有可引用的资源；只清理 cardId 子目录，不能动 assetsDir 本身。
+            if (path.resolve(assetDir) !== path.resolve(assetsDir)) {
+              try {
+                await rm(assetDir, { recursive: true, force: true });
+              } catch (err) {
+                console.warn("[card-assets] 清理无效答题卡的资源目录失败:", err);
+              }
+            }
+          }
           res.status(404).json({ message: "答题卡不存在" });
           return;
         }

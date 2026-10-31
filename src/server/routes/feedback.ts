@@ -15,14 +15,15 @@ import { Router, type Request, type RequestHandler, type Response } from "expres
 import multer from "multer";
 import { randomUUID } from "node:crypto";
 import { createWriteStream, mkdirSync, readdirSync, unlinkSync, type Dirent } from "node:fs";
-import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { mkdir, open, readdir, rename, rm, stat, type FileHandle } from "node:fs/promises";
 import { Transform } from "node:stream";
 import path from "node:path";
-import { authMiddleware, refreshRequestUser, requirePermission, requireRole } from "../middleware/auth";
+import { authMiddleware, refreshAuthenticatedUser, refreshRequestUser, requirePermission, requireRole } from "../middleware/auth";
 import { PERMISSIONS, roleHasPermission } from "../auth/permissions";
 import { getMysqlDb } from "../db";
 import { databaseTimestamp } from "../db/timestamp";
 import { resolveAnswerCardDataDir } from "../db/paths";
+import { holdAnswerCardDataMutationLock } from "../lib/answerCardDataLock";
 import { requestUploadBudget, isUploadAlreadyRejected } from "../lib/uploadBudget";
 import {
   FeedbackStorageQuotaError,
@@ -790,6 +791,12 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
         upload.array("files", MAX_FEEDBACK_ATTACHMENTS)(req, res, async (error) => {
           state.feedbackUploadFinished = true;
           if (!error) {
+            // 最后一个 chunk 越过预算时 413 已经发送，但请求体已读完，Multer 会按成功回调。
+            // 此时若继续进业务 handler，会写入一条客户端收到 413 的反馈 / 附件。
+            if (isUploadAlreadyRejected(req, res)) {
+              await finalizeFeedbackUpload(state);
+              return;
+            }
             next();
             return;
           }
@@ -916,13 +923,17 @@ async function listFeedback(req: Request, res: Response, ownerId?: number): Prom
   }
 }
 
+// 读取与恢复 / 备份共用同一把数据锁：等锁期间恢复可能替换账号；
+// 取得锁后必须重新认证并按当前库复核角色，不能用恢复前挂载的旧身份读新库。
+const holdFeedbackReadLock: RequestHandler[] = [holdAnswerCardDataMutationLock, refreshAuthenticatedUser];
+
 // GET /api/feedback — 全部反馈（管理员）
-router.get("/", requireAdmin, (req, res) => {
+router.get("/", ...holdFeedbackReadLock, requireAdmin, (req, res) => {
   void listFeedback(req, res);
 });
 
 // GET /api/feedback/mine — 当前账号自己的反馈（教师 / 管理员）
-router.get("/mine", requireTeacher, (req, res) => {
+router.get("/mine", ...holdFeedbackReadLock, requireTeacher, (req, res) => {
   void listFeedback(req, res, req.user!.id);
 });
 
@@ -1082,46 +1093,89 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
   }
 });
 
+type AttachmentDownloadGate =
+  | { kind: "file"; file: FileHandle; size: number; filename: string }
+  | { kind: "error"; status: number; code?: string; error: string };
+
 // GET /api/feedback/:id/attachments/:attachmentId — 下载附件（管理员，或反馈提交人）
-router.get("/:id/attachments/:attachmentId", requireTeacher, async (req, res) => {
+router.get("/:id/attachments/:attachmentId", async (req, res) => {
+  const feedbackId = parsePositiveId(req.params.id);
+  const attachmentId = parsePositiveId(req.params.attachmentId);
+  if (!feedbackId || !attachmentId) {
+    res.status(400).json({ ok: false, error: "无效的附件 ID" });
+    return;
+  }
   try {
-    const feedbackId = parsePositiveId(req.params.id);
-    const attachmentId = parsePositiveId(req.params.attachmentId);
-    if (!feedbackId || !attachmentId) {
-      return res.status(400).json({ ok: false, error: "无效的附件 ID" });
-    }
-    const row = await getMysqlDb().get<{ filename: string; stored_path: string; user_id: number | null }>(
-      `SELECT a.filename, a.stored_path, f.user_id
-         FROM feedback_attachments a
-         JOIN feedback_reports f ON f.id = a.feedback_id
-        WHERE a.id = ? AND a.feedback_id = ?`,
-      attachmentId, feedbackId
-    );
-    if (!row) return res.status(404).json({ ok: false, error: "附件不存在" });
-    const isAdmin = roleHasPermission(req.user!.role_id, PERMISSIONS.SYSTEM_MANAGE);
-    if (!isAdmin && Number(row.user_id) !== req.user!.id) {
-      return res.status(403).json({ ok: false, error: "无权下载他人的反馈附件" });
-    }
-    const absPath = resolveStoredPath(row.stored_path);
-    if (!absPath) return res.status(404).json({ ok: false, error: "附件不存在" });
-    res.setHeader("Cache-Control", "private, no-store");
-    res.setHeader("Content-Type", "application/octet-stream");
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    res.download(absPath, row.filename, (err) => {
-      if (!err) return;
-      if (res.headersSent) {
-        if (!res.writableEnded) res.end();
-        return;
+    // 锁内只做重新认证、查库、权限判断和打开文件；拿到句柄后立即释放，
+    // 慢速下载不再长期占用答题卡数据锁，阻塞保存 / 备份 / 恢复。
+    const gate = await withFeedbackMutationLock(async (): Promise<AttachmentDownloadGate> => {
+      if (!(await refreshRequestUser(req))) {
+        return { kind: "error", status: 401, code: "FEEDBACK_SESSION_STALE", error: "账号权限已变更，请重新登录后再下载" };
       }
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-        res.status(404).json({ ok: false, error: "附件文件不存在" });
-      } else {
-        res.status(500).json({ ok: false, error: "附件下载失败" });
+      const role = req.user?.role_name;
+      if (role !== "admin" && role !== "teacher") {
+        return { kind: "error", status: 403, error: "当前账号不能下载反馈附件" };
+      }
+      const row = await getMysqlDb().get<{ filename: string; stored_path: string; user_id: number | null }>(
+        `SELECT a.filename, a.stored_path, f.user_id
+           FROM feedback_attachments a
+           JOIN feedback_reports f ON f.id = a.feedback_id
+          WHERE a.id = ? AND a.feedback_id = ?`,
+        attachmentId, feedbackId
+      );
+      if (!row) return { kind: "error", status: 404, error: "附件不存在" };
+      const isAdmin = roleHasPermission(req.user!.role_id, PERMISSIONS.SYSTEM_MANAGE);
+      if (!isAdmin && Number(row.user_id) !== req.user!.id) {
+        return { kind: "error", status: 403, error: "无权下载他人的反馈附件" };
+      }
+      const absPath = resolveStoredPath(row.stored_path);
+      if (!absPath) return { kind: "error", status: 404, error: "附件不存在" };
+      try {
+        const file = await open(absPath, "r");
+        const info = await file.stat();
+        return { kind: "file", file, size: info.size, filename: row.filename };
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+          return { kind: "error", status: 404, error: "附件文件不存在" };
+        }
+        throw err;
       }
     });
+    if (gate.kind === "error") {
+      res.status(gate.status).json({
+        ok: false,
+        ...(gate.code ? { code: gate.code } : {}),
+        error: gate.error,
+      });
+      return;
+    }
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.attachment(gate.filename);
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Length", String(gate.size));
+    const stream = gate.file.createReadStream({ autoClose: true });
+    stream.on("close", () => {
+      // createReadStream 正常结束会自动关闭；这里兜底显式释放，避免 Windows 上延迟占住数据目录。
+      void gate.file.close().catch(() => undefined);
+    });
+    stream.on("error", (err) => {
+      console.error("[feedback] 附件下载流失败:", err);
+      if (!res.headersSent) {
+        res.status(500).json({ ok: false, error: "附件下载失败" });
+      } else if (!res.writableEnded) {
+        res.destroy(err);
+      }
+    });
+    res.on("close", () => stream.destroy());
+    stream.pipe(res);
   } catch (err: any) {
     console.error("[feedback] 附件下载失败:", err);
-    res.status(500).json({ ok: false, error: "附件下载失败" });
+    if (!res.headersSent) {
+      res.status(500).json({ ok: false, error: "附件下载失败" });
+    } else if (!res.writableEnded) {
+      res.destroy(err);
+    }
   }
 });
 

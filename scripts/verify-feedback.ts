@@ -1497,6 +1497,56 @@ async function main(): Promise<void> {
     }
   }
 
+  // 恢复替换账号库后，已经在途的读取请求不能继续用旧身份读新库：
+  // 三个读取入口都必须与恢复共用数据锁，并在锁内重新认证、按当前角色判断。
+  section("7. 恢复期间反馈读取在锁内重新认证");
+  {
+    const readForm = new FormData();
+    readForm.set("title", "读取锁测试");
+    readForm.set("content", "正文");
+    readForm.append("files", new Blob(["read-lock"], { type: "text/plain" }), "read.txt");
+    const readReport = await upload(readForm, adminToken);
+    ok(readReport.status === 201, "准备读取锁回归的反馈与附件");
+    const readReportId = Number(readReport.json?.data?.id);
+    const readAttachmentId = Number((await call("GET", "?limit=1", adminToken)).json?.data?.[0]?.attachments?.[0]?.id);
+
+    let releaseReadLock!: () => void;
+    const readGate = new Promise<void>((resolve) => { releaseReadLock = resolve; });
+    const lockHeld = withAnswerCardDataMutationLock(async () => {
+      await readGate;
+      // 模拟恢复替换账号库：旧 Token 仍在请求上，但当前角色已变成学生。
+      await db.run("UPDATE users SET role_id = ? WHERE id = ?", ROLE_IDS.STUDENT, adminRow!.id);
+    });
+    let listSettled = false;
+    let mineSettled = false;
+    let downloadSettled = false;
+    const blockedList = call("GET", "?limit=1", adminToken).then((result) => {
+      listSettled = true;
+      return result;
+    });
+    const blockedMine = call("GET", "/mine?limit=1", adminToken).then((result) => {
+      mineSettled = true;
+      return result;
+    });
+    const blockedDownload = fetch(`${base}/${readReportId}/attachments/${readAttachmentId}`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    }).then((response) => {
+      downloadSettled = true;
+      return response;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    ok(!listSettled && !mineSettled && !downloadSettled,
+      "恢复持锁期间列表 / mine / 附件下载都等待数据锁");
+    releaseReadLock();
+    await lockHeld;
+    ok((await blockedList).status === 403, "锁内重新认证后，降级管理员读取全部反馈被拒绝");
+    ok((await blockedMine).status === 403, "锁内重新认证后，降级管理员读取 mine 被拒绝");
+    const downloadResponse = await blockedDownload;
+    const downloadStatus = downloadResponse.status;
+    await downloadResponse.text().catch(() => "");
+    ok(downloadStatus === 403, "锁内重新认证后，降级管理员下载附件被拒绝");
+  }
+
   // 恢复备份会整体替换账号库：调用方必须无条件吊销全部 Token，旧数字 userId 不能继承新身份。
   auth.revokeAllTokens();
   ok((await call("GET", "?limit=1", adminToken)).status === 401,
@@ -1516,7 +1566,8 @@ try {
   try { resetAdapter(); } catch { /* ignore */ }
   try { process.chdir(originalCwd); } catch { /* ignore */ }
   for (const dir of [tmpDir, dirtyCwd]) {
-    if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+    // Windows 上刚结束的下载句柄可能晚一个 tick 释放，给临时目录删除留重试。
+    if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 
