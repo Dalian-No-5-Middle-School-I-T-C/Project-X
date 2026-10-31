@@ -6,24 +6,27 @@
  * 设计约束：
  * - 答案以「考试」为单位（不是答题卡）：同一张答题卡复用于多次考试时，
  *   每次的正确答案不同，因此不能塞进卡片级 objective_answer_keys。
- * - 只存文字、只出文字：接口不判对错，也不与 question_scores 交互。
- * - OCR 结果是草稿，必须由教师显式 PUT 保存后才对学生可见。
+ * - 本路由只服务教师侧：文字答案存 exam_answer_keys，上传的答案原文件存
+ *   exam_answer_key_pages + 磁盘，两者的学生可见性由 exams.answer_key_mode 二选一决定，
+ *   实际下发在学生端 `/api/scores/me/exams/:examId/paper*` 完成（v66）。
+ * - 接口不判对错，也不与 question_scores 交互。
+ * - OCR 结果是草稿，必须由教师显式 PUT 保存后才可能对学生可见。
  */
 import { Router } from "express";
 import multer from "multer";
 import path from "node:path";
-import { existsSync, unlinkSync } from "node:fs";
+import { unlinkSync } from "node:fs";
 import type { Request, Response } from "express";
 import { getMysqlDb, buildUpsertSQL } from "../../../../server/db/mysql";
 import { beginManualDataMutationLockRelease, holdAnswerCardDataMutationLock, releaseDataMutationLock, stopDisconnectedUpload } from "../../../../server/lib/answerCardDataLock";
 import {
-  ANSWER_KEY_EXTENSIONS,
-  answerKeyBaseName,
   listAnswerKeyPages,
   listExamAnswerKeys,
   listExamPaperPages,
+  loadAnswerKeyPageFilename,
+  discardAnswerKeyPageFiles,
   purgeAnswerKeyPageSiblings,
-  resolveAnswerKeyPageFile,
+  resolveAnswerKeyPreviewFile,
 } from "../../../../server/services/ExamPaperViewService";
 import { answerKeyDir, answerKeysDir, ensureAnswerKeyDir } from "../storage";
 import { MAX_FILE_SIZE, storeAnswerKeyPageFile, validatePaperFile } from "../paper-converter";
@@ -31,6 +34,7 @@ import { MAX_FILE_SIZE, storeAnswerKeyPageFile, validatePaperFile } from "../pap
 import { purgeStaleTmpUploads } from "../paperQuota";
 import { extractDocxText, extractPdfText, extractImageText } from "../paper-ocr";
 import { MAX_ANSWER_TEXT_LENGTH, MAX_QUESTION_NUMBER, parseAnswerKeyText } from "../answer-key-ocr";
+import { normalizeAnswerKeyMode } from "../../../../shared/answerKeyMode";
 import { requireExamAccess } from "../middleware";
 import { refreshAuthenticatedUser, recheckWritePermission } from "../../../../server/middleware/auth";
 import { PERMISSIONS } from "../../../../server/auth/permissions";
@@ -67,11 +71,13 @@ type ExamRow = {
   name?: string;
   show_original_paper: number | null;
   score_published: number | null;
+  /** v66: text=逐题文字答案 file=答案原文件直发（旧库缺列时按 text） */
+  answer_key_mode?: string | null;
 };
 
 async function loadExam(examId: number): Promise<ExamRow | null> {
   return await getMysqlDb().get<ExamRow>(
-    "SELECT id, card_id, name, show_original_paper, score_published FROM exams WHERE id = ?",
+    "SELECT id, card_id, name, show_original_paper, score_published, answer_key_mode FROM exams WHERE id = ?",
     examId
   ) ?? null;
 }
@@ -112,20 +118,6 @@ function draftPayload(text: string | null) {
 }
 
 /**
- * 取某页在 DB 登记的磁盘文件名。
- * 只有走过上传流程的页才会有行记录，因此「无行 = 该页不存在」：
- * 以此为准可以同时挡掉两类问题——按页码猜测文件（早期失败上传遗留的孤儿文件）
- * 被当作已上传页读取或预览（PR 审查 P2）。
- */
-async function loadAnswerKeyPageFilename(examId: number, pageIndex: number): Promise<string | null> {
-  const row = await getMysqlDb().get<{ filename: string | null }>(
-    "SELECT filename FROM exam_answer_key_pages WHERE exam_id = ? AND page_index = ?",
-    examId, pageIndex
-  );
-  return row?.filename ?? null;
-}
-
-/**
  * 同场考试的答案页上传串行队列（沿用 scanner 模块的队列写法）。
  * 最小空闲页码是「读 DB → 写文件 → 插行」，并发上传会抢到同一页码并写同一个
  * answerkey-<n>.* 文件名，失败一方回滚时可能删掉成功一方的文件（或两行共用一份字节）。
@@ -161,6 +153,7 @@ export function examAnswerKeyRoutes(): Router {
         cardId: exam.card_id,
         showOriginalPaper: exam.show_original_paper === 1 ? 1 : 0,
         scorePublished: exam.score_published === 1 ? 1 : 0,
+        answerKeyMode: normalizeAnswerKeyMode(exam.answer_key_mode),
         hasOriginalPaper: paperPages.length > 0,
         paperPages,
         answerPages,
@@ -326,10 +319,13 @@ export function examAnswerKeyRoutes(): Router {
         // 落盘循环必须与入库同处一个 try：转换（compressImage）抛错时本轮已写下的文件
         // 还没有任何 DB 记录引用，若只兜入库失败就会留下「无记录占文件名」的孤儿，
         // 后续同名页会被扩展名探测顺序遮蔽（PR 审查 P2）。
-        const planned: Array<{ pageIndex: number; diskFilename: string; relPath: string }> = [];
+        const planned: Array<{ pageIndex: number; diskFilename: string; relPath: string; previewFilename: string | null }> = [];
         const discardPlannedFiles = (): void => {
           for (const page of planned) {
-            try { unlinkSync(path.join(dir, page.diskFilename)); } catch {}
+            for (const name of [page.diskFilename, page.previewFilename]) {
+              if (!name) continue;
+              try { unlinkSync(path.join(dir, name)); } catch {}
+            }
           }
           planned.length = 0;
         };
@@ -338,7 +334,12 @@ export function examAnswerKeyRoutes(): Router {
           for (const { file, originalname } of valid) {
             const pageIndex = takeIndex();
             const stored = await storeAnswerKeyPageFile(file.path, originalname, dir, pageIndex);
-            planned.push({ pageIndex, diskFilename: stored.diskFilename, relPath: stored.relPath });
+            planned.push({
+              pageIndex,
+              diskFilename: stored.diskFilename,
+              relPath: stored.relPath,
+              previewFilename: stored.previewFilename,
+            });
           }
 
           await db.transaction(async (tx) => {
@@ -368,7 +369,7 @@ export function examAnswerKeyRoutes(): Router {
       const ocrResults: Array<{ pageIndex: number; text?: string; drafts?: Array<{ questionNumber: number; answerText: string }>; recognized?: boolean; error?: string }> = [];
       if (runOcr) {
         for (const page of uploaded) {
-          const resolved = resolveAnswerKeyPageFile(exam.id, page.pageIndex, page.filename);
+          const resolved = resolveAnswerKeyPreviewFile(exam.id, page.pageIndex, page.filename);
           if (!resolved) { ocrResults.push({ pageIndex: page.pageIndex, error: "文件不存在" }); continue; }
           try {
             const text = await ocrAnswerKeyFile(resolved.filePath);
@@ -409,7 +410,7 @@ export function examAnswerKeyRoutes(): Router {
 
       const filename = await loadAnswerKeyPageFilename(examId, pageIndex);
       if (!filename) { res.status(404).json({ message: "答案页不存在" }); return; }
-      const resolved = resolveAnswerKeyPageFile(examId, pageIndex, filename);
+      const resolved = resolveAnswerKeyPreviewFile(examId, pageIndex, filename);
       if (!resolved) { res.status(404).json({ message: "答案页不存在" }); return; }
       const text = await ocrAnswerKeyFile(resolved.filePath);
       res.json({ pageIndex, ...draftPayload(text) });
@@ -419,7 +420,8 @@ export function examAnswerKeyRoutes(): Router {
     }
   });
 
-  // GET /api/exams/:examId/answer-key/pages/:pageIndex/image — 答案页图片（教师核对用，学生不可访问）
+  // GET /api/exams/:examId/answer-key/pages/:pageIndex/image — 答案页图片（仅教师核对；
+  // 学生侧读取另有 /api/scores/me/exams/:examId/paper/answer-file/:pageIndex，受 answer_key_mode 门）
   router.get("/api/exams/:examId/answer-key/pages/:pageIndex/image", requireExamAccess, async (req: Request, res: Response) => {
     try {
       if (invalidExamId(res, req.params.examId)) return;
@@ -428,7 +430,7 @@ export function examAnswerKeyRoutes(): Router {
       const examId = Number(req.params.examId);
       const filename = await loadAnswerKeyPageFilename(examId, pageIndex);
       if (!filename) { res.status(404).json({ message: "答案页不存在" }); return; }
-      const resolved = resolveAnswerKeyPageFile(examId, pageIndex, filename);
+      const resolved = resolveAnswerKeyPreviewFile(examId, pageIndex, filename);
       if (!resolved) { res.status(404).json({ message: "答案页不存在" }); return; }
       res.contentType(resolved.mimeType);
       res.sendFile(resolved.filePath);
@@ -453,12 +455,7 @@ export function examAnswerKeyRoutes(): Router {
       ) as { filename: string } | undefined;
       if (!row) { res.status(404).json({ message: "答案页不存在" }); return; }
 
-      const dir = answerKeyDir(examId);
-      const baseName = answerKeyBaseName(pageIndex);
-      for (const ext of ANSWER_KEY_EXTENSIONS) {
-        const filePath = path.join(dir, `${baseName}${ext}`);
-        if (existsSync(filePath)) { try { unlinkSync(filePath); } catch {} }
-      }
+      discardAnswerKeyPageFiles(examId, pageIndex);
       await db.run("DELETE FROM exam_answer_key_pages WHERE exam_id = ? AND page_index = ?", examId, pageIndex);
       // 注意：exam_answer_keys.page_index 存的是「原卷页码」（card 级资产，见答案配置面板），
       // 与这里删除的「答案扫描页码」是两套坐标系，不能按同一数字联动清空。

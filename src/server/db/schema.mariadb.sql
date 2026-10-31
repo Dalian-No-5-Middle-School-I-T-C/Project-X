@@ -329,6 +329,7 @@ CREATE TABLE IF NOT EXISTS exams (
     review_enabled TINYINT DEFAULT 0,       -- v1.9.0: 网阅开关
     exam_mode      VARCHAR(20) NOT NULL DEFAULT 'formal',  -- v34: quiz=晨测 formal=大考(默认)
     show_original_paper TINYINT DEFAULT 0,  -- v54: 0=不向学生展示原卷 1=成绩发布后可查看原卷与答案解析
+    answer_key_mode     VARCHAR(16) NOT NULL DEFAULT 'text',  -- v68: text=逐题文字答案 file=答案原文件直发
     created_by    INT,
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

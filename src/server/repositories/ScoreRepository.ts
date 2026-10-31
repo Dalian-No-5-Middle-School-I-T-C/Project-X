@@ -1,5 +1,6 @@
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
+import { answerKeyModeIsFileSql } from "../db/mysql";
 import type {
   SemesterSubjectComparison,
   StudentSemesterComparison,
@@ -41,7 +42,7 @@ export interface StudentExamScore {
   percentile: number | null;
   class_size: number;
   graded_at: string;
-  /** v54: 原卷/答案解析是否对该学生开放（exams.show_original_paper=1 且成绩已公布） */
+  /** v54: 原卷/答案解析是否对该学生开放（成绩已公布，且「显示原卷」或「答案原文件直发」至少开一项） */
   paper_visible?: number;
 }
 
@@ -98,8 +99,13 @@ export class ScoreRepository {
         (
           SELECT COUNT(*) FROM student_scores s3 WHERE s3.exam_id = ss.exam_id
         ) AS class_size,
-        -- v54: 学生端「查看原卷」入口条件（已公布 + 教师开启显示原卷），与 /paper 接口同一道门
-        CASE WHEN e.score_published = 1 AND e.show_original_paper = 1 THEN 1 ELSE 0 END AS paper_visible
+        -- v54: 学生端「查看原卷」入口条件（已公布 + 教师开启显示原卷），与 /paper 接口同一道门。
+        -- v66: 「答案原文件直发」本身就等于把答案交给学生，同样算开门条件。这两处必须与
+        -- assertStudentPaperVisible / normalizeAnswerKeyMode 保持一致，否则列表露出的入口点进去会 404。
+        -- MariaDB 默认大小写不敏感，脏值 FILE 不能算作 file。
+        CASE WHEN e.score_published = 1
+              AND (e.show_original_paper = 1 OR ${answerKeyModeIsFileSql(this.db.dialect, "e.answer_key_mode")})
+             THEN 1 ELSE 0 END AS paper_visible
       FROM student_scores ss
       JOIN exams e ON e.id = ss.exam_id
       WHERE ${whereParts.join("\n        ")}

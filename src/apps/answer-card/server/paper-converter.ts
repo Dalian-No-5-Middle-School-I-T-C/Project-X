@@ -6,6 +6,7 @@ import type { ReadStream } from "node:fs";
 import { createWriteStream } from "node:fs";
 import { dataDir } from "./storage";
 import { MAX_PAPER_FILE_BYTES } from "../../../shared/paperStorageLimits";
+import { answerKeyPreviewFilename } from "../../../shared/answerKeyFiles";
 
 export const ALLOWED_EXTENSIONS = new Set([
   ".docx", ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"
@@ -255,34 +256,44 @@ export type AnswerKeyPageKind = "image" | "pdf" | "docx";
 
 /**
  * v54: 按页码存储考试级「本次正确答案」上传件。
- * 与 storePaperPageFile 的区别：答案页只用于教师核对与 OCR，学生端只展示文字答案，
- * 因此图片不生成配对 PDF，也使用独立文件名前缀避免与原卷混淆。
+ * 图片、PDF、DOCX 都按上传字节原样落盘，直发模式把这一份交给学生。
+ * 图片另外写一份压缩 JPEG（`<base>.preview.jpg`）给 OCR 和教师预览，避免再把原件压小。
+ * 这次改动之前入库的图片已经是压缩 JPEG，磁盘上没有原件，预览与直发都只能继续用那一份。
  */
 export async function storeAnswerKeyPageFile(
   sourcePath: string,
   filename: string,
   targetDir: string,
   pageIndex: number
-): Promise<{ diskFilename: string; relPath: string; kind: AnswerKeyPageKind }> {
+): Promise<{ diskFilename: string; relPath: string; kind: AnswerKeyPageKind; previewFilename: string | null }> {
   const ext = path.extname(filename).toLowerCase();
   const baseName = pageIndex === 1 ? "answerkey" : `answerkey-${pageIndex}`;
-  const targetPath = path.join(targetDir, `${baseName}${ext}`);
+  const diskFilename = `${baseName}${ext}`;
+  const targetPath = path.join(targetDir, diskFilename);
 
   if (isDocx(filename)) {
     await copyFile(sourcePath, targetPath);
-    return { diskFilename: `${baseName}${ext}`, relPath: path.relative(dataDir, targetPath), kind: "docx" };
+    return { diskFilename, relPath: path.relative(dataDir, targetPath), kind: "docx", previewFilename: null };
   }
   if (isPdf(filename)) {
     await copyFile(sourcePath, targetPath);
-    return { diskFilename: `${baseName}${ext}`, relPath: path.relative(dataDir, targetPath), kind: "pdf" };
+    return { diskFilename, relPath: path.relative(dataDir, targetPath), kind: "pdf", previewFilename: null };
   }
   if (!isImageFormat(filename)) throw new Error(`不支持 ${ext} 格式的答案文件`);
 
-  const diskFilename = `${baseName}.jpg`;
-  await writeFile(path.join(targetDir, diskFilename), await compressImage(sourcePath));
+  const previewFilename = answerKeyPreviewFilename(baseName);
+  const previewPath = path.join(targetDir, previewFilename);
+  try {
+    await copyFile(sourcePath, targetPath);
+    await writeFile(previewPath, await compressImage(sourcePath));
+  } catch (err) {
+    await discardStoredPaths([targetPath, previewPath]);
+    throw err;
+  }
   return {
     diskFilename,
-    relPath: path.relative(dataDir, path.join(targetDir, diskFilename)),
+    relPath: path.relative(dataDir, targetPath),
     kind: "image",
+    previewFilename,
   };
 }
