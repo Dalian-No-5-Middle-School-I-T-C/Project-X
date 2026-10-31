@@ -20,6 +20,7 @@ import { getFileMime } from "../../apps/answer-card/server/paper-ocr";
 import { answerKeyPreviewFilename } from "../../shared/answerKeyFiles";
 
 export const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".bmp", ".webp"];
+const SOURCE_IMAGE_EXTENSIONS = [...IMAGE_EXTENSIONS, ".tiff", ".tif"];
 export const ANSWER_KEY_EXTENSIONS = [...IMAGE_EXTENSIONS, ".tiff", ".tif", ".pdf", ".docx"];
 
 export type PaperPageView = {
@@ -31,6 +32,10 @@ export type PaperPageView = {
 
 function isImageFile(filename: string): boolean {
   return IMAGE_EXTENSIONS.includes(path.extname(filename).toLowerCase());
+}
+
+function isSourceImageFile(filename: string): boolean {
+  return SOURCE_IMAGE_EXTENSIONS.includes(path.extname(filename).toLowerCase());
 }
 
 /** 答题卡原卷的磁盘文件名（第 1 页沿用 legacy 的 original.<ext>） */
@@ -226,6 +231,7 @@ export function resolveAnswerKeyPreviewFile(
 ): { filePath: string; filename: string; mimeType: string; isImage: boolean } | null {
   const original = resolveAnswerKeyPageFile(examId, pageIndex, preferredFilename);
   if (!original) return null;
+  if (!isSourceImageFile(original.filename)) return original;
   const previewName = answerKeyPreviewFilename(answerKeyBaseName(pageIndex));
   const previewPath = path.join(answerKeyDir(examId), previewName);
   if (!existsSync(previewPath)) return original;
@@ -264,6 +270,12 @@ export function purgeAnswerKeyPageSiblings(
     const filePath = path.join(dir, filename);
     if (existsSync(filePath)) {
       try { unlinkSync(filePath); } catch {}
+    }
+  }
+  if (!isSourceImageFile(keepFilename)) {
+    const previewPath = path.join(dir, answerKeyPreviewFilename(baseName));
+    if (existsSync(previewPath)) {
+      try { unlinkSync(previewPath); } catch {}
     }
   }
 }

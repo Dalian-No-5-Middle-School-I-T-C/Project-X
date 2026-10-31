@@ -607,6 +607,46 @@ async function main() {
     "教师预览与 OCR 走压缩派生图，不把原 PNG 当预览");
   const studentOriginal = resolveAnswerKeyPageFile(modeExamId, 3, "answerkey-3.png", { exact: true });
   ok(studentOriginal?.filename === "answerkey-3.png", "学生直发解析仍指向登记的原文件");
+
+  const uploadedTiff = await sharp({
+    create: { width: 80, height: 60, channels: 3, background: { r: 4, g: 5, b: 6 } },
+  }).tiff().toBuffer();
+  const pageTiff = await uploadModePage(new Blob([uploadedTiff], { type: "image/tiff" }), "答案扫描件.tiff");
+  ok(pageTiff.status === 200 && pageTiff.body?.pages?.[0]?.filename === "answerkey-4.tiff",
+    "TIFF 按原扩展名登记并生成教师预览");
+  const tiffPreviewPath = path.join(answerKeyDir(modeExamId), "answerkey-4.preview.jpg");
+  const teacherTiff = await fetch(`${base}/api/exams/${modeExamId}/answer-key/pages/4/image`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  ok(existsSync(tiffPreviewPath) && (teacherTiff.headers.get("content-type") ?? "").includes("image/jpeg"),
+    "TIFF 的教师预览读取 JPEG 派生图");
+  const tiffView = await modePaper();
+  const tiffRow = ((tiffView.body?.answerFiles ?? []) as Array<{ pageIndex: number; filename: string; mimeType: string; isImage: boolean }>)
+    .find((row) => row.pageIndex === 4);
+  ok(tiffRow?.filename === "answerkey-4.tiff" && tiffRow?.mimeType === "image/tiff" && tiffRow?.isImage === false,
+    "浏览器不支持的 TIFF 不下发为内联图片，学生端保留打开/下载入口");
+  const tiffRes = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/answer-file/4`, {
+    headers: { Authorization: `Bearer ${stuToken}` },
+  });
+  const tiffBytes = Buffer.from(await tiffRes.arrayBuffer());
+  ok(tiffRes.status === 200 && (tiffRes.headers.get("content-type") ?? "").includes("image/tiff") && tiffBytes.equals(uploadedTiff),
+    "TIFF 原字节可供学生下载");
+
+  // 模拟旧版本中途失败留下的同页图片派生图：下一份 PDF 占用该页时必须清掉旧 JPEG。
+  await getMysqlDb().run("DELETE FROM exam_answer_key_pages WHERE exam_id = ? AND page_index = 4", modeExamId);
+  const pagePdfAfterTiff = await uploadModePage(
+    new Blob([Buffer.from("%PDF-1.4\n% replacement fixture\n")], { type: "application/pdf" }),
+    "替换答案.pdf",
+  );
+  ok(pagePdfAfterTiff.status === 200 && pagePdfAfterTiff.body?.pages?.[0]?.filename === "answerkey-4.pdf",
+    "同页后续上传 PDF 时重新占用该页");
+  ok(!existsSync(tiffPreviewPath), "非图片替换图片时清理旧 JPEG 派生图，避免预览和 OCR 读错页");
+  const teacherPdfAfterTiff = await fetch(`${base}/api/exams/${modeExamId}/answer-key/pages/4/image`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  ok((teacherPdfAfterTiff.headers.get("content-type") ?? "").includes("pdf"),
+    "PDF/DOCX 预览直接返回登记文件，不复用残留图片");
+
   const historicalJpeg = await jpegBuffer();
   const historicalName = "answerkey-8.jpg";
   await writeFile(path.join(answerKeyDir(modeExamId), historicalName), historicalJpeg);
@@ -634,8 +674,10 @@ async function main() {
 
   await patchMode({ showOriginalPaper: true });
   const bothView = await modePaper();
+  const bothAnswerPages = (bothView.body?.answerFiles ?? []) as Array<{ pageIndex: number }>;
   ok(bothView.status === 200 && bothView.body?.hasOriginalPaper === true
-    && (bothView.body?.answerFiles ?? []).length === 2 && ((bothView.body?.pages ?? [])[0]?.answers ?? []).length === 0,
+    && bothAnswerPages.map((page) => page.pageIndex).join(",") === "1,2,4"
+    && ((bothView.body?.pages ?? [])[0]?.answers ?? []).length === 0,
     "「显示原卷」与直发模式同时开启 → 原卷页可见且仍不下发文字答案");
   const paperImageNow = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/pages/1/image`, { headers: { Authorization: `Bearer ${stuToken}` } });
   ok(paperImageNow.status === 200, "开关开启后原卷图片恢复可取");
@@ -685,7 +727,8 @@ async function main() {
   console.log(`\n通过 ${passed} 项，失败 ${failed} 项`);
   await new Promise<void>((resolve) => server.close(() => resolve()));
   closeDatabase();
-  rmSync(tmpDir, { recursive: true, force: true });
+  process.chdir(tmpdir());
+  rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   if (failed > 0) process.exitCode = 1;
 }
 
