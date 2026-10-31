@@ -217,15 +217,24 @@ function ScannerAppInner() {
           setLiveScanSessionId(sid);
           setPostSessions(prev => prev.some(p => p.sessionId === sid) ? prev : [...prev, { sessionId: sid, pageCount: 0 }]);
         }}
-        onScanSessionAbandoned={(sid) => {
+        onScanSessionAbandoned={(originCardId, sid) => {
           setLiveScanSessionId(prev => prev === sid ? null : prev);
-          setPostSessions(prev => prev.filter(p => p.sessionId !== sid));
+          if (currentCardIdRef.current === originCardId) {
+            setPostSessions(prev => prev.filter(p => p.sessionId !== sid));
+          } else if (user?.id) {
+            const stored = readPostprocessSessions(originCardId, user.id);
+            writePostprocessSessions(originCardId, stored.filter(item => item.sessionId !== sid), user.id);
+          }
         }}
-        onBatchArchived={(sid, pageCount) => {
-          // 已经切到另一张卡时，旧卡的晚到交接不能混进新卡的后处理列表。
-          const current = currentCardIdRef.current;
-          if (current && current !== selectedCardId) return;
-          setPostSessions(prev => [...prev.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }]);
+        onBatchArchived={(originCardId, sid, pageCount) => {
+          // 交接请求晚到时可能已经切到另一张卡或回到列表。只在原卡仍活跃时写内存；
+          // 其余情况按发起卡直接归到它自己的账号槽位，不能借 lastSelectionRef 写进新卡。
+          if (currentCardIdRef.current === originCardId) {
+            setPostSessions(prev => [...prev.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }]);
+          } else if (user?.id) {
+            const stored = readPostprocessSessions(originCardId, user.id);
+            writePostprocessSessions(originCardId, [...stored.filter(p => p.sessionId !== sid), { sessionId: sid, pageCount }], user.id);
+          }
         }}
         onScansComplete={(sid, pageCount) => {
           setLiveScanSessionId(null);

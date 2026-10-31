@@ -143,9 +143,9 @@ function hasAction(label: string) {
 let panelMounted = true;
 try {
   await act(async () => { root.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id,
-    onBatchArchived: (sid: string, pageCount: number) => { archivedBatches.push(`${sid}/${pageCount}`); },
+    onBatchArchived: (originCardId: string, sid: string, pageCount: number) => { archivedBatches.push(`${originCardId}/${sid}/${pageCount}`); },
     onScanSessionStarted: (sid: string) => { startedSessions.push(sid); },
-    onScanSessionAbandoned: (sid: string) => { abandonedSessions.push(sid); },
+    onScanSessionAbandoned: (_cardId: string, sid: string) => { abandonedSessions.push(sid); },
   }))); });
   await settle();
   const checkbox = document.querySelector<HTMLButtonElement>('[role="checkbox"]');
@@ -392,7 +392,7 @@ try {
   await settle();
   assert(cancelRequests.slice(cancelsBeforeLeave).some(url => url.includes(midScanSession)),
     "扫描中离开面板要终止后台扫描，不能让设备继续送纸");
-  assert(archivedBatches.slice(archivedBeforeLeave).includes(`${midScanSession}/1`),
+  assert(archivedBatches.slice(archivedBeforeLeave).includes(`${card.id}/${midScanSession}/1`),
     "已扫出的页面要交给后处理页，离开面板不等于丢掉这一批");
 
   // 离开面板时取消接口返回 401/500：authFetch 不会抛，必须看 response.ok 才提示，并且已扫页面仍交接。
@@ -411,7 +411,7 @@ try {
       document.body.append(stopHost);
       const stopRoot = createRoot(stopHost);
       await act(async () => { stopRoot.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id,
-        onBatchArchived: (sid: string, pageCount: number) => { archivedBatches.push(`${sid}/${pageCount}`); },
+        onBatchArchived: (originCardId: string, sid: string, pageCount: number) => { archivedBatches.push(`${originCardId}/${sid}/${pageCount}`); },
       }))); });
       await settle();
       await act(async () => {
@@ -428,7 +428,7 @@ try {
       await settle();
       assert.equal(stopWarnings.length, 1, `取消接口 HTTP ${status} 要提示未能确认扫描仪已停止`);
       assert.match(stopWarnings[0] ?? "", /未能确认扫描仪已停止/);
-      assert(archivedBatches.slice(archivedBeforeStop).includes(`${stopSession}/1`),
+      assert(archivedBatches.slice(archivedBeforeStop).includes(`${card.id}/${stopSession}/1`),
         `HTTP ${status} 时已扫页面仍交给后处理，不因为停止失败就丢掉`);
     }
   } finally {
@@ -486,8 +486,8 @@ try {
     const handoffArchived: string[] = [];
     const handoffAbandoned: string[] = [];
     await act(async () => { handoffRoot.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id,
-      onBatchArchived: (sid: string, pageCount: number) => { handoffArchived.push(`${sid}/${pageCount}`); },
-      onScanSessionAbandoned: (sid: string) => { handoffAbandoned.push(sid); },
+      onBatchArchived: (originCardId: string, sid: string, pageCount: number) => { handoffArchived.push(`${originCardId}/${sid}/${pageCount}`); },
+      onScanSessionAbandoned: (originCardId: string, sid: string) => { handoffAbandoned.push(`${originCardId}/${sid}`); },
     }))); });
     await settle();
     await act(async () => {
@@ -501,11 +501,11 @@ try {
     assert(snapshotRequests.slice(snapshotsBeforeHandoff).some(url => url.includes(handoffSession)),
       "本地没有页面时，交接前要问服务端记录数");
     if (handoffCase.expectation === "archive") {
-      assert(handoffArchived.includes(`${handoffSession}/${handoffCase.serverPages}`),
+      assert(handoffArchived.includes(`${card.id}/${handoffSession}/${handoffCase.serverPages}`),
         "服务端已有页面或 worker 仍在收尾时，要按服务端页数交给后处理");
-      assert(!handoffAbandoned.includes(handoffSession), "服务端已有页面或 worker 仍在收尾时不能撤掉占位");
+      assert(!handoffAbandoned.includes(`${card.id}/${handoffSession}`), "服务端已有页面或 worker 仍在收尾时不能撤掉占位");
     } else {
-      assert(handoffAbandoned.includes(handoffSession), "服务端确实没有页面且已收尾时才撤掉占位");
+      assert(handoffAbandoned.includes(`${card.id}/${handoffSession}`), "服务端确实没有页面且已收尾时才撤掉占位");
     }
     handoffHost.remove();
   }

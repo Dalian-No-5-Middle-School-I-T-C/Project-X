@@ -60,9 +60,9 @@ interface Props {
   /** v2.7.2：本批扫描完成时上抛给 ScannerApp，自动进入扫描后处理页 */
   onScansComplete?: (sessionId: string, pageCount: number) => void;
   /** 继续扫描前先归档当前会话：部分中断的批次离开面板后仍能在后处理页找到。 */
-  onBatchArchived?: (sessionId: string, pageCount: number) => void;
+  onBatchArchived?: (cardId: string, sessionId: string, pageCount: number) => void;
   onScanSessionStarted?: (sessionId: string) => void;
-  onScanSessionAbandoned?: (sessionId: string) => void;
+  onScanSessionAbandoned?: (cardId: string, sessionId: string) => void;
   /** 从后处理页点「继续扫描」进入时自动开扫。 */
   autoStartScan?: boolean;
   onAutoStartConsumed?: () => void;

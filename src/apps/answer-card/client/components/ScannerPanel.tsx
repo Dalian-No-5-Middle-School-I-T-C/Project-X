@@ -55,11 +55,11 @@ interface ScannerPanelProps {
   cardId: string;
   onScansComplete?: (sessionId: string, pageCount: number) => void;
   /** 继续扫描/重开前把当前会话交给后处理页：部分中断的批次不能因为离开面板就消失。 */
-  onBatchArchived?: (sessionId: string, pageCount: number) => void;
+  onBatchArchived?: (cardId: string, sessionId: string, pageCount: number) => void;
   /** 会话一创建就上报。渲染进程在扫描中崩溃时来不及走卸载清理，后处理页仍要找得到这一批。 */
   onScanSessionStarted?: (sessionId: string) => void;
   /** 还没扫出页面就取消或被新会话替换时，撤掉刚才的占位，避免恢复出空批次。 */
-  onScanSessionAbandoned?: (sessionId: string) => void;
+  onScanSessionAbandoned?: (cardId: string, sessionId: string) => void;
   /** 从后处理页点「继续扫描」进入时自动开始下一批；消费后回调避免刷新重复触发。 */
   autoStartScan?: boolean;
   onAutoStartConsumed?: () => void;
@@ -651,7 +651,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
     if (!sid) return;
     const pageCount = pagesRef.current.length;
     if (pageCount > 0) {
-      onBatchArchivedRef.current?.(sid, pageCount);
+      onBatchArchivedRef.current?.(cardId, sid, pageCount);
       return;
     }
     if (completedRef.current) return;
@@ -664,8 +664,8 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
       if (!response.ok) return;
       const data = await response.json() as { records?: unknown; workerActive?: boolean };
       const serverPages = Array.isArray(data.records) ? data.records.length : 0;
-      if (serverPages > 0 || data.workerActive === true) onBatchArchivedRef.current?.(sid, serverPages);
-      else onScanSessionAbandonedRef.current?.(sid);
+      if (serverPages > 0 || data.workerActive === true) onBatchArchivedRef.current?.(cardId, sid, serverPages);
+      else onScanSessionAbandonedRef.current?.(cardId, sid);
     } catch (error) {
       console.warn("[scanner] 交接前核对会话记录失败，保留占位", error);
     }
