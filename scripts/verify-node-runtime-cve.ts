@@ -250,6 +250,12 @@ const helperAt = mainCjs.indexOf("await installChromiumBrotliDecodeBlock(webCont
 const loadAt = mainCjs.indexOf("await mainWindow.loadURL(baseUrl)");
 check(decodeAt > 0 && helperAt > 0 && loadAt > decodeAt,
   "loadURL 之前先限制 Chromium 接受的编码（重试包装最终仍调用 installChromiumBrotliDecodeBlock）");
+check(
+  mainCjs.includes("lastLoadError")
+    && mainCjs.includes("detail.includes(\"ERR_FAILED (-2)\")")
+    && mainCjs.includes("if (!mainWindow || mainWindow.isDestroyed()) return;"),
+  "首启 loadURL 对瞬时 ERR_FAILED 重试，关窗后不再弹启动失败",
+);
 const readyBody = mainCjs.slice(mainCjs.indexOf("app.whenReady().then(async () => {"));
 const permissionAt = readyBody.indexOf("installDevicePermissionPolicy();");
 const headerAt = readyBody.indexOf("installChromiumBrotliHeaderBlock(session.defaultSession");
@@ -442,7 +448,8 @@ try {
 check(startupFailed, "主框架装不上编码覆盖时启动失败，页面不会加载");
 const detached = fakeWebContents();
 let fatalMessage = "";
-await cjs.installChromiumBrotliDecodeBlock(detached, () => {}, {
+const detachLogs: string[] = [];
+await cjs.installChromiumBrotliDecodeBlock(detached, (_level, message) => { detachLogs.push(message); }, {
   onFatal(error: unknown) {
     fatalMessage = error instanceof Error ? error.message : String(error);
   },
@@ -453,6 +460,16 @@ detached.id = 41;
 cjs.trackChromiumWebContents(detached);
 cjs.configureChromiumBrotliRemoteGate({ retryDelayMs: 0 });
 check(cjs.isChromiumBrotliDecodeReady(detached) === true, "编码限制装上之后窗口标记为已保护");
+detached.calls.length = 0;
+detached.debugger.emit("detach", "target closed");
+check(
+  cjs.isChromiumBrotliDecodeReady(detached) === false
+    && !detached.stopped()
+    && detachLogs.length === 0,
+  "正常关窗 / 渲染进程退出触发的 target closed 不误报、不重连",
+);
+await cjs.installChromiumBrotliDecodeBlock(detached, (_level, message) => { detachLogs.push(message); });
+check(cjs.isChromiumBrotliDecodeReady(detached), "target closed 后页面重载可重新安装防护");
 const pauseLogs: string[] = [];
 let beforeRequest: ((details: { webContentsId?: number; url?: string }, callback: (value: { cancel?: boolean }) => void) => void) | undefined;
 const pauseSession = {

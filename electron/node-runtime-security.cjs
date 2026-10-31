@@ -537,6 +537,16 @@ function installChromiumBrotliNetworkPause(targetSession, log) {
 
 function scheduleChromiumBrotliReattach(webContents, dbg, log, options, state, reason) {
   if (typeof webContents.isDestroyed === "function" && webContents.isDestroyed()) return;
+  const detachReason = String(reason || "").toLowerCase();
+  if (detachReason === "target closed" || detachReason === "render frame was disposed") {
+    // 关窗与渲染进程崩溃都会先发 detach，而 isDestroyed() 此刻仍可能为 false。
+    // 这不是保护失效：清掉就绪标记，后续页面重载会走本机 Brotli 握手重新安装。
+    decodeReady.delete(webContents);
+    decodeReattachPending.delete(webContents);
+    decodeConfiguredSessions.delete(webContents);
+    decodeInstallPromises.delete(webContents);
+    return;
+  }
   // 先停掉当前加载并清掉「已保护」标记，再等待重连。这段时间里页面不能继续发请求。
   const alreadyPending = decodeReattachPending.has(webContents);
   suspendChromiumBrotliContents(webContents);

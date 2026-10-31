@@ -524,7 +524,27 @@ async function createWindow() {
     await installChromiumBrotliWithRetry(mainWindow.webContents);
   }
   appendLog("INFO", `[Electron] loadURL ${baseUrl}`);
-  await mainWindow.loadURL(baseUrl);
+  let loaded = false;
+  let lastLoadError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await mainWindow.loadURL(baseUrl);
+      loaded = true;
+      break;
+    } catch (error) {
+      lastLoadError = error;
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      const detail = error instanceof Error ? error.message : String(error);
+      const transient = detail.includes("ERR_FAILED (-2)");
+      appendLog("WARN", `[Electron] loadURL 第 ${attempt}/3 次失败: ${detail}`);
+      if (!transient || attempt === 3) break;
+      await sleep(500 * attempt);
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      appendLog("INFO", `[Electron] loadURL 第 ${attempt + 1} 次重试 ${baseUrl}`);
+    }
+  }
+  if (!loaded) throw lastLoadError;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
   appendLog("INFO", `[Electron] loadURL done status=${mainWindow.webContents.getURL()}`);
 }
 
@@ -684,6 +704,8 @@ app.whenReady().then(async () => {
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     appendLog("ERROR", `[Electron] createWindow failed: ${error instanceof Error ? error.stack || msg : msg}`);
+    // 冷启动空白窗口期间老师主动关窗时，loadURL 会以 ERR_FAILED 结束；这不是启动故障。
+    if (!mainWindow || mainWindow.isDestroyed()) return;
     dialog.showErrorBox(
       "扫描端启动失败",
       "启动时遇到问题，扫描端将退出。\n\n请重新启动；如果仍然出现，请联系维护人员并提供日志 main.log。",
