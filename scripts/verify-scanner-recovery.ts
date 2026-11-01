@@ -157,6 +157,13 @@ function testPostprocessResume(): void {
   assert.match(scannerAppSource,
     /onBatchArchived=\{[\s\S]{0,240}setLiveScanSessionId\(prev => prev === sid \? null : prev\)/,
     "批次归档后不再把已结束的会话当成正在扫描");
+  const scannerPanelSource = readFileSync(
+    new URL("../src/apps/answer-card/client/components/ScannerPanel.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(scannerPanelSource,
+    /attempt !== scanAttemptRef\.current[\s\S]{0,420}onScanSessionStartedRef\.current\?\.\(staleSid\)[\s\S]{0,320}reconcileSessionHandoff\(staleSid, 0\)/,
+    "晚到的 /scan 响应要先登记占位再取消并对账");
   const postprocessSource = readFileSync(
     new URL("../src/apps/answer-card/client/components/ScannerPostprocessPage.tsx", import.meta.url),
     "utf8",

@@ -683,16 +683,13 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
     finally { resultsBusyRef.current = false; setResultsBusy(false); }
   }
 
-  /** 把当前会话交给后处理，或在还没有页面时撤掉占位。已正常结束的批次不撤。 */
-  async function handoffCurrentSession() {
-    const sid = sessionIdRef.current;
-    if (!sid) return;
-    const pageCount = pagesRef.current.length;
-    if (pageCount > 0) {
-      onBatchArchivedRef.current?.(cardId, sid, pageCount);
+  /** 按服务端权威页数归档或撤占位；localPageCount 来自本地面板，0 时仍可能已有落页。 */
+  async function reconcileSessionHandoff(sid: string, localPageCount: number) {
+    if (localPageCount > 0) {
+      onBatchArchivedRef.current?.(cardId, sid, localPageCount);
       return;
     }
-    if (completedRef.current) return;
+    if (sid === sessionIdRef.current && completedRef.current) return;
     // SSE 不补发 page_done：晚连或重连时本地页数可能是 0，而服务端早就落了页；
     // 取消后 worker 也可能还在落页 / 识别。两种情况下撤占位都会把已扫页面和入口一起删掉：
     // 先问服务端「有多少页、worker 是否还在跑、会话是否已进入终态」，
@@ -722,6 +719,13 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
     } catch (error) {
       console.warn("[scanner] 交接前核对会话记录失败，保留占位", error);
     }
+  }
+
+  /** 把当前会话交给后处理，或在还没有页面时撤掉占位。已正常结束的批次不撤。 */
+  async function handoffCurrentSession() {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    await reconcileSessionHandoff(sid, pagesRef.current.length);
   }
 
   async function startScan() {
@@ -796,7 +800,11 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
 
       const data = await res.json();
       if (attempt !== scanAttemptRef.current) {
-        void authFetch(`/api/scanner/scan/${data.sessionId}/cancel`, { method: "POST" }).catch(() => undefined);
+        const staleSid = data.sessionId;
+        // /scan 晚于卸载或取消返回：服务端可能已落页，必须先登记占位再取消并对账。
+        onScanSessionStartedRef.current?.(staleSid);
+        void authFetch(`/api/scanner/scan/${encodeURIComponent(staleSid)}/cancel`, { method: "POST" }).catch(() => undefined);
+        void reconcileSessionHandoff(staleSid, 0);
         return;
       }
       sessionUploadRef.current = { sessionId: data.sessionId, cardId, identityMode,

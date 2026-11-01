@@ -60,6 +60,9 @@ const snapshotRequests: string[] = [];
 const cancelRequests: string[] = [];
 /** 让下一次答题卡版本请求挂起，模拟「点开始扫描后立刻离开」的在途窗口。 */
 let holdNextCard = false;
+/** 让下一次 /scan 挂起，模拟「点开始扫描后立刻离开、会话 ID 晚到」。 */
+let holdNextScan = false;
+let releaseHeldScan: (() => void) | null = null;
 let cancelHttpStatus = 200;
 let releaseHeldCard: (() => void) | null = null;
 const archivedBatches: string[] = [];
@@ -93,7 +96,12 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   }
   if (url.endsWith("/scan")) {
     scans.push(JSON.parse(String(init?.body)));
-    return Response.json({ sessionId: `scan-${scans.length}` });
+    const sessionId = `scan-${scans.length}`;
+    if (holdNextScan) {
+      holdNextScan = false;
+      await new Promise<void>(resolve => { releaseHeldScan = resolve; });
+    }
+    return Response.json({ sessionId });
   }
   if (/\/scan\/scan-\d+$/.test(url)) {
     snapshotRequests.push(url);
@@ -580,6 +588,40 @@ try {
   // SSE 晚连 / 重连不补发 page_done：本地页数为 0 时以服务端记录为准，
   // 不能把已落盘的页和入口一起撤掉；取消后 worker 还在落页时同样要留着；
   // 服务端确实没有页面且已收尾时才撤占位。
+  // /scan 晚于卸载返回：必须先登记占位、取消并对账，不能把已落页会话丢在恢复列表外。
+  {
+    holdNextScan = true;
+    retainedPageCount = 1;
+    snapshotWorkerActive = false;
+    snapshotSessionStatus = "cancelled";
+    const lateHost = document.createElement("div");
+    document.body.append(lateHost);
+    const lateRoot = createRoot(lateHost);
+    const lateStarted: string[] = [];
+    const lateArchived: string[] = [];
+    const cancelsBeforeLate = cancelRequests.length;
+    await act(async () => { lateRoot.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id,
+      onScanSessionStarted: (sid: string) => { lateStarted.push(sid); },
+      onBatchArchived: (originCardId: string, sid: string, pageCount: number) => { lateArchived.push(`${originCardId}/${sid}/${pageCount}`); },
+    }))); });
+    await settle();
+    await act(async () => {
+      [...lateHost.querySelectorAll("button")].find(node => node.textContent?.trim() === "开始扫描")!.click();
+    });
+    await settle();
+    const lateSession = `scan-${scans.length}`;
+    await act(async () => { lateRoot.unmount(); });
+    releaseHeldScan?.();
+    releaseHeldScan = null;
+    await settle();
+    assert.deepEqual(lateStarted, [lateSession], "晚到的 sessionId 也要登记到恢复列表");
+    assert(cancelRequests.slice(cancelsBeforeLate).some(url => url.includes(lateSession)),
+      "晚到的 sessionId 仍要取消后台扫描");
+    assert(lateArchived.includes(`${card.id}/${lateSession}/1`),
+      "取消前已落页的会话要对账后归档，不能只在内存里 fire-and-forget");
+    lateHost.remove();
+  }
+
   const handoffCases = [
     { status: "error", serverPages: 2, workerActive: false, expectation: "archive" },
     { status: "error", serverPages: 0, workerActive: true, expectation: "archive" },
