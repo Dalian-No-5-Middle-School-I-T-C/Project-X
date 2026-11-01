@@ -48,11 +48,14 @@ export interface ClassTeacherRow {
  * 管理员通过 /api/classes 维护组织结构，教师/分析模块按 grade_id / class_id 过滤成绩。
  */
 export class ClassRepository {
-  private db: DbAdapter;
+  /** 显式传入的是事务连接，必须固定；否则每次取当前单例，恢复后不能还拿着已关闭的库。 */
+  private readonly bound?: DbAdapter;
 
-  constructor(db: DbAdapter = getMysqlDb()) {
-    this.db = db;
+  constructor(db?: DbAdapter) {
+    this.bound = db;
   }
+
+  private get db(): DbAdapter { return this.bound ?? getMysqlDb(); }
 
   // ── 年级 ──────────────────────────────────────────────
 

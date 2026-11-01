@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback, type ReactNode } from "react";
 import { AlertTriangle, Bell, CheckCircle2, FlaskConical, RefreshCw, Terminal, Trash2 } from "lucide-react";
 import { fetchJson } from "../auth/api";
+import { useAuth } from "../auth/AuthContext";
 import { cn } from "../lib/utils";
 import { tokens } from "../theme";
+import { FeedbackSection } from "./FeedbackSection";
 import {
   Badge,
   Button,
@@ -73,6 +75,7 @@ const DEFAULT_DISCRIMINATION_BANDS: Band[] = [
 ];
 
 export function GlobalSettingsPage({ onBack }: Props) {
+  const { user } = useAuth();
   const [settings, setSettings] = useState<Settings>({});
   const [draft, setDraft] = useState<Settings>({});
   const [diffBands, setDiffBands] = useState<Band[]>(DEFAULT_DIFFICULTY_BANDS);
@@ -498,6 +501,8 @@ export function GlobalSettingsPage({ onBack }: Props) {
         {purgeMsg && <Banner tone={purgeTone}>{purgeMsg}</Banner>}
       </div>
       )}
+
+      {user && <FeedbackSection />}
 
       {/* v1.9.6+: 开发者工具（演示数据导入/清除）。即时执行，不参与底部保存。 */}
       <div className="flex flex-col gap-3 border-t border-border-subtle pt-5">

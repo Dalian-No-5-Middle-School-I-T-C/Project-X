@@ -1,3 +1,4 @@
+import { isServiceMaintenanceActive, runServiceTask } from "../lib/serviceTasks";
 /**
  * 每周考试审计服务 —— 周报告发布（成绩分析页「周报」板块后端）。
  *
@@ -431,8 +432,8 @@ export class WeeklyAuditService {
  */
 export function scheduleWeeklyAuditRefresh(): NodeJS.Timeout {
   const run = () => {
-    void new WeeklyAuditService()
-      .publishDueWeeks(new Date())
+    if (isServiceMaintenanceActive()) return;
+    void runServiceTask(() => new WeeklyAuditService().publishDueWeeks(new Date()))
       .then((r) => {
         if (r.created.length > 0) {
           console.log(`[WeeklyAudit] 周报告已发布: ${r.created.join("、")}`);

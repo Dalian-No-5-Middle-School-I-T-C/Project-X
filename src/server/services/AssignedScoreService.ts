@@ -17,12 +17,9 @@ export const ASSIGNED_SCORE_SUBJECTS = ["化学", "生物", "地理", "政治"];
  *    assigned = raw × a + b
  */
 export class AssignedScoreService {
-  private db: DbAdapter;
+  /** 每次取当前连接。恢复备份会关掉旧库并重置适配器，启动时缓存的实例不能继续用。 */
+  private get db(): DbAdapter { return getMysqlDb(); }
   private customWarningLogged = false;
-
-  constructor() {
-    this.db = getMysqlDb();
-  }
 
   /**
    * 获取考试的赋分公式配置

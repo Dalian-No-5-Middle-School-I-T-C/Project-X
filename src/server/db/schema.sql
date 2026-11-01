@@ -846,3 +846,36 @@ CREATE TABLE IF NOT EXISTS scan_correction_pages (
  layout_json TEXT NOT NULL, recognition_json TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
  modified_by INTEGER, modified_at VARCHAR(32), recovery_fingerprint VARCHAR(64), PRIMARY KEY (source_type, source_id)
 );
+
+-- v66: 问题反馈（#357）。反馈落本系统数据库，不依赖 GitHub；
+-- 用户被删除后保留反馈正文，账号信息以快照列留存。
+CREATE TABLE IF NOT EXISTS feedback_reports (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    username     TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
+    role_name    TEXT NOT NULL DEFAULT '',
+    category     TEXT NOT NULL DEFAULT 'problem',
+    title        TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    contact      TEXT,
+    context_json TEXT,
+    status       TEXT NOT NULL DEFAULT 'open',
+    resolved_at  DATETIME,
+    resolved_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback_reports(status, created_at);
+
+-- v67: 反馈附件元数据（#357）。文件本体在 data/answer-card/feedback/<uuid>/，随数据目录备份。
+CREATE TABLE IF NOT EXISTS feedback_attachments (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    feedback_id  INTEGER NOT NULL REFERENCES feedback_reports(id) ON DELETE CASCADE,
+    filename     TEXT NOT NULL,
+    stored_path  TEXT NOT NULL,
+    mime         TEXT,
+    size_bytes   INTEGER NOT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_attachments_feedback ON feedback_attachments(feedback_id);

@@ -28,6 +28,11 @@ function secretKeyPath(): string {
 
 let cachedKey: Buffer | null = null;
 
+/** A restored data tree may contain a different secret.key. */
+export function invalidateSecretKeyCache(): void {
+  cachedKey = null;
+}
+
 /** 获取 32 字节密钥：env 优先，否则从 data/secret.key 读取或生成。 */
 export function getSecretKey(): Buffer {
   if (cachedKey) return cachedKey;

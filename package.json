@@ -43,6 +43,8 @@
     "release:hash:check": "node scripts/hash-release-artifacts.cjs --check",
     "server": "tsx src/apps/answer-card/server/index.ts",
     "verify:auth": "tsx scripts/verify-auth.ts",
+    "verify:feedback": "tsx scripts/verify-feedback.ts",
+    "verify:feedback:mariadb": "tsx scripts/verify-feedback.ts --mariadb",
     "verify:student-score-display": "tsx scripts/verify-student-score-fullscore-examtime.ts",
     "verify:progress-score-rate": "tsx scripts/verify-progress-score-rate.ts",
     "sync:score-progress": "tsx scripts/sync-score-progress-browser.ts",
@@ -145,7 +147,9 @@
     "verify:scanner-postprocess-ui": "tsx scripts/scanner-postprocess-ui-smoke.ts",
     "verify:scanner-postprocess-delete": "tsx scripts/scanner-postprocess-delete-smoke.ts",
     "verify:card-rotation-ui": "tsx scripts/rotated-card-image-ui-smoke.ts",
-    "verify:scanner-postprocess-all": "tsx scripts/scanner-postprocess-smoke.ts && tsx scripts/scanner-postprocess-delete-smoke.ts && tsx scripts/scanner-postprocess-ui-smoke.ts"
+    "verify:scanner-postprocess-all": "tsx scripts/scanner-postprocess-smoke.ts && tsx scripts/scanner-postprocess-delete-smoke.ts && tsx scripts/scanner-postprocess-ui-smoke.ts",
+    "verify:data-operation": "tsx --test scripts/data-operation.test.ts && tsx scripts/verify-maintenance-routes.ts",
+    "verify:backup-lifecycle": "tsx scripts/verify-backup-lifecycle.ts"
   },
   "browserslist": [
     "iOS >= 15",
