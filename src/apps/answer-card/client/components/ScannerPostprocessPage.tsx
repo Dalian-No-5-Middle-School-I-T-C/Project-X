@@ -65,6 +65,8 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   const queuedByPage = useRef<Set<string>>(readQueuedGroups(cardId));
   /** 崩溃重载后只恢复一次上次停留的组，避免用户返回结果页又被弹回去。 */
   const resumeAppliedRef = useRef(false);
+  /** setView 还没提交时，结果页的清理不能先把刚读到的崩溃标记清掉。 */
+  const pendingRestoredView = useRef<View | null>(null);
 
   // 通道唯一为本地（spec §5 通道裁定）：远端语义只经 queueGroupUpload 补传承担
   const channel: PostprocessChannel = useMemo(() => localChannel(), []);
@@ -249,15 +251,24 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
     if (!saved) return;
     const group = groups.find(entry => entry.sessionId === saved.sessionId && entry.groupId === saved.groupId);
     if (!group) return;
+    pendingRestoredView.current = saved.view;
     setActive(group);
     setView(saved.view);
     if (saved.view === "queue") setFocusIssue({ sessionId: saved.sessionId, groupId: saved.groupId, itemId: saved.itemId });
     setResumedFromCrash(true);
-  }, [groups, cardId]);
+  }, [groups, cardId, userId]);
 
-  // 记录当前停留位置：只在打开具体卷或停在队列某一条时写，正常返回结果页不会把旧组写回去。
-  const resumeTarget = view === "queue" ? queueCurrent : active;
+  // 只记住具体卷和队列当前位置。停在扫描结果时清掉，避免下次重载误报「已恢复上次停留的卷」。
+  // 结果页的首次渲染发生在恢复读完之前，那时不能清，否则崩溃标记会被自己抹掉。
+  const resumeTarget = view === "queue" ? queueCurrent : view === "correction" ? active : null;
   useEffect(() => {
+    if (view === "results") {
+      if (!resumeAppliedRef.current) return;
+      if (pendingRestoredView.current && pendingRestoredView.current !== "results") return;
+      clearPostprocessView(cardId, userId);
+      return;
+    }
+    if (pendingRestoredView.current === view) pendingRestoredView.current = null;
     if (!resumeTarget) return;
     writePostprocessView(cardId, {
       view,
@@ -265,7 +276,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
       groupId: resumeTarget.groupId,
       ...("itemId" in resumeTarget && resumeTarget.itemId ? { itemId: resumeTarget.itemId } : {}),
     }, userId);
-  }, [cardId, view, resumeTarget]);
+  }, [cardId, view, resumeTarget, userId]);
 
   // 定位请求是一次性的：离开队列视图后就过期了，再回来应停在刚才那一条（queueCurrent），
   // 而不是最初点开的那条。

@@ -151,8 +151,12 @@ function ScannerAppInner() {
   }, [selectedCardId, selectedCardTitle, postSessions, page, user?.id, liveScanSessionId]);
 
   // 登出/会话过期时清掉工作台选择，避免下一个登录账号继承上一人的扫描会话。
+  // 同账号重登也要忘掉上次选卡：否则空的内存列表会按「刚才那张卡」写回去，把已保存批次盖掉。
   useEffect(() => {
-    if (user || !selectedCardId) return;
+    if (user) return;
+    lastSelectionRef.current = null;
+    setLiveScanSessionId(null);
+    if (!selectedCardId) return;
     setSelectedCardId("");
     setSelectedCardTitle("");
     setPostSessions([]);
@@ -240,6 +244,7 @@ function ScannerAppInner() {
           }
         }}
         onBatchArchived={(originCardId, sid, pageCount) => {
+          setLiveScanSessionId(prev => prev === sid ? null : prev);
           const ownerUserId = scanSessionOwnersRef.current.get(sid) ?? user?.id ?? null;
           scanSessionOwnersRef.current.delete(sid);
           // 交接请求晚到时可能已经切到另一张卡或回到列表。原卡仍是本机持久化目标时写内存；

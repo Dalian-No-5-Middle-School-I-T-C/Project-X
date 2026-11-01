@@ -501,6 +501,14 @@ check(
 );
 await cjs.installChromiumBrotliDecodeBlock(detached, (_level, message) => { detachLogs.push(message); });
 check(cjs.isChromiumBrotliDecodeReady(detached), "target closed 后页面重载可重新安装防护");
+const suspended = fakeWebContents();
+(suspended as { getURL: () => string }).getURL = () => "https://scanner.test/app";
+await cjs.installChromiumBrotliDecodeBlock(suspended, () => {}, { reattachDelayMs: 60_000, maxReattachAttempts: 5 });
+check(cjs.isChromiumBrotliDecodeReady(suspended), "挂起重连前防护已经装好");
+suspended.debugger.emit("detach", "socket hangup");
+check(cjs.isChromiumBrotliDecodeReady(suspended) === false, "非关窗断开后先撤掉已保护标记");
+await cjs.installChromiumBrotliDecodeBlock(suspended, () => {});
+check(cjs.isChromiumBrotliDecodeReady(suspended), "重连等待期间再次安装不能复用已经结束的旧 Promise");
 const pauseLogs: string[] = [];
 let beforeRequest: ((details: { webContentsId?: number; url?: string }, callback: (value: { cancel?: boolean }) => void) => void) | undefined;
 const pauseSession = {

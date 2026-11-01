@@ -393,6 +393,8 @@ try {
   assert(saveButton() && !saveButton()!.disabled, "有真实改动时保存按钮可用");
   await clickText("扫描结果");
   await settle();
+  const { readPostprocessView } = await import("../src/apps/answer-card/client/lib/postprocessResume");
+  assert.equal(readPostprocessView(card.id), null, "从改分回到扫描结果时清掉恢复位置，避免下次误报已恢复");
   await clickText("卡查看与改分");
   await settle();
   assert(saveButton() && !saveButton()!.disabled, "切到扫描结果再回来，未保存的修改还在");
@@ -618,6 +620,7 @@ try {
   assert.match(correctionGets.at(-1) ?? "", /\/groups\/1\/correction$/, "顶栏切换要用队列当前项的组打开改分页");
   await clickText("异常处理"); await settle();
   await clickText("扫描结果"); await settle();
+  assert.equal(readPostprocessView(card.id), null, "从异常处理回到扫描结果时清掉队列恢复位置");
   await clickText("异常处理"); await settle();
   assert.match(resumeHost.textContent ?? "", /第 1 \/ 2 条/,
     `从别的视图回来要停在刚才那一条，不能跳回最初定位的那条（实际 ${resumeHost.textContent?.match(/第 \d+ \/ \d+ 条/)?.[0] ?? "没有条数"}）`);
@@ -1002,7 +1005,7 @@ try {
   await clickNode(scoreCell());await settle();
   assert.equal(scoreCell()!.getAttribute("aria-pressed"), pressedBefore, "再点一次回到原状态");
 
-  const { writePostprocessView, readPostprocessView } = await import("../src/apps/answer-card/client/lib/postprocessResume");
+  const { writePostprocessView } = await import("../src/apps/answer-card/client/lib/postprocessResume");
   hideCard = false;
   writePostprocessView(card.id, { view: "queue", sessionId: "scan-1", groupId: "0" }, 7);
   const continueHost = document.createElement("div");

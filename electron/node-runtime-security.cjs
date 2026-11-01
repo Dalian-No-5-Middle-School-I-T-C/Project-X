@@ -468,6 +468,8 @@ function suspendChromiumBrotliContents(webContents) {
   decodeReady.delete(webContents);
   decodeSuspended.add(webContents);
   decodeConfiguredSessions.delete(webContents);
+  // 重连定时器触发前就会有人再次安装。旧的已完成 Promise 还在的话，调用方会以为防护已就绪。
+  decodeInstallPromises.delete(webContents);
   try {
     if (typeof webContents.stop === "function") webContents.stop();
   } catch {
