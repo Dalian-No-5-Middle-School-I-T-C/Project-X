@@ -42,11 +42,14 @@ export interface ScanRecordInput {
 }
 
 export class ExamRepository {
-  private db: DbAdapter;
+  /** 显式传入的是事务连接，必须固定；否则每次取当前单例，恢复后不能还拿着已关闭的库。 */
+  private readonly bound?: DbAdapter;
 
-  constructor(db: DbAdapter = getMysqlDb()) {
-    this.db = db;
+  constructor(db?: DbAdapter) {
+    this.bound = db;
   }
+
+  private get db(): DbAdapter { return this.bound ?? getMysqlDb(); }
 
   async createExam(params: {
     name: string; card_id: string; grade_id?: number; class_id?: number;

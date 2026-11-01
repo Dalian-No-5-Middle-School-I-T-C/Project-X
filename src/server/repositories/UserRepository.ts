@@ -39,9 +39,8 @@ export interface BatchImportResult {
 }
 
 export class UserRepository {
-  private db: DbAdapter;
-
-  constructor() { this.db = getMysqlDb(); }
+  /** 每次取当前连接。恢复备份会关掉旧库并重置适配器，启动时缓存的实例不能继续用。 */
+  private get db(): DbAdapter { return getMysqlDb(); }
 
   async findByUsername(username: string): Promise<UserRecord | null> {
     return await this.db.get(`SELECT u.*, r.name as role_name, r.display_name as role_display_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.username = ? AND u.is_active = 1`, username);

@@ -1664,6 +1664,28 @@ async function main(): Promise<void> {
     ok((await call("DELETE", `/${dirId}`, pathToken)).status === 200, "清掉目录句柄回归的反馈记录");
     rmSync(path.join(feedbackRoot, "not-a-file-parent"), { recursive: true, force: true });
 
+    const goneForm = new FormData();
+    goneForm.set("title", "文件已丢");
+    goneForm.set("content", "正文");
+    goneForm.append("files", new Blob(["gone"], { type: "text/plain" }), "gone.txt");
+    const goneReport = await upload(goneForm, pathToken);
+    ok(goneReport.status === 201, "准备文件缺失的附件下载");
+    const goneId = Number(goneReport.json?.data?.id);
+    const goneAttachmentId = Number(
+      (await call("GET", "?limit=20", pathToken)).json?.data?.find((row: { id: number }) => row.id === goneId)?.attachments?.[0]?.id
+    );
+    const goneRow = await db.get<{ stored_path: string }>(
+      "SELECT stored_path FROM feedback_attachments WHERE id = ?",
+      goneAttachmentId
+    );
+    rmSync(path.resolve(process.env.ANSWER_CARD_DATA_DIR!, goneRow!.stored_path));
+    const goneDownload = await fetch(`${base}/${goneId}/attachments/${goneAttachmentId}`, {
+      headers: { Authorization: `Bearer ${pathToken}` },
+    });
+    await goneDownload.arrayBuffer().catch(() => undefined);
+    ok(goneDownload.status === 404, `附件记录还在但文件已丢时返回 404（实际 ${goneDownload.status}）`);
+    ok((await call("DELETE", `/${goneId}`, pathToken)).status === 200, "清掉文件缺失回归的反馈记录");
+
     const disconnectForm = new FormData();
     disconnectForm.set("title", "排队断连");
     disconnectForm.set("content", "正文");
@@ -1748,6 +1770,10 @@ async function main(): Promise<void> {
     await backupModule.restoreScannerDatabase(looseMarker, missingScanner);
     ok(readFileSync(missingScanner, "utf8") === "scanner-without-datadir",
       "数据目录不存在时仍会建目录并写入 scanner.db");
+    const rotatedPassword = readFileSync(bootstrap.passwordFile, "utf8").trim();
+    const afterRestoreLogin = await auth.login("admin", rotatedPassword);
+    ok(afterRestoreLogin.success === true && Boolean(afterRestoreLogin.token),
+      "恢复后登录使用新连接，而不是启动时缓存的已关闭适配器");
   }
 
   server.close();

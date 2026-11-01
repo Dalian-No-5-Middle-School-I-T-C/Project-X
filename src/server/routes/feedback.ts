@@ -1157,9 +1157,10 @@ router.get("/:id/attachments/:attachmentId", requireTeacher, async (req, res) =>
       const absPath = resolveStoredPath(row.stored_path);
       if (!absPath) return { kind: "error", status: 404, error: "附件不存在" };
       if (clientGone || downloadClientGone(res)) return { kind: "closed" };
-      const file = await open(absPath, "r");
+      let file: FileHandle | undefined;
       let handedOff = false;
       try {
+        file = await open(absPath, "r");
         if (clientGone || downloadClientGone(res)) return { kind: "closed" };
         const info = await file.stat();
         if (!info.isFile()) return { kind: "error", status: 404, error: "附件不存在" };
@@ -1172,7 +1173,7 @@ router.get("/:id/attachments/:attachmentId", requireTeacher, async (req, res) =>
         }
         throw err;
       } finally {
-        if (!handedOff) await file.close().catch(() => undefined);
+        if (file && !handedOff) await file.close().catch(() => undefined);
       }
     });
     if (gate.kind === "closed") return;
