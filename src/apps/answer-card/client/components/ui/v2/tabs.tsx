@@ -62,7 +62,7 @@ export const TabsContent = React.forwardRef<
   return (
     <TabsPrimitive.Content
       ref={ref}
-      className={cn("outline-none focus-visible:shadow-focus", className)}
+      className={cn("outline-none focus-visible:shadow-focus data-[state=inactive]:hidden", className)}
       {...props}
     />
   );

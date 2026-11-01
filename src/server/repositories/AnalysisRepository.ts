@@ -125,9 +125,9 @@ const OPTION_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 type ObjectiveDef = { mode: string; optionCount: number; maxScore: number; answerKey: string[] };
 
 export class AnalysisRepository {
-  private db: DbAdapter;
-  private cardRepo: CardRepository;
-  constructor() { this.db = getMysqlDb(); this.cardRepo = new CardRepository(); }
+  /** 每次取当前连接。恢复备份会关掉旧库并重置适配器，启动时缓存的实例不能继续用。 */
+  private get db(): DbAdapter { return getMysqlDb(); }
+  private cardRepo = new CardRepository();
 
   async getExamClasses(examId: number): Promise<Array<{ classId: number; className: string; gradeName?: string }>> {
     const classes = await this.db.all(`SELECT DISTINCT ${examClassId()} as classId, c.name as className, g.name as gradeName FROM student_scores ss ${examClassJoin("ss.student_id", "ss.exam_id")} JOIN classes c ON c.id = ${examClassId()} LEFT JOIN grades g ON g.id = c.grade_id WHERE ss.exam_id = ? ORDER BY g.sort_order, c.sort_order, c.name`, examId);

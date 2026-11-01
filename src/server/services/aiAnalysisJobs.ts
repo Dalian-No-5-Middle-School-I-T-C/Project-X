@@ -1,3 +1,4 @@
+import { runServiceTask } from "../lib/serviceTasks";
 /**
  * AI 学情分析异步任务化（建议 5）。
  *
@@ -131,6 +132,17 @@ export async function cleanupInterruptedAiJobs(): Promise<void> {
   await markInterruptedJobsFailed(getMysqlDb());
 }
 
+/** After a database restore, saved in-flight rows have no corresponding live task. */
+export async function failRestoredAiWork(): Promise<void> {
+  await getMysqlDb().transaction(async (db) => {
+    await db.run(
+      "UPDATE ai_analysis_jobs SET status = 'error', error = ? WHERE status IN ('queued', 'running')",
+      "备份恢复中断，任务未完成",
+    );
+    await db.run("UPDATE ai_analysis_runs SET success = 0, error_code = 'INTERRUPTED' WHERE success IS NULL");
+  });
+}
+
 /** 创建任务并立即返回 jobId。 */
 export async function createAiAnalysisJob(input: AiJobCreateInput, db: DbAdapter = getMysqlDb()): Promise<number> {
   const info = await db.run(
@@ -200,7 +212,7 @@ export async function claimAiAnalysisJobForRun(
 /** 将任务入队执行（fire-and-forget，调用方负责 catch 日志）。 */
 export function enqueueAiAnalysisJob(jobId: number, spec: AiJobSpec): Promise<AiAnalysisResponse> {
   const db = getMysqlDb();
-  return enqueueSerial(async () => {
+  return runServiceTask(() => enqueueSerial(async () => {
     // 队列是串行的，DB 单连接下不会插队
     let claimed: { runId: number; userId: number | null };
     try {
@@ -237,7 +249,7 @@ export function enqueueAiAnalysisJob(jobId: number, spec: AiJobSpec): Promise<Ai
       );
       throw err;
     }
-  });
+  }));
 }
 
 export async function getAiAnalysisJob(jobId: number): Promise<AiJobPollResponse | null> {

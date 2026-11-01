@@ -150,6 +150,13 @@ export function revokeMediaTicketsForUser(userId: number): number {
   return removed;
 }
 
+/** 恢复备份等身份来源整体替换后清空全部票据。 */
+export function revokeAllMediaTickets(): number {
+  const removed = tickets.size;
+  tickets.clear();
+  return removed;
+}
+
 export function describeMediaTicketStatus(): string {
   return `${describeMediaTicketLimits()}`;
 }

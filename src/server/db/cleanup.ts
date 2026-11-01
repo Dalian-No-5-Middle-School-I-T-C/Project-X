@@ -1,3 +1,4 @@
+import { isServiceMaintenanceActive, runServiceTask } from "../lib/serviceTasks";
 import { databaseTimestamp } from "./timestamp";
 import { getMysqlDb } from "./index";
 import type { DbAdapter } from "./mysql";
@@ -280,14 +281,15 @@ export function scheduleCleanup(intervalHours: number = 24, retainDays: number =
   console.log(`[Cleanup] 定时清理已注册，每 ${intervalHours} 小时执行一次，保留期 ${retainDays} 天`);
 
   // 立即执行一次（异步，不阻塞）
-  runCleanup(retainDays).catch((error) => {
+  runServiceTask(() => runCleanup(retainDays)).catch((error) => {
     console.error("[Cleanup] 首次执行失败:", error);
   });
 
   // 注册定时任务
   const intervalMs = intervalHours * 60 * 60 * 1000;
   return setInterval(() => {
-    runCleanup(retainDays).catch((error) => {
+    if (isServiceMaintenanceActive()) return;
+    runServiceTask(() => runCleanup(retainDays)).catch((error) => {
       console.error("[Cleanup] 定时清理执行失败:", error);
     });
   }, intervalMs);

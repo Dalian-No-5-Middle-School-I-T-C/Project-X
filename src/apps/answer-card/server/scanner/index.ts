@@ -1,3 +1,4 @@
+import { runServiceTask } from "../../../../server/lib/serviceTasks";
 import { scanCorrectionRouter } from "../../../../server/routes/scan-correction";
 import { processScannerSession, discardScannerGroup, listActiveReceiptGroups, writeScannerSession } from "../../../../server/services/scannerSubmissions";
 import { scannerLegacyRecoveryRouter } from "../../../../server/routes/scanner-legacy-recovery";
@@ -171,9 +172,9 @@ export function createScannerRouter(twainEnabled = true): Router {
           status: "scanning"
         });
 
-        void runScanSession(sessionId, config, (event) => {
+        void runServiceTask(() => runScanSession(sessionId, config, (event) => {
           emitProgress(event.sessionId, event);
-        }).catch((error) => {
+        })).catch((error) => {
           console.error(`[Scanner] Scan session ${sessionId} failed:`, error);
         });
       } catch (error) {

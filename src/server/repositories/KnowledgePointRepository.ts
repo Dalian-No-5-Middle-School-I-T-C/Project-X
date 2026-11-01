@@ -23,11 +23,8 @@ export interface KnowledgePointInput {
 }
 
 export class KnowledgePointRepository {
-  private db: DbAdapter;
-
-  constructor() {
-    this.db = getMysqlDb();
-  }
+  /** 每次取当前连接。恢复备份会关掉旧库并重置适配器，启动时缓存的实例不能继续用。 */
+  private get db(): DbAdapter { return getMysqlDb(); }
 
   async findByCardId(cardId: string): Promise<KnowledgePointRow[]> {
     return await this.db.all(

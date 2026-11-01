@@ -56,13 +56,10 @@ export interface StudentQuestionScore {
 }
 
 export class ScoreRepository {
-  private db: DbAdapter;
+  /** 每次取当前连接。恢复备份会关掉旧库并重置适配器，启动时缓存的实例不能继续用。 */
+  private get db(): DbAdapter { return getMysqlDb(); }
   /** 复用 AnalysisRepository 的满分口径（getExamFullScoreMap），避免各端各算一套 */
   private analysisRepo = new AnalysisRepository();
-
-  constructor() {
-    this.db = getMysqlDb();
-  }
 
   /**
    * 学生全部考试成绩。

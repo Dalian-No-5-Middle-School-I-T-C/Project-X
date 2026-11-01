@@ -1,3 +1,7 @@
+import { runServiceTask } from "../../../server/lib/serviceTasks";
+import { loadRestoreRecoveryState } from "../../../server/lib/restoreRecovery";
+import { isServiceMaintenanceActive } from "../../../server/lib/serviceTasks";
+import { multipartTask, taskDiskStorage } from "../../../server/lib/multipartTask";
 import { storeCorrectionPage } from "../../../server/services/scanCorrection";
 import { databaseTimestamp } from "../../../server/db/timestamp";
 import express from "express";
@@ -10,6 +14,9 @@ import {
   describeScanUploadLimits,
 } from "../../../shared/scanUploadLimits";
 import { requestUploadBudget } from "../../../server/lib/uploadBudget";
+import {
+  answerCardDataOperation,
+} from "../../../server/lib/answerCardDataLock";
 import { describeReviewPoolLimits } from "../../../shared/reviewPoolLimits";
 import { describeRestoreZipLimits } from "../../../shared/restoreZipLimits";
 import { describePaperStorageLimits } from "../../../shared/paperStorageLimits";
@@ -102,6 +109,7 @@ import reviewAnnotationsRoutes from "../../../server/routes/review-annotations";
 import blockGradingConfigRoutes from "../../../server/routes/block-grading-config";
 import reviewPoolRoutes from "../../../server/routes/review-pool";
 import systemSettingsRoutes from "../../../server/routes/system-settings";
+import feedbackRoutes from "../../../server/routes/feedback";
 import { startLlmClientSidecar, shutdownLlmClient } from "./llm-launcher";
 import dashboardRoutes from "../../../server/routes/dashboard";
 import weeklyAuditRoutes from "../../../server/routes/weekly-audit";
@@ -124,7 +132,7 @@ import {
   restoreCropFileMoves,
   type CropFileMove,
 } from "../../../server/services/AnswerBlockCropService";
-import { optionalAuth, authMiddleware, requirePermission } from "../../../server/middleware/auth";
+import { optionalAuth, authMiddleware, refreshAuthenticatedUser, recheckWritePermission, requirePermission } from "../../../server/middleware/auth";
 import { requirePasswordChangeCompleted } from "../../../server/middleware/auth";
 import { authService } from "../../../server/services/AuthService";
 import { initPermissionCache, roleHasPermission, PERMISSIONS, ROLE_IDS } from "../../../server/auth/permissions";
@@ -686,7 +694,7 @@ async function persistGradingResultsLocked(
   }
   // Readers may repopulate the old committed view while the transaction is open.
   analysisCache.invalidateExam(Number(examIdParam));
-  if (backupAfterCommit) void autoBackupOnExamClose(Number(examIdParam)).catch(e => console.error("[AutoBackup] Failed:",e));
+  if (backupAfterCommit) void runServiceTask(() => autoBackupOnExamClose(Number(examIdParam))).catch(e => console.error("[AutoBackup] Failed:",e));
   return outcome;
 }
 
@@ -743,6 +751,8 @@ export async function createApp(): Promise<express.Express> {
   // 信任最近一跳让登录限速等拿到真实客户端 IP（可用 PROJECTX_TRUST_PROXY=0 关闭）。
   app.set("trust proxy", process.env.PROJECTX_TRUST_PROXY === "0" ? false : 1);
 
+  const recoveryRequired = loadRestoreRecoveryState();
+  if (recoveryRequired) throw new Error("检测到未完成的数据恢复，请按 projectx-restore-state.json 完成回退后再启动服务");
   console.log("[Server] 正在初始化数据库...");
   initializeDatabase();
   // 确保连接池在使用前已创建（MariaDB 模式下 initMariadbSchema / ensureDefaultAdmin 依赖）
@@ -778,11 +788,8 @@ export async function createApp(): Promise<express.Express> {
   // P0-5 (C-S3): 同步鉴权状态到 middleware 模块，供 requireExamAccess 使用
   setAuthEnforced(enforceAuth);
 
-  // ── Express 5 异步错误处理（防请求挂死）──
-  // Express 5 不再自动捕获 async handler 抛出的异常；这里在注册层
-  // 统一包裹所有 app.get/post/put/delete/patch/use 调用（含已挂载的
-  // Router），使任意未捕获的 rejection 都被转发到全局错误中间件，
-  // 返回 500 JSON 而非让请求永久挂起。
+  // 统一记录处理器实际完成时间；恢复维护等待异步任务收尾后再替换数据库。
+  // 已挂载 Router 同样递归包装，异步错误统一交给错误中间件。
   {
     const methods = ["get", "post", "put", "delete", "patch", "use"] as const;
     for (const m of methods) {
@@ -878,6 +885,7 @@ export async function createApp(): Promise<express.Express> {
 
 
   app.get("/api/app/health", async (_req, res) => {
+    if (isServiceMaintenanceActive()) { res.status(503).json({ ok: false, maintenance: true }); return; }
     const db = await healthCheck();
     // 安全审计（F-12-8）：脱敏 —— 只暴露存活布尔，不回传 dialect/latencyMs 等内网细节
     res.status(db.ok ? 200 : 503).json({
@@ -1099,10 +1107,10 @@ export async function createApp(): Promise<express.Express> {
 
   // 上传自定义背景图
   const bgUpload = multer({
-    storage: multer.diskStorage({
+    storage: taskDiskStorage({
       destination: async (_req, _file, cb) => {
-        await mkdir(backgroundsDir, { recursive: true });
-        cb(null, backgroundsDir);
+        try { await mkdir(backgroundsDir, { recursive: true }); cb(null, backgroundsDir); }
+        catch (error) { cb(error as Error, backgroundsDir); }
       },
       filename: (_req, file, cb) => {
         const ext = path.extname(decodeMultipartFilename(file.originalname)).toLowerCase() || ".jpg";
@@ -1127,69 +1135,85 @@ export async function createApp(): Promise<express.Express> {
 
   // 超限在这条路由上直接回 413。全局 MulterError 分支不知道这是哪一个上传闸门，
   // 若把背景图上限写进那句共用文案，答题卡资源等其它上传也会显示成同一个数字。
-  const receiveBackgroundUpload: express.RequestHandler = (req, res, next) => {
-    bgUpload.single("file")(req, res, (err: unknown) => {
-      if (err && typeof err === "object" && (err as { code?: string }).code === "LIMIT_FILE_SIZE") {
-        res.status(413).json({
-          code: "UPLOAD_ERROR",
-          message: backgroundUploadTooLargeMessage(MAX_BACKGROUND_UPLOAD_BYTES),
-        });
-        return;
-      }
-      next(err);
-    });
-  };
+  const receiveBackgroundUpload = multipartTask(bgUpload.single("file"), (error, _req, res) => {
+    if ((error as { code?: string }).code === "LIMIT_FILE_SIZE") {
+      res.status(413).json({ code: "UPLOAD_ERROR", message: backgroundUploadTooLargeMessage(MAX_BACKGROUND_UPLOAD_BYTES) });
+      return;
+    }
+    throw error;
+  });
 
   // #322: 学生账号不能上传自定义背景图。门放在 multer 之前——
   // 否则被拒的请求仍会先把上传体落盘到 dataDir/backgrounds 再返回 403。
-  app.post("/api/users/me/background", authMiddleware, requireBackgroundUploadAccess, receiveBackgroundUpload, async (req, res, next) => {
-    try {
-      const userId = req.user?.id;
-      if (userId == null) {
-        // 免登录模式的上传门会放行无身份请求，multer 已经落了临时文件。
-        // 没有用户 id 时文件名会变成 undefined.jpg，GET 也不会下发它。
-        if (req.file?.path) await rm(req.file.path, { force: true });
-        res.status(401).json({ error: "保存背景图需要已登录用户" });
-        return;
+  app.post(
+    "/api/users/me/background",
+    authMiddleware,
+    requireBackgroundUploadAccess,
+    answerCardDataOperation(refreshAuthenticatedUser,
+    requireBackgroundUploadAccess,
+
+    receiveBackgroundUpload,
+    async (req, res, next) => {
+      try {
+        const userId = req.user?.id;
+        if (userId == null) {
+          // 免登录模式的上传门会放行无身份请求，multer 已经落了临时文件。
+          // 没有用户 id 时文件名会变成 undefined.jpg，GET 也不会下发它。
+          if (req.file?.path) await rm(req.file.path, { force: true });
+          res.status(401).json({ error: "保存背景图需要已登录用户" });
+          return;
+        }
+        if (!req.file) {
+          res.status(400).json({ error: "请选择图片文件" });
+          return;
+        }
+        if (!await assertImageFile(req.file.path, res)) return;
+        // 重命名为 <userId>.jpg，覆盖旧背景。id 非法时不落一个跑出目录的名字。
+        const target = resolveUserBackgroundPath(backgroundsDir, userId);
+        if (!target) {
+          await rm(req.file.path, { force: true });
+          res.status(400).json({ error: "无法保存背景图" });
+          return;
+        }
+        await rename(req.file.path, target);
+        res.json({ ok: true });
+      } catch (error) {
+        next(error);
       }
-      if (!req.file) {
-        res.status(400).json({ error: "请选择图片文件" });
-        return;
-      }
-      if (!await assertImageFile(req.file.path, res)) return;
-      // 重命名为 <userId>.jpg，覆盖旧背景。id 非法时不落一个跑出目录的名字。
-      const target = resolveUserBackgroundPath(backgroundsDir, userId);
-      if (!target) {
-        await rm(req.file.path, { force: true });
-        res.status(400).json({ error: "无法保存背景图" });
-        return;
-      }
-      await rename(req.file.path, target);
-      res.json({ ok: true });
-    } catch (error) {
-      next(error);
-    }
-  });
+    }),
+  );
 
   // #336：本人删除自己的背景文件，并把透明度归零。学生也可以调——
   // 禁的是「使用/上传」自定义背景，不是「清掉自己留下的文件」。设置页不给学生摆按钮。
-  app.delete("/api/users/me/background", authMiddleware, async (req, res, next) => {
-    try {
-      const userId = req.user?.id;
-      if (userId == null || resolveUserBackgroundPath(backgroundsDir, userId) == null) {
-        res.status(401).json({ message: "删除背景图需要已登录用户" });
-        return;
+  app.delete(
+    "/api/users/me/background",
+    authMiddleware,
+    answerCardDataOperation(refreshAuthenticatedUser,
+    async (req, res, next) => {
+      try {
+        const userId = req.user?.id;
+        if (userId == null || resolveUserBackgroundPath(backgroundsDir, userId) == null) {
+          res.status(401).json({ message: "删除背景图需要已登录用户" });
+          return;
+        }
+        // 文件删除与透明度归零同备份 / 恢复串行：否则快照可能保留非零透明度却缺少文件。
+        // 先归零再删文件：删文件失败只会留下一个不再被引用的孤立文件，不会出现「图没了但仍启用」。
+        const updated = await getMysqlDb().run(
+          "UPDATE users SET background_opacity = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND COALESCE(background_opacity, 0) != 0",
+          userId
+        );
+        let removed = false;
+        try {
+          removed = await removeUserBackgroundFile(backgroundsDir, userId);
+        } catch (err) {
+          console.warn("[background] 删除背景文件失败，透明度已归零:", err);
+        }
+        res.json({ ok: true, removed, opacityReset: updated.changes > 0 });
+      } catch (error) {
+        next(error);
       }
-      const removed = await removeUserBackgroundFile(backgroundsDir, userId);
-      const updated = await getMysqlDb().run(
-        "UPDATE users SET background_opacity = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND COALESCE(background_opacity, 0) != 0",
-        userId
-      );
-      res.json({ ok: true, removed, opacityReset: updated.changes > 0 });
-    } catch (error) {
-      next(error);
-    }
-  });
+    })
+  );
 
   // #336：管理员一次性清退学生历史背景。不在启动时做，避免老师发现图突然没了。
   // 只删 role=student 的 <id>.jpg，并只把这些账号的透明度归零。教师/管理员文件不动。
@@ -1197,6 +1221,8 @@ export async function createApp(): Promise<express.Express> {
   app.post(
     "/api/admin/backgrounds/purge-students",
     authMiddleware,
+    requirePermissionCompat(PERMISSIONS.SYSTEM_MANAGE),
+    answerCardDataOperation(refreshAuthenticatedUser,
     requirePermissionCompat(PERMISSIONS.SYSTEM_MANAGE),
     async (req, res, next) => {
       try {
@@ -1209,19 +1235,20 @@ export async function createApp(): Promise<express.Express> {
           "SELECT id FROM users WHERE role_id = ?",
           ROLE_IDS.STUDENT
         );
-        const removedFiles = await removeStudentBackgroundFiles(
-          backgroundsDir,
-          students.map((row) => row.id)
-        );
+        // 先统一归零，再逐个删文件：单个文件被占用时仍能完成清退，不会留下「图没了但仍启用」。
         const updated = await db.run(
           "UPDATE users SET background_opacity = 0, updated_at = CURRENT_TIMESTAMP WHERE role_id = ? AND COALESCE(background_opacity, 0) != 0",
           ROLE_IDS.STUDENT
+        );
+        const removedFiles = await removeStudentBackgroundFiles(
+          backgroundsDir,
+          students.map((row) => row.id)
         );
         res.json({ ok: true, removedFiles, opacityReset: updated.changes });
       } catch (error) {
         next(error);
       }
-    }
+    })
   );
 
   app.use("/api/users", userRoutes);
@@ -1326,6 +1353,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/block-grading-config", analysisGate, blockGradingConfigRoutes);
   app.use("/api/review-pool", analysisGate, reviewPoolRoutes);
   app.use("/api/system-settings", systemSettingsRoutes);
+  app.use("/api/feedback", feedbackRoutes);
   app.use("/api/dashboard", dashboardRoutes);
   app.use("/api/weekly-audit", weeklyAuditRoutes);
   app.use(paperRoutes());
@@ -1333,12 +1361,12 @@ export async function createApp(): Promise<express.Express> {
   const cardRepo = new CardRepository();
 
   const upload = multer({
-    storage: multer.diskStorage({
+    storage: taskDiskStorage({
       destination: async (req, _file, cb) => {
         const cardId = safeId(paramValue(req.params.cardId));
         const dir = cardAssetsDir(cardId);
-        await mkdir(dir, { recursive: true });
-        cb(null, dir);
+        try { await mkdir(dir, { recursive: true }); cb(null, dir); }
+        catch (error) { cb(error as Error, dir); }
       },
       filename: (_req, file, cb) => {
         // 安全（R05）：扩展名走闭合白名单，非图片一律回落 .png（与扫描上传入口同口径）。
@@ -1362,16 +1390,18 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  const receiveCardAssetUpload = multipartTask(upload.single("file"));
+
   const recognitionUpload = multer({
     // 安全（R28）：批量判分/识别上传此前只有单文件 50 MiB 上限，文件数量与单次请求累计
     // 字节都不受约束（一次提交可以压进任意多张原卷）。数量用 multer 原生 limits.files，
     // 累计字节用 requestUploadBudget 在请求层拦截；单文件上限保持不变以免影响真实扫描尺寸。
-    storage: multer.diskStorage({
+    storage: taskDiskStorage({
       destination: async (req, _file, cb) => {
         const cardId = safeId(paramValue(req.params.cardId));
         const dir = path.join(dataDir, "recognition", "uploads", cardId);
-        await mkdir(dir, { recursive: true });
-        cb(null, dir);
+        try { await mkdir(dir, { recursive: true }); cb(null, dir); }
+        catch (error) { cb(error as Error, dir); }
       },
       filename: (_req, file, cb) => {
         // 安全：扩展名白名单，非图片一律回落 .png，避免同源预览按 text/html 提供上传内容。
@@ -1399,56 +1429,62 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards", validateBody(CreateCardSchema), async (req, res, next) => {
-    try {
-      const subject = (req.body?.subject ?? "").trim();
-      const title = (req.body?.title ?? "").trim();
-      const subjectLabel = (req.body?.subjectLabel ?? "").trim();
-      const examDate = (req.body?.examDate ?? "").trim();
-      const englishListening = req.body?.englishListening !== false;
-      const chineseChoicePlacement = req.body?.chineseChoicePlacement === "inline" ? "inline" : "front";
-      const paperSize = req.body?.paperSize === "A3" ? "A3" : "A4";
-      if (!subject) {
-        res.status(400).json({ error: "科目（subject）为必填项" });
-        return;
-      }
-      if (!title) {
-        res.status(400).json({ error: "考试名称为必填项" });
-        return;
-      }
-      if (!isValidExamDate(examDate)) {
-        res.status(400).json({ error: `考试时间为必填项，需为 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效日期（YYYY-MM-DD）` });
-        return;
-      }
-      // 257-08: 后端兜底自动后缀“空格+数字”，避免并发/旧前端 409（与 DesignPage 前端去重一致）
-      let finalTitle = title;
-      if (await cardRepo.findByTitle(finalTitle)) {
-        let seq = 2;
-        while (await cardRepo.findByTitle(`${title} ${seq}`) && seq < 1000) seq++;
-        if (seq < 1000 && !(await cardRepo.findByTitle(`${title} ${seq}`))) {
-          finalTitle = `${title} ${seq}`;
-        } else {
-          res.status(409).json({ error: `已存在同名答题卡「${title}」，请修改名称后重试` });
+  app.post(
+    "/api/cards",
+    validateBody(CreateCardSchema),
+    answerCardDataOperation(refreshAuthenticatedUser,
+    recheckWritePermission(PERMISSIONS.GRADE_WRITE),
+    async (req, res, next) => {
+      try {
+        const subject = (req.body?.subject ?? "").trim();
+        const title = (req.body?.title ?? "").trim();
+        const subjectLabel = (req.body?.subjectLabel ?? "").trim();
+        const examDate = (req.body?.examDate ?? "").trim();
+        const englishListening = req.body?.englishListening !== false;
+        const chineseChoicePlacement = req.body?.chineseChoicePlacement === "inline" ? "inline" : "front";
+        const paperSize = req.body?.paperSize === "A3" ? "A3" : "A4";
+        if (!subject) {
+          res.status(400).json({ error: "科目（subject）为必填项" });
           return;
         }
+        if (!title) {
+          res.status(400).json({ error: "考试名称为必填项" });
+          return;
+        }
+        if (!isValidExamDate(examDate)) {
+          res.status(400).json({ error: `考试时间为必填项，需为 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效日期（YYYY-MM-DD）` });
+          return;
+        }
+        // 257-08: 后端兜底自动后缀“空格+数字”，避免并发/旧前端 409（与 DesignPage 前端去重一致）
+        let finalTitle = title;
+        if (await cardRepo.findByTitle(finalTitle)) {
+          let seq = 2;
+          while (await cardRepo.findByTitle(`${title} ${seq}`) && seq < 1000) seq++;
+          if (seq < 1000 && !(await cardRepo.findByTitle(`${title} ${seq}`))) {
+            finalTitle = `${title} ${seq}`;
+          } else {
+            res.status(409).json({ error: `已存在同名答题卡「${title}」，请修改名称后重试` });
+            return;
+          }
+        }
+        let id = generateCardId(subject);
+        let retry = 0;
+        while (await cardRepo.findById(id) && retry < 100) {
+          id = generateCardId(subject + "_" + String(retry++));
+        }
+        let card = createDefaultCard(id, subject, paperSize);
+        card.title = finalTitle;
+        card.subjectLabel = subjectLabel || undefined;
+        card.examDate = examDate;
+        card = applySubjectTemplate(card, { englishListening, chineseChoicePlacement });
+        const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
+        await recordLifecycleEvent({ entityType: "answer_card", entityId: saved.id, action: "create", actorId: req.user?.id });
+        res.status(201).json(saved);
+      } catch (error) {
+        next(error);
       }
-      let id = generateCardId(subject);
-      let retry = 0;
-      while (await cardRepo.findById(id) && retry < 100) {
-        id = generateCardId(subject + "_" + String(retry++));
-      }
-      let card = createDefaultCard(id, subject, paperSize);
-      card.title = finalTitle;
-      card.subjectLabel = subjectLabel || undefined;
-      card.examDate = examDate;
-      card = applySubjectTemplate(card, { englishListening, chineseChoicePlacement });
-      const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
-      await recordLifecycleEvent({ entityType: "answer_card", entityId: saved.id, action: "create", actorId: req.user?.id });
-      res.status(201).json(saved);
-    } catch (error) {
-      next(error);
-    }
-  });
+    })
+  );
 
   app.get("/api/cards/:cardId", async (req, res, next) => {
     try {
@@ -1463,37 +1499,47 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.put("/api/cards/:cardId", async (req, res, next) => {
-    try {
-      const examDate = fieldValue((req.body as AnswerCard)?.examDate).trim();
-      if (examDate && !isValidExamDate(examDate)) {
-        res.status(400).json({ message: `考试时间需为 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效日期（YYYY-MM-DD）` });
-        return;
+  app.put(
+    "/api/cards/:cardId",
+    answerCardDataOperation(refreshAuthenticatedUser,
+    recheckWritePermission(PERMISSIONS.GRADE_WRITE),
+    async (req, res, next) => {
+      try {
+        const examDate = fieldValue((req.body as AnswerCard)?.examDate).trim();
+        if (examDate && !isValidExamDate(examDate)) {
+          res.status(400).json({ message: `考试时间需为 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效日期（YYYY-MM-DD）` });
+          return;
+        }
+        const card = normalizeCard(req.body as AnswerCard, paramValue(req.params.cardId));
+        const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
+        res.json(saved);
+      } catch (error) {
+        next(error);
       }
-      const card = normalizeCard(req.body as AnswerCard, paramValue(req.params.cardId));
-      const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
-      res.json(saved);
-    } catch (error) {
-      next(error);
-    }
-  });
+    })
+  );
 
-  app.get("/api/cards/:cardId/layout", async (req, res, next) => {
-    try {
-      const card = await cardRepo.findById(safeId(paramValue(req.params.cardId)));
-      if (!card) {
-        res.status(404).json({ message: "答题卡不存在" });
-        return;
+  app.get(
+    "/api/cards/:cardId/layout",
+    answerCardDataOperation(refreshAuthenticatedUser,
+    cardGate,
+    async (req, res, next) => {
+      try {
+        const card = await cardRepo.findById(safeId(paramValue(req.params.cardId)));
+        if (!card) {
+          res.status(404).json({ message: "答题卡不存在" });
+          return;
+        }
+        const layout = buildLayout(card);
+        await writeLayoutDocument(card.id, layout);
+        res.json(layout);
+      } catch (error) {
+        next(error);
       }
-      const layout = buildLayout(card);
-      await writeLayoutDocument(card.id, layout);
-      res.json(layout);
-    } catch (error) {
-      next(error);
-    }
-  });
+    })
+  );
 
-  app.post("/api/cards/:cardId/recognition/objective", recognitionPageBudget, recognitionUpload.single("file"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/recognition/objective", recognitionPageBudget, multipartTask(recognitionUpload.single("file")), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const card = await cardRepo.findById(cardId);
@@ -1530,7 +1576,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards/:cardId/recognition", recognitionPageBudget, recognitionUpload.single("file"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/recognition", recognitionPageBudget, multipartTask(recognitionUpload.single("file")), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const card = await cardRepo.findById(cardId);
@@ -1602,6 +1648,7 @@ export async function createApp(): Promise<express.Express> {
     res.flushHeaders?.();
 
     const handler = (event: GradingProgressEvent) => {
+      if (res.writableEnded || res.destroyed) return;
       res.write(`data: ${JSON.stringify(event)}\n\n`);
       if (event.type === "done" || event.type === "error") {
         res.end();
@@ -1614,12 +1661,12 @@ export async function createApp(): Promise<express.Express> {
     gradingProgressListeners.get(batchId)!.add(handler);
     gradingProgressStreamsByOwner.set(streamOwner, (gradingProgressStreamsByOwner.get(streamOwner) ?? 0) + 1);
 
-    const snapshot = gradingProgressSnapshots.get(batchId);
-    if (snapshot) {
-      handler(snapshot);
-    }
-
-    req.on("close", () => {
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      res.off("finish", cleanup);
+      res.off("close", cleanup);
       if ((gradingProgressStreamsByOwner.get(streamOwner) ?? 0) > 0) {
         const remaining = gradingProgressStreamsByOwner.get(streamOwner)! - 1;
         if (remaining > 0) gradingProgressStreamsByOwner.set(streamOwner, remaining);
@@ -1630,10 +1677,15 @@ export async function createApp(): Promise<express.Express> {
         listeners.delete(handler);
         if (listeners.size === 0) gradingProgressListeners.delete(batchId);
       }
-    });
+    };
+    res.once("finish", cleanup);
+    res.once("close", cleanup);
+
+    const snapshot = gradingProgressSnapshots.get(batchId);
+    if (snapshot) handler(snapshot);
   });
 
-  app.post("/api/cards/:cardId/grading/objective", recognitionBatchBudget, recognitionUpload.array("files"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/grading/objective", recognitionBatchBudget, multipartTask(recognitionUpload.array("files")), async (req, res, next) => {
     let progressId = "";
     try {
       const cardId = safeId(paramValue(req.params.cardId));
@@ -1729,7 +1781,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards/:cardId/grading", recognitionBatchBudget, recognitionUpload.array("files"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/grading", recognitionBatchBudget, multipartTask(recognitionUpload.array("files")), async (req, res, next) => {
     let progressId = "";
     try {
       const cardId = safeId(paramValue(req.params.cardId));
@@ -1979,28 +2031,53 @@ export async function createApp(): Promise<express.Express> {
   });
 
 
-  app.post("/api/cards/:cardId/assets", upload.single("file"), async (req, res, next) => {
-    try {
-      const cardId = safeId(paramValue(req.params.cardId));
-      const card = await cardRepo.findById(cardId);
-      if (!card) {
-        res.status(404).json({ message: "答题卡不存在" });
-        return;
+  app.post(
+    "/api/cards/:cardId/assets",
+    answerCardDataOperation(refreshAuthenticatedUser,
+    cardGate,
+
+    receiveCardAssetUpload,
+    async (req, res, next) => {
+      try {
+        const cardId = safeId(paramValue(req.params.cardId));
+        const card = await cardRepo.findById(cardId);
+        if (!card) {
+          // Multer 在查库前就按 cardId 建目录并落盘；答题卡不存在（或等待数据锁期间被恢复移除）
+          // 时必须回收这份无主文件，否则会残留并被打进后续备份。
+          if (req.file?.path) {
+            const assetDir = path.dirname(req.file.path);
+            try {
+              await rm(req.file.path, { force: true });
+            } catch (err) {
+              console.warn("[card-assets] 清理无效答题卡的上传文件失败:", err);
+            }
+            // 答题卡不存在时该目录下不会有可引用的资源；只清理 cardId 子目录，不能动 assetsDir 本身。
+            if (path.resolve(assetDir) !== path.resolve(assetsDir)) {
+              try {
+                await rm(assetDir, { recursive: true, force: true });
+              } catch (err) {
+                console.warn("[card-assets] 清理无效答题卡的资源目录失败:", err);
+              }
+            }
+          }
+          res.status(404).json({ message: "答题卡不存在" });
+          return;
+        }
+        if (!req.file) {
+          res.status(400).json({ message: "没有收到图片文件" });
+          return;
+        }
+        if (!await assertImageFile(req.file.path, res)) return;
+        res.status(201).json({
+          assetId: req.file.filename,
+          originalName: decodeMultipartFilename(req.file.originalname),
+          url: `/api/assets/${cardId}/${req.file.filename}`
+        });
+      } catch (error) {
+        next(error);
       }
-      if (!req.file) {
-        res.status(400).json({ message: "没有收到图片文件" });
-        return;
-      }
-      if (!await assertImageFile(req.file.path, res)) return;
-      res.status(201).json({
-        assetId: req.file.filename,
-        originalName: decodeMultipartFilename(req.file.originalname),
-        url: `/api/assets/${cardId}/${req.file.filename}`
-      });
-    } catch (error) {
-      next(error);
-    }
-  });
+    }),
+  );
 
   app.get("/api/cards/:cardId/pdf", async (req, res, next) => {
     try {
@@ -2046,7 +2123,7 @@ export async function createApp(): Promise<express.Express> {
   // ── 答题卡导出/导入/删除 ──────────────────────────────
 
   // DELETE: 删除答题卡
-  app.delete("/api/cards/:cardId", async (req, res, next) => {
+  app.delete("/api/cards/:cardId", answerCardDataOperation(refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const card = await cardRepo.findById(cardId);
@@ -2144,7 +2221,7 @@ export async function createApp(): Promise<express.Express> {
     } catch (error) {
       next(error);
     }
-  });
+  }));
 
   // GET: 导出答题卡（含答案 + assets base64）
   app.get("/api/cards/:cardId/export", async (req, res, next) => {
@@ -2193,7 +2270,7 @@ export async function createApp(): Promise<express.Express> {
   });
 
   // POST: 导入答题卡
-  app.post("/api/cards/import", async (req, res, next) => {
+  app.post("/api/cards/import", answerCardDataOperation(refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
     try {
       const imported = req.body as {
         format?: string; version?: number;
@@ -2386,7 +2463,7 @@ export async function createApp(): Promise<express.Express> {
     } catch (error) {
       next(error);
     }
-  });
+  }));
 
   // ── Score editing: mounted before exam routes to match
   //     /api/exams/:examId/student/:studentId/scores before /api/exams/:examId
@@ -2654,7 +2731,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.delete("/api/exams/:examId", requireExamAccess, async (req, res, next) => {
+  app.delete("/api/exams/:examId", answerCardDataOperation(refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.EXAM_WRITE), requireExamAccess, async (req, res, next) => {
     try {
       const examRepo = new ExamRepository();
       const exam = await examRepo.findExamById(Number(req.params.examId));
@@ -2690,7 +2767,7 @@ export async function createApp(): Promise<express.Express> {
     } catch (error) {
       next(error);
     }
-  });
+  }));
 
   app.patch("/api/exams/:examId", requireExamAccess, async (req, res, next) => {
     try {
@@ -3262,13 +3339,15 @@ export async function createApp(): Promise<express.Express> {
     });
   }
 
-  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  app.use((error: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     // 安全（R30）：错误对象里可能带着完整 URL（侧车/第三方接口失败时 message 常含请求地址），
     // 落日志前先打码凭据类查询参数。
     console.error(safeErrorForLog(error));
     // 请求级上传预算（R28）已经给出 413 并销毁请求，随后 multer 抛出的断流错误不再改写响应。
     // 已经结束/已销毁的响应连 `end()` 都不能调：那是对写完的 writable 再写一次，只会得到 write-after-end。
-    if (res.writableEnded || res.destroyed) return;
+    if (res.writableEnded || res.destroyed) {
+      return;
+    }
     if (res.headersSent) { res.end(); return; }
     // 上传类错误映射：multer 超限应 413、其它上传错误 400，而不是 500
     if (error && typeof error === "object" && (error as any)?.name === "MulterError") {
@@ -3294,7 +3373,10 @@ export async function createApp(): Promise<express.Express> {
     const typed = error as { status?: unknown; code?: unknown; message?: unknown; retryAfterSeconds?: unknown };
     const status = typeof typed?.status === "number" && typed.status >= 400 && typed.status < 600 ? typed.status : 500;
     const code = typeof typed?.code === "string" ? typed.code : ApiError.INTERNAL;
-    const message = typeof typed?.message === "string" ? typed.message : "服务器内部错误";
+    // 5xx 不把底层 message 交给客户端：Node/SQL 异常常带临时目录或数据库细节。
+    const message = status >= 500
+      ? "服务器内部错误"
+      : (typeof typed?.message === "string" ? typed.message : "服务器内部错误");
     // 安全（R11）：配额类错误自带建议重试间隔，转成标准 Retry-After 头，
     // 客户端（含扫描端、学生端）据此退避，而不是把它当 500 反复重试打爆模型。
     const retryAfter = Number(typed?.retryAfterSeconds);

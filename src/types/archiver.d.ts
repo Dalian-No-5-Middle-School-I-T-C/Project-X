@@ -1,18 +1,20 @@
 /** Minimal type declaration for archiver v8 ESM exports */
 declare module "archiver" {
+  import { Transform, Readable } from "node:stream";
   interface ArchiverOptions {
     zlib?: { level?: number };
     statConcurrency?: number;
     store?: boolean;
   }
 
-  class Archiver {
+  class Archiver extends Transform {
     constructor(options?: ArchiverOptions);
     pipe<T extends NodeJS.WritableStream>(destination: T): T;
     file(filePath: string, options: { name: string }): this;
     directory(dirPath: string, destPath: string | false): this;
-    append(source: Buffer | string, options: { name: string }): this;
+    append(source: Buffer | string | Readable, options: { name: string }): this;
     finalize(): Promise<void>;
+    abort(): this;
     on(event: "error", handler: (err: Error) => void): this;
     on(event: "warning" | "entry" | "progress" | "end" | "close" | "drain" | "finish" | "pipe" | "unpipe", handler: (...args: any[]) => void): this;
   }

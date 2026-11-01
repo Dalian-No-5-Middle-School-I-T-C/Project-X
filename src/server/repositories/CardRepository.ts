@@ -65,11 +65,14 @@ function orderBlocksByCardSequence(entries: Array<{ sortOrder: number; block: an
 }
 
 export class CardRepository {
-  private db: DbAdapter;
+  /** 显式传入的是事务连接，必须固定；否则每次取当前单例，恢复后不能还拿着已关闭的库。 */
+  private readonly bound?: DbAdapter;
 
   constructor(db?: DbAdapter) {
-    this.db = db ?? getMysqlDb();
+    this.bound = db;
   }
+
+  private get db(): DbAdapter { return this.bound ?? getMysqlDb(); }
 
   async createCard(card: AnswerCard, createdBy?: number): Promise<void> {
     await this.db.run(

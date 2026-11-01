@@ -41,11 +41,15 @@ export async function removeUserBackgroundFile(dir: string, userId: unknown): Pr
   return true;
 }
 
-/** 只删除给定学生 id 对应的文件，返回实际删掉的份数。 */
+/** 只删除给定学生 id 对应的文件，返回实际删掉的份数；单个文件被占用不影响其余学生清退。 */
 export async function removeStudentBackgroundFiles(dir: string, studentIds: readonly unknown[]): Promise<number> {
   let removed = 0;
   for (const id of studentIds) {
-    if (await removeUserBackgroundFile(dir, id)) removed += 1;
+    try {
+      if (await removeUserBackgroundFile(dir, id)) removed += 1;
+    } catch (err) {
+      console.warn(`[background] 删除学生背景文件失败（id=${String(id)}）:`, err);
+    }
   }
   return removed;
 }
