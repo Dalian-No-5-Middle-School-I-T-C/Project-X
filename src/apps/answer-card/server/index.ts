@@ -80,7 +80,7 @@ import { isAuthEnforced } from "../../../server/lib/authEnforce";
 import { isScannerClientApiEnabled, isScannerClientOrigin } from "../../../server/lib/scannerClientAccess";
 import { recordLifecycleEvent } from "../../../server/services/lifecycleEvents";
 import { markScoreMutated } from "../../../server/services/examPublishEvents";
-import { ensureExamParticipants, isExamParticipant, listParticipants, searchStudentsForExam, setExplicitParticipants, clearExplicitParticipants, hasExplicitParticipants, findStudentsOutsideParticipantScope } from "../../../server/services/examParticipants";
+import { ensureExamParticipants, isExamParticipant, listParticipants, searchExamParticipantRoster, searchStudentsForExam, setExplicitParticipants, clearExplicitParticipants, hasExplicitParticipants, findStudentsOutsideParticipantScope } from "../../../server/services/examParticipants";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -3087,8 +3087,11 @@ export async function createApp(): Promise<express.Express> {
         res.json({ ok: true, students: [] });
         return;
       }
-      // 安全：搜索结果限定在调用者可见班级范围内，避免学科教师/班主任枚举全校学生名册。
-      const students = await searchStudentsForExam(getMysqlDb(), examId, q, await getAccessibleClassIds(req.user));
+      // scope=roster：订正重复考号时只搜本场已冻结的应考快照。
+      // 默认仍按当前班级搜，供考试管理里「添加应考学生」（人可能还没进快照）。
+      const students = req.query.scope === "roster"
+        ? await searchExamParticipantRoster(getMysqlDb(), examId, q)
+        : await searchStudentsForExam(getMysqlDb(), examId, q, await getAccessibleClassIds(req.user));
       res.json({ ok: true, students });
     } catch (error) {
       next(error);

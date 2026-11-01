@@ -33,6 +33,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import crypto from "node:crypto";
 import { dualAuth } from "../middleware/scanner-auth";
+import { hasViewPermission } from "../../apps/answer-card/server/middleware";
 import { requireScannerExamScope, requireScannerRecordScope, enforceScannerCardScope } from "../middleware/scanner-scope";
 import { resolveScannerExam } from "../services/scannerExam";
 import { getMysqlDb } from "../db";
@@ -43,7 +44,7 @@ import { z } from "zod";
 import { assertScanImageDimensions, ScanImageBudgetError } from "../lib/scanImageBudget";
 import { CardRepository } from "../repositories/CardRepository";
 import { ExamRepository } from "../repositories/ExamRepository";
-import { ensureExamParticipants, listMissingParticipants } from "../services/examParticipants";
+import { ensureExamParticipants, listMissingParticipants, searchExamParticipantRoster } from "../services/examParticipants";
 import { recomputeExamRankings } from "../services/rankingUpdate";
 import { processScannerSession, enqueueScannerSubmission, writeScannerSession, invalidateScanRecognition, invalidateScanRecognitionInTransaction, savedReceiptOwnerOfPage, discardScannerGroup } from "../services/scannerSubmissions";
 import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
@@ -541,6 +542,46 @@ router.get("/records/:recordId/image", dualAuth, async (req, res, next) => {
     res.sendFile(imagePath);
   } catch (error) { next(error); }
 });
+// GET /sessions/:sessionId/participant-search — 扫描端凭据在应考快照内按姓名/考号联想（#362）
+router.get("/sessions/:sessionId/participant-search", dualAuth, async (req, res, next) => {
+  try {
+    if (Array.isArray(req.query.q) || (req.query.q != null && typeof req.query.q !== "string")) {
+      res.status(400).json({ message: "搜索关键词只能有一个" });
+      return;
+    }
+    const q = String(req.query.q ?? "").trim();
+    if (!q) {
+      res.json({ ok: true, students: [] });
+      return;
+    }
+    const sessionId = String(req.params.sessionId);
+    const db = getMysqlDb();
+    const session = await db.get<{ card_id: string }>(
+      "SELECT card_id FROM twain_scan_sessions WHERE id = ?",
+      sessionId,
+    );
+    if (!session) {
+      res.status(404).json({ message: "扫描会话不存在" });
+      return;
+    }
+    const { exam } = await resolveScannerExam(session.card_id, sessionId);
+    if (!exam) {
+      res.status(409).json({ message: "无法确定扫描会话的考试归属" });
+      return;
+    }
+    // 教师 JWT 与 /api/exams/:examId/participant-search 同口径：名单查看被矩阵关闭时不得检索学生。
+    // 扫描端 API Key 无 req.user，仍走 requireScannerExamScope 的归属链，不受此门约束。
+    if (req.user && !(await hasViewPermission(req.user, exam.id, "can_view_students"))) {
+      res.status(403).json({ message: "权限不足：管理员已关闭你对本场考试「学生名单」的查看权限" });
+      return;
+    }
+    const students = await searchExamParticipantRoster(db, exam.id, q);
+    res.json({ ok: true, students });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get("/sessions/:sessionId/results", dualAuth, async (req, res, next) => {
   try {
     const session = await getMysqlDb().get<{ card_id: string }>("SELECT card_id FROM twain_scan_sessions WHERE id = ?", req.params.sessionId);

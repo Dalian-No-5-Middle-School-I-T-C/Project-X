@@ -3,10 +3,15 @@ import { useEffect, useState } from "react";
 import { uniqueScanConflictCards, type ScanConflictCard } from "../../../../shared/scanPages";
 import { authFetch } from "../auth/api";
 import { Button, Input } from "./ui/v2";
+import { ParticipantLookupField, type ParticipantSearchScope } from "./ParticipantLookupField";
 import { ScanPreviewModal, type ScanPage } from "./ScanPreviewModal";
 
-export function ScannerConflictCards({ cards, remote = false, request = authFetch, saveSession, onChanged }: {
+export function ScannerConflictCards({ cards, remote = false, examId = null, remoteSessionId = null, request = authFetch, saveSession, onChanged }: {
   cards: ScanConflictCard[]; remote?: boolean;
+  /** 本场考试 ID；有值时可用姓名/考号联想填入订正学号 */
+  examId?: number | null;
+  /** 本地上传任务绑定的远端会话；legacy 冲突卡不能当作 participant-search 范围 */
+  remoteSessionId?: string | null;
   request?: (url: string, init?: RequestInit) => Promise<Response>;
   saveSession?: (sessionId: string, groupId: string) => Promise<Response>;
   onChanged: (sessionId: string) => void | Promise<void>;
@@ -16,6 +21,14 @@ export function ScannerConflictCards({ cards, remote = false, request = authFetc
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [preview, setPreview] = useState<ScanPage[]>([]);
+  const uploadSessionId = remote
+    ? cards.find(c => c.sessionId && !c.sessionId.startsWith("legacy:"))?.sessionId ?? remoteSessionId
+    : null;
+  const lookupScope: ParticipantSearchScope | null = remote && uploadSessionId
+    ? { type: "uploadSession", sessionId: uploadSessionId }
+    : examId != null
+      ? { type: "exam", examId }
+      : null;
   useEffect(() => () => { for (const page of preview) URL.revokeObjectURL(page.imageUrl); }, [preview]);
   async function view(card: ScanConflictCard) {
     setBusy(true); setMessage("");
@@ -77,7 +90,15 @@ export function ScannerConflictCards({ cards, remote = false, request = authFetc
           {!legacy && <CardCorrectionButton disabled={busy} request={request} url={`/api/scanner/${remote ? "upload/sessions" : "session"}/${encodeURIComponent(card.sessionId)}/groups/${encodeURIComponent(card.groupId)}/correction`} onSaved={() => onChanged(card.sessionId)} />}
           <Button size="sm" variant="outline" disabled={busy || !card.pages.length} onClick={() => void view(card)}>查看原卷</Button>
           <>
-            <Input aria-label={`原卷 ${key} 订正学号`} placeholder="订正后的学号" value={ids[key] ?? ""} onChange={e => setIds(old => ({ ...old, [key]: e.target.value }))} disabled={busy} />
+            <div className="flex min-w-[12rem] flex-1 flex-col gap-1.5">
+              <ParticipantLookupField
+                scope={lookupScope}
+                request={request}
+                disabled={busy}
+                onPick={number => setIds(old => ({ ...old, [key]: number }))}
+              />
+              <Input aria-label={`原卷 ${key} 订正学号`} placeholder="订正后的学号" value={ids[key] ?? ""} onChange={e => setIds(old => ({ ...old, [key]: e.target.value }))} disabled={busy} />
+            </div>
             <Button size="sm" variant="outline" disabled={busy || !ids[key]?.trim()} onClick={() => void act(card, false)}>订正此卷</Button>
             {!legacy && <Button size="sm" variant="outline" disabled={busy || card.previouslySaved} onClick={() => void discard(card)}>作废此卷</Button>}
             <Button size="sm" variant="outline" disabled={busy} onClick={() => void act(card, true)}>{legacy ? "恢复核对后的历史成绩" : "保存此卷"}</Button>

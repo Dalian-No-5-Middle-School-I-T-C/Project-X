@@ -132,6 +132,13 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
   // 检测诊断（根因/建议/原始输出）：把「未检测到扫描仪」这一类笼统文案拆成可操作结论
   const [sourcesDiag, setSourcesDiag] = useState<ScannerSourcesResult | null>(null);
   const [sessionId, setSessionId] = useState("");
+  /** 本场扫描归属考试；重复学号订正时用于花名册联想 */
+  const [sessionExamId, setSessionExamId] = useState<number | null>(null);
+  const sessionExamIdRef = useRef<number | null>(null);
+  const assignSessionExamId = (examId: number | null) => {
+    sessionExamIdRef.current = examId;
+    setSessionExamId(examId);
+  };
   const [progressMessage, setProgressMessage] = useState("");
   const [pages, setPages] = useState<ScanPage[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
@@ -503,6 +510,17 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
     }
   }
 
+  async function readSessionExamId(sid: string, signal?: AbortSignal): Promise<number | null> {
+    try {
+      const metaResponse = await authFetch(`/api/scanner/scan/${sid}`, signal ? { signal } : undefined);
+      if (!metaResponse.ok) return null;
+      const meta = await metaResponse.json();
+      return typeof meta.examId === "number" ? meta.examId : null;
+    } catch {
+      return null;
+    }
+  }
+
   async function readResults(sid: string, save = false): Promise<ScanBatchResponse> {
     const remotePreview = !save && getScannerMode() === "remote";
     const res = await authFetch(`/api/scanner/session/${sid}/${remotePreview ? "results?previewOnly=1" : save ? "results" : "validate"}`, { method: remotePreview ? "GET" : "POST" });
@@ -521,11 +539,13 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
     setResultsBusy(true);
     setErrorMessage("");
     try {
+      let examFromSnapshot: number | null | undefined;
       if (partial) {
         const response = await authFetch(`/api/scanner/scan/${sid}`);
         const snapshot = await response.json();
         if (!current()) return;
         if (!response.ok) throw new Error(snapshot.message || `读取保留页面失败（HTTP ${response.status}）`);
+        examFromSnapshot = typeof snapshot.examId === "number" ? snapshot.examId : null;
         const records = snapshot.records as Array<Omit<ScanPage, "recordId"> & { id: string }>;
         const retainedPages = records.map(({ id, ...page }) => ({ ...page, recordId: id }));
         pagesRef.current = retainedPages;
@@ -541,9 +561,26 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
       const data = await readResults(sid);
       if (!current()) return;
       applyResults(data);
-      // 远端模式：成绩汇总一完成即自动后台上传（先出分、图片续传，进度见右上角进度条）
+      // 姓名联想只服务重复卷。先丢掉上一场的考试，避免新请求慢或失败时仍按旧名册填考号。
+      assignSessionExamId(null);
+      const queuedExamId: number | null = examFromSnapshot !== undefined
+        ? (typeof examFromSnapshot === "number" ? examFromSnapshot : null)
+        : null;
+      if (examFromSnapshot !== undefined) {
+        assignSessionExamId(queuedExamId);
+        if (queuedExamId != null) scannerUploadManager.assignLocalSessionExamId(sid, queuedExamId);
+      }
+      if (!current()) return;
+      // 远端模式：成绩汇总一完成即自动后台上传。考试元数据晚到或失败都不能挡住这一步。
       if (!partial && getScannerMode() === "remote" && isRemoteServerConfigured()) {
-        queueSuccessfulUploads(data, sid);
+        queueSuccessfulUploads(data, sid, queuedExamId);
+      }
+      if (examFromSnapshot === undefined) {
+        void (async () => {
+          const id = await readSessionExamId(sid, AbortSignal.timeout(3000));
+          if (id != null) scannerUploadManager.assignLocalSessionExamId(sid, id);
+          if (current()) assignSessionExamId(id);
+        })();
       }
     }
     catch (err) {
@@ -555,7 +592,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
   }
 
   /** 把成功答题卡加入后台上传队列（自动与手动共用；已入队的组自动跳过） */
-  function queueSuccessfulUploads(data: ScanBatchResponse, sid: string) {
+  function queueSuccessfulUploads(data: ScanBatchResponse, sid: string, examId: number | null = sessionExamIdRef.current) {
     const metadata = sessionUploadRef.current;
     if (!metadata || metadata.sessionId !== sid) return;
     const nextJobs = { ...uploadJobsRef.current };
@@ -570,6 +607,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
         identityMode: metadata.identityMode,
         kind: "scan", cardId: metadata.cardId, name: `扫描_${result.studentId}`,
         localSessionId: sid,
+        examId,
         dpi: metadata.dpi, paperSize: metadata.paperSize, cardVersion: metadata.cardVersion,
         pages: result.pages.map(page => ({
           recordId: page.recordId,
@@ -719,6 +757,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
     setDisconnected(false);
     setActiveStudent(null);
     setSessionLegacyIdentity(false);
+    assignSessionExamId(null);
     setSessionId("");
     sessionIdRef.current = "";
 
@@ -840,6 +879,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
     setErrorMessage("");
     setScanErrorMessage("");
     partialSessionRef.current = false;
+    assignSessionExamId(null);
     setSourcesDiag(null);
     detectSources();
   }
@@ -1167,6 +1207,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
           {errorMessage && <p role="alert" className="text-sm text-destructive-fg">{errorMessage}</p>}
           {(reviewCards.length > 0 || failures.some(f => f.conflicts?.length)) && <ScannerConflictCards
             cards={uniqueScanConflictCards([...reviewCards, ...failures.flatMap(f => f.conflicts ?? [])])}
+            examId={sessionExamId}
             onChanged={() => fetchCombinedResults(sessionId)} />}
           {failures.length > 0 && (
             <div className="flex flex-col gap-3 rounded-md border border-warning-border bg-warning-soft p-3">
