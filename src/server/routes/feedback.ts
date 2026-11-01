@@ -1,3 +1,4 @@
+import { finished as streamFinished } from "node:stream/promises";
 /**
  * 问题反馈 API（#357）
  * 挂载点: /api/feedback
@@ -23,7 +24,7 @@ import { PERMISSIONS, roleHasPermission } from "../auth/permissions";
 import { getMysqlDb } from "../db";
 import { databaseTimestamp } from "../db/timestamp";
 import { resolveAnswerCardDataDir } from "../db/paths";
-import { holdAnswerCardDataMutationLock } from "../lib/answerCardDataLock";
+import { answerCardDataOperation } from "../lib/answerCardDataLock";
 import { requestUploadBudget, isUploadAlreadyRejected } from "../lib/uploadBudget";
 import {
   FeedbackStorageQuotaError,
@@ -52,8 +53,9 @@ import { MAX_RESTORE_ZIP_ENTRIES } from "../../shared/restoreZipLimits";
 const router = Router();
 router.use(authMiddleware);
 // 任何反馈请求都先核对一次暂存目录：进程在删除中途退出时，文件能尽快回到原位。
-router.use((_req, _res, next) => {
-  void reconcileFeedbackTrashOnce().finally(next);
+router.use(async (_req, _res, next) => {
+  await reconcileFeedbackTrashOnce();
+  next();
 });
 
 const requireAdmin = requirePermission(PERMISSIONS.SYSTEM_MANAGE);
@@ -290,10 +292,10 @@ type FeedbackRequest = Express.Request & {
   feedbackReservation?: FeedbackStorageReservation;
   /** multer 存储引擎逐个登记临时文件，失败/断连时按这份清单清理（req.files 可能还没赋值）。 */
   feedbackTempPaths?: string[];
+  feedbackWriters?: Promise<void>[];
   /** 本次请求累计已写入的附件字节数（文本字段不算）。 */
   feedbackFileBytes?: number;
   /** multer 回调已经给出结果：此后由路由或错误处理负责清理，断连兜底不再介入。 */
-  feedbackUploadFinished?: boolean;
   feedbackFinalize?: Promise<void>;
   feedbackAborted?: boolean;
   /** 每个 part 的写入流销毁器；失败/断连时统一收尾，避免迟到的 transform 再落盘。 */
@@ -565,6 +567,7 @@ function finalizeFeedbackUpload(req: FeedbackRequest): Promise<void> {
       for (const abort of req.feedbackAborters ?? []) {
         try { abort(); } catch { /* 已关闭的流 */ }
       }
+      await Promise.all(req.feedbackWriters ?? []);
       await removeRegisteredTempFiles(req);
       for (const tempPath of req.feedbackTempPaths ?? []) unmarkActiveFeedbackTempFile(tempPath);
     } finally {
@@ -661,6 +664,7 @@ export const feedbackStorageEngine: multer.StorageEngine = {
       return;
     }
     const out = createWriteStream(filePath);
+    (state.feedbackWriters ??= []).push(streamFinished(out, { cleanup: true }).catch(() => undefined));
     let size = 0;
     let finished = false;
     let transform: Transform;
@@ -734,7 +738,7 @@ const attachmentBudget = requestUploadBudget({
 });
 
 /** JSON 请求直接放行；multipart 先走上传统计与 multer，再交给路由处理。 */
-const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
+const receiveFeedbackUpload: RequestHandler = async (req, res, next) => {
   if (!req.is("multipart/form-data")) {
     next();
     return;
@@ -746,7 +750,6 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
   }
   const state = req as FeedbackRequest;
   state.feedbackTempPaths = [];
-  state.feedbackUploadFinished = false;
   state.feedbackFileBytes = 0;
   if (!feedbackTmpReady) {
     try {
@@ -758,7 +761,7 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
       console.error("[feedback] 临时目录仍不可用，本次请求只有带附件时才会被拒绝:", err);
     }
   }
-  void purgeStaleTmpUploads(feedbackTmpDir, 60 * 60_000, activeFeedbackTempFiles())
+  await purgeStaleTmpUploads(feedbackTmpDir, 60 * 60_000, activeFeedbackTempFiles())
     .catch(() => 0)
     .then(async (removedStale) => {
       if (removedStale > 0) invalidateFeedbackStorageUsage();
@@ -783,72 +786,77 @@ const receiveFeedbackUpload: RequestHandler = (req, res, next) => {
         return;
       }
       state.feedbackReservation = reservation;
-      // 断连兜底：multer 通常会在断流时自行回滚并回调，回调里会先清理再释放；
-      // 这里只处理「回调始终没来」的情况，且不再进入路由后才触发。
-      res.once("close", () => {
-        if (state.feedbackUploadFinished) return;
-        const timer = setTimeout(() => {
-          if (state.feedbackUploadFinished) return;
-          void finalizeFeedbackUpload(state);
-        }, 1000);
-        timer.unref();
-      });
-
-      attachmentBudget(req, res, () => {
-        upload.array("files", MAX_FEEDBACK_ATTACHMENTS)(req, res, async (error) => {
-          state.feedbackUploadFinished = true;
-          if (!error) {
-            // 最后一个 chunk 越过预算时 413 已经发送，但请求体已读完，Multer 会按成功回调。
-            // 此时若继续进业务 handler，会写入一条客户端收到 413 的反馈 / 附件。
-            if (isUploadAlreadyRejected(req, res)) {
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const settle = () => {
+          if (settled) return;
+          settled = true;
+          res.off("close", disconnected);
+          resolve();
+        };
+        const disconnected = () => { void finalizeFeedbackUpload(state).finally(settle); };
+        res.once("close", disconnected);
+        if (res.destroyed || req.aborted) { disconnected(); return; }
+        attachmentBudget(req, res, () => {
+          upload.array("files", MAX_FEEDBACK_ATTACHMENTS)(req, res, async (error) => {
+            try {
+              if (!error) {
+                await Promise.all(state.feedbackWriters ?? []);
+                // 最后一个 chunk 越过预算时 413 已经发送，但请求体已读完，Multer 会按成功回调。
+                // 此时若继续进业务 handler，会写入一条客户端收到 413 的反馈 / 附件。
+                if (isUploadAlreadyRejected(req, res)) {
+                  await finalizeFeedbackUpload(state);
+                  return;
+                }
+                next();
+                return;
+              }
               await finalizeFeedbackUpload(state);
-              return;
-            }
-            next();
-            return;
-          }
-          await finalizeFeedbackUpload(state);
-          if (isUploadAlreadyRejected(req, res)) return;
-          if (error instanceof FeedbackStorageQuotaError) {
-            res.status(413).json({ ok: false, code: error.code, error: error.message });
-            return;
-          }
-          if (error instanceof FeedbackTmpUnavailableError) {
-            res.status(503).json({ ok: false, code: error.code, error: error.message });
-            return;
-          }
-          if (error instanceof FeedbackMaintenanceError) {
-            res.status(503).json({ ok: false, code: error.code, error: error.message });
-            return;
-          }
-          if (error instanceof FeedbackStorageUnavailableError) {
-            res.status(500).json({ ok: false, code: error.code, error: error.message });
-            return;
-          }
-          if (error instanceof multer.MulterError) {
-            if (error.code === "LIMIT_FILE_SIZE") {
-              res.status(413).json({
-                ok: false,
-                error: `单个附件不能超过 ${MAX_FEEDBACK_ATTACHMENT_BYTES / 1024 / 1024} MB`,
-              });
-              return;
-            }
-            if (error.code === "LIMIT_FILE_COUNT") {
-              res.status(400).json({
-                ok: false,
-                error: `最多附加 ${MAX_FEEDBACK_ATTACHMENTS} 个文件`,
-              });
-              return;
-            }
-            if (["LIMIT_FIELD_COUNT", "LIMIT_FIELD_VALUE", "LIMIT_FIELD_KEY", "LIMIT_PART_COUNT"].includes(error.code)) {
-              res.status(400).json({ ok: false, error: "表单字段过多或过大" });
-              return;
-            }
-            res.status(400).json({ ok: false, error: `上传失败：${error.code}` });
-            return;
-          }
-          next(error);
+              if (isUploadAlreadyRejected(req, res)) return;
+              if (error instanceof FeedbackStorageQuotaError) {
+                res.status(413).json({ ok: false, code: error.code, error: error.message });
+                return;
+              }
+              if (error instanceof FeedbackTmpUnavailableError) {
+                res.status(503).json({ ok: false, code: error.code, error: error.message });
+                return;
+              }
+              if (error instanceof FeedbackMaintenanceError) {
+                res.status(503).json({ ok: false, code: error.code, error: error.message });
+                return;
+              }
+              if (error instanceof FeedbackStorageUnavailableError) {
+                res.status(500).json({ ok: false, code: error.code, error: error.message });
+                return;
+              }
+              if (error instanceof multer.MulterError) {
+                if (error.code === "LIMIT_FILE_SIZE") {
+                  res.status(413).json({
+                    ok: false,
+                    error: `单个附件不能超过 ${MAX_FEEDBACK_ATTACHMENT_BYTES / 1024 / 1024} MB`,
+                  });
+                  return;
+                }
+                if (error.code === "LIMIT_FILE_COUNT") {
+                  res.status(400).json({
+                    ok: false,
+                    error: `最多附加 ${MAX_FEEDBACK_ATTACHMENTS} 个文件`,
+                  });
+                  return;
+                }
+                if (["LIMIT_FIELD_COUNT", "LIMIT_FIELD_VALUE", "LIMIT_FIELD_KEY", "LIMIT_PART_COUNT"].includes(error.code)) {
+                  res.status(400).json({ ok: false, error: "表单字段过多或过大" });
+                  return;
+                }
+                res.status(400).json({ ok: false, error: `上传失败：${error.code}` });
+                return;
+              }
+              next(error);
+            } catch (failure) { next(failure); }
+            finally { settle(); }
+          });
         });
+        if (isUploadAlreadyRejected(req, res)) disconnected();
       });
     })
     .catch(next);
@@ -932,17 +940,15 @@ async function listFeedback(req: Request, res: Response, ownerId?: number): Prom
 
 // 读取与恢复 / 备份共用同一把数据锁：等锁期间恢复可能替换账号；
 // 取得锁后必须重新认证并按当前库复核角色，不能用恢复前挂载的旧身份读新库。
-const holdFeedbackReadLock: RequestHandler[] = [holdAnswerCardDataMutationLock, refreshAuthenticatedUser];
-
 // GET /api/feedback — 全部反馈（管理员）
-router.get("/", ...holdFeedbackReadLock, requireAdmin, (req, res) => {
-  void listFeedback(req, res);
-});
+router.get("/", answerCardDataOperation(refreshAuthenticatedUser, requireAdmin, async (req, res) => {
+  await listFeedback(req, res);
+}));
 
 // GET /api/feedback/mine — 当前账号自己的反馈（教师 / 管理员）
-router.get("/mine", ...holdFeedbackReadLock, requireTeacher, (req, res) => {
-  void listFeedback(req, res, req.user!.id);
-});
+router.get("/mine", answerCardDataOperation(refreshAuthenticatedUser, requireTeacher, async (req, res) => {
+  await listFeedback(req, res, req.user!.id);
+}));
 
 // POST /api/feedback — 提交反馈（教师 / 管理员，multipart 可带附件）
 router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {

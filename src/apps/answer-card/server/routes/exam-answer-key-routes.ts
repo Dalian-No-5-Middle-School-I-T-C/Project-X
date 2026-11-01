@@ -1,3 +1,4 @@
+import { multipartTask, taskDiskStorage } from "../../../../server/lib/multipartTask";
 /**
  * v54: 教师/管理员端「本次正确答案」配置接口
  * 挂载点：/api/exams/:examId/answer-key（路径前缀 /api/exams 已被 examGate 覆盖：
@@ -18,7 +19,7 @@ import path from "node:path";
 import { unlinkSync } from "node:fs";
 import type { Request, Response } from "express";
 import { getMysqlDb, buildUpsertSQL } from "../../../../server/db/mysql";
-import { beginManualDataMutationLockRelease, holdAnswerCardDataMutationLock, releaseDataMutationLock, stopDisconnectedUpload } from "../../../../server/lib/answerCardDataLock";
+import { answerCardDataOperation } from "../../../../server/lib/answerCardDataLock";
 import {
   listAnswerKeyPages,
   listExamAnswerKeys,
@@ -53,7 +54,7 @@ function decodeMultipartFilename(name: string): string {
 }
 
 const answerKeyUpload = multer({
-  dest: path.join(answerKeysDir, "_tmp"),
+  storage: taskDiskStorage({ destination: path.join(answerKeysDir, "_tmp") }),
   limits: { fileSize: MAX_FILE_SIZE, files: MAX_ANSWER_KEY_PAGES },
   fileFilter: (_req, file, cb) => {
     const err = validatePaperFile(decodeMultipartFilename(file.originalname), MAX_FILE_SIZE);
@@ -236,25 +237,9 @@ export function examAnswerKeyRoutes(): Router {
 
   // POST /api/exams/:examId/answer-key/pages — 上传「本次正确答案」并可顺带 OCR
   // ?ocr=0 只入库不识别；识别结果作为草稿返回，不落库（教师确认后 PUT 保存）
-  router.post("/api/exams/:examId/answer-key/pages", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.EXAM_WRITE), requireExamAccess, stopDisconnectedUpload, (req, res, next) => {
-    beginManualDataMutationLockRelease(req);
-    answerKeyUpload.array("files", MAX_ANSWER_KEY_PAGES)(req, res, (err) => {
-      if (err) {
-        // 安全（R14）：数量/体积越界时 multer 直接报错，已落盘的兄弟文件不会经过
-        // 下面带 `finally` 的处理函数——必须在这里清掉，否则越界重试会留下无人引用的副本。
-        const partial = ((req.files as Express.Multer.File[] | undefined) ?? (req.file ? [req.file] : []))
-          .filter(Boolean);
-        for (const file of partial) {
-          try { unlinkSync(file.path); } catch { /* multer 已回收或文件不存在 */ }
-        }
-        // 断连时响应可能已被销毁、不会再走 res.end；清理完成后显式结算数据锁。
-        releaseDataMutationLock(req);
-        res.status(400).json({ message: err.message || "答案文件上传失败" });
-        return;
-      }
-      next();
-    });
-  }, async (req: Request, res: Response) => {
+  router.post("/api/exams/:examId/answer-key/pages", answerCardDataOperation(refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.EXAM_WRITE), requireExamAccess, multipartTask(answerKeyUpload.array("files", MAX_ANSWER_KEY_PAGES), (error, _req, res) => {
+    res.status(400).json({ message: error.message || "答案文件上传失败" });
+  }), async (req: Request, res: Response) => {
     const staged = ((req.files as Express.Multer.File[]) || []).filter(Boolean);
     try {
       const db = getMysqlDb();
@@ -269,8 +254,8 @@ export function examAnswerKeyRoutes(): Router {
 
       // 安全（R14）：与 /api/cards/:cardId/paper 同一道兜底清理。multer 的落盘发生在路由之前，
       // 请求被中断、被 multer 越界拒绝时都没有人能引用那些临时件；这里顺手扫一遍，
-      // 只删超过存活期的普通文件，且不阻塞本次上传。
-      purgeStaleTmpUploads(path.join(answerKeysDir, "_tmp"))
+      // 只删超过存活期的普通文件，并等待清理完成。
+      await purgeStaleTmpUploads(path.join(answerKeysDir, "_tmp"))
         .then((removed) => { if (removed > 0) console.log(`[answer-key] 清理滞留临时上传件 ${removed} 个`); })
         .catch(() => {});
 
@@ -396,9 +381,9 @@ export function examAnswerKeyRoutes(): Router {
       for (const file of staged) {
         try { unlinkSync(file.path); } catch {}
       }
-      releaseDataMutationLock(req);
+
     }
-  });
+  }));
 
   // POST /api/exams/:examId/answer-key/pages/:pageIndex/ocr — 对已上传页重新识别（草稿，不落库）
   router.post("/api/exams/:examId/answer-key/pages/:pageIndex/ocr", requireExamAccess, async (req: Request, res: Response) => {
@@ -441,7 +426,7 @@ export function examAnswerKeyRoutes(): Router {
   });
 
   // DELETE /api/exams/:examId/answer-key/pages/:pageIndex — 删除答案页（同页所有扩展名残留一并清理）
-  router.delete("/api/exams/:examId/answer-key/pages/:pageIndex", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.EXAM_WRITE), requireExamAccess, async (req: Request, res: Response) => {
+  router.delete("/api/exams/:examId/answer-key/pages/:pageIndex", answerCardDataOperation(refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.EXAM_WRITE), requireExamAccess, async (req: Request, res: Response) => {
     try {
       if (invalidExamId(res, req.params.examId)) return;
       const examId = Number(req.params.examId);
@@ -464,7 +449,7 @@ export function examAnswerKeyRoutes(): Router {
       console.error("[answer-key] delete page failed:", err);
       res.status(500).json({ message: err.message || "答案页删除失败" });
     }
-  });
+  }));
 
   return router;
 }

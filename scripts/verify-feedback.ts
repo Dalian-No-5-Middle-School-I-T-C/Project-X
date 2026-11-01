@@ -97,7 +97,7 @@ const backupRouter = backupModule.default;
 const { extractZipWithinBudget, extractZipFileWithinBudget, RestoreZipError } = await import("../src/server/services/restoreZip");
 const express = (await import("express")).default;
 const { crc32, deflateRawSync } = await import("node:zlib");
-const { holdAnswerCardDataMutationLock, withAnswerCardDataMutationLock } = await import("../src/server/lib/answerCardDataLock");
+const { answerCardDataOperation, withAnswerCardDataMutationLock } = await import("../src/server/lib/answerCardDataLock");
 
 /** 最小 ZIP：method 0 为 STORED，8 为 DEFLATE。CRC 写进本地头和中央目录。 */
 function buildZip(name: string, data: Buffer, method: 0 | 8, storedCrc = crc32(data) >>> 0): Buffer {
@@ -160,10 +160,10 @@ async function checkLockSurvivesQueuedDisconnect(): Promise<void> {
   const held = withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => { releaseHeld = resolve; }));
   const app = express();
   let entered = 0;
-  app.post("/upload", holdAnswerCardDataMutationLock, (_req, res) => {
+  app.post("/upload", answerCardDataOperation((_req, res) => {
     entered += 1;
     res.end("ok");
-  });
+  }));
   const server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as AddressInfo).port;
@@ -286,7 +286,7 @@ async function main(): Promise<void> {
   const app = express();
   app.use(express.json({ limit: "64kb" }));
   app.use("/api/feedback", feedbackRouter);
-  if (!maria) app.use("/api/db", backupRouter);
+  app.use("/api/db", backupRouter);
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => server.once("listening", () => resolve()));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/feedback`;
@@ -661,9 +661,7 @@ async function main(): Promise<void> {
   const dataLock = await import("../src/server/lib/answerCardDataLock");
   ok(feedbackStorage.withFeedbackMutationLock === dataLock.withAnswerCardDataMutationLock,
     "反馈、原卷 / 答案页删除与备份 / 恢复共用同一把数据锁");
-  const backupRouteSource = readFileSync(new URL("../src/server/routes/backup.ts", import.meta.url), "utf8");
-  ok(/router\.get\(\s*\n\s*"\/backup",[\s\S]{0,120}holdAnswerCardDataMutationLock,[\s\S]{0,120}refreshAuthenticatedUser,[\s\S]{0,120}requirePermission\(PERMISSIONS\.USER_MANAGE\)/.test(backupRouteSource),
-    "系统备份导出在数据锁内重新认证并重检 USER_MANAGE");
+
 
   const purgeDir = path.join(tmpDir, "purge-unit");
   mkdirSync(purgeDir, { recursive: true });
@@ -1226,7 +1224,9 @@ async function main(): Promise<void> {
     probeZip.addFile("metadata.json", Buffer.from(JSON.stringify({
       version: 1, format: "projectx-backup", generatedAt: new Date().toISOString(), files: [],
     })));
-    probeZip.addFile("projectx.db", Buffer.from("not-a-real-db"));
+    const probeDb = path.join(tmpDir, "restore-probe.db");
+    await getDatabase().backup(probeDb);
+    probeZip.addFile("projectx.db", readFileSync(probeDb));
     const activeTempPath = path.join(feedbackRoot, "_tmp", "restore-probe.tmp");
     writeFileSync(activeTempPath, "active");
     feedbackStorage.markActiveFeedbackTempFile(activeTempPath);

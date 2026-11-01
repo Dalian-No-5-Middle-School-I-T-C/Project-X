@@ -1,3 +1,4 @@
+import { runServiceTask } from "../lib/serviceTasks";
 /**
  * 成绩首次正式发布 → 微信订阅消息推送。
  *
@@ -112,7 +113,7 @@ async function releaseSlot(db: DbAdapter, examId: number, reason: string, detail
 
 export async function notifyGradeReleaseSubscribers(examId: number): Promise<void> {
   try {
-    await notifyGradeReleaseSubscribersInner(examId);
+    await runServiceTask(() => notifyGradeReleaseSubscribersInner(examId));
   } catch (error) {
     // 本函数以 void 方式在发布响应前调用：任何外溢都会变成 unhandled rejection
     console.error("wechat grade release fatal error:", {

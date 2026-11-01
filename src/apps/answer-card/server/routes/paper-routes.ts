@@ -1,9 +1,10 @@
+import { multipartTask, taskDiskStorage } from "../../../../server/lib/multipartTask";
 import { Router } from "express";
 import multer from "multer";
 import path from "node:path";
 import { existsSync, unlinkSync } from "node:fs";
 import { ensurePaperDir, paperDir, paperTmpDir, safeId } from "../storage";
-import { beginManualDataMutationLockRelease, holdAnswerCardDataMutationLock, releaseDataMutationLock, stopDisconnectedUpload } from "../../../../server/lib/answerCardDataLock";
+import { answerCardDataOperation } from "../../../../server/lib/answerCardDataLock";
 import { refreshAuthenticatedUser, recheckWritePermission } from "../../../../server/middleware/auth";
 import { PERMISSIONS } from "../../../../server/auth/permissions";
 import {
@@ -28,7 +29,7 @@ import {
   purgeStaleTmpUploads,
   readPaperQuota,
 } from "../paperQuota";
-import { requestUploadBudget, isUploadAlreadyRejected } from "../../../../server/lib/uploadBudget";
+import { requestUploadBudget } from "../../../../server/lib/uploadBudget";
 import { autoExtractPaperText, getFileMime, getPaperInputKind } from "../paper-ocr";
 import { PaperInputError } from "../paper-docx";
 import type { DbAdapter } from "../../../../server/db/mysql";
@@ -69,7 +70,7 @@ type AiProviderRow = {
 
 /** multer 的暂存目录在 storage 里定义：容量扫描要把这棵子树整棵排除，两边必须指向同一个路径。 */
 const paperUpload = multer({
-  dest: paperTmpDir,
+  storage: taskDiskStorage({ destination: paperTmpDir }),
   // 安全 R10：单文件与单次文件数都走「默认 + 环境变量 + 天花板」三档，不再是硬编码 50MB/40 个
   limits: { fileSize: MAX_PAPER_FILE_BYTES, files: MAX_PAPER_FILES_PER_REQUEST },
   fileFilter: (_req, file, cb) => {
@@ -166,41 +167,13 @@ export function paperRoutes(): Router {
   // 安全 R14：任何失败路径（校验、转换、入库、请求中断）都不留无人引用的文件。
   router.post(
     "/api/cards/:cardId/paper",
-    holdAnswerCardDataMutationLock,
-    refreshAuthenticatedUser,
+    answerCardDataOperation(refreshAuthenticatedUser,
     recheckWritePermission(PERMISSIONS.GRADE_WRITE),
-    stopDisconnectedUpload,
+
     requestUploadBudget({ maxTotalBytes: MAX_PAPER_REQUEST_BYTES, label: "原卷上传" }),
-    (req: Request, res: Response, next) => {
-      beginManualDataMutationLockRelease(req);
-      paperUpload.array("files", MAX_PAPER_FILES_PER_REQUEST)(req, res, (err) => {
-        if (err) {
-          // 安全（R14）：数量/体积越界时 multer 直接报错，已落盘的兄弟文件不会经过
-          // 下面带 `finally` 的处理函数——必须在这里清掉，否则越界重试会留下无人引用的副本。
-          const partial = ((req.files as Express.Multer.File[] | undefined) ?? (req.file ? [req.file] : []))
-            .filter(Boolean);
-          void discardStoredPaths(partial.map((f) => f.path).filter(Boolean))
-            .catch(() => undefined)
-            .finally(() => releaseDataMutationLock(req));
-          // PR #312 复核：请求预算是先回 413 再断开请求的，multer 的断流错误随后才到达。
-          // 这里若照样 res.status(400)，等于对已结束的响应二次写入，还会把 413 覆盖成误导的 400。
-          if (isUploadAlreadyRejected(req, res)) return;
-          res.status(400).json({ error: err.message || "原卷上传失败" });
-          return;
-        }
-        // 最后一个 chunk 触发预算 413 时 req 已读完，busboy / Multer 会按成功回调，
-        // 这里必须挡住业务 handler：响应已发送，再落库 / 写 papers 只会在 res.status 处报错。
-        if (isUploadAlreadyRejected(req, res)) {
-          const partial = ((req.files as Express.Multer.File[] | undefined) ?? (req.file ? [req.file] : []))
-            .filter(Boolean);
-          void discardStoredPaths(partial.map((f) => f.path).filter(Boolean))
-            .catch(() => undefined)
-            .finally(() => releaseDataMutationLock(req));
-          return;
-        }
-        next();
-      });
-    },
+    multipartTask(paperUpload.array("files", MAX_PAPER_FILES_PER_REQUEST), (error, _req, res) => {
+      res.status(400).json({ error: error.message || "原卷上传失败" });
+    }),
     async (req: Request, res: Response) => {
       const staged = ((req.files as Express.Multer.File[]) || []).filter(Boolean);
       // 本次已落盘但尚未被 DB 行引用的文件；提交成功后清空，失败时逐个删除（安全 R14）
@@ -217,8 +190,8 @@ export function paperRoutes(): Router {
         }
 
         // 上一次进程留下的滞留临时件（请求被中断、multer 越界拒绝都不会进到这个路由）：
-        // 顺手扫一遍，只删超过存活期的普通文件，不阻塞本次上传。
-        purgeStaleTmpUploads(paperTmpDir)
+        // 顺手扫一遍，只删超过存活期的普通文件，并等待清理完成。
+        await purgeStaleTmpUploads(paperTmpDir)
           .then((removed) => { if (removed > 0) console.log(`[paper] 清理滞留临时上传件 ${removed} 个`); })
           .catch(() => {});
 
@@ -359,11 +332,10 @@ export function paperRoutes(): Router {
         for (const file of staged) {
           try { unlinkSync(file.path); } catch {}
         }
-        releaseDataMutationLock(req);
         // 评审 A2：这里**不再**无条件作废用量缓存——`_tmp` 本来就不计入长期占盘，
         // 清临时文件不需要重扫 `papers/`；缓存的增减由上面的写入增量与下面的删除路径负责。
       }
-    }
+    })
   );
 
   // GET /api/cards/:cardId/paper — 预览/下载原卷（支持 ?page=N 指定页码）
@@ -442,7 +414,7 @@ export function paperRoutes(): Router {
   });
 
   // DELETE /api/cards/:cardId/paper — 删除原卷（全部页）
-  router.delete("/api/cards/:cardId/paper", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.GRADE_WRITE), async (req: Request, res: Response) => {
+  router.delete("/api/cards/:cardId/paper", answerCardDataOperation(refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.GRADE_WRITE), async (req: Request, res: Response) => {
     try {
         const cardId = String(req.params.cardId);
         const dir = paperDir(cardId);
@@ -472,10 +444,10 @@ export function paperRoutes(): Router {
       console.error("[paper] delete failed:", err);
       res.status(500).json({ error: err.message || "删除失败" });
     }
-  });
+  }));
 
   // DELETE /api/cards/:cardId/paper/page/:pageIndex — 删除单页
-  router.delete("/api/cards/:cardId/paper/page/:pageIndex", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.GRADE_WRITE), async (req: Request, res: Response) => {
+  router.delete("/api/cards/:cardId/paper/page/:pageIndex", answerCardDataOperation(refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.GRADE_WRITE), async (req: Request, res: Response) => {
     try {
         const cardId = String(req.params.cardId);
         const pageIndex = Number(req.params.pageIndex);
@@ -506,7 +478,7 @@ export function paperRoutes(): Router {
       console.error("[paper] delete page failed:", err);
       res.status(500).json({ error: err.message || "删除失败" });
     }
-  });
+  }));
 
   // GET /api/cards/:cardId/paper/info — 获取原卷状态（支持 DB+文件双检查）
   router.get("/api/cards/:cardId/paper/info", async (req: Request, res: Response) => {

@@ -434,6 +434,15 @@ export function resetAdapter(): void {
   resetDialect();
 }
 
+/** Restore waits for the previous pool to close before importing a replacement database. */
+export async function closeAdapter(): Promise<void> {
+  const pool = mariadbPool;
+  mariadbPool = null;
+  adapter = null;
+  resetDialect();
+  if (pool) await pool.end();
+}
+
 /** 健康检查：测试数据库连通性 */
 export async function healthCheck(): Promise<{ ok: boolean; dialect: string; latencyMs?: number; error?: string }> {
   try {

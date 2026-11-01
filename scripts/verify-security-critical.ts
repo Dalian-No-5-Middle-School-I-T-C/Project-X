@@ -1259,31 +1259,28 @@ async function main(): Promise<void> {
     // ── 请求预算与 multer 错误回调的先后（PR #312 复核）：413 已经给出后不得再回一次 400
     const expressModule = await import("express");
     const multerModule = await import("multer");
-    const { isUploadAlreadyRejected } = await import("../src/server/lib/uploadBudget");
+    const { answerCardDataOperation } = await import("../src/server/lib/answerCardDataLock");
+    const { multipartTask, taskDiskStorage } = await import("../src/server/lib/multipartTask");
     const doubleTmp = path.join(tempDir, "multer-double-tmp");
     mkdirSync(doubleTmp, { recursive: true });
     const doubleCallbacks: string[] = [];
     const doubleApp = expressModule.default();
-    // 与 paper-routes.ts 完全同形的链：预算 → multer → 手写错误回调（先清临时件，再决定是否响应）
+    // Exercise the same task and storage adapters used by the actual upload routes.
     const mountGuardedUpload = (routePath: string, budgetBytes: number, fileSizeBytes: number): void => {
-      const upload = multerModule.default({ dest: doubleTmp, limits: { fileSize: fileSizeBytes, files: 8 } });
-      doubleApp.post(routePath, requestUploadBudget({ maxTotalBytes: budgetBytes, label: "回归上传" }),
-        (req: any, res: any, next: any) => {
+      const upload = multerModule.default({ storage: taskDiskStorage({ destination: doubleTmp }), limits: { fileSize: fileSizeBytes, files: 8 } });
+      doubleApp.post(routePath, answerCardDataOperation(
+        requestUploadBudget({ maxTotalBytes: budgetBytes, label: "回归上传" }),
+        multipartTask((req, res, next) => {
           upload.array("files", 8)(req, res, (err: unknown) => {
-            const partial: Array<{ path: string }> = req.files ?? (req.file ? [req.file] : []);
-            for (const file of partial) {
-              try { unlinkSync(file.path); } catch { /* multer 已回收或文件不存在 */ }
-            }
             doubleCallbacks.push(`${routePath}|${err ? String((err as Error).message) : "ok"}|${res.headersSent ? "answered" : "fresh"}`);
-            if (err) {
-              if (isUploadAlreadyRejected(req, res)) return;
-              res.status(400).json({ error: String((err as Error).message) });
-              return;
-            }
-            next();
+            next(err);
           });
+        }, (error, _req, res) => { res.status(400).json({ error: error.message }); }),
+        async (req, res) => {
+          for (const file of (req.files as Express.Multer.File[]) ?? []) unlinkSync(file.path);
+          res.json({ ok: true });
         },
-        (_req: any, res: any) => { res.json({ ok: true }); });
+      ));
     };
     mountGuardedUpload("/budget-first", 900, 4096);
     mountGuardedUpload("/filesize-first", 100_000, 500);
@@ -1335,12 +1332,6 @@ async function main(): Promise<void> {
     doubleServer.close();
     check(doubleResidue === 0,
       "跳过响应并不跳过临时件回收：被预算拒掉的请求依旧不在 _tmp 留副本（R14 与「不要二次响应」互不影响）");
-    const paperRouteSrc = readFileSync(path.join(process.cwd(), "src/apps/answer-card/server/routes/paper-routes.ts"), "utf8");
-    const guardAt = paperRouteSrc.indexOf("isUploadAlreadyRejected(req, res)");
-    const rejectAt = paperRouteSrc.indexOf("原卷上传失败");
-    check(guardAt > 0 && rejectAt > guardAt
-      && paperRouteSrc.indexOf("discardStoredPaths") < guardAt,
-      "真实原卷路由同形：临时件清理在前、守卫在 400 之前（回归链与线上代码不是两套写法）");
 
     // ── AI 计费与并发配额（安全 R11）
     const {

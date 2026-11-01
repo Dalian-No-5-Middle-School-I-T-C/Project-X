@@ -1,3 +1,7 @@
+import { runServiceTask } from "../../../server/lib/serviceTasks";
+import { loadRestoreRecoveryState } from "../../../server/lib/restoreRecovery";
+import { isServiceMaintenanceActive } from "../../../server/lib/serviceTasks";
+import { multipartTask, taskDiskStorage } from "../../../server/lib/multipartTask";
 import { storeCorrectionPage } from "../../../server/services/scanCorrection";
 import { databaseTimestamp } from "../../../server/db/timestamp";
 import express from "express";
@@ -11,9 +15,7 @@ import {
 } from "../../../shared/scanUploadLimits";
 import { requestUploadBudget } from "../../../server/lib/uploadBudget";
 import {
-  holdAnswerCardDataMutationLock,
-  releaseDataMutationLock,
-  stopDisconnectedUpload,
+  answerCardDataOperation,
 } from "../../../server/lib/answerCardDataLock";
 import { describeReviewPoolLimits } from "../../../shared/reviewPoolLimits";
 import { describeRestoreZipLimits } from "../../../shared/restoreZipLimits";
@@ -692,7 +694,7 @@ async function persistGradingResultsLocked(
   }
   // Readers may repopulate the old committed view while the transaction is open.
   analysisCache.invalidateExam(Number(examIdParam));
-  if (backupAfterCommit) void autoBackupOnExamClose(Number(examIdParam)).catch(e => console.error("[AutoBackup] Failed:",e));
+  if (backupAfterCommit) void runServiceTask(() => autoBackupOnExamClose(Number(examIdParam))).catch(e => console.error("[AutoBackup] Failed:",e));
   return outcome;
 }
 
@@ -749,6 +751,8 @@ export async function createApp(): Promise<express.Express> {
   // 信任最近一跳让登录限速等拿到真实客户端 IP（可用 PROJECTX_TRUST_PROXY=0 关闭）。
   app.set("trust proxy", process.env.PROJECTX_TRUST_PROXY === "0" ? false : 1);
 
+  const recoveryRequired = loadRestoreRecoveryState();
+  if (recoveryRequired) throw new Error("检测到未完成的数据恢复，请按 projectx-restore-state.json 完成回退后再启动服务");
   console.log("[Server] 正在初始化数据库...");
   initializeDatabase();
   // 确保连接池在使用前已创建（MariaDB 模式下 initMariadbSchema / ensureDefaultAdmin 依赖）
@@ -784,11 +788,8 @@ export async function createApp(): Promise<express.Express> {
   // P0-5 (C-S3): 同步鉴权状态到 middleware 模块，供 requireExamAccess 使用
   setAuthEnforced(enforceAuth);
 
-  // ── Express 5 异步错误处理（防请求挂死）──
-  // Express 5 不再自动捕获 async handler 抛出的异常；这里在注册层
-  // 统一包裹所有 app.get/post/put/delete/patch/use 调用（含已挂载的
-  // Router），使任意未捕获的 rejection 都被转发到全局错误中间件，
-  // 返回 500 JSON 而非让请求永久挂起。
+  // 统一记录处理器实际完成时间；恢复维护等待异步任务收尾后再替换数据库。
+  // 已挂载 Router 同样递归包装，异步错误统一交给错误中间件。
   {
     const methods = ["get", "post", "put", "delete", "patch", "use"] as const;
     for (const m of methods) {
@@ -884,6 +885,7 @@ export async function createApp(): Promise<express.Express> {
 
 
   app.get("/api/app/health", async (_req, res) => {
+    if (isServiceMaintenanceActive()) { res.status(503).json({ ok: false, maintenance: true }); return; }
     const db = await healthCheck();
     // 安全审计（F-12-8）：脱敏 —— 只暴露存活布尔，不回传 dialect/latencyMs 等内网细节
     res.status(db.ok ? 200 : 503).json({
@@ -1105,10 +1107,10 @@ export async function createApp(): Promise<express.Express> {
 
   // 上传自定义背景图
   const bgUpload = multer({
-    storage: multer.diskStorage({
+    storage: taskDiskStorage({
       destination: async (_req, _file, cb) => {
-        await mkdir(backgroundsDir, { recursive: true });
-        cb(null, backgroundsDir);
+        try { await mkdir(backgroundsDir, { recursive: true }); cb(null, backgroundsDir); }
+        catch (error) { cb(error as Error, backgroundsDir); }
       },
       filename: (_req, file, cb) => {
         const ext = path.extname(decodeMultipartFilename(file.originalname)).toLowerCase() || ".jpg";
@@ -1133,20 +1135,13 @@ export async function createApp(): Promise<express.Express> {
 
   // 超限在这条路由上直接回 413。全局 MulterError 分支不知道这是哪一个上传闸门，
   // 若把背景图上限写进那句共用文案，答题卡资源等其它上传也会显示成同一个数字。
-  const receiveBackgroundUpload: express.RequestHandler = (req, res, next) => {
-    bgUpload.single("file")(req, res, (err: unknown) => {
-      if (err && typeof err === "object" && (err as { code?: string }).code === "LIMIT_FILE_SIZE") {
-        releaseDataMutationLock(req);
-        res.status(413).json({
-          code: "UPLOAD_ERROR",
-          message: backgroundUploadTooLargeMessage(MAX_BACKGROUND_UPLOAD_BYTES),
-        });
-        return;
-      }
-      if (err) releaseDataMutationLock(req);
-      next(err);
-    });
-  };
+  const receiveBackgroundUpload = multipartTask(bgUpload.single("file"), (error, _req, res) => {
+    if ((error as { code?: string }).code === "LIMIT_FILE_SIZE") {
+      res.status(413).json({ code: "UPLOAD_ERROR", message: backgroundUploadTooLargeMessage(MAX_BACKGROUND_UPLOAD_BYTES) });
+      return;
+    }
+    throw error;
+  });
 
   // #322: 学生账号不能上传自定义背景图。门放在 multer 之前——
   // 否则被拒的请求仍会先把上传体落盘到 dataDir/backgrounds 再返回 403。
@@ -1154,10 +1149,9 @@ export async function createApp(): Promise<express.Express> {
     "/api/users/me/background",
     authMiddleware,
     requireBackgroundUploadAccess,
-    holdAnswerCardDataMutationLock,
-    refreshAuthenticatedUser,
+    answerCardDataOperation(refreshAuthenticatedUser,
     requireBackgroundUploadAccess,
-    stopDisconnectedUpload,
+
     receiveBackgroundUpload,
     async (req, res, next) => {
       try {
@@ -1186,7 +1180,7 @@ export async function createApp(): Promise<express.Express> {
       } catch (error) {
         next(error);
       }
-    },
+    }),
   );
 
   // #336：本人删除自己的背景文件，并把透明度归零。学生也可以调——
@@ -1194,8 +1188,7 @@ export async function createApp(): Promise<express.Express> {
   app.delete(
     "/api/users/me/background",
     authMiddleware,
-    holdAnswerCardDataMutationLock,
-    refreshAuthenticatedUser,
+    answerCardDataOperation(refreshAuthenticatedUser,
     async (req, res, next) => {
       try {
         const userId = req.user?.id;
@@ -1219,7 +1212,7 @@ export async function createApp(): Promise<express.Express> {
       } catch (error) {
         next(error);
       }
-    }
+    })
   );
 
   // #336：管理员一次性清退学生历史背景。不在启动时做，避免老师发现图突然没了。
@@ -1229,8 +1222,7 @@ export async function createApp(): Promise<express.Express> {
     "/api/admin/backgrounds/purge-students",
     authMiddleware,
     requirePermissionCompat(PERMISSIONS.SYSTEM_MANAGE),
-    holdAnswerCardDataMutationLock,
-    refreshAuthenticatedUser,
+    answerCardDataOperation(refreshAuthenticatedUser,
     requirePermissionCompat(PERMISSIONS.SYSTEM_MANAGE),
     async (req, res, next) => {
       try {
@@ -1256,7 +1248,7 @@ export async function createApp(): Promise<express.Express> {
       } catch (error) {
         next(error);
       }
-    }
+    })
   );
 
   app.use("/api/users", userRoutes);
@@ -1369,12 +1361,12 @@ export async function createApp(): Promise<express.Express> {
   const cardRepo = new CardRepository();
 
   const upload = multer({
-    storage: multer.diskStorage({
+    storage: taskDiskStorage({
       destination: async (req, _file, cb) => {
         const cardId = safeId(paramValue(req.params.cardId));
         const dir = cardAssetsDir(cardId);
-        await mkdir(dir, { recursive: true });
-        cb(null, dir);
+        try { await mkdir(dir, { recursive: true }); cb(null, dir); }
+        catch (error) { cb(error as Error, dir); }
       },
       filename: (_req, file, cb) => {
         // 安全（R05）：扩展名走闭合白名单，非图片一律回落 .png（与扫描上传入口同口径）。
@@ -1398,23 +1390,18 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  const receiveCardAssetUpload: express.RequestHandler = (req, res, next) => {
-    upload.single("file")(req, res, (err: unknown) => {
-      if (err) releaseDataMutationLock(req);
-      next(err);
-    });
-  };
+  const receiveCardAssetUpload = multipartTask(upload.single("file"));
 
   const recognitionUpload = multer({
     // 安全（R28）：批量判分/识别上传此前只有单文件 50 MiB 上限，文件数量与单次请求累计
     // 字节都不受约束（一次提交可以压进任意多张原卷）。数量用 multer 原生 limits.files，
     // 累计字节用 requestUploadBudget 在请求层拦截；单文件上限保持不变以免影响真实扫描尺寸。
-    storage: multer.diskStorage({
+    storage: taskDiskStorage({
       destination: async (req, _file, cb) => {
         const cardId = safeId(paramValue(req.params.cardId));
         const dir = path.join(dataDir, "recognition", "uploads", cardId);
-        await mkdir(dir, { recursive: true });
-        cb(null, dir);
+        try { await mkdir(dir, { recursive: true }); cb(null, dir); }
+        catch (error) { cb(error as Error, dir); }
       },
       filename: (_req, file, cb) => {
         // 安全：扩展名白名单，非图片一律回落 .png，避免同源预览按 text/html 提供上传内容。
@@ -1445,8 +1432,7 @@ export async function createApp(): Promise<express.Express> {
   app.post(
     "/api/cards",
     validateBody(CreateCardSchema),
-    holdAnswerCardDataMutationLock,
-    refreshAuthenticatedUser,
+    answerCardDataOperation(refreshAuthenticatedUser,
     recheckWritePermission(PERMISSIONS.GRADE_WRITE),
     async (req, res, next) => {
       try {
@@ -1497,7 +1483,7 @@ export async function createApp(): Promise<express.Express> {
       } catch (error) {
         next(error);
       }
-    }
+    })
   );
 
   app.get("/api/cards/:cardId", async (req, res, next) => {
@@ -1515,8 +1501,7 @@ export async function createApp(): Promise<express.Express> {
 
   app.put(
     "/api/cards/:cardId",
-    holdAnswerCardDataMutationLock,
-    refreshAuthenticatedUser,
+    answerCardDataOperation(refreshAuthenticatedUser,
     recheckWritePermission(PERMISSIONS.GRADE_WRITE),
     async (req, res, next) => {
       try {
@@ -1531,13 +1516,12 @@ export async function createApp(): Promise<express.Express> {
       } catch (error) {
         next(error);
       }
-    }
+    })
   );
 
   app.get(
     "/api/cards/:cardId/layout",
-    holdAnswerCardDataMutationLock,
-    refreshAuthenticatedUser,
+    answerCardDataOperation(refreshAuthenticatedUser,
     cardGate,
     async (req, res, next) => {
       try {
@@ -1552,10 +1536,10 @@ export async function createApp(): Promise<express.Express> {
       } catch (error) {
         next(error);
       }
-    }
+    })
   );
 
-  app.post("/api/cards/:cardId/recognition/objective", recognitionPageBudget, recognitionUpload.single("file"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/recognition/objective", recognitionPageBudget, multipartTask(recognitionUpload.single("file")), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const card = await cardRepo.findById(cardId);
@@ -1592,7 +1576,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards/:cardId/recognition", recognitionPageBudget, recognitionUpload.single("file"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/recognition", recognitionPageBudget, multipartTask(recognitionUpload.single("file")), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const card = await cardRepo.findById(cardId);
@@ -1664,6 +1648,7 @@ export async function createApp(): Promise<express.Express> {
     res.flushHeaders?.();
 
     const handler = (event: GradingProgressEvent) => {
+      if (res.writableEnded || res.destroyed) return;
       res.write(`data: ${JSON.stringify(event)}\n\n`);
       if (event.type === "done" || event.type === "error") {
         res.end();
@@ -1676,12 +1661,12 @@ export async function createApp(): Promise<express.Express> {
     gradingProgressListeners.get(batchId)!.add(handler);
     gradingProgressStreamsByOwner.set(streamOwner, (gradingProgressStreamsByOwner.get(streamOwner) ?? 0) + 1);
 
-    const snapshot = gradingProgressSnapshots.get(batchId);
-    if (snapshot) {
-      handler(snapshot);
-    }
-
-    req.on("close", () => {
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      res.off("finish", cleanup);
+      res.off("close", cleanup);
       if ((gradingProgressStreamsByOwner.get(streamOwner) ?? 0) > 0) {
         const remaining = gradingProgressStreamsByOwner.get(streamOwner)! - 1;
         if (remaining > 0) gradingProgressStreamsByOwner.set(streamOwner, remaining);
@@ -1692,10 +1677,15 @@ export async function createApp(): Promise<express.Express> {
         listeners.delete(handler);
         if (listeners.size === 0) gradingProgressListeners.delete(batchId);
       }
-    });
+    };
+    res.once("finish", cleanup);
+    res.once("close", cleanup);
+
+    const snapshot = gradingProgressSnapshots.get(batchId);
+    if (snapshot) handler(snapshot);
   });
 
-  app.post("/api/cards/:cardId/grading/objective", recognitionBatchBudget, recognitionUpload.array("files"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/grading/objective", recognitionBatchBudget, multipartTask(recognitionUpload.array("files")), async (req, res, next) => {
     let progressId = "";
     try {
       const cardId = safeId(paramValue(req.params.cardId));
@@ -1791,7 +1781,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards/:cardId/grading", recognitionBatchBudget, recognitionUpload.array("files"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/grading", recognitionBatchBudget, multipartTask(recognitionUpload.array("files")), async (req, res, next) => {
     let progressId = "";
     try {
       const cardId = safeId(paramValue(req.params.cardId));
@@ -2043,10 +2033,9 @@ export async function createApp(): Promise<express.Express> {
 
   app.post(
     "/api/cards/:cardId/assets",
-    holdAnswerCardDataMutationLock,
-    refreshAuthenticatedUser,
+    answerCardDataOperation(refreshAuthenticatedUser,
     cardGate,
-    stopDisconnectedUpload,
+
     receiveCardAssetUpload,
     async (req, res, next) => {
       try {
@@ -2087,7 +2076,7 @@ export async function createApp(): Promise<express.Express> {
       } catch (error) {
         next(error);
       }
-    },
+    }),
   );
 
   app.get("/api/cards/:cardId/pdf", async (req, res, next) => {
@@ -2134,7 +2123,7 @@ export async function createApp(): Promise<express.Express> {
   // ── 答题卡导出/导入/删除 ──────────────────────────────
 
   // DELETE: 删除答题卡
-  app.delete("/api/cards/:cardId", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
+  app.delete("/api/cards/:cardId", answerCardDataOperation(refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const card = await cardRepo.findById(cardId);
@@ -2232,7 +2221,7 @@ export async function createApp(): Promise<express.Express> {
     } catch (error) {
       next(error);
     }
-  });
+  }));
 
   // GET: 导出答题卡（含答案 + assets base64）
   app.get("/api/cards/:cardId/export", async (req, res, next) => {
@@ -2281,7 +2270,7 @@ export async function createApp(): Promise<express.Express> {
   });
 
   // POST: 导入答题卡
-  app.post("/api/cards/import", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
+  app.post("/api/cards/import", answerCardDataOperation(refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
     try {
       const imported = req.body as {
         format?: string; version?: number;
@@ -2474,7 +2463,7 @@ export async function createApp(): Promise<express.Express> {
     } catch (error) {
       next(error);
     }
-  });
+  }));
 
   // ── Score editing: mounted before exam routes to match
   //     /api/exams/:examId/student/:studentId/scores before /api/exams/:examId
@@ -2742,7 +2731,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.delete("/api/exams/:examId", holdAnswerCardDataMutationLock, refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.EXAM_WRITE), requireExamAccess, async (req, res, next) => {
+  app.delete("/api/exams/:examId", answerCardDataOperation(refreshAuthenticatedUser, recheckWritePermission(PERMISSIONS.EXAM_WRITE), requireExamAccess, async (req, res, next) => {
     try {
       const examRepo = new ExamRepository();
       const exam = await examRepo.findExamById(Number(req.params.examId));
@@ -2778,7 +2767,7 @@ export async function createApp(): Promise<express.Express> {
     } catch (error) {
       next(error);
     }
-  });
+  }));
 
   app.patch("/api/exams/:examId", requireExamAccess, async (req, res, next) => {
     try {
@@ -3357,8 +3346,6 @@ export async function createApp(): Promise<express.Express> {
     // 请求级上传预算（R28）已经给出 413 并销毁请求，随后 multer 抛出的断流错误不再改写响应。
     // 已经结束/已销毁的响应连 `end()` 都不能调：那是对写完的 writable 再写一次，只会得到 write-after-end。
     if (res.writableEnded || res.destroyed) {
-      // 响应不会再 end：持锁请求必须在这里显式结算，否则全局数据锁永久泄漏。
-      releaseDataMutationLock(req);
       return;
     }
     if (res.headersSent) { res.end(); return; }

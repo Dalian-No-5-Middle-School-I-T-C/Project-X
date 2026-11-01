@@ -1,20 +1,16 @@
 import type { Request, Response, NextFunction, RequestHandler, Router } from "express";
 
-/**
- * Express 5 不再自动捕获异步处理器（async handler）抛出的异常。
- * 一旦 handler 内部 await 的 DB 调用抖动并 reject，请求会因为没有
- * 被捕获的异常而永久挂起（前端一直转圈）。
- *
- * 用 asyncHandler 包裹后，未处理的 rejection 会被转发给 Express 的
- * 错误处理中间件（app.use((err, req, res, next) => ...)），
- * 从而返回 500 JSON 而不是让请求悬挂。
- *
- * 对同步处理器同样安全：同步抛出的错误也会被 Promise 捕获并转发。
- */
+import { enterRequestTask, inServiceTaskContext } from "./serviceTasks";
+
+/** Track handler completion separately from response finish/close, and forward errors. */
 export const asyncHandler =
   (fn: RequestHandler): RequestHandler =>
-  (req: Request, res: Response, next: NextFunction) => {
-    Promise.resolve(fn(req, res, next)).catch(next);
+  async (req: Request, res: Response, next: NextFunction) => {
+    const leave = enterRequestTask(req, res);
+    if (!leave) return;
+    try { await inServiceTaskContext(async () => { await fn(req, res, next); }); }
+    catch (error) { next(error); }
+    finally { leave(); }
   };
 
 /**

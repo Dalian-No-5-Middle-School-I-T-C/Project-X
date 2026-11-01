@@ -484,7 +484,7 @@ async function main(): Promise<void> {
     : "";
   const backgroundAuthAt = backgroundWiring.indexOf("authMiddleware");
   const backgroundAccessAt = backgroundWiring.indexOf("requireBackgroundUploadAccess");
-  const backgroundLockAt = backgroundWiring.indexOf("holdAnswerCardDataMutationLock");
+  const backgroundLockAt = backgroundWiring.indexOf("answerCardDataOperation");
   const backgroundUploadAt = backgroundWiring.indexOf("receiveBackgroundUpload");
   ok(
     backgroundAuthAt >= 0
