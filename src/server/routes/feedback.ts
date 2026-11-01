@@ -444,7 +444,14 @@ function toReport(
 function resolveStoredPath(relative: string): string | null {
   if (!relative || path.isAbsolute(relative)) return null;
   const abs = path.resolve(dataRoot, relative);
-  return abs.startsWith(feedbackRootPrefix) ? abs : null;
+  if (!abs.startsWith(feedbackRootPrefix)) return null;
+  // 正式附件只允许 feedback/<报告目录>/<文件>。少一层会把 feedback 根或 _tmp 当成待删目录。
+  const parts = path.relative(feedbackRoot, abs).split(path.sep).filter((part) => part.length > 0);
+  if (parts.length !== 2) return null;
+  const [subdir, file] = parts;
+  if (!subdir || !file || subdir === "." || subdir === ".." || subdir.startsWith("_")) return null;
+  if (file === "." || file === "..") return null;
+  return abs;
 }
 
 type StagedAttachmentDir = { original: string; staged: string };
@@ -1095,20 +1102,39 @@ router.post("/", requireTeacher, receiveFeedbackUpload, async (req, res) => {
 
 type AttachmentDownloadGate =
   | { kind: "file"; file: FileHandle; size: number; filename: string }
-  | { kind: "error"; status: number; code?: string; error: string };
+  | { kind: "error"; status: number; code?: string; error: string }
+  | { kind: "closed" };
+
+function downloadClientGone(res: Response): boolean {
+  return res.destroyed || res.writableEnded || res.socket?.destroyed === true;
+}
 
 // GET /api/feedback/:id/attachments/:attachmentId — 下载附件（管理员，或反馈提交人）
-router.get("/:id/attachments/:attachmentId", async (req, res) => {
+// 学生在进数据锁之前就被角色门挡住，避免为了一次 403 排到备份 / 恢复后面。
+router.get("/:id/attachments/:attachmentId", requireTeacher, async (req, res) => {
   const feedbackId = parsePositiveId(req.params.id);
   const attachmentId = parsePositiveId(req.params.attachmentId);
   if (!feedbackId || !attachmentId) {
     res.status(400).json({ ok: false, error: "无效的附件 ID" });
     return;
   }
+  // 等锁期间的断连不会再补发 close。先记下来，开文件前、拿到句柄后、挂上清理监听后再各看一次。
+  let clientGone = downloadClientGone(res);
+  const markClientGone = (): void => {
+    if (!res.writableEnded) clientGone = true;
+  };
+  req.on("aborted", markClientGone);
+  res.on("close", markClientGone);
+  if (downloadClientGone(res)) clientGone = true;
+  const stopWatchingClient = (): void => {
+    req.off("aborted", markClientGone);
+    res.off("close", markClientGone);
+  };
   try {
     // 锁内只做重新认证、查库、权限判断和打开文件；拿到句柄后立即释放，
     // 慢速下载不再长期占用答题卡数据锁，阻塞保存 / 备份 / 恢复。
     const gate = await withFeedbackMutationLock(async (): Promise<AttachmentDownloadGate> => {
+      if (clientGone || downloadClientGone(res)) return { kind: "closed" };
       if (!(await refreshRequestUser(req))) {
         return { kind: "error", status: 401, code: "FEEDBACK_SESSION_STALE", error: "账号权限已变更，请重新登录后再下载" };
       }
@@ -1130,17 +1156,26 @@ router.get("/:id/attachments/:attachmentId", async (req, res) => {
       }
       const absPath = resolveStoredPath(row.stored_path);
       if (!absPath) return { kind: "error", status: 404, error: "附件不存在" };
+      if (clientGone || downloadClientGone(res)) return { kind: "closed" };
+      const file = await open(absPath, "r");
+      let handedOff = false;
       try {
-        const file = await open(absPath, "r");
+        if (clientGone || downloadClientGone(res)) return { kind: "closed" };
         const info = await file.stat();
+        if (!info.isFile()) return { kind: "error", status: 404, error: "附件不存在" };
+        if (clientGone || downloadClientGone(res)) return { kind: "closed" };
+        handedOff = true;
         return { kind: "file", file, size: info.size, filename: row.filename };
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === "ENOENT") {
           return { kind: "error", status: 404, error: "附件文件不存在" };
         }
         throw err;
+      } finally {
+        if (!handedOff) await file.close().catch(() => undefined);
       }
     });
+    if (gate.kind === "closed") return;
     if (gate.kind === "error") {
       res.status(gate.status).json({
         ok: false,
@@ -1155,12 +1190,16 @@ router.get("/:id/attachments/:attachmentId", async (req, res) => {
     res.setHeader("Content-Type", "application/octet-stream");
     res.setHeader("Content-Length", String(gate.size));
     const stream = gate.file.createReadStream({ autoClose: true });
-    stream.on("close", () => {
-      // createReadStream 正常结束会自动关闭；这里兜底显式释放，避免 Windows 上延迟占住数据目录。
+    let handleClosed = false;
+    const closeHandle = (): void => {
+      if (handleClosed) return;
+      handleClosed = true;
       void gate.file.close().catch(() => undefined);
-    });
+    };
+    stream.on("close", closeHandle);
     stream.on("error", (err) => {
       console.error("[feedback] 附件下载流失败:", err);
+      closeHandle();
       if (!res.headersSent) {
         res.status(500).json({ ok: false, error: "附件下载失败" });
       } else if (!res.writableEnded) {
@@ -1168,6 +1207,13 @@ router.get("/:id/attachments/:attachmentId", async (req, res) => {
       }
     });
     res.on("close", () => stream.destroy());
+    // 监听刚挂上的这一小段里客户端也可能已经断开，不能等下一次 close。
+    if (clientGone || downloadClientGone(res)) {
+      stream.destroy();
+      closeHandle();
+      return;
+    }
+    stopWatchingClient();
     stream.pipe(res);
   } catch (err: any) {
     console.error("[feedback] 附件下载失败:", err);
@@ -1176,6 +1222,8 @@ router.get("/:id/attachments/:attachmentId", async (req, res) => {
     } else if (!res.writableEnded) {
       res.destroy(err);
     }
+  } finally {
+    stopWatchingClient();
   }
 });
 

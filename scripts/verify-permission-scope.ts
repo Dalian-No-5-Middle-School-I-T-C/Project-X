@@ -248,6 +248,55 @@ async function main(): Promise<void> {
     await layoutHeld;
     ok((await pendingLayout).status === 200, "layout 取得数据锁后正常返回");
 
+    const { layoutPath } = await import("../src/apps/answer-card/server/storage");
+    const layoutFile = layoutPath(cardId);
+    const layoutText = (): string => existsSync(layoutFile) ? readFileSync(layoutFile, "utf8") : "";
+    ok(layoutText().includes("权限卡"), "layout 首次读取已把当前标题写盘");
+
+    db.prepare("UPDATE answer_cards SET title = ? WHERE id = ?").run("锁内改过的标题", cardId);
+    let releaseDowngrade!: () => void;
+    const downgradeHeld = withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => { releaseDowngrade = resolve; }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    let downgradeSettled = false;
+    const pendingDowngrade = get(`/api/cards/${cardId}/layout`, adminToken).then((result) => {
+      downgradeSettled = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    ok(!downgradeSettled, "降权场景的 layout 请求在锁释放前不能完成");
+    db.prepare("UPDATE users SET role_id = 3 WHERE id = ?").run(adminId);
+    releaseDowngrade();
+    await downgradeHeld;
+    const downgradeResponse = await pendingDowngrade;
+    ok(downgradeResponse.status === 403, `等锁期间管理员被降为学生后，layout 按新角色拒绝（实际 ${downgradeResponse.status}）`);
+    ok(!layoutText().includes("锁内改过的标题"), "降权后的 layout 请求不得把新标题写进布局文件");
+    db.prepare("UPDATE users SET role_id = 1 WHERE id = ?").run(adminId);
+
+    const layoutTeacher = await users.createUser({
+      username: "t-layout", password: "pass-1234", name: "布局教师", role_id: 2, teacher_role: "subject_teacher", subject: "数学",
+    });
+    const tokenLayout = (await authService.login("t-layout", "pass-1234")).token!;
+    let releaseRevoke!: () => void;
+    const revokeHeld = withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => { releaseRevoke = resolve; }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    let revokeSettled = false;
+    const pendingRevoke = get(`/api/cards/${cardId}/layout`, tokenLayout).then((result) => {
+      revokeSettled = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    ok(!revokeSettled, "吊销场景的 layout 请求在锁释放前不能完成");
+    authService.revokeUserTokens(layoutTeacher.id);
+    releaseRevoke();
+    await revokeHeld;
+    const revokeResponse = await pendingRevoke;
+    ok(revokeResponse.status === 401, `等锁期间令牌被吊销后，layout 拒绝旧请求（实际 ${revokeResponse.status}）`);
+    ok(!layoutText().includes("锁内改过的标题"), "吊销后的 layout 请求不得写盘");
+
+    db.prepare("UPDATE answer_cards SET title = ? WHERE id = ?").run("权限卡", cardId);
+    const teacherRead = await get(`/api/cards/${cardId}/layout`, tokenA);
+    ok(teacherRead.status === 200 && layoutText().includes("权限卡"), "教师取得数据锁并复核身份后仍可读取 layout");
+
     // 背景删除：文件删除与透明度归零都必须落在同一把锁内。
     const backgroundForm = new FormData();
     backgroundForm.append("file", new Blob([tinyPng], { type: "image/png" }), "teacher.png");

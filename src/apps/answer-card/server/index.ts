@@ -1534,20 +1534,26 @@ export async function createApp(): Promise<express.Express> {
     }
   );
 
-  app.get("/api/cards/:cardId/layout", holdAnswerCardDataMutationLock, async (req, res, next) => {
-    try {
-      const card = await cardRepo.findById(safeId(paramValue(req.params.cardId)));
-      if (!card) {
-        res.status(404).json({ message: "答题卡不存在" });
-        return;
+  app.get(
+    "/api/cards/:cardId/layout",
+    holdAnswerCardDataMutationLock,
+    refreshAuthenticatedUser,
+    cardGate,
+    async (req, res, next) => {
+      try {
+        const card = await cardRepo.findById(safeId(paramValue(req.params.cardId)));
+        if (!card) {
+          res.status(404).json({ message: "答题卡不存在" });
+          return;
+        }
+        const layout = buildLayout(card);
+        await writeLayoutDocument(card.id, layout);
+        res.json(layout);
+      } catch (error) {
+        next(error);
       }
-      const layout = buildLayout(card);
-      await writeLayoutDocument(card.id, layout);
-      res.json(layout);
-    } catch (error) {
-      next(error);
     }
-  });
+  );
 
   app.post("/api/cards/:cardId/recognition/objective", recognitionPageBudget, recognitionUpload.single("file"), async (req, res, next) => {
     try {

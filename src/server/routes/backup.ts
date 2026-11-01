@@ -19,7 +19,7 @@ import { activeFeedbackTempFiles, beginFeedbackMaintenance, invalidateFeedbackSt
 import { reconcileFeedbackTrashLocked, resetFeedbackRuntimeStateAfterRestore } from "./feedback";
 import { sanitizeOpsMessage } from "../lib/opsErrorMessage";
 import { PERMISSIONS, initPermissionCache, invalidatePermissionCache } from "../auth/permissions";
-import { closeDatabase, getDatabase, getMysqlDb, getMariadbConfig, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, detectDialect, ensureDefaultAdmin, removeBootstrapAdminFile } from "../db";
+import { closeDatabase, getDatabase, getMysqlDb, getMariadbConfig, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, detectDialect, ensureDefaultAdmin, removeBootstrapAdminFile, resetAdapter } from "../db";
 import { closeDb } from "../../apps/answer-card/server/database";
 import { seedDemoData, clearDemoData } from "../services/DemoDataService";
 import { DEMO_IMPORT_PRODUCTION_CONFIRM } from "../services/demo/demoDataPolicy";
@@ -156,6 +156,21 @@ async function swapRestoredDataDir(dataDir: string, staging: string | null, suff
     }
     throw err;
   }
+}
+
+/** 数据树换完之后再落 scanner.db。它和 data/answer-card 同目录，提前写进旧树会被一起换走。 */
+export async function restoreScannerDatabase(scannerBak: string, scannerDbPath: string): Promise<void> {
+  if (!existsSync(scannerBak)) return;
+  await mkdir(path.dirname(scannerDbPath), { recursive: true });
+  for (const suffix of ["-wal", "-shm"]) {
+    const sidecar = scannerDbPath + suffix;
+    if (existsSync(sidecar)) {
+      try { rmSync(sidecar, { force: true }); } catch (err) {
+        console.warn(`[Restore] 清理 scanner ${suffix} 失败（继续）:`, err);
+      }
+    }
+  }
+  await copyFile(scannerBak, scannerDbPath);
 }
 
 async function discardStagingDir(staging: string | null): Promise<void> {
@@ -460,6 +475,9 @@ async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
       }
       await copyFile(projectxBak, projectxDbPath);
       dbReplaced = true;
+      // closeDatabase() 只清掉 better-sqlite3 实例。SqliteAdapter 仍缓存着那条已关闭的连接，
+      // 不重置的话后面的引导、权限缓存和请求都会一直打在关闭的库上。
+      resetAdapter();
 
       // 恢复后重新引导管理员账号（#185 安全模型 + R01 整改）：先删掉当前引导文件，
       // 让 ensureDefaultAdmin() 以「文件缺失」判定口令事实源不可用——
@@ -476,14 +494,10 @@ async function restoreUploadedZip(req: Request, res: Response): Promise<void> {
       // 无条件吊销全部会话与票据，所有用户都必须重新登录。
       await revokeAllRestoreSessions();
 
-      // 恢复 scanner.db（如果有）
-      const scannerBak = path.join(tmpDir, "scanner.db");
-      if (existsSync(scannerBak)) {
-        await copyFile(scannerBak, scannerDbPath);
-      }
-
       // 恢复 data/answer-card/ 目录：暂存树已在库替换前复制并校验，这里只做两次同卷 rename。
+      // scanner.db 不在暂存树里（备份时单独抽出），必须等新树就位后再写，否则会跟着旧树被换走。
       await swapRestoredDataDir(dataDir, staging, backupSuffix);
+      await restoreScannerDatabase(path.join(tmpDir, "scanner.db"), scannerDbPath);
       // 备份不含 feedback/_tmp：替换数据树后让反馈模块按新目录重新初始化。
       resetFeedbackRuntimeStateAfterRestore();
 

@@ -16,7 +16,7 @@
  *   8. 教师提交、自己的反馈 / 附件与越权拒绝
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
@@ -554,6 +554,34 @@ async function main(): Promise<void> {
     headers: { Authorization: `Bearer ${teacherToken}` },
   })).status === 403, "教师不能下载附件");
   ok((await fetch(`${base}/${attachReportId}/attachments/${firstAttachment?.id}`)).status === 401, "未登录不能下载附件");
+
+  const student = await userRepo.createUser({
+    username: "fb_student",
+    password: "student-feedback",
+    name: "反馈测试学生",
+    role_id: ROLE_IDS.STUDENT,
+  });
+  ok(student.id > 0, "准备学生账号");
+  const studentLogin = await auth.login("fb_student", "student-feedback");
+  ok(Boolean(studentLogin.token), "学生登录成功");
+  const studentToken = studentLogin.token!;
+  let releaseStudentLock!: () => void;
+  const studentLockHeld = withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => {
+    releaseStudentLock = resolve;
+  }));
+  let studentStatus = 0;
+  const studentDownload = fetch(`${base}/${attachReportId}/attachments/${firstAttachment?.id}`, {
+    headers: { Authorization: `Bearer ${studentToken}` },
+  }).then(async (response) => {
+    studentStatus = response.status;
+    await response.arrayBuffer().catch(() => undefined);
+    return response;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  ok(studentStatus === 403, "学生下载附件不等数据锁，角色门直接返回 403");
+  releaseStudentLock();
+  await studentLockHeld;
+  await studentDownload;
 
   ok((await call("DELETE", `/${attachReportId}`, adminToken)).status === 200, "删除带附件的反馈");
   ok((await fetch(`${base}/${attachReportId}/attachments/${firstAttachment?.id}`, {
@@ -1551,6 +1579,176 @@ async function main(): Promise<void> {
   auth.revokeAllTokens();
   ok((await call("GET", "?limit=1", adminToken)).status === 401,
     "吊销全部会话后旧管理员 Token 立即失效");
+
+  section("8. 附件路径深度、非文件句柄与排队断连");
+  {
+    const openFds = (target: string): string[] | null => {
+      if (!existsSync("/proc/self/fd")) return null;
+      const abs = path.resolve(target);
+      const hits: string[] = [];
+      for (const name of readdirSync("/proc/self/fd")) {
+        try {
+          if (readlinkSync(path.join("/proc/self/fd", name)) === abs) hits.push(name);
+        } catch { /* 扫描途中关闭 */ }
+      }
+      return hits;
+    };
+
+    await db.run("UPDATE users SET role_id = ? WHERE username = 'admin'", ROLE_IDS.ADMIN);
+    const restoredLogin = await auth.login("admin", adminPassword);
+    ok(Boolean(restoredLogin.token), "路径回归前管理员重新登录");
+    const pathToken = restoredLogin.token!;
+
+    const shallowForm = new FormData();
+    shallowForm.set("title", "浅路径");
+    shallowForm.set("content", "正文");
+    shallowForm.append("files", new Blob(["shallow"], { type: "text/plain" }), "shallow.txt");
+    const shallowReport = await upload(shallowForm, pathToken);
+    ok(shallowReport.status === 201, "准备浅路径删除回归");
+    const shallowId = Number(shallowReport.json?.data?.id);
+    await db.run(
+      "UPDATE feedback_attachments SET stored_path = ? WHERE feedback_id = ?",
+      "feedback/file.png",
+      shallowId
+    );
+    mkdirSync(tempDir, { recursive: true });
+    writeFileSync(path.join(tempDir, "keep.txt"), "keep");
+    const shallowDelete = await call("DELETE", `/${shallowId}`, pathToken);
+    ok(shallowDelete.status === 500, "缺少报告子目录的附件路径拒绝删除");
+    ok(existsSync(feedbackRoot) && existsSync(path.join(tempDir, "keep.txt")),
+      "浅路径不会把 feedback 根目录或 _tmp 移进回收站");
+    await db.run("DELETE FROM feedback_attachments WHERE feedback_id = ?", shallowId);
+    ok((await call("DELETE", `/${shallowId}`, pathToken)).status === 200, "清掉浅路径回归的反馈记录");
+
+    const tmpPathForm = new FormData();
+    tmpPathForm.set("title", "临时目录路径");
+    tmpPathForm.set("content", "正文");
+    tmpPathForm.append("files", new Blob(["tmp-path"], { type: "text/plain" }), "tmp-path.txt");
+    const tmpPathReport = await upload(tmpPathForm, pathToken);
+    const tmpPathId = Number(tmpPathReport.json?.data?.id);
+    await db.run(
+      "UPDATE feedback_attachments SET stored_path = ? WHERE feedback_id = ?",
+      "feedback/_tmp/keep.txt",
+      tmpPathId
+    );
+    const tmpPathDelete = await call("DELETE", `/${tmpPathId}`, pathToken);
+    ok(tmpPathDelete.status === 500 && existsSync(path.join(tempDir, "keep.txt")),
+      "指向 _tmp 的附件路径不会把临时目录移进回收站");
+    await db.run("DELETE FROM feedback_attachments WHERE feedback_id = ?", tmpPathId);
+    ok((await call("DELETE", `/${tmpPathId}`, pathToken)).status === 200, "清掉 _tmp 路径回归的反馈记录");
+
+    const dirForm = new FormData();
+    dirForm.set("title", "目录当附件");
+    dirForm.set("content", "正文");
+    dirForm.append("files", new Blob(["dir"], { type: "text/plain" }), "dir.txt");
+    const dirReport = await upload(dirForm, pathToken);
+    ok(dirReport.status === 201, "准备目录句柄回归");
+    const dirId = Number(dirReport.json?.data?.id);
+    const dirAttachmentId = Number((await call("GET", `/${dirId}`, pathToken)).json?.data?.attachments?.[0]?.id
+      ?? (await call("GET", "?limit=20", pathToken)).json?.data?.find((row: { id: number }) => row.id === dirId)?.attachments?.[0]?.id);
+    const nestedDir = path.join(feedbackRoot, "not-a-file-parent", "nested");
+    mkdirSync(nestedDir, { recursive: true });
+    await db.run(
+      "UPDATE feedback_attachments SET stored_path = ? WHERE feedback_id = ?",
+      "feedback/not-a-file-parent/nested",
+      dirId
+    );
+    const dirDownload = await fetch(`${base}/${dirId}/attachments/${dirAttachmentId}`, {
+      headers: { Authorization: `Bearer ${pathToken}` },
+    });
+    await dirDownload.arrayBuffer().catch(() => undefined);
+    const dirFds = openFds(nestedDir);
+    ok(dirDownload.status === 404, `目录不是附件文件时返回 404（实际 ${dirDownload.status}）`);
+    ok(dirFds === null || dirFds.length === 0, "打开目录后立刻关闭句柄");
+    await db.run("DELETE FROM feedback_attachments WHERE feedback_id = ?", dirId);
+    ok((await call("DELETE", `/${dirId}`, pathToken)).status === 200, "清掉目录句柄回归的反馈记录");
+    rmSync(path.join(feedbackRoot, "not-a-file-parent"), { recursive: true, force: true });
+
+    const disconnectForm = new FormData();
+    disconnectForm.set("title", "排队断连");
+    disconnectForm.set("content", "正文");
+    const disconnectPayload = Buffer.alloc(256 * 1024, 0x61);
+    disconnectForm.append("files", new Blob([disconnectPayload]), "queued.bin");
+    const disconnectReport = await upload(disconnectForm, pathToken);
+    ok(disconnectReport.status === 201, `准备排队断连下载（实际 ${disconnectReport.status} ${disconnectReport.json?.error ?? ""}）`);
+    if (disconnectReport.status === 201) {
+      const disconnectId = Number(disconnectReport.json?.data?.id);
+      const disconnectAttachmentId = Number(
+        (await call("GET", "?limit=20", pathToken)).json?.data?.find((row: { id: number }) => row.id === disconnectId)?.attachments?.[0]?.id
+      );
+      const disconnectRow = await db.get<{ stored_path: string }>(
+        "SELECT stored_path FROM feedback_attachments WHERE id = ?",
+        disconnectAttachmentId
+      );
+      const disconnectFile = path.resolve(process.env.ANSWER_CARD_DATA_DIR!, disconnectRow!.stored_path);
+      let releaseDownloadLock!: () => void;
+      const downloadLockHeld = withAnswerCardDataMutationLock(() => new Promise<void>((resolve) => {
+        releaseDownloadLock = resolve;
+      }));
+      const downloadUrl = new URL(`${base}/${disconnectId}/attachments/${disconnectAttachmentId}`);
+      const queuedDownload = http.request({
+        hostname: downloadUrl.hostname,
+        port: downloadUrl.port,
+        path: downloadUrl.pathname,
+        method: "GET",
+        headers: { Authorization: `Bearer ${pathToken}` },
+      });
+      queuedDownload.on("error", () => undefined);
+      queuedDownload.end();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      queuedDownload.destroy();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      releaseDownloadLock();
+      await downloadLockHeld;
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const leftoverFds = openFds(disconnectFile);
+      ok(leftoverFds === null || leftoverFds.length === 0, "排队期间断开的下载不再占着附件句柄");
+      ok((await call("DELETE", `/${disconnectId}`, pathToken)).status === 200, "清掉排队断连回归的反馈");
+    }
+  }
+
+  if (!maria) {
+    section("9. SQLite 备份恢复保留 scanner.db，并重新打开数据库连接");
+    await db.run("UPDATE users SET role_id = ? WHERE username = 'admin'", ROLE_IDS.ADMIN);
+    const backupLogin = await auth.login("admin", adminPassword);
+    ok(Boolean(backupLogin.token), "备份前管理员可以登录");
+    const backupToken = backupLogin.token!;
+    const scannerPath = path.join(process.env.ANSWER_CARD_DATA_DIR!, "scanner.db");
+    mkdirSync(path.dirname(scannerPath), { recursive: true });
+    const scannerMarker = "scanner-restore-marker";
+    writeFileSync(scannerPath, scannerMarker);
+    await getMysqlDb().run("UPDATE users SET name = ? WHERE username = 'admin'", "name-before-backup");
+    const origin = new URL(base).origin;
+    const backupResponse = await fetch(`${origin}/api/db/backup`, {
+      headers: { Authorization: `Bearer ${backupToken}` },
+    });
+    ok(backupResponse.status === 200, `完整备份成功（实际 ${backupResponse.status}）`);
+    const backupZip = Buffer.from(await backupResponse.arrayBuffer());
+    writeFileSync(scannerPath, "scanner-clobbered");
+    await getMysqlDb().run("UPDATE users SET name = ? WHERE username = 'admin'", "name-clobbered");
+    const restoreResponse = await fetch(`${origin}/api/db/restore`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${backupToken}`, "Content-Type": "application/zip" },
+      body: backupZip,
+    });
+    const restoreBody = await restoreResponse.text();
+    ok(restoreResponse.status === 200, `完整恢复成功（实际 ${restoreResponse.status} ${restoreBody.slice(0, 160)}）`);
+    ok(existsSync(scannerPath) && readFileSync(scannerPath, "utf8") === scannerMarker,
+      "恢复后数据目录里的 scanner.db 是备份中的那一份");
+    const restoredName = await getMysqlDb().get<{ name: string }>("SELECT name FROM users WHERE username = 'admin'");
+    ok(restoredName?.name === "name-before-backup", "恢复后 getMysqlDb() 读到的是备份里的数据，而不是已关闭的旧连接");
+    await getMysqlDb().run("UPDATE users SET name = ? WHERE username = 'admin'", "name-after-restore");
+    const writtenName = await getMysqlDb().get<{ name: string }>("SELECT name FROM users WHERE username = 'admin'");
+    ok(writtenName?.name === "name-after-restore", "恢复后 getMysqlDb() 可以继续写入");
+
+    const missingRoot = path.join(tmpDir, "missing-answer-card");
+    const missingScanner = path.join(missingRoot, "scanner.db");
+    const looseMarker = path.join(tmpDir, "scanner-without-datadir.bin");
+    writeFileSync(looseMarker, "scanner-without-datadir");
+    await backupModule.restoreScannerDatabase(looseMarker, missingScanner);
+    ok(readFileSync(missingScanner, "utf8") === "scanner-without-datadir",
+      "数据目录不存在时仍会建目录并写入 scanner.db");
+  }
 
   server.close();
 }
