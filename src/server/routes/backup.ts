@@ -7,7 +7,8 @@ import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 
-import { authMiddleware, requirePermission } from "../middleware/auth";
+import { authMiddleware, refreshAuthenticatedUser, requirePermission } from "../middleware/auth";
+import { holdAnswerCardDataMutationLock } from "../lib/answerCardDataLock";
 import { extractZipFileWithinBudget, RestoreZipError } from "../services/restoreZip";
 import {
   MAX_RESTORE_ZIP_ENTRIES,
@@ -233,7 +234,12 @@ function isDataTreeTransientPath(filePath: string, dataDir: string): boolean {
  * GET /api/db/backup
  * 导出所有数据为 ZIP 下载
  */
-router.get("/backup", async (_req: Request, res: Response) => {
+router.get(
+  "/backup",
+  holdAnswerCardDataMutationLock,
+  refreshAuthenticatedUser,
+  requirePermission(PERMISSIONS.USER_MANAGE),
+  async (_req: Request, res: Response) => {
   const dialect = detectDialect();
   if (dialect === "mariadb") {
     await backupMariadb(res);
@@ -262,55 +268,52 @@ router.get("/backup", async (_req: Request, res: Response) => {
     const dataDir = getDataDir();
     const dataBakDir = path.join(tmpDir, "data", "answer-card");
 
-    // 数据库快照与附件目录复制必须处于同一反馈视图：期间不允许提交或删除反馈，
-    // 否则快照里的附件记录可能在目录复制前被删除，备份成功却缺少文件。
-    await withFeedbackMutationLock(async () => {
-      // 先把 _trash 收敛到与数据库一致：仍存在的记录移回原位，已删记录的残骸清掉，
-      // 之后只复制正式附件目录，不会把删除残骸或悬空目录带进备份。
-      if (!(await reconcileFeedbackTrashLocked())) {
-        // 暂存目录没能与数据库对齐时直接中止：此时导出会留下指向缺失附件的元数据。
-        throw new Error("反馈暂存目录核对失败，已中止备份");
-      }
+    // 路由级数据锁已串行备份 / 恢复 / 上传；此处不再嵌套 withFeedbackMutationLock（同一把锁会自死锁）。
+    // 先把 _trash 收敛到与数据库一致：仍存在的记录移回原位，已删记录的残骸清掉，
+    // 之后只复制正式附件目录，不会把删除残骸或悬空目录带进备份。
+    if (!(await reconcileFeedbackTrashLocked())) {
+      // 暂存目录没能与数据库对齐时直接中止：此时导出会留下指向缺失附件的元数据。
+      throw new Error("反馈暂存目录核对失败，已中止备份");
+    }
 
-      // 1. 备份 projectx.db（通过 VACUUM INTO 创建干净的副本）
-      if (existsSync(projectxDbPath)) {
-        const db = getDatabase();
-        try {
-          const safeTarget = projectxBak.replace(/\\/g, "\\\\").replace(/'/g, "''");
-          db.exec(`VACUUM INTO '${safeTarget}'`);
-        } catch (err) {
-          // VACUUM INTO 可能不支持旧版 SQLite，降级为文件复制
-          console.warn("[Backup] VACUUM INTO failed, falling back to file copy:", err);
-          await copyFile(projectxDbPath, projectxBak);
-        }
-        const fstat = await stat(projectxBak);
-        metadata.files.push({ name: "projectx.db", size: fstat.size });
+    // 1. 备份 projectx.db（通过 VACUUM INTO 创建干净的副本）
+    if (existsSync(projectxDbPath)) {
+      const db = getDatabase();
+      try {
+        const safeTarget = projectxBak.replace(/\\/g, "\\\\").replace(/'/g, "''");
+        db.exec(`VACUUM INTO '${safeTarget}'`);
+      } catch (err) {
+        // VACUUM INTO 可能不支持旧版 SQLite，降级为文件复制
+        console.warn("[Backup] VACUUM INTO failed, falling back to file copy:", err);
+        await copyFile(projectxDbPath, projectxBak);
       }
+      const fstat = await stat(projectxBak);
+      metadata.files.push({ name: "projectx.db", size: fstat.size });
+    }
 
-      // 2. 备份 scanner.db
-      if (existsSync(scannerDbPath)) {
-        // scanner.db 使用独立连接，先关闭再复制
-        try {
-          closeDb();
-        } catch (err) {
-          console.warn("[Backup] 关闭 scanner DB 失败，继续备份（文件可能不一致）:", err);
-        }
-        await copyFile(scannerDbPath, scannerBak);
-        const fstat = await stat(scannerBak);
-        metadata.files.push({ name: "scanner.db", size: fstat.size });
+    // 2. 备份 scanner.db
+    if (existsSync(scannerDbPath)) {
+      // scanner.db 使用独立连接，先关闭再复制
+      try {
+        closeDb();
+      } catch (err) {
+        console.warn("[Backup] 关闭 scanner DB 失败，继续备份（文件可能不一致）:", err);
       }
+      await copyFile(scannerDbPath, scannerBak);
+      const fstat = await stat(scannerBak);
+      metadata.files.push({ name: "scanner.db", size: fstat.size });
+    }
 
-      // 3. 打包 data/answer-card/ 目录
-      if (existsSync(dataDir)) {
-        const separatelyBackedUp = [getProjectXDbPath(), getScannerDbPath()];
-        await copyDirectory(
-          dataDir,
-          dataBakDir,
-          (filePath: string) => !isSeparatelyBackedUpDbFile(filePath, separatelyBackedUp) && !isDataTreeTransientPath(filePath, dataDir)
-        );
-        metadata.files.push({ name: "data/answer-card/", size: 0 });
-      }
-    });
+    // 3. 打包 data/answer-card/ 目录
+    if (existsSync(dataDir)) {
+      const separatelyBackedUp = [getProjectXDbPath(), getScannerDbPath()];
+      await copyDirectory(
+        dataDir,
+        dataBakDir,
+        (filePath: string) => !isSeparatelyBackedUpDbFile(filePath, separatelyBackedUp) && !isDataTreeTransientPath(filePath, dataDir)
+      );
+      metadata.files.push({ name: "data/answer-card/", size: 0 });
+    }
 
     // 4. 写入 metadata
     await writeFile(path.join(tmpDir, "metadata.json"), JSON.stringify(metadata, null, 2));
@@ -364,7 +367,8 @@ router.get("/backup", async (_req: Request, res: Response) => {
       res.destroy(error instanceof Error ? error : undefined);
     }
   }
-});
+  },
+);
 
 /**
  * POST /api/db/restore
@@ -666,36 +670,35 @@ async function backupMariadb(res: Response): Promise<void> {
 
     // mysqldump 与附件目录复制必须处于同一反馈视图：期间不允许提交或删除反馈，
     // 否则 dump 里的附件记录可能在目录复制前被删除，备份成功却缺少文件。
-    await withFeedbackMutationLock(async () => {
-      if (!(await reconcileFeedbackTrashLocked())) {
-        // 暂存目录没能与数据库对齐时直接中止：此时导出会留下指向缺失附件的元数据。
-        throw new Error("反馈暂存目录核对失败，已中止备份");
-      }
+    // 调用方已在路由级持有数据锁并完成锁内重新认证，此处不再嵌套 withFeedbackMutationLock。
+    if (!(await reconcileFeedbackTrashLocked())) {
+      // 暂存目录没能与数据库对齐时直接中止：此时导出会留下指向缺失附件的元数据。
+      throw new Error("反馈暂存目录核对失败，已中止备份");
+    }
+    try {
+      await execFileAsync("mysqldump", args, { timeout: 300_000 });
+    } catch (err: any) {
+      // 也尝试 mariadb-dump
+      console.warn("[Backup] mysqldump failed, trying mariadb-dump:", err.message);
       try {
-        await execFileAsync("mysqldump", args, { timeout: 300_000 });
-      } catch (err: any) {
-        // 也尝试 mariadb-dump
-        console.warn("[Backup] mysqldump failed, trying mariadb-dump:", err.message);
-        try {
-          await execFileAsync("mariadb-dump", args, { timeout: 300_000 });
-        } catch (err2: any) {
-          res.status(500).json({
-            // 报错里的 `--result-file=<绝对路径>` 与账号信息不外发（安全 R25）
-            message: `mysqldump 执行失败: ${sanitizeOpsMessage(err2?.message, { fallback: "导出失败" })}。请确保已安装 MariaDB 客户端工具。`,
-          });
-          return;
-        }
+        await execFileAsync("mariadb-dump", args, { timeout: 300_000 });
+      } catch (err2: any) {
+        res.status(500).json({
+          // 报错里的 `--result-file=<绝对路径>` 与账号信息不外发（安全 R25）
+          message: `mysqldump 执行失败: ${sanitizeOpsMessage(err2?.message, { fallback: "导出失败" })}。请确保已安装 MariaDB 客户端工具。`,
+        });
+        return;
       }
+    }
 
-      if (existsSync(dataDir)) {
-        const separatelyBackedUp = [getProjectXDbPath(), getScannerDbPath()];
-        await copyDirectory(
-          dataDir,
-          dataBakDir,
-          (filePath: string) => !isSeparatelyBackedUpDbFile(filePath, separatelyBackedUp) && !isDataTreeTransientPath(filePath, dataDir)
-        );
-      }
-    });
+    if (existsSync(dataDir)) {
+      const separatelyBackedUp = [getProjectXDbPath(), getScannerDbPath()];
+      await copyDirectory(
+        dataDir,
+        dataBakDir,
+        (filePath: string) => !isSeparatelyBackedUpDbFile(filePath, separatelyBackedUp) && !isDataTreeTransientPath(filePath, dataDir)
+      );
+    }
     if (res.headersSent) return;
 
     const fstat = await stat(dumpFile);

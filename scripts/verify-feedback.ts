@@ -661,6 +661,9 @@ async function main(): Promise<void> {
   const dataLock = await import("../src/server/lib/answerCardDataLock");
   ok(feedbackStorage.withFeedbackMutationLock === dataLock.withAnswerCardDataMutationLock,
     "反馈、原卷 / 答案页删除与备份 / 恢复共用同一把数据锁");
+  const backupRouteSource = readFileSync(new URL("../src/server/routes/backup.ts", import.meta.url), "utf8");
+  ok(/router\.get\(\s*\n\s*"\/backup",[\s\S]{0,120}holdAnswerCardDataMutationLock,[\s\S]{0,120}refreshAuthenticatedUser,[\s\S]{0,120}requirePermission\(PERMISSIONS\.USER_MANAGE\)/.test(backupRouteSource),
+    "系统备份导出在数据锁内重新认证并重检 USER_MANAGE");
 
   const purgeDir = path.join(tmpDir, "purge-unit");
   mkdirSync(purgeDir, { recursive: true });
@@ -1573,6 +1576,29 @@ async function main(): Promise<void> {
     const downloadStatus = downloadResponse.status;
     await downloadResponse.text().catch(() => "");
     ok(downloadStatus === 403, "锁内重新认证后，降级管理员下载附件被拒绝");
+
+    await db.run("UPDATE users SET role_id = ? WHERE id = ?", ROLE_IDS.ADMIN, adminRow!.id);
+    let releaseBackupLock!: () => void;
+    const backupGate = new Promise<void>((resolve) => { releaseBackupLock = resolve; });
+    const backupLockHeld = withAnswerCardDataMutationLock(async () => {
+      await backupGate;
+      await db.run("UPDATE users SET role_id = ? WHERE id = ?", ROLE_IDS.STUDENT, adminRow!.id);
+    });
+    let backupExportSettled = false;
+    const blockedBackupExport = fetch(`${new URL(base).origin}/api/db/backup`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    }).then((response) => {
+      backupExportSettled = true;
+      return response;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    ok(!backupExportSettled, "系统备份在数据锁释放前等待");
+    releaseBackupLock();
+    await backupLockHeld;
+    const backupExportResponse = await blockedBackupExport;
+    ok(backupExportResponse.status === 403,
+      `等锁期间管理员被降级后，备份导出按新角色拒绝（实际 ${backupExportResponse.status}）`);
+    await db.run("UPDATE users SET role_id = ? WHERE id = ?", ROLE_IDS.ADMIN, adminRow!.id);
   }
 
   // 恢复备份会整体替换账号库：调用方必须无条件吊销全部 Token，旧数字 userId 不能继承新身份。
