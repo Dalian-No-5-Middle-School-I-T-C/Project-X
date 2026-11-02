@@ -5,36 +5,22 @@ import { createRoot } from "react-dom/client";
 import { ScannerApp } from "./ScannerApp";
 import { AuthProvider } from "./auth/AuthContext";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import { TooltipProvider } from "./components/ui/v2";
+import { reportRendererProblem, ScannerNotice } from "./components/ScannerNotice";
+import { Toaster, TooltipProvider } from "./components/ui/v2";
 // 唯一样式入口（与 main.tsx 一致，层序由 app.css 内部保证）
 import "./theme/app.css";
 
-// 黑匣子诊断：全局未捕获错误兜底（main-scanner 此前无 ErrorBoundary，白屏无提示）
+// 黑匣子诊断：全局未捕获错误兜底（main-scanner 此前无 ErrorBoundary，白屏无提示）。
+// 现场反馈白屏/闪退时最怕整页被覆盖：这里只挂一个可关闭的诊断卡，页面还能继续用。
 window.addEventListener("error", (event) => {
   const msg = event.error instanceof Error ? event.error.stack || event.error.message : String(event.message || event.error || "unknown error");
   console.error("[ScannerRenderer] window.error:", msg);
-  const overlayId = "__px_scanner_error_overlay";
-  if (!document.getElementById(overlayId)) {
-    const el = document.createElement("div");
-    el.id = overlayId;
-    el.setAttribute("role", "alert");
-    el.style.cssText = "position:fixed;inset:12px;z-index:99999;background:#fff;color:#111;border:2px solid #d32f2f;border-radius:8px;padding:16px;overflow:auto;font:12px/1.5 monospace;white-space:pre-wrap;word-break:break-all;";
-    el.textContent = `扫描端渲染异常（已捕获）：\n${msg}\n\n请截图此信息并回传，日志位于 %APPDATA%\\answer-card-designer\\logs\\main.log`;
-    document.body.appendChild(el);
-  }
+  reportRendererProblem("界面遇到异常", msg);
 });
 window.addEventListener("unhandledrejection", (event) => {
   const reason = event.reason instanceof Error ? event.reason.stack || event.reason.message : String(event.reason || "unknown rejection");
   console.error("[ScannerRenderer] unhandledrejection:", reason);
-  const overlayId = "__px_scanner_rejection_overlay";
-  if (!document.getElementById(overlayId)) {
-    const el = document.createElement("div");
-    el.id = overlayId;
-    el.setAttribute("role", "alert");
-    el.style.cssText = "position:fixed;inset:12px;z-index:99999;background:#fff;color:#111;border:2px solid #d32f2f;border-radius:8px;padding:16px;overflow:auto;font:12px/1.5 monospace;white-space:pre-wrap;word-break:break-all;";
-    el.textContent = `扫描端异步异常（已捕获）：\n${reason}\n\n请截图此信息并回传，日志位于 %APPDATA%\\answer-card-designer\\logs\\main.log`;
-    document.body.appendChild(el);
-  }
+  reportRendererProblem("界面遇到异步异常", reason);
 });
 
 try {
@@ -64,5 +50,9 @@ createRoot(document.getElementById("root")!).render(
         </AuthProvider>
       </TooltipProvider>
     </ErrorBoundary>
+    {/* 通知卡挂在边界外：界面整体降级时，诊断与恢复提示仍然显示得出来 */}
+    <ScannerNotice />
+    {/* 扫描端组件里大量 notify.* 反馈（保存成绩、删除记录、停不下来等）需要有自己的容器 */}
+    <Toaster />
   </React.StrictMode>
 );

@@ -60,10 +60,15 @@ interface Props {
   /** v2.7.2：本批扫描完成时上抛给 ScannerApp，自动进入扫描后处理页 */
   onScansComplete?: (sessionId: string, pageCount: number) => void;
   /** 继续扫描前先归档当前会话：部分中断的批次离开面板后仍能在后处理页找到。 */
-  onBatchArchived?: (sessionId: string, pageCount: number) => void;
+  onBatchArchived?: (cardId: string, sessionId: string, pageCount: number) => void;
+  onScanSessionStarted?: (sessionId: string) => void;
+  onScanSessionAbandoned?: (cardId: string, sessionId: string) => void;
   /** 从后处理页点「继续扫描」进入时自动开扫。 */
   autoStartScan?: boolean;
   onAutoStartConsumed?: () => void;
+  /** 本卡已保存的后处理批次数量；大于 0 时在工作台给出回到后处理页的入口。 */
+  postprocessBatchCount?: number;
+  onOpenPostprocess?: () => void;
 }
 
 const directoryInputProps = {
@@ -75,7 +80,7 @@ function isImageFile(file: File): boolean {
   return file.type.startsWith("image/") || /\.(png|jpe?g|bmp|webp|tiff?)$/i.test(file.name);
 }
 
-export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange, cardVersionNote, onScansComplete, onBatchArchived, autoStartScan, onAutoStartConsumed }: Props) {
+export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange, cardVersionNote, onScansComplete, onBatchArchived, onScanSessionStarted, onScanSessionAbandoned, autoStartScan, onAutoStartConsumed, postprocessBatchCount = 0, onOpenPostprocess }: Props) {
   const [cfgOpen, setCfgOpen] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [status, setStatus] = useState("");
@@ -253,6 +258,8 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
                 autoStartScan={autoStartScan}
                 onAutoStartConsumed={onAutoStartConsumed}
                 onBatchArchived={onBatchArchived}
+                onScanSessionStarted={onScanSessionStarted}
+                onScanSessionAbandoned={onScanSessionAbandoned}
                 onScansComplete={(sid, pageCount) => {
                   // v2.5.1: 保持面板挂在 done 视图；v2.7.2: 同时上抛给 ScannerApp 自动跳后处理页
                   setStatus(`扫描完成：${pageCount} 张`);
@@ -351,6 +358,11 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
               >
                 开始扫描
               </Button>
+              {postprocessBatchCount > 0 && onOpenPostprocess && (
+                <Button variant="outline" block className="mt-2" onClick={onOpenPostprocess}>
+                  查看扫描后处理（{postprocessBatchCount} 批）
+                </Button>
+              )}
               <p className="mt-2 rounded-md bg-secondary p-2 text-xs text-muted-foreground">连接扫描仪进行 TWAIN 直扫和自动识别</p>
               </CardContent>
             </Card>

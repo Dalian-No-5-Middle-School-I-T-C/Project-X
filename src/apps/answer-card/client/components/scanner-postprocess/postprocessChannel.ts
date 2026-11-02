@@ -20,14 +20,25 @@ export interface PostprocessChannel {
   saveResults(sessionId: string, groupIds: readonly string[]): Promise<ScanBatchResponse>;
   correctionUrl(sessionId: string, groupId: string): string;
   imageUrl(recordId: string): string;
+  thumbnailUrl(recordId: string): string;
   discardUrl(sessionId: string, groupId: string): string;
   retryUrl(sessionId: string): string;
   deleteGroupsUrl(sessionId: string): string;
 }
 
+/** 服务端拒绝时保留状态码：409 表示会话还没收尾，调用方要等待而不是当加载失败。 */
+export class PostprocessHttpError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "PostprocessHttpError";
+    this.status = status;
+  }
+}
+
 async function readJson(res: Response): Promise<any> {
   const data = await res.json();
-  if (!res.ok) throw new Error(data?.message || `请求失败（HTTP ${res.status}）`);
+  if (!res.ok) throw new PostprocessHttpError(data?.message || `请求失败（HTTP ${res.status}）`, res.status);
   return data;
 }
 
@@ -48,6 +59,7 @@ export function localChannel(): PostprocessChannel {
     })),
     correctionUrl: (sessionId, groupId) => `/api/scanner/session/${sessionId}/groups/${groupId}/correction`,
     imageUrl: recordId => mediaUrl(`/api/scanner/scan-image/${recordId}`),
+    thumbnailUrl: recordId => mediaUrl(`/api/scanner/scan-image/${recordId}?thumb=1`),
     discardUrl: (sessionId, groupId) => `/api/scanner/session/${sessionId}/groups/${groupId}/discard`,
     retryUrl: sessionId => `/api/scanner/session/${sessionId}/retry`,
     deleteGroupsUrl: sessionId => `/api/scanner/session/${sessionId}/groups`,
@@ -65,6 +77,8 @@ export interface SessionMeta {
   paperSize: string;
   /** 扫描阶段写入会话的告警。跳到后处理页后扫描面板已卸载，横幅从这里读。 */
   warnings: string[];
+  /** 服务端会话状态。取消的批次保留页面但不再自动补传，避免把老师中止的批次悄悄入库。 */
+  status: string;
 }
 
 /** 补传与花名册查询所需的会话元数据。 */
@@ -72,7 +86,7 @@ export async function loadSessionMeta(sessionId: string): Promise<SessionMeta> {
   const data = await readJson(await authFetch(`/api/scanner/scan/${sessionId}`));
   const session = data.session as {
     identity_mode?: "strict" | "legacy"; dpi?: number; paper_size?: string;
-    card_version?: string | null; warnings_json?: unknown;
+    card_version?: string | null; warnings_json?: unknown; status?: string;
   };
   return {
     sessionId,
@@ -82,6 +96,7 @@ export async function loadSessionMeta(sessionId: string): Promise<SessionMeta> {
     dpi: Number(session.dpi) || 300,
     paperSize: session.paper_size || "A4",
     warnings: parseStoredWarnings(session.warnings_json),
+    status: typeof session.status === "string" ? session.status : "",
   };
 }
 
