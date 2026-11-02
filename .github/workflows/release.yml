@@ -41,6 +41,9 @@ on:
       - "scripts/build-native-mingw.sh"
       - "resources/native/win-ia32/**"
       - "resources/native/correction-linux-x64/**"
+      # 打包工序会无条件把这份 TWAIN 第三方声明拷进 stage，改了它也属于改到发布链路：
+      # 不在触发范围里的话，重命名或删除要等到打标签执行 cp 时才第一次报错。
+      - "native/ScannerBridge/third_party/THIRD_PARTY_NOTICES.md"
   workflow_dispatch:
     inputs:
       build_scanner:
@@ -363,8 +366,10 @@ jobs:
             echo '```'
             echo
             echo '```bash'
-            echo "# Linux / macOS"
+            echo "# Linux（GNU coreutils）"
             echo "sha256sum project-x-server-ubuntu24-${version}.zip"
+            echo "# macOS 没有 sha256sum，用自带的："
+            echo "shasum -a 256 project-x-server-ubuntu24-${version}.zip"
             echo '```'
             echo
             echo "安装包不保证逐字节复现：同一份源码两次构建的 PE 头里带构建时间戳，SHA256 会变。"
