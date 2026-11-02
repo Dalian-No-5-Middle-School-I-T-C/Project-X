@@ -83,7 +83,49 @@ function walk(dir) {
     return e.isDirectory() ? walk(f) : e.isFile() ? [f] : [];
   });
 }
+/**
+ * Windows 主机上的 MSI 载荷核对：用系统自己的 Windows Installer 做管理员解包（msiexec /a），
+ * 再与 stage 里的原生件逐字节比。
+ *
+ * 为什么不走 7za：electron-builder 给 Windows 下的那颗 7za 读不出 WiX 4 产物的内部压缩流
+ * （对每个文件都报 `ERROR: Data Error : xxx_f`），而同一份 WiX 4 生成的 MSI 在 macOS/Linux 上
+ * 用 7za 解包验证一直是对的——坏的是 Windows 侧那个解包器，不是包。用 msiexec 反而更硬：
+ * 它必须真能把这个 MSI 解析成安装源，等于顺带证明包装程序读得动这份包。
+ */
+function verifyMsiWithWindowsInstaller(artifact) {
+  const checkDir = fs.mkdtempSync(path.join(root, "ignored", "scanner-installer-check-"));
+  const statusFile = path.join(checkDir, "msiexec-status.txt");
+  // 只清双引号，反斜杠必须留着（Windows 路径全靠它）；TARGETDIR 不能以反斜杠收尾，
+  // 否则 `"…\"` 里的转义会把闭合引号吃掉，msiexec 收到的参数就烂了。
+  const quote = (value) => `"${value.replace(/"/g, "")}"`;
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    `$p = Start-Process -FilePath msiexec.exe -Wait -PassThru -WindowStyle Hidden -ArgumentList '/a', ${quote(artifact)}, '/qn', ${quote(`TARGETDIR=${checkDir}`)}`,
+    `$code = if ($null -eq $p.ExitCode) { -1 } else { $p.ExitCode }`,
+    `$code | Set-Content -LiteralPath ${quote(statusFile)} -Encoding ASCII`,
+    "exit 0"
+  ].join("\n");
+  try {
+    execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { env, stdio: "pipe", timeout: 900_000 });
+    if (!fs.existsSync(statusFile)) throw new Error("msiexec 没有留下退出码，解包未真正执行");
+    const code = Number(fs.readFileSync(statusFile, "utf8").trim());
+    // 0 成功；3010 = 需要重启（本工序不涉及），其余都算解包失败。
+    if (code !== 0 && code !== 3010) throw new Error(`msiexec /a 退出码 ${code}（MSI 错误码可在 readus/Windows32位扫描端交叉打包.md 查）`);
+    const extracted = walk(checkDir);
+    for (const component of nativeComponents) {
+      const expected = fs.readFileSync(path.join(nativeDir, component));
+      const match = extracted.find((file) => path.basename(file).toLowerCase() === component.toLowerCase()
+        && fs.statSync(file).size === expected.length && fs.readFileSync(file).equals(expected));
+      if (!match) throw new Error(`MSI 内缺少与构建产物一致的 ${component}`);
+    }
+    console.log(`Installer payload verified with Windows Installer: ${nativeComponents.join(", ")}`);
+  } finally {
+    fs.rmSync(checkDir, { recursive: true, force: true });
+  }
+}
+
 async function verifyInstaller(artifact) {
+  if (process.platform === "win32" && target === "msi") return verifyMsiWithWindowsInstaller(artifact);
   const { getPath7za } = require("app-builder-lib/out/toolsets/7zip");
   const sevenZip = await getPath7za();
   const checkDir = fs.mkdtempSync(path.join(root, "ignored", "scanner-installer-check-"));
