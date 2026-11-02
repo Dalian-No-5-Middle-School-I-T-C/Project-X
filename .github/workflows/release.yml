@@ -149,6 +149,13 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
+      # Windows runner 的机器级 git 配置是 core.autocrlf=true，检出会把 LF 源码改成 CRLF；
+      # 而 source-sha256.txt 是在 Linux 上用 cmake -E sha256sum 记的原始字节哈希。
+      # 不关掉转换，来源核对在这条作业里必然 14 项全红（第九轮实测如此）。
+      # .gitattributes 里显式声明的 eol 属性仍然生效：*.sh 保持 LF、*.bat 保持 CRLF。
+      - name: Disable line-ending conversion for this checkout
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v4
         with:
           # 来源核对要查「随包 exe 最后一次入库的提交」，depth 1 的浅克隆查不到。

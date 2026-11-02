@@ -77,7 +77,8 @@ if (!existsSync(manifest)) {
     const normalized = Buffer.from(readFileSync(file).toString("utf8").replace(/\r\n/g, "\n"), "utf8");
     const lfDigest = createHash("sha256").update(normalized).digest("hex");
     if (lfDigest === expected) {
-      fail(`${relative} 是 CRLF 检出的工作副本，无法核对 ia32 原生件源码摘要。请在 LF 检出（Linux 构建机或 CI）上跑这道门禁。`);
+      fail(`${relative} 与清单只对得上「换行归一后」的哈希：这份工作副本把源码检成了 CRLF，而清单记的是 Linux 上的原始字节哈希。`
+        + `要在关闭行尾转换的检出上跑这道门禁（Windows 上先 \`git config --global core.autocrlf false\` 再检出；发布作业里已经这么做）。`);
     } else {
       fail(`${relative} 与清单摘要不一致：源码已改动而随包 ia32 识别器没重编。请按 readus/Windows32位扫描端交叉打包.md 重编并入库。`);
     }
