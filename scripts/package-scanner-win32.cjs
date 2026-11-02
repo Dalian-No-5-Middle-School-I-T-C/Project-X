@@ -215,10 +215,18 @@ async function main() {
   for (const f of walk(unpacked)) if (/\.(exe|dll|node)$/i.test(f)) pe32(f);
   const asar = require("@electron/asar");
   const archive = path.join(unpacked, "resources", "app.asar");
-  for (const entry of ["dist/scanner/index.html", "dist/server/index.mjs", "electron/main.cjs"]) asar.statFile(archive, entry);
-  for (const entry of asar.listPackage(archive).filter((f) => /\.(dll|node)$/i.test(f))) {
-    const relative = entry.replace(/^\//, "");
-    if (!asar.statFile(archive, relative).unpacked) throw new Error(`Native dependency must be unpacked: ${entry}`);
+  // asar 按 path.sep 切分归档内路径：写死正斜杠的字面量在 Windows 构建机上永远查不到，
+  // 打包完成后会在这一步误报「缺入口文件」。用 path.join 生成，两种主机上都是本机分隔符。
+  const asarEntries = [
+    path.join("dist", "scanner", "index.html"),
+    path.join("dist", "server", "index.mjs"),
+    path.join("electron", "main.cjs")
+  ];
+  for (const entry of asarEntries) asar.statFile(archive, entry);
+  for (const raw of asar.listPackage(archive).filter((f) => /\.(dll|node)$/i.test(f))) {
+    // listPackage 回吐的是分隔符拼出来的路径，先归一成 entry 再校验。
+    const relative = raw.replace(/^[\\/]/, "").split(/[\\/]/).join(path.sep);
+    if (!asar.statFile(archive, relative).unpacked) throw new Error(`Native dependency must be unpacked: ${raw}`);
     pe32(path.join(`${archive}.unpacked`, relative));
   }
   if (prepareMsi) {

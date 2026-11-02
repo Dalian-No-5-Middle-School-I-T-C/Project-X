@@ -3,8 +3,11 @@
  *
  * 部署形态差异（都要能读到，否则管理员页面永远是「—」）：
  *  - 生产：`/opt/project-x-server/dist/server/index.mjs`，`import.meta.url` 落在 `dist/server/`，与文件同目录。
- *  - 从仓库根跑 `npm run server`：按 cwd 命中 `dist/server/`，读到的是当前这份产物的构建时间。
- *  - `npm run dev` 直跑源码：没有构建信息，如实返回 null，界面显示「—」。
+ *  - 扫描端 Electron 壳：服务端产物同样打进包内，按同一路径命中。
+ *  - `npm run dev` 直跑源码：`import.meta.url` 落在 `src/server/lib/`，那里没有构建信息，
+ *    如实返回 null，界面显示「—」。
+ *    这里**故意不按 cwd 去找 `dist/server/`**：源码直跑时仓库里那份 `dist/` 属于上一次构建，
+ *    把它当成本次运行的构建时间会直接误导「这台服务器是不是新包」这个判断。
  *  - 特殊布局（自定义 `PROJECTX_APP_DIR` 等）：用 `PROJECTX_BUILD_INFO_PATH` 指定绝对路径。
  *
  * 取用规则：按优先级取**第一个存在的文件**，内容不可用就说明不可用，不再往下一个候选找，
@@ -35,10 +38,8 @@ function candidatePaths(env: NodeJS.ProcessEnv): string[] {
   // 显式指定时以此为准：文件不在就说「不在」，不悄悄改用别的候选，否则管理员看到的构建时间
   // 可能来自另一份产物，比「未知」更危险。
   if (env.PROJECTX_BUILD_INFO_PATH) return [path.resolve(env.PROJECTX_BUILD_INFO_PATH)];
-  return [
-    path.join(__dirname, BUILD_INFO_FILE_NAME),
-    path.join(process.cwd(), "dist", "server", BUILD_INFO_FILE_NAME),
-  ];
+  // 只认与服务端产物同目录的那一份：见文件头，按 cwd 兜底会把上一次构建的时间当成本次运行的。
+  return [path.join(__dirname, BUILD_INFO_FILE_NAME)];
 }
 
 /** 错误原因去掉路径部分：`ENOENT` / `EACCES` 这类代码足够定位，目录本身不该出现在管理接口响应里。 */

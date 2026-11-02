@@ -97,7 +97,12 @@ section("构建侧写盘与读取端读回");
   ok(info.version === packageVersion, `版本取自 package.json（${info.version}）`);
   ok(info.schema === BUILD_INFO_SCHEMA, "写入的结构版本与共享契约一致");
   ok(!Number.isNaN(new Date(info.builtAt).getTime()), "builtAt 可解析");
-  ok(typeof info.commitDirty === "boolean", "在 git 仓库内构建能判定工作区是否干净");
+  // 没有 git 元数据时（源码压缩包构建）要记成「未判定」，不能报成干净或脏。
+  const gitPresent = existsSync(path.join(root, ".git"));
+  ok(gitPresent ? typeof info.commitDirty === "boolean" : info.commitDirty === null,
+    gitPresent ? "在 git 仓库内构建能判定工作区是否干净" : "无 git 元数据时 commitDirty 记为未判定，不谎报干净");
+  ok(gitPresent ? typeof info.commit === "string" : info.commit === null,
+    gitPresent ? "在 git 仓库内构建能取到提交号" : "无 git 元数据时提交号为 null");
 
   process.env.PROJECTX_BUILD_INFO_PATH = file;
   const read = readFromEnv();
@@ -142,7 +147,8 @@ section("管理员控制台接口的真实行为");
 
   const { initializeDatabase, ensureDefaultAdmin, closeDatabase, getMysqlDb } = await import("../src/server/db/index");
   const { authService } = await import("../src/server/services/AuthService");
-  const { loadRolePermissions } = await import("../src/server/auth/permissions");
+  const { UserRepository } = await import("../src/server/repositories/UserRepository");
+  const { loadRolePermissions, ROLE_IDS } = await import("../src/server/auth/permissions");
   initializeDatabase();
   const bootstrap = await ensureDefaultAdmin();
   loadRolePermissions(true);
@@ -155,6 +161,12 @@ section("管理员控制台接口的真实行为");
   const adminLogin = await authService.login("admin", "BuildInfo-Verify-2026");
   assert.ok(adminLogin.success && adminLogin.token, "管理员改密后应能登录");
 
+  // 权限门是后端属性：只测「未登录被拒」的话，把 requirePermission 摘掉也照样绿。
+  const userRepo = new UserRepository();
+  await userRepo.createUser({ username: "bi_teacher", password: "bi-teacher-pw", name: "构建信息教师", role_id: ROLE_IDS.TEACHER });
+  const teacherLogin = await authService.login("bi_teacher", "bi-teacher-pw");
+  assert.ok(teacherLogin.success && teacherLogin.token, "教师应能登录");
+
   const { createApp } = await import("../src/apps/answer-card/server/index");
   const server = createServer(await createApp());
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -164,6 +176,10 @@ section("管理员控制台接口的真实行为");
 
   const anonymous = await fetch(`${base}/api/admin/console/build`);
   ok(anonymous.status === 401 || anonymous.status === 403, `未登录访问被拒（${anonymous.status}）`);
+  const teacherRes = await fetch(`${base}/api/admin/console/build`, {
+    headers: { Authorization: `Bearer ${teacherLogin.token}` },
+  });
+  ok(teacherRes.status === 403, `教师登录也没有权限（${teacherRes.status}）`);
 
   // 部署包就位：构建信息就是第 2 段写出的那份文件。
   process.env.PROJECTX_BUILD_INFO_PATH = builtFile;
@@ -182,8 +198,16 @@ section("管理员控制台接口的真实行为");
   ok(body.buildInfoFile === "build-info.json", "只回文件名，不回绝对路径");
   ok(!String(body.buildInfoFile ?? "").includes(path.sep), "响应不含目录分隔符");
   ok(typeof body.runtime?.startedAt === "string" && new Date(body.runtime.startedAt).getTime() > 0, "返回本次启动时间");
-  ok((body.runtime?.uptimeSeconds ?? -1) >= 0, "返回运行时长");
-  ok(body.runtime?.node === process.version, "运行环境里的 Node 版本来自进程本身");
+  ok(/^(win32|linux|darwin)-[a-z0-9_]+$/.test(String(body.runtime?.platform ?? "")), "运行环境回的是平台与架构");
+  // 「本次启动」必须跟着进程走，不是请求时刻：隔一秒多再要一次，启动时间不该动、运行时长该涨。
+  const firstStartedAt = String(body.runtime?.startedAt);
+  const firstUptime = Number(body.runtime?.uptimeSeconds ?? -1);
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  const again = await fetch(`${base}/api/admin/console/build`, { headers: adminHeaders });
+  const againBody = await again.json() as { runtime?: { startedAt: string; uptimeSeconds: number } };
+  const secondUptime = Number(againBody.runtime?.uptimeSeconds ?? -1);
+  ok(againBody.runtime?.startedAt === firstStartedAt, "两次请求的本次启动时间一致（不是每次请求重算）");
+  ok(secondUptime >= firstUptime + 1, `运行时长随请求间隔增长（${firstUptime} → ${secondUptime}）`);
   ok(adminRes.headers.get("cache-control") === "no-store", `响应不被缓存（${adminRes.headers.get("cache-control")}）`);
 
   // 源码直跑 / 旧部署包：200 + null + 原因，界面据此显示「—」而不是编造时间。

@@ -324,10 +324,15 @@ router.post("/exams/:examId/restore", async (req, res, next) => {
 // 进程启动时间来自运行期；两者分开返回，才能区分「新包已就位但服务没重启」这类情况。
 // 读不到构建信息时如实返回 null + 原因，不用当前时间顶替（安全审计 F-12-8 同源口径：
 // 只给管理员看聚合事实，不回传绝对路径等内网细节）。
+
+// 进程启动时刻在模块加载时定一次：它是固定事实。每次请求用 now - floor(uptime) 反推会在
+// 取整跨秒时抖一秒，管理员刷新页面会看到「本次启动」不断变化。
+const SERVER_STARTED_AT = new Date(Date.now() - process.uptime() * 1000).toISOString();
+
 router.get("/build", (_req, res) => {
   const { info, path: infoFile, reason } = readBuildInfo();
   const now = new Date();
-  const uptimeSeconds = Math.max(0, Math.floor(process.uptime()));
+  const uptimeSeconds = Math.max(0, Math.floor((now.getTime() - new Date(SERVER_STARTED_AT).getTime()) / 1000));
   res.setHeader("Cache-Control", "no-store");
   res.json({
     ok: true,
@@ -336,7 +341,7 @@ router.get("/build", (_req, res) => {
     reason: info ? null : reason,
     runtime: {
       now: now.toISOString(),
-      startedAt: new Date(now.getTime() - uptimeSeconds * 1000).toISOString(),
+      startedAt: SERVER_STARTED_AT,
       uptimeSeconds,
       node: process.version,
       platform: `${process.platform}-${process.arch}`,

@@ -112,19 +112,30 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts
 
+      # ⑥ 门槛：核对入库的 ia32 识别器与扫描桥确实含源码现有的关键行为。
+      # 不跑它等于「CI 闭眼把仓库里现成的二进制发出去」，这条纯静态检查很便宜，必须在打包之前。
+      - name: Check the staged native components against current source
+        run: npm run verify:scanner-page-timeout
+
       - name: Stage the committed ia32 native components
         shell: bash
         run: |
           set -euo pipefail
           stage="ignored/native-mingw/stage/win-ia32"
-          mkdir -p "$stage"
-          # 与 scripts/build-native-mingw.sh 的 stage 目录同构：三件可执行 + licenses。
-          # resources/native/win-ia32 里其余 DLL（OpenCV 动态库、UCRT）属 MSVC 工序遗留，
-          # 交叉包是静态链接的，带上只会让安装包白胖 90 MB。
-          for f in answer-card-recognizer.exe scanner-bridge.exe TWAINDSM.dll; do
-            cp "resources/native/win-ia32/$f" "$stage/"
-          done
-          cp -R resources/native/win-ia32/licenses "$stage/"
+          src="resources/native/win-ia32"
+          mkdir -p "$stage/licenses"
+          # 与 scripts/build-native-mingw.sh 的 stage 目录同构：三件可执行 + 源码摘要 + licenses。
+          cp "$src/answer-card-recognizer.exe" "$src/scanner-bridge.exe" "$src/TWAINDSM.dll" "$stage/"
+          cp "$src/source-sha256.txt" "$stage/"
+          cp -R "$src/licenses/." "$stage/licenses/"
+          # 随包 licenses 里没有 TWAIN 声明，按同一条工序从源码目录补上，别把第三方声明漏掉。
+          cp native/ScannerBridge/third_party/THIRD_PARTY_NOTICES.md "$stage/licenses/TWAIN-NOTICES.md"
+          # UCRT 按 app-local 随包：识别器导入的是 api-ms-win-crt-* 系列，缺运行库的旧 32 位工作站
+          # 会以 0xC0000142 退出（见 scripts/stage-vc-runtime.cjs 与 recognition.ts 里的同一说明）。
+          cp "$src/ucrtbase.dll" "$stage/"
+          cp $src/api-ms-win-crt-*.dll "$stage/"
+          # 不带 msvcp140* / vcruntime140* / concrt140 / opencv_world4130.dll：那批属 MSVC 工序布局，
+          # 交叉构建的 OpenCV 与 libstdc++ 是静态链接的，导入表里也没有它们，带上只让安装包白胖 90 MB。
           ls -la "$stage"
 
       - name: Build ia32 MSI
@@ -168,15 +179,23 @@ jobs:
           sudo apt-get install -y --no-install-recommends wine wine32 wine64
           wine --version || true
 
+      - name: Check the staged native components against current source
+        run: npm run verify:scanner-page-timeout
+
       - name: Stage the committed ia32 native components
         run: |
           set -euo pipefail
           stage="ignored/native-mingw/stage/win-ia32"
-          mkdir -p "$stage"
-          for f in answer-card-recognizer.exe scanner-bridge.exe TWAINDSM.dll; do
-            cp "resources/native/win-ia32/$f" "$stage/"
-          done
-          cp -R resources/native/win-ia32/licenses "$stage/"
+          src="resources/native/win-ia32"
+          mkdir -p "$stage/licenses"
+          # 与 Windows 线取同一份预置口径，两条线产物才可比。
+          cp "$src/answer-card-recognizer.exe" "$src/scanner-bridge.exe" "$src/TWAINDSM.dll" "$stage/"
+          cp "$src/source-sha256.txt" "$stage/"
+          cp -R "$src/licenses/." "$stage/licenses/"
+          cp native/ScannerBridge/third_party/THIRD_PARTY_NOTICES.md "$stage/licenses/TWAIN-NOTICES.md"
+          cp "$src/ucrtbase.dll" "$stage/"
+          cp $src/api-ms-win-crt-*.dll "$stage/"
+          ls -la "$stage"
 
       - name: Build ia32 MSI
         env:
@@ -239,9 +258,13 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [preflight, scanner-ia32-windows, scanner-ia32-linux-wine, server-ubuntu]
-    # 显式写了 if 就不再自动带 success()，所以把「上游全绿」写回来：
-    # 任何一条构建线红掉都不发版，不允许「缺一个包也照样发布」。
-    if: needs.preflight.outputs.is_release == 'true' && !failure() && !cancelled()
+    # 显式写了 if 就不再自动带 success()，所以把「上游全绿」逐条写回来：
+    # 只靠 !failure() 会漏掉「被 skip 的构建线」，那样会发出缺包的 Release。
+    if: >-
+      needs.preflight.outputs.is_release == 'true' &&
+      needs.scanner-ia32-windows.result == 'success' &&
+      needs.scanner-ia32-linux-wine.result == 'success' &&
+      needs.server-ubuntu.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -259,20 +282,46 @@ jobs:
           set -euo pipefail
           mkdir -p out
           for lane in scanner-ia32-windows scanner-ia32-linux-wine server-ubuntu24; do
-            [ -d "staging/$lane" ] || continue
-            # 通配上传的工件平铺在 lanes 根下，字面路径上传的会带一层 release/，两种都要收。
-            find "staging/$lane" -type f \( -name '*.msi' -o -name '*.zip' \) -exec cp {} out/ \;
-            integrity="$(find "staging/$lane" -type f -name BUILD-INTEGRITY.txt | head -1)"
-            sums="$(find "staging/$lane" -type f -name SHA256SUMS.txt | head -1)"
-            # 三条构建线的清单文件同名，加 lane 前缀区分，避免 Release 资产互相覆盖。
+            dir="staging/$lane"
+            [ -d "$dir" ] || continue
+            # 通配上传的工件平铺在 lane 根下，字面路径上传的会多一层 release/，两种都要收。
+            while IFS= read -r file; do
+              base="$(basename "$file")"
+              if [ -e "out/$base" ] && ! cmp -s "$file" "out/$base"; then
+                echo "::error title=两条构建线交出同名不同物的文件::$base 在两条线上内容不同，随便发哪一个都和清单对不上。先按实测结论删掉一条线，再用标签发版。"
+                exit 1
+              fi
+              cp "$file" "out/$base"
+            done < <(find "$dir" -type f \( -name '*.msi' -o -name '*.zip' \))
+            sums="$(find "$dir" -type f -name SHA256SUMS.txt | head -1)"
+            integrity="$(find "$dir" -type f -name BUILD-INTEGRITY.txt | head -1)"
+            if [ -n "$sums" ]; then
+              # 清单按 release/ 目录写路径（服务端包多一层 server-ubuntu24/），资产是平铺的；
+              # 不剥掉那层前缀，收包方 `sha256sum -c` 必然报「找不到文件」。
+              awk '{ path = $2; sub(/^.*\//, "", path); printf "%s  %s\n", $1, path }' "$sums" > "out/${lane}-SHA256SUMS.txt"
+            fi
             [ -n "$integrity" ] && cp "$integrity" "out/${lane}-BUILD-INTEGRITY.txt"
-            [ -n "$sums" ] && cp "$sums" "out/${lane}-SHA256SUMS.txt"
           done
           if [ "$(find out -maxdepth 1 -type f \( -name '*.msi' -o -name '*.zip' \) | wc -l)" -eq 0 ]; then
             echo "::error title=没有可发布的产物::上游构建没交出 msi / zip，终止发布。"
             exit 1
           fi
           ls -la out
+          # 清单与平铺后的资产当场对一次，别把对不上的清单发出去。
+          for manifest in out/*-SHA256SUMS.txt; do
+            [ -e "$manifest" ] || continue
+            (cd out && sha256sum -c "$(basename "$manifest")")
+          done
+
+      - name: Refuse to double publish a tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error title=$GITHUB_REF_NAME 已经发布过::重跑同一个标签不会覆盖已有 Release。要重发就先删掉那条 Release，或者按发版流程升版本号打新标签。"
+            exit 1
+          fi
 
       - name: Write release notes
         run: |
