@@ -11,10 +11,16 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { BUILD_INFO_FILE_NAME, BUILD_INFO_SCHEMA, type BuildInfo } from "../../src/shared/buildInfo";
 
+/**
+ * 执行 git 并返回**去掉首尾空白的原始输出**；只有命令本身失败才返回 null。
+ *
+ * 这里不能把空串折叠成 null：`git status --porcelain` 在工作区干净时输出空串，
+ * 那是「干净」这个确定结论，不是「取不到」。CI 的检出永远是干净的，折叠成 null 会让
+ * 正式版本的构建信息一律写成「未记录」，恰好把最该告诉管理员的事实丢掉。
+ */
 function git(rootDir: string, args: string[]): string | null {
   try {
-    const out = execFileSync("git", args, { cwd: rootDir, encoding: "utf8" }).trim();
-    return out === "" ? null : out;
+    return execFileSync("git", args, { cwd: rootDir, encoding: "utf8" }).trim();
   } catch {
     return null;
   }
@@ -37,9 +43,10 @@ function ciRunUrl(env: NodeJS.ProcessEnv): string | null {
 }
 
 export function collectBuildInfo(rootDir: string, env: NodeJS.ProcessEnv = process.env): BuildInfo {
-  const commit = git(rootDir, ["rev-parse", "HEAD"]);
+  const revision = git(rootDir, ["rev-parse", "HEAD"]);
+  const commit = revision && revision !== "" ? revision : null;
   const status = git(rootDir, ["status", "--porcelain"]);
-  // `git status` 本身失败（非仓库、权限问题）时是「无法判定」，不能写成 false。
+  // status === null 才是「无法判定」；空串是「干净」。
   const commitDirty = status === null ? null : status !== "";
   return {
     schema: BUILD_INFO_SCHEMA,

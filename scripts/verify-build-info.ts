@@ -1,16 +1,18 @@
 /**
  * 构建元信息与「服务器更新时间」接口回归。
  *
- * 覆盖三件事（都是这条链路上真正会出错的地方）：
+ * 覆盖四件事（都是这条链路上真正会出错的地方）：
  *  1. 归一化：缺构建时间的文件视为不可用，不能退回当前时间；提交短号缺失时从完整号推。
  *  2. 构建侧：`collectBuildInfo` + `writeBuildInfoFile` 产出的文件，读取端要能原样读回。
- *  3. 实际 HTTP 路径：未登录被挡；管理员拿到的版本与构建时间和盘上一致；没有构建信息时
+ *  3. 工作区状态：干净 / 有改动 / 取不到 git 三种结论要能区分（CI 检出永远干净）。
+ *  4. 实际 HTTP 路径：未登录与教师被挡；管理员拿到的版本与构建时间和盘上一致；没有构建信息时
  *     如实返回 null + 原因，且整份响应不外泄目录细节。
  *
  * 运行：npm run verify:build-info
  * 隔离：临时 SQLite 库、临时数据目录、临时 token 目录，不碰仓库 data/ 与 config.yml。
  */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import os from "node:os";
@@ -136,7 +138,45 @@ section("构建侧写盘与读取端读回");
   ok(!String(missing.reason ?? "").includes(tmpDir), "缺失原因不回传临时目录路径");
 }
 
-// ── 3. 实际 HTTP 路径 ────────────────────────────────────
+// ── 3. 干净 / 脏 / 取不到 git ────────────────────────────
+section("工作区状态三种结论都要能区分");
+{
+  // CI 的检出永远是干净的，正式版本的构建信息就走这条分支；本机工作区常年是脏的，
+  // 所以这一支只有用临时 git 仓库才钉得住（曾经把「干净」的空串折叠成 null，CI 才炸出来）。
+  let gitAvailable = true;
+  try {
+    execFileSync("git", ["--version"], { stdio: "ignore" });
+  } catch {
+    gitAvailable = false;
+  }
+  if (!gitAvailable) {
+    console.log("  跳过：本机没有 git，脏/干净分支未验证（CI 会跑）");
+  } else {
+    const repoDir = path.join(tmpDir, "git-fixture");
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(path.join(repoDir, "package.json"), JSON.stringify({ version: "3.2.1" }), "utf8");
+    const gitInit = ["init", "-q", repoDir];
+    execFileSync("git", gitInit, { stdio: "ignore" });
+    execFileSync("git", ["-C", repoDir, "config", "user.email", "verify@example.invalid"], { stdio: "ignore" });
+    execFileSync("git", ["-C", repoDir, "config", "user.name", "verify"], { stdio: "ignore" });
+    execFileSync("git", ["-C", repoDir, "add", "package.json"], { stdio: "ignore" });
+    execFileSync("git", ["-C", repoDir, "commit", "-q", "-m", "fixture"], { stdio: "ignore" });
+
+    const clean = collectBuildInfo(repoDir);
+    ok(clean.commitDirty === false, "干净工作区判为 false，不是 null「未记录」");
+    ok(clean.version === "3.2.1", "版本号取自该目录的 package.json");
+    ok(typeof clean.commit === "string" && typeof clean.commitShort === "string", "干净工作区也能取到提交号与短号");
+
+    writeFileSync(path.join(repoDir, "loose.txt"), "untracked", "utf8");
+    ok(collectBuildInfo(repoDir).commitDirty === true, "多出未跟踪文件后判为 true");
+
+    const outside = collectBuildInfo(path.join(tmpDir, "no-such-directory"));
+    ok(outside.commitDirty === null && outside.commit === null, "取不到 git 时才记为未判定");
+    ok(outside.version === null && outside.builtAt.length > 0, "目录不存在时版本为 null，但构建时间仍然如实写入");
+  }
+}
+
+// ── 4. 实际 HTTP 路径 ────────────────────────────────────
 section("管理员控制台接口的真实行为");
 {
   const originalCwd = process.cwd();

@@ -91,7 +91,9 @@ function fmtUptime(seconds: number | null | undefined): string {
   const minutes = Math.floor((seconds % 3600) / 60);
   if (days > 0) return `${days} 天 ${hours} 小时`;
   if (hours > 0) return `${hours} 小时 ${minutes} 分`;
-  return `${minutes} 分`;
+  // 刚重启的服务要说「多少秒」，落到「0 分」会被读成没有数据，恰好丢掉最该看得见的时刻。
+  if (minutes > 0) return `${minutes} 分`;
+  return `${Math.floor(seconds)} 秒`;
 }
 
 function DistBar({ label, dist }: { label: string; dist: Distribution }) {

@@ -48,6 +48,10 @@ jobs:
       - name: Build info and server update time regression
         run: npm run verify:build-info
 
+      # 上面那块的渲染结果：缺依据要显示「—」并给原因，不能漏 undefined、不能拿请求时间冒充构建时间。
+      - name: Console build-info panel mounted regression
+        run: npm run verify:console-build-info-ui
+
       - name: Core logic verify suite
         run: npm run verify:core-logic
 

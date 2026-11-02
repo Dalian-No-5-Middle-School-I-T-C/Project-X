@@ -37,11 +37,37 @@ process.env.ELECTRON_CACHE = path.join(root, ".electron-cache");
 process.env.ELECTRON_BUILDER_CACHE = path.join(root, ".electron-builder-cache");
 const env = { ...process.env, npm_config_cache: path.join(root, ".npm-cache") };
 
-// Windows 上 npm 是 npm.cmd，execFileSync 不走 shell，直接传 "npm" 会 ENOENT。
-// 其余命令（curl / tar / git / node）在 Windows runner 上都是真实 exe，不需要映射。
-const WINDOWS_COMMANDS = new Map([["npm", "npm.cmd"]]);
+// Windows 上的 npm 不能这么起：
+//  - 直接 execFileSync("npm") 会 ENOENT（npm 是 npm.cmd，execFileSync 不走 shell）；
+//  - 换成 "npm.cmd" 又撞上 Node 20+ 的限制——不带 shell 时 spawn .cmd/.bat 直接 EINVAL。
+// 官方 Node 发行版自带 npm 的 JS 入口，用当前 node 直接跑它，两头都不碰 shell 拼接。
+// POSIX 保持原样走 PATH 上的 npm，不改已被现场验证过的那条路。
+const npmCliOnWindows = (() => {
+  if (process.platform !== "win32") return null;
+  const bases = [
+    path.join("node_modules", "npm", "bin", "npm-cli.js"),
+    path.join("lib", "node_modules", "npm", "bin", "npm-cli.js"),
+  ];
+  for (const rel of bases) {
+    const cli = path.join(path.dirname(process.execPath), rel);
+    if (fs.existsSync(cli)) return cli;
+  }
+  return undefined;
+})();
+
 function run(command, args, cwd = root) {
-  execFileSync(WINDOWS_COMMANDS.get(command) ?? command, args, { cwd, env, stdio: "inherit" });
+  if (command !== "npm") {
+    execFileSync(command, args, { cwd, env, stdio: "inherit" });
+    return;
+  }
+  if (npmCliOnWindows === null) {
+    execFileSync("npm", args, { cwd, env, stdio: "inherit" });
+    return;
+  }
+  if (npmCliOnWindows === undefined) {
+    throw new Error(`找不到 npm-cli.js（node 在 ${path.dirname(process.execPath)}）；Windows 上请用官方 Node 发行版跑打包。`);
+  }
+  execFileSync(process.execPath, [npmCliOnWindows, ...args], { cwd, env, stdio: "inherit" });
 }
 function pe32(file) {
   const bytes = fs.readFileSync(file);

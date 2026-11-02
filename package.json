@@ -44,6 +44,7 @@
     "server": "tsx src/apps/answer-card/server/index.ts",
     "verify:auth": "tsx scripts/verify-auth.ts",
     "verify:build-info": "tsx scripts/verify-build-info.ts",
+    "verify:console-build-info-ui": "tsx scripts/console-build-info-ui-smoke.ts",
     "verify:feedback": "tsx scripts/verify-feedback.ts",
     "verify:feedback:mariadb": "tsx scripts/verify-feedback.ts --mariadb",
     "verify:student-score-display": "tsx scripts/verify-student-score-fullscore-examtime.ts",
