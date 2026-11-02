@@ -91,42 +91,77 @@ function walk(dir) {
  * （对每个文件都报 `ERROR: Data Error : xxx_f`），而同一份 WiX 4 生成的 MSI 在 macOS/Linux 上
  * 用 7za 解包验证一直是对的——坏的是 Windows 侧那个解包器，不是包。用 msiexec 反而更硬：
  * 它必须真能把这个 MSI 解析成安装源，等于顺带证明包装程序读得动这份包。
+ *
+ * msiexec 的参数形态有两层坑，都实测过：
+ *  1. Start-Process 把 ArgumentList 的元素用空格拼成原生命令行，PowerShell 自己的引号不会留下来，
+ *     所以引号必须做成**字符串内容**（PS 单引号字面量包住双引号，内部单引号翻倍转义）。
+ *  2. 属性要写成 `TARGETDIR="值"`，把整段包成 `"TARGETDIR=值"` 会被当成未知参数，msiexec 于是弹
+ *     用法对话框；非交互会话里没人点掉它，`-Wait` 直接挂到超时（2026-11-03 第五跑即如此）。
+ * 另外目标目录结尾不能带反斜杠：`"...\out\"` 里的 `\"` 会把闭合引号吃掉。
  */
 function verifyMsiWithWindowsInstaller(artifact) {
   const checkDir = fs.mkdtempSync(path.join(root, "ignored", "scanner-installer-check-"));
   const statusFile = path.join(checkDir, "msiexec-status.txt");
-  // Start-Process 把 ArgumentList 的元素用空格拼成原生命令行，PowerShell 自己的字符串引号不会留下来：
-  // 写成 "-LiteralPath 值" 这种外层双引号，到 msiexec 手里就只剩值本身，带空格的仓库或临时目录会被拆成
-  // 多个参数，解包直接失败。所以引号必须是**字符串内容**——用 PS 单引号字面量包住一对双引号，
-  // 里面的单引号按 PS 规则翻倍转义，反斜杠原样保留（Windows 路径全靠它）。
-  // TARGETDIR 结尾不能带反斜杠：`"...\out\"` 里的 `\"` 会把闭合引号吃掉。
-  const psArg = (value) => "'" + '"' + value.replace(/'/g, "''") + '"' + "'";
-  // 给 PowerShell 自己的 cmdlet 参数（-LiteralPath）就不能再塞字面双引号：那是原生命令行的规则，
-  // cmdlet 会把引号当成路径的一部分，报「路径无效」。
-  const psString = (value) => "'" + value.replace(/'/g, "''") + "'";
+  const logFile = path.join(checkDir, "msiexec.log");
+  const psLiteral = (value) => "'" + value.replace(/'/g, "''") + "'";            // PS 字面量，内容原样交给原生进程
+  const nativeQuoted = (value) => psLiteral('"' + value.replace(/"/g, "") + '"'); // 原生参数：整体加引号
+  const nativeProperty = (name, value) => psLiteral(`${name}="${value.replace(/"/g, "")}"`); // 原生参数：NAME="值"
   const script = [
     "$ErrorActionPreference='Stop'",
-    `$p = Start-Process -FilePath msiexec.exe -Wait -PassThru -WindowStyle Hidden -ArgumentList '/a', ${psArg(artifact)}, '/qn', ${psArg(`TARGETDIR=${checkDir}`)}`,
+    `$p = Start-Process -FilePath msiexec.exe -Wait -PassThru -WindowStyle Hidden -ArgumentList '/a', ${nativeQuoted(artifact)}, '/qn', '/l*v', ${nativeQuoted(logFile)}, ${nativeProperty("TARGETDIR", checkDir)}`,
     `$code = if ($null -eq $p.ExitCode) { -1 } else { $p.ExitCode }`,
-    `$code | Set-Content -LiteralPath ${psString(statusFile)} -Encoding ASCII`,
+    `$code | Set-Content -LiteralPath ${psLiteral(statusFile)} -Encoding ASCII`,
     "exit 0"
   ].join("\n");
+  // 失败时把 msiexec 自己的日志尾部带出来：这一步已经两次把「红」留给后人猜，不能再多一次。
+  const logTail = () => {
+    try {
+      if (!fs.existsSync(logFile)) return "";
+      const text = fs.readFileSync(logFile, "utf8").split(/\r?\n/).filter((line) => line.trim() !== "");
+      return text.length === 0 ? "" : `\nmsiexec 日志尾部：\n${text.slice(-20).join("\n")}`;
+    } catch { return ""; }
+  };
   try {
-    execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { env, stdio: "pipe", timeout: 900_000 });
-    if (!fs.existsSync(statusFile)) throw new Error("msiexec 没有留下退出码，解包未真正执行");
-    const code = Number(fs.readFileSync(statusFile, "utf8").trim());
+    let code;
+    try {
+      execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { env, stdio: "pipe", timeout: 300_000 });
+      if (!fs.existsSync(statusFile)) throw new Error(`msiexec 没有留下退出码，解包未真正执行${logTail()}`);
+      code = Number(fs.readFileSync(statusFile, "utf8").trim());
+    } catch (error) {
+      if (error && error.code === "ETIMEDOUT") {
+        throw new Error(`msiexec /a 5 分钟没有返回——多半是它等了一个没人应答的对话框（参数形态不对时会出现）${logTail()}`);
+      }
+      throw error;
+    }
     // 0 成功；3010 = 需要重启（本工序不涉及），其余都算解包失败。
-    if (code !== 0 && code !== 3010) throw new Error(`msiexec /a 退出码 ${code}（MSI 错误码可在 readus/Windows32位扫描端交叉打包.md 查）`);
+    if (code !== 0 && code !== 3010) throw new Error(`msiexec /a 退出码 ${code}${logTail()}`);
+    // msiexec 会再拉起一个子进程，-Wait 有可能先回来；按有界轮询等载荷落盘，不等就先比就会误报缺件。
+    const deadline = Date.now() + 120_000;
+    for (;;) {
+      const extracted = walk(checkDir);
+      const missing = nativeComponents.filter((component) => !extracted.some(
+        (file) => path.basename(file).toLowerCase() === component.toLowerCase()));
+      if (missing.length === 0) break;
+      if (Date.now() >= deadline) {
+        throw new Error(`MSI 解包后找不到原生件：${missing.join(", ")}${logTail()}`);
+      }
+      execFileSync("ping", ["-n", "3", "127.0.0.1"], { env, stdio: "ignore" }); // Windows 上的可靠短等待（不带 shell 的 sleep 没有）
+    }
     const extracted = walk(checkDir);
     for (const component of nativeComponents) {
       const expected = fs.readFileSync(path.join(nativeDir, component));
       const match = extracted.find((file) => path.basename(file).toLowerCase() === component.toLowerCase()
         && fs.statSync(file).size === expected.length && fs.readFileSync(file).equals(expected));
-      if (!match) throw new Error(`MSI 内缺少与构建产物一致的 ${component}`);
+      if (!match) throw new Error(`MSI 内的 ${component} 与构建产物不一致${logTail()}`);
     }
     console.log(`Installer payload verified with Windows Installer: ${nativeComponents.join(", ")}`);
   } finally {
-    fs.rmSync(checkDir, { recursive: true, force: true });
+    // msiexec 的子进程可能还在写这个目录；删不掉只提示，别把上面真正的失败原因盖掉。
+    try {
+      fs.rmSync(checkDir, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[package-scanner-win32] 解包临时目录没能清理（不影响本次结论）: ${checkDir} — ${error.message}`);
+    }
   }
 }
 

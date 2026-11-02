@@ -14,6 +14,7 @@
   2. 标签预检从「`identical` 或 `behind` 都放行」收紧为**只接受 `identical`**：`behind` 表示标签指向主干上更早的提交，放过去等于把旧源码发成最新版本。
   3. `msiexec` 参数引号修对了两层规则：给 `Start-Process -ArgumentList` 的元素必须让双引号成为**字符串内容**（PS 单引号字面量包住一对双引号），否则引号只是 PowerShell 的定界符、到 msiexec 就消失，带空格的目录被拆成多个参数；同一个字面引号又不能用在传给 cmdlet 的 `-LiteralPath` 上，那里会被当成路径字符。本机用带空格、带单引号、带中文的路径逐项验（4 个参数不散、退出码落文件）。
   维护者提的前两条（npm 起法、干净工作区被写成未判定）与上一轮修复同源，已在 `48488802` 改掉并由 `41488043846`、`41535020397` 跑绿，回复里附了日志依据。
+- **第五跑我自己改坏的一处，已修**：为评审调整 `msiexec` 引号时把属性写成整段包裹的 `"TARGETDIR=D:\out"`。msiexec 认的是 `TARGETDIR="D:\out"`，整段包裹会被当成未知参数并弹出用法对话框；非交互会话里没人应答，`-Wait` 挂满 15 分钟，日志只留下一句 `ETIMEDOUT`。现在属性形态改对，超时收到 5 分钟并在报错里带上 `/l*v` 日志尾部，`-Wait` 之后改有界轮询等载荷落盘（msiexec 会再拉子进程，先返回就立刻比对会误报缺件）。参数形态用产品代码里的同一组拼接函数在本机回显核过：`/a "包" /qn /l*v "日志" TARGETDIR="目录"`，带空格与中文的路径各自成整体、闭合引号前无反斜杠；没有真起 msiexec（形态错会弹框，不该在桌面上试）。五跑 Windows 线红在这一步，MSI 本身已编出。
 - **验证**：`typecheck`、`build:web`、`build:scanner:full`、`build:server`（确认 `build-info.json` 落盘）、新增 `verify:build-info` 49/0（归一化、写盘读回、工作区三种状态、部署替换与文件删除后不返回旧值、真实 HTTP 的未登录与教师 403、构建时间与盘上一致、本次启动不随请求抖动、缺失口径、响应不含目录）、新增 `verify:console-build-info-ui` 26/0（挂载真实控制台组件断言渲染结果：有信息时版本/短号/平台/时长/本地日期都在，无信息时显示「—」并给原因，半截字段不漏 `undefined` 字面串，外链带 `rel=noopener`），两者都已接入 `ci.yml`；`verify:release-integrity`、`verify:systemd-hardening` 110/0 通过；LF 检出副本上 `package-server-ubuntu.cjs` 真跑出 zip 并核对包内含 `dist/server/build-info.json`；`@electron/asar` 的分隔符行为用临时归档在本机实测。渲染回归还逮到一个显示缺陷：刚重启 42 秒的服务「已运行」算成「0 分」，看着像没数据，改成说秒。**未验证**：真机安装与扫描验收；本轮不涉及 SQL 与 MariaDB。详见 [发布构建与服务器更新时间](发布构建与服务器更新时间.md)。
 
 ## 2026-11-01：PR #358 上传与备份恢复收尾
