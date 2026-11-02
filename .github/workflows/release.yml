@@ -44,6 +44,11 @@ on:
       # 打包工序会无条件把这份 TWAIN 第三方声明拷进 stage，改了它也属于改到发布链路：
       # 不在触发范围里的话，重命名或删除要等到打标签执行 cp 时才第一次报错。
       - "native/ScannerBridge/third_party/THIRD_PARTY_NOTICES.md"
+      # 随包原生件的源码摘要门禁读的就是这些文件（package-server-ubuntu.cjs 按
+      # resources/native/correction-linux-x64/source-sha256.txt 逐个哈希比对，⑥ 门槛比对 win-ia32 两颗 exe）。
+      # 只改 native/** 而不动 resources/native/** 时，包内件会落后于源码，而 ci.yml 不跑打包器，
+      # 报错要推迟到打标签那一刻；把源码路径也纳入，门禁在合并前就会跑。
+      - "native/**"
   workflow_dispatch:
     inputs:
       build_scanner:
