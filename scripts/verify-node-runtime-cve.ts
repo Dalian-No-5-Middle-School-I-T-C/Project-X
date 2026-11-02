@@ -632,23 +632,38 @@ check(
   "失败后第一次请求落在退避窗口里，直接取消、不立刻重装",
 );
 const brokenSend = brokenPage.debugger.sendCommand;
+// 用可控 Promise 卡住编码覆盖的完成：原写法靠固定 30ms 赌「重连已在途中」，
+// 慢机器上 fake 已经 resolve，这一发就被放行，断言变成偶发红。
+let resolveBrokenEncodings: ((value: unknown) => void) | null = null;
+let brokenEncodingsAttempts = 0;
 brokenPage.debugger.sendCommand = (method: string, params: Record<string, unknown>, sessionId?: string) => {
-  if (method === "Network.setAcceptedEncodings") return Promise.resolve({});
+  if (method === "Network.setAcceptedEncodings") {
+    brokenEncodingsAttempts += 1;
+    return new Promise((resolve) => { resolveBrokenEncodings = resolve; });
+  }
   return brokenSend(method, params, sessionId);
 };
-await new Promise((resolve) => setTimeout(resolve, 30));
-const retryResult = await Promise.race([
-  new Promise<{ cancel?: boolean }>((resolve) => {
-    beforeRequest?.({ webContentsId: 9, url: "https://school.example/api/retry" }, resolve);
-  }),
-  new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("重试的远端请求没有结束")), 1000)),
-]);
+let retryResult: { cancel?: boolean } | undefined;
+const retryDeadline = Date.now() + 2000;
+while (brokenEncodingsAttempts === 0 && Date.now() < retryDeadline) {
+  retryResult = await Promise.race([
+    new Promise<{ cancel?: boolean }>((resolve) => {
+      beforeRequest?.({ webContentsId: 9, url: "https://school.example/api/retry" }, resolve);
+    }),
+    new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("重试的远端请求没有结束")), 1000)),
+  ]);
+  if (brokenEncodingsAttempts === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+}
+check(brokenEncodingsAttempts > 0, "退避窗口过后会自己再装一次编码覆盖");
 check(
-  retryResult.cancel === true,
+  retryResult?.cancel === true,
   "退避窗口过后会再装一次，但当前这一发仍然取消，绝不带着旧 encodings 放行",
 );
-await new Promise((resolve) => setTimeout(resolve, 0));
-await new Promise((resolve) => setTimeout(resolve, 0));
+resolveBrokenEncodings?.({});
+const brokenReadyDeadline = Date.now() + 2000;
+while (!cjs.isChromiumBrotliDecodeReady(brokenPage) && Date.now() < brokenReadyDeadline) {
+  await new Promise((resolve) => setTimeout(resolve, 5));
+}
 check(cjs.isChromiumBrotliDecodeReady(brokenPage) === true, "重装成功后窗口标记为已保护");
 let afterRetryCancelled = false;
 beforeRequest?.({ webContentsId: 9, url: "https://school.example/api/after-retry" }, (value) => { afterRetryCancelled = value.cancel === true; });
