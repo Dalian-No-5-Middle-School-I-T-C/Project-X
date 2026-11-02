@@ -39,6 +39,10 @@ on:
       - "scripts/package-server-ubuntu.cjs"
       - "scripts/hash-release-artifacts.cjs"
       - "scripts/build-native-mingw.sh"
+      # 这两道门禁脚本本身就是发布链路的一部分：只改它们而不在 PR 上跑一次，
+      # 坏掉或被悄悄放宽要等到打标签才看得出来（ci.yml 不调用它们）。
+      - "scripts/verify-native-provenance.ts"
+      - "scripts/verify-scanner-page-timeout.ts"
       - "resources/native/win-ia32/**"
       - "resources/native/correction-linux-x64/**"
       # 打包工序会无条件把这份 TWAIN 第三方声明拷进 stage，改了它也属于改到发布链路：
@@ -199,8 +203,23 @@ jobs:
           cp native/ScannerBridge/third_party/THIRD_PARTY_NOTICES.md "$stage/licenses/TWAIN-NOTICES.md"
           # UCRT 按 app-local 随包：识别器导入的是 api-ms-win-crt-* 系列，缺运行库的旧 32 位工作站
           # 会以 0xC0000142 退出（见 scripts/stage-vc-runtime.cjs 与 recognition.ts 里的同一说明）。
-          cp "$src/ucrtbase.dll" "$stage/"
-          cp $src/api-ms-win-crt-*.dll "$stage/"
+          # 通配拷贝不会「少拷还报错」：源目录里被删掉一颗，它照样安静成功。所以这里要的是计数下限——
+          # 现随包 15 颗 api-ms-win-crt-*.dll + ucrtbase.dll，少任何一颗都必须让发布红，
+          # 而不是发出一个在老工作站上打不开的包。下限要改得有意识（重编工具集时同步）。
+          shopt -s nullglob
+          ucrt=("$src"/api-ms-win-crt-*.dll)
+          if [ "${#ucrt[@]}" -lt 15 ] || [ ! -f "$src/ucrtbase.dll" ]; then
+            echo "::error title=随包 UCRT 集合不完整::resources/native/win-ia32 里只有 ${#ucrt[@]} 颗 api-ms-win-crt-*.dll（下限 15），ucrtbase.dll 存在=$([ -f "$src/ucrtbase.dll" ] && echo 是 || echo 否)。"
+            echo "旧 ia32 扫描工作站缺任一颗都会让识别器以 0xC0000142 退出。要么补齐随包件，要么在 scripts/stage-vc-runtime.cjs 那侧重新部署后再入库。"
+            exit 1
+          fi
+          cp "${ucrt[@]}" "$src/ucrtbase.dll" "$stage/"
+          # 逐个确认确实落进 stage（拷贝被拦截/磁盘满等不能只靠退出码）
+          for dll in "${ucrt[@]}" "$src/ucrtbase.dll"; do
+            base="$(basename "$dll")"
+            [ -f "$stage/$base" ] || { echo "::error title=$base 没进 stage::"; exit 1; }
+          done
+          echo "UCRT 随包集合完整：api-ms-win-crt-*.dll × ${#ucrt[@]} + ucrtbase.dll"
           # 不带 msvcp140* / vcruntime140* / concrt140 / opencv_world4130.dll：那批属 MSVC 工序布局，
           # 交叉构建的 OpenCV 与 libstdc++ 是静态链接的，导入表里也没有它们，带上只让安装包白胖 90 MB。
           ls -la "$stage"

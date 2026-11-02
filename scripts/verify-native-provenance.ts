@@ -107,14 +107,17 @@ try {
 if (!bridgeCommit) {
   fail(`查不到 ${bridgeExe} 的入库提交。可能是浅克隆（fetch-depth 太小）或该文件未纳入版本控制——这道门禁要完整历史才能判。`);
 } else {
-  // 桥接目录里除了源码还有 third_party/twain-dsm 的二进制与声明；只比源码子目录，
-  // 否则重打包 third_party 也会误报成「源码动过没重编」。
+  // 桥接的编译输入：自己的源码 + TWAIN 头（`native/CMakeLists.txt` 里直接引用，
+  // twain_controller.cpp 会 #include 它）。头改了而包内件没重编，同样会发出行为对不上的 exe。
+  // 这里刻意不用 existsSync 过滤：路径写错时静默丢掉等于把门禁配了个寂寞（评审指出
+  // 原先配的 native/ScannerBridge/CMakeLists.txt 根本不存在），所以缺路径要响。
   const sourcePaths = [
     `${bridgeSourceDir}/scanner-bridge`,
-    `${bridgeSourceDir}/CMakeLists.txt`,
-  ].filter((p) => existsSync(path.join(root, p)));
-  if (sourcePaths.length === 0) {
-    fail(`找不到桥接源码路径（${bridgeSourceDir}），无法核对包内件是否落后。`);
+    `${bridgeSourceDir}/third_party/twain-dsm-2.5.1/include`,
+  ];
+  const missingPaths = sourcePaths.filter((p) => !existsSync(path.join(root, p)));
+  if (missingPaths.length > 0) {
+    fail(`配置的桥接源码路径不存在：${missingPaths.join("、")}。这道门禁不能按缺着的路径判定通过。`);
   } else {
     let drifted = false;
     try {
