@@ -150,6 +150,9 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 来源核对要查「随包 exe 最后一次入库的提交」，depth 1 的浅克隆查不到。
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -164,6 +167,10 @@ jobs:
       # 不跑它等于「CI 闭眼把仓库里现成的二进制发出去」，这条纯静态检查很便宜，必须在打包之前。
       - name: Check the staged native components against current source
         run: npm run verify:scanner-page-timeout
+
+      # ⑥ 只搜几颗字串，字串还在就看不出桥接是旧的；这一步按源码摘要 + 「exe 入库后的内容差异」兜住。
+      - name: Check the committed ia32 natives are not older than their sources
+        run: npm run verify:native-provenance
 
       - name: Stage the committed ia32 native components
         shell: bash
