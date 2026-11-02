@@ -44,6 +44,7 @@
 | 扫描端与多端使用 | `readus/SCANNER-SETUP.md`、`readus/多端使用说明.md` |
 | 整卡订正与旧卷补识别 | `readus/整卡改分说明.md`，并核对 `scanCorrection.ts` 与 `scanCorrectionRecovery.ts` |
 | TWAIN 与 Windows 打包 | `readus/Windows32位扫描端交叉打包.md`、`readus/虚拟扫描仪验证.md`，并核对原生构建脚本与工作流 |
+| 发布构建、版本号与服务器更新时间 | `readus/发布构建与服务器更新时间.md`，并核对 `.github/workflows/release.yml` |
 | 主观题红笔识别 | `readus/主观题红笔划线识别修复记录-20261017.md`，并核对原生识别与共享判分 |
 | 历史变更 | `readus/CHANGELOG.md` |
 
@@ -136,10 +137,11 @@ README 开发环境建议 Node.js 24+；当前 CI 使用 Node.js 22。命令以 
 | MariaDB 适配与迁移 | `npm run verify:mariadb`、`npm run verify:mariadb-migration`；各专项的 MariaDB 配置见对应脚本与 CI |
 | Web + 服务端构建 | `npm run build`，含类型检查，产物 `dist/web/` + `dist/server/` |
 | 扫描端 + 服务端构建 | `npm run build:scanner:full`，含类型检查 |
-| Ubuntu 服务端打包 | `npm run package:server:ubuntu24`；该脚本不包含类型检查，需先单独验证 |
+| Ubuntu 服务端打包 | `npm run package:server:ubuntu24`；该脚本不包含类型检查，需先单独验证；只能在 LF 检出上跑（`core.autocrlf=true` 的 Windows 副本会撞随包识别器的源码摘要门禁） |
 | 原生组件交叉构建 | `npm run native:build:mingw:ia32`、`npm run native:build:mingw:x64`、`npm run native:build:correction:linux-x64`；MSVC 路线见 `native:build:ia32` / `native:build:x64` |
 | Windows ia32 交叉打包 | `npm run package:scanner:win32:cross`；MSI 编译及虚拟机路线见交叉打包文档 |
 | 产物完整性 | `npm run verify:release-integrity`、`npm run release:hash:check`；后者针对已生成的发布产物 |
+| 构建信息与服务器更新时间 | `npm run verify:build-info`；发布由推 `v<版本号>` 标签触发，工序见 `.github/workflows/release.yml` |
 | 健康检查 | `GET /api/app/health`；业务验收继续走实际操作、持久化及结果读取 |
 
 - 代码改动运行类型检查、相关专项测试和受影响目标的构建；共享代码影响两端时检查两端。纯文档改动检查路径、命令与 diff 即可。

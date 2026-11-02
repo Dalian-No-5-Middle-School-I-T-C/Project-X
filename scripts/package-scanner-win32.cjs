@@ -20,16 +20,28 @@ const sqliteVersion = versionOf("better-sqlite3");
 const sharpVersion = versionOf("sharp");
 const abi = require("node-abi").getAbi(electronVersion, "electron");
 const prepared = process.argv.includes("--prepared");
+const skipNativeBuild = process.argv.includes("--skip-native-build");
 const target = process.argv.includes("--portable") ? "portable" : "msi";
 const verifyMsi = process.argv.includes("--verify-msi");
 const prepareMsi = process.argv.includes("--prepare-msi");
-if (process.argv.slice(2).some((a) => !["--prepared", "--portable", "--verify-msi", "--prepare-msi"].includes(a)) || (verifyMsi && (prepared || prepareMsi || target === "portable")) || (prepareMsi && target === "portable")) throw new Error("Usage: node scripts/package-scanner-win32.cjs [--prepared] [--portable | --prepare-msi] | --verify-msi");
+const allowedFlags = ["--prepared", "--skip-native-build", "--portable", "--verify-msi", "--prepare-msi"];
+if (
+  process.argv.slice(2).some((a) => !allowedFlags.includes(a))
+  || (verifyMsi && (prepared || prepareMsi || target === "portable"))
+  || (prepareMsi && target === "portable")
+  // --prepared 本来就不编原生件，两个开关同时给属于误用，直接拒绝而不是猜意图。
+  || (prepared && skipNativeBuild)
+  || (verifyMsi && skipNativeBuild)
+) throw new Error("Usage: node scripts/package-scanner-win32.cjs [--skip-native-build | --prepared] [--portable | --prepare-msi] | --verify-msi");
 process.env.ELECTRON_CACHE = path.join(root, ".electron-cache");
 process.env.ELECTRON_BUILDER_CACHE = path.join(root, ".electron-builder-cache");
 const env = { ...process.env, npm_config_cache: path.join(root, ".npm-cache") };
 
+// Windows 上 npm 是 npm.cmd，execFileSync 不走 shell，直接传 "npm" 会 ENOENT。
+// 其余命令（curl / tar / git / node）在 Windows runner 上都是真实 exe，不需要映射。
+const WINDOWS_COMMANDS = new Map([["npm", "npm.cmd"]]);
 function run(command, args, cwd = root) {
-  execFileSync(command, args, { cwd, env, stdio: "inherit" });
+  execFileSync(WINDOWS_COMMANDS.get(command) ?? command, args, { cwd, env, stdio: "inherit" });
 }
 function pe32(file) {
   const bytes = fs.readFileSync(file);
@@ -131,7 +143,17 @@ async function main() {
   fs.mkdirSync(process.env.ELECTRON_BUILDER_CACHE, { recursive: true });
   fs.writeFileSync(path.join(process.env.ELECTRON_BUILDER_CACHE, "package.json"), JSON.stringify({ private: true, type: "commonjs" }) + "\n");
   if (!prepared) {
-    run("bash", ["scripts/build-native-mingw.sh"]);
+    if (skipNativeBuild) {
+      // 原生件不重编时，必须已经预置在 stage 目录（CI 从 resources/native/win-ia32 复制，
+      // 或维护者按 native-ia32 工序自行构建）。先核对齐并验架构，别等到装完依赖才发现缺件。
+      for (const component of nativeComponents) {
+        const staged = path.join(nativeDir, component);
+        if (!fs.existsSync(staged)) throw new Error(`--skip-native-build 需要预置原生件，缺少 ${staged}`);
+        pe32(staged);
+      }
+    } else {
+      run("bash", ["scripts/build-native-mingw.sh"]);
+    }
     run("npm", ["run", "build:scanner:full"]);
     fs.mkdirSync(appDir, { recursive: true });
     const appPkg = { name: pkg.name, version: pkg.version, description: pkg.description, author: pkg.author, private: true, type: pkg.type, main: pkg.main, dependencies: createRuntimePackageJson().dependencies };

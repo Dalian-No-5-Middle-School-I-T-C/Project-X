@@ -1,0 +1,333 @@
+name: Release build
+
+# 发布构建：32 位扫描端安装包 + Ubuntu 服务端包 + GitHub Releases 上新。
+#
+# 触发口径（按维护者拍板）：
+#  - 推 `v<版本号>` 标签 → 出正式 Release。版本号以 `package.json` 为准，标签对不上就直接失败，
+#    本工作流不会替你改版本号。
+#  - `workflow_dispatch` → 只构建并上传工件，不建 Release、不动任何站点，用来验证发布链路。
+#
+# 32 位原生件不在这里重编：随包的 `resources/native/win-ia32/` 已由 `native-ia32.yml`
+# 的 `[build-native]` 工序出件、入库，并由 `verify:scanner-page-timeout` 的 ⑥ 长期核对
+# 「包内件含源码现有的关键行为」。发布构建只复用入库件，重编仍走那条工序。
+#
+# 两条 MSI 构建路线（Windows runner / Linux + Wine）同时跑，是为了实测哪条在 CI 上真的绿；
+# 结论确定后保留可用的一条。产物不保证逐字节复现（PE 头有构建时间戳），核对看 SHA256SUMS
+# 与 BUILD-INTEGRITY.txt，以及实际安装运行。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      build_scanner:
+        description: 构建 32 位扫描端安装包
+        type: boolean
+        default: true
+      build_server:
+        description: 构建 Ubuntu 服务端包
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # 与 ci.yml 一致：CVE-2026-111497 从 22.23.4 起修复，不要用浮动的 22。
+  NODE_VERSION: "22.23.4"
+
+jobs:
+  preflight:
+    name: Version gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_release: ${{ github.event_name == 'push' }}
+      build_scanner: ${{ steps.scope.outputs.build_scanner }}
+      build_server: ${{ steps.scope.outputs.build_server }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Read package.json version
+        id: version
+        run: |
+          version="$(node -e 'process.stdout.write(require("./package.json").version)')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "发布版本：v$version"
+
+      - name: Check the tag matches package.json
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          expected="v${{ steps.version.outputs.version }}"
+          if [ "$tag" != "$expected" ]; then
+            echo "::error title=版本对不上::标签是 $tag，但 package.json 的版本是 ${{ steps.version.outputs.version }}。"
+            echo "发布不会替你改版本号：先按发版流程更新 package.json 与 CHANGELOG，重新打标签。"
+            exit 1
+          fi
+
+      - name: Resolve build scope
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "build_scanner=true" >> "$GITHUB_OUTPUT"
+            echo "build_server=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_scanner=${{ inputs.build_scanner }}" >> "$GITHUB_OUTPUT"
+            echo "build_server=${{ inputs.build_server }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fail when nothing is selected
+        if: steps.scope.outputs.build_scanner == 'false' && steps.scope.outputs.build_server == 'false'
+        run: |
+          echo "::error title=没选构建内容::两项构建都没勾选，无事可做。"
+          exit 1
+
+  scanner-ia32-windows:
+    name: Scanner ia32 MSI (Windows runner)
+    needs: preflight
+    if: needs.preflight.outputs.build_scanner == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      # 与 ci.yml 同口径：先跳过安装脚本，构建阶段不需要 Electron 二进制。
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Stage the committed ia32 native components
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="ignored/native-mingw/stage/win-ia32"
+          mkdir -p "$stage"
+          # 与 scripts/build-native-mingw.sh 的 stage 目录同构：三件可执行 + licenses。
+          # resources/native/win-ia32 里其余 DLL（OpenCV 动态库、UCRT）属 MSVC 工序遗留，
+          # 交叉包是静态链接的，带上只会让安装包白胖 90 MB。
+          for f in answer-card-recognizer.exe scanner-bridge.exe TWAINDSM.dll; do
+            cp "resources/native/win-ia32/$f" "$stage/"
+          done
+          cp -R resources/native/win-ia32/licenses "$stage/"
+          ls -la "$stage"
+
+      - name: Build ia32 MSI
+        run: node scripts/package-scanner-win32.cjs --skip-native-build
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: scanner-ia32-windows
+          path: |
+            release/*.msi
+            release/SHA256SUMS.txt
+            release/BUILD-INTEGRITY.txt
+          if-no-files-found: error
+
+  scanner-ia32-linux-wine:
+    name: Scanner ia32 MSI (Linux + Wine)
+    needs: preflight
+    if: needs.preflight.outputs.build_scanner == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Install Linux platform binaries (npm bug #4828)
+        run: npm install --no-save --ignore-scripts @rollup/rollup-linux-x64-gnu @esbuild/linux-x64
+
+      # electron-builder 在非 Windows 上编 MSI 要走 Wine 跑 WiX。
+      - name: Install Wine
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends wine wine32 wine64
+          wine --version || true
+
+      - name: Stage the committed ia32 native components
+        run: |
+          set -euo pipefail
+          stage="ignored/native-mingw/stage/win-ia32"
+          mkdir -p "$stage"
+          for f in answer-card-recognizer.exe scanner-bridge.exe TWAINDSM.dll; do
+            cp "resources/native/win-ia32/$f" "$stage/"
+          done
+          cp -R resources/native/win-ia32/licenses "$stage/"
+
+      - name: Build ia32 MSI
+        env:
+          WINEDEBUG: -all
+          DISPLAY: ""
+        run: node scripts/package-scanner-win32.cjs --skip-native-build
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: scanner-ia32-linux-wine
+          path: |
+            release/*.msi
+            release/SHA256SUMS.txt
+            release/BUILD-INTEGRITY.txt
+          if-no-files-found: error
+
+  server-ubuntu:
+    name: Ubuntu server package
+    needs: preflight
+    if: needs.preflight.outputs.build_server == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Install Linux platform binaries (npm bug #4828)
+        run: npm install --no-save --ignore-scripts @rollup/rollup-linux-x64-gnu @esbuild/linux-x64
+
+      - name: Rebuild native module (better-sqlite3)
+        run: npm rebuild better-sqlite3
+
+      - name: Build server package
+        run: npm run package:server:ubuntu24
+
+      - name: Verify package contents carry build info
+        run: |
+          set -euo pipefail
+          unzip -l release/server-ubuntu24/*.zip | grep -E "dist/server/build-info.json"
+          echo "服务端包内带构建信息，部署后管理员页面能读到更新时间"
+
+      - name: Upload server package
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-ubuntu24
+          path: |
+            release/server-ubuntu24/*.zip
+            release/SHA256SUMS.txt
+            release/BUILD-INTEGRITY.txt
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [preflight, scanner-ia32-windows, scanner-ia32-linux-wine, server-ubuntu]
+    # 显式写了 if 就不再自动带 success()，所以把「上游全绿」写回来：
+    # 任何一条构建线红掉都不发版，不允许「缺一个包也照样发布」。
+    if: needs.preflight.outputs.is_release == 'true' && !failure() && !cancelled()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: staging
+
+      - name: Assemble release files
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for lane in scanner-ia32-windows scanner-ia32-linux-wine server-ubuntu24; do
+            [ -d "staging/$lane" ] || continue
+            # 通配上传的工件平铺在 lanes 根下，字面路径上传的会带一层 release/，两种都要收。
+            find "staging/$lane" -type f \( -name '*.msi' -o -name '*.zip' \) -exec cp {} out/ \;
+            integrity="$(find "staging/$lane" -type f -name BUILD-INTEGRITY.txt | head -1)"
+            sums="$(find "staging/$lane" -type f -name SHA256SUMS.txt | head -1)"
+            # 三条构建线的清单文件同名，加 lane 前缀区分，避免 Release 资产互相覆盖。
+            [ -n "$integrity" ] && cp "$integrity" "out/${lane}-BUILD-INTEGRITY.txt"
+            [ -n "$sums" ] && cp "$sums" "out/${lane}-SHA256SUMS.txt"
+          done
+          if [ "$(find out -maxdepth 1 -type f \( -name '*.msi' -o -name '*.zip' \) | wc -l)" -eq 0 ]; then
+            echo "::error title=没有可发布的产物::上游构建没交出 msi / zip，终止发布。"
+            exit 1
+          fi
+          ls -la out
+
+      - name: Write release notes
+        run: |
+          set -euo pipefail
+          version="${{ needs.preflight.outputs.version }}"
+          commit="$(git rev-parse --short HEAD)"
+          {
+            echo "## Project-X v${version}"
+            echo
+            echo "- 构建提交：\`${commit}\`"
+            echo "- 发布构建：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            echo "### 安装包"
+            echo
+            for f in out/*.msi out/*.zip; do
+              [ -e "$f" ] || continue
+              base="$(basename "$f")"
+              size="$(numfmt --to=iec --suffix=B -- "$(stat -c%s "$f")")"
+              sha="$(sha256sum "$f" | cut -d' ' -f1)"
+              echo "- \`$base\` · $size"
+              echo "  - SHA256 \`${sha}\`"
+            done
+            echo
+            echo "### 怎么选"
+            echo
+            echo "- **答题卡扫描端-…-ia32.msi**：32 位 Windows 扫描工作站用这个，现场部署就是 ia32；装之前先装好扫描仪的 32 位 TWAIN 驱动。"
+            echo "- **project-x-server-ubuntu24-….zip**：Ubuntu 24 服务端包，部署入口见包内《Ubuntu24浏览器版部署说明.md》。"
+            echo
+            echo "### 校验与签名"
+            echo
+            echo "安装包**没有代码签名**（仓库不含证书，证书也不入库），首次安装时 Windows 会提示未知发布者；这是既有口径，不是本次回归。"
+            echo "配套的 \`*-SHA256SUMS.txt\` 与 \`*-BUILD-INTEGRITY.txt\` 逐件列出校验和与签名状态，收到包后请先核对："
+            echo
+            echo '```powershell'
+            echo "# Windows：算出下载文件的 SHA256，与清单里的值对比"
+            echo "Get-FileHash .\\答题卡扫描端-${version}-ia32.msi -Algorithm SHA256"
+            echo '```'
+            echo
+            echo '```bash'
+            echo "# Linux / macOS"
+            echo "sha256sum project-x-server-ubuntu24-${version}.zip"
+            echo '```'
+            echo
+            echo "两条构建路线（Windows runner 与 Linux + Wine）产物的 SHA256 不保证一致：同一份源码两次构建的"
+            echo "PE 头里带构建时间戳，不逐字节可复现。核对请看包内字符串与实际运行，不要只比哈希。"
+          } > notes.md
+          cat notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Project-X v${{ needs.preflight.outputs.version }}" \
+            --notes-file notes.md \
+            out/*

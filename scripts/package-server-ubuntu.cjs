@@ -145,6 +145,9 @@ This is the browser-accessible web server package. It includes dist/web for the 
 - dist/server/index.mjs: Node API + static server.
 - dist/server/schema.sql: SQLite initialization schema.
 - dist/server/schema.mariadb.sql: MariaDB 10.11 schema.
+- dist/server/build-info.json: version, commit and build time recorded when this package was built.
+  The admin console shows it as「服务器版本与更新时间」, so an operator can tell whether the running
+  service is the new package (compare 构建时间 with 本次启动) without opening a shell.
 - llmclient/: Python AI sidecar source and requirements (no local credentials).
 - resources/background.jpg: runtime resource used by the background API.
 - resources/native/correction-linux-x64/: Linux x86_64 recognizer for explicit recovery of uploaded abnormal cards missing alignment. Ordinary scanning still runs on Windows.
@@ -623,9 +626,21 @@ function buildPackage() {
 
   const correctionDir = path.join(rootDir,"resources","native","correction-linux-x64");
   const correction = readFileSync(path.join(correctionDir,"answer-card-recognizer"));
-  for (const line of readFileSync(path.join(correctionDir,"source-sha256.txt"),"utf8").trim().split("\n")) {
+  // 摘要清单按行解析：Windows 工作副本会把它检出成 CRLF，行尾的 \r 会让整行匹配不上，
+  // 于是报出「源码变了」这种误导结论。解析容许 \r，但比对摘要仍然用原始字节。
+  for (const line of readFileSync(path.join(correctionDir,"source-sha256.txt"),"utf8").split(/\r?\n/)) {
+    if (line.trim() === "") continue;
     const match = line.match(/^([a-f0-9]{64})  (native\/[A-Za-z0-9_./-]+)$/);
-    if (!match || createHash("sha256").update(readFileSync(path.join(rootDir,match[2]))).digest("hex")!==match[1]) throw new Error("Correction recognizer source has changed; rebuild Linux binary before packaging");
+    if (!match) throw new Error(`Unparsable line in correction recognizer source manifest: ${line.slice(0, 80)}`);
+    const bytes = readFileSync(path.join(rootDir,match[2]));
+    if (createHash("sha256").update(bytes).digest("hex") === match[1]) continue;
+    // 摘要对不上时区分两种成因：行尾被 checkout 改写（换个说法让人去 LF 检出上打包），
+    // 还是源码真的动过（保持原来的拒绝打包结论）。都不放行。
+    const lf = Buffer.from(bytes.toString("utf8").replace(/\r\n/g, "\n"), "utf8");
+    if (createHash("sha256").update(lf).digest("hex") === match[1]) {
+      throw new Error(`${match[2]} 是 CRLF 检出的工作副本，无法核对随包 Linux 识别器源码摘要。请在 LF 检出（Linux 构建机或 CI）上打包，不要用 autocrlf=true 的 Windows 副本。`);
+    }
+    throw new Error("Correction recognizer source has changed; rebuild Linux binary before packaging");
   }
   if (correction.length<64 || correction.subarray(0,4).toString("hex")!=="7f454c46" || correction[4]!==2 || correction[5]!==1 || correction.readUInt16LE(18)!==62) throw new Error("Expected Linux x86_64 ELF correction recognizer");
 
