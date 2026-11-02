@@ -14,7 +14,8 @@
  * 也不退回当前时间——否则管理员会把「猜的」读成「这台服务器刚刚构建过」。
  * 原因文案只带文件名与错误类别，不回传目录（与管理台其余接口 F-12-8 的脱敏口径一致）。
  *
- * 只读一次并缓存：进程运行期这份文件不会变，变了也要等重启才生效。
+ * 缓存按文件的 mtime + 大小失效，不是进程级永久缓存：管理员可能先打开过控制台，再把新包拷进来。
+ * 若一直返回第一次读到的内容，「新包已就位但服务没重启」这个最该被看见的场景反而看不见。
  */
 import path from "node:path";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -49,55 +50,76 @@ function failureHint(error: unknown): string {
 }
 
 let cached: BuildInfoSource | null = null;
+/** 缓存对应的文件与指纹；文件被替换（部署新包）后指纹不再匹配，就会重新读。 */
+let cachedStamp: { file: string; mtimeMs: number; size: number } | null = null;
 
-export function readBuildInfo(): BuildInfoSource {
-  if (cached) return cached;
-  const override = process.env.PROJECTX_BUILD_INFO_PATH;
-  const existing: string[] = [];
-  const unreadable: string[] = [];
-  for (const file of candidatePaths(process.env)) {
-    try {
-      if (!existsSync(file)) continue;
-      existing.push(file);
-    } catch (error) {
-      unreadable.push(`${path.basename(file)} (${failureHint(error)})`);
-    }
-  }
-  const file = existing[0];
-  if (!file) {
-    cached = {
-      info: null,
-      path: null,
-      reason: override
-        ? "指定的构建信息文件不存在"
-        : unreadable.length > 0
-          ? `构建信息读取失败（${unreadable.join("、")}）`
-          : "本次运行没有构建信息（源码直跑或旧版部署包）",
-    };
-    return cached;
-  }
+/** 当前取用文件的指纹；文件不在或读不到属性时返回 null（此时不套用缓存）。 */
+function currentStamp(file: string | null): { file: string; mtimeMs: number; size: number } | null {
+  if (!file) return null;
   try {
-    if (statSync(file).size > MAX_BUILD_INFO_BYTES) {
-      cached = { info: null, path: file, reason: "构建信息文件过大，按不可信内容忽略" };
-      return cached;
-    }
-    const parsed = normalizeBuildInfo(JSON.parse(readFileSync(file, "utf8")));
-    // 文件存在但关键字段缺失：多半是旧版本产物或手工放置，如实说明，不退回当前时间。
-    cached = parsed
-      ? { info: parsed, path: file, reason: null }
-      : { info: null, path: file, reason: `构建信息字段不完整（${path.basename(file)}，可能是旧版本产物）` };
-    return cached;
-  } catch (error) {
-    cached = {
-      info: null,
-      path: file,
-      reason: `构建信息无法解析（${path.basename(file)}，${failureHint(error)}）`,
-    };
-    return cached;
+    const stat = statSync(file);
+    return { file, mtimeMs: stat.mtimeMs, size: stat.size };
+  } catch {
+    return null;
   }
 }
 
-/** 回归夹具用：清掉缓存，让下一次读取重新按当前环境变量定位。 */
+/**
+ * 先找出「存在」的候选文件，再按指纹决定是否重读。
+ * 这里分两步是为了让「文件被替换成同大小但内容不同」也能重读：mtime 变了就失效。
+ */
+function locatedFile(): string | null {
+  for (const file of candidatePaths(process.env)) {
+    try {
+      if (existsSync(file)) return file;
+    } catch {
+      // 目录不可达之类的问题留到读取时统一说明，这里不猜。
+    }
+  }
+  return null;
+}
+
+export function readBuildInfo(): BuildInfoSource {
+  const file = locatedFile();
+  const stamp = currentStamp(file);
+  // 没有可用文件时不缓存结论：可能是部署过程中间态，下一次请求要重新看。
+  if (!stamp) {
+    cached = null;
+    cachedStamp = null;
+    const override = process.env.PROJECTX_BUILD_INFO_PATH;
+    return {
+      info: null,
+      path: null,
+      reason: override ? "指定的构建信息文件不存在" : "本次运行没有构建信息（源码直跑或旧版部署包）",
+    };
+  }
+  if (cached && cachedStamp && cachedStamp.file === stamp.file && cachedStamp.mtimeMs === stamp.mtimeMs && cachedStamp.size === stamp.size) {
+    return cached;
+  }
+  const fresh = loadBuildInfo(stamp.file);
+  cached = fresh;
+  cachedStamp = fresh.path ? currentStamp(fresh.path) : null;
+  return fresh;
+}
+
+/** 真正读一次盘：内容不可用就如实说明，不退回当前时间。 */
+function loadBuildInfo(file: string): BuildInfoSource {
+  try {
+    if (statSync(file).size > MAX_BUILD_INFO_BYTES) {
+      return { info: null, path: file, reason: "构建信息文件过大，按不可信内容忽略" };
+    }
+    const parsed = normalizeBuildInfo(JSON.parse(readFileSync(file, "utf8")));
+    // 文件存在但关键字段缺失：多半是旧版本产物或手工放置，如实说明，不退回当前时间。
+    return parsed
+      ? { info: parsed, path: file, reason: null }
+      : { info: null, path: file, reason: `构建信息字段不完整（${path.basename(file)}，可能是旧版本产物）` };
+  } catch (error) {
+    return { info: null, path: file, reason: `构建信息无法解析（${path.basename(file)}，${failureHint(error)}）` };
+  }
+}
+
+/** 回归夹具用：清掉缓存，让下一次读取重新落盘。 */
 export function resetBuildInfoCache(): void {
   cached = null;
+  cachedStamp = null;
 }

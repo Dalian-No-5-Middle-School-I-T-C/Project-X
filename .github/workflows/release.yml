@@ -105,17 +105,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # 发出去的版本必须是主干历史上的提交。标签打在未合并的分支或旧提交上时，
-          # Releases 会出现一个「标题像最新、内容不是最新」的包，教师按它下载就是踩坑。
+          # 发出去的版本必须是主干当前的那个提交。只收 identical：
+          # compare 把「标签指向主干上更早的提交」报成 behind，放行的话就等于
+          # 允许把一个旧提交发成最新版本——正是这条检查想拦住的事。
           status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${GITHUB_SHA}" --jq '.status')"
-          case "$status" in
-            behind|identical) echo "标签提交在 main 上（compare 状态：$status）" ;;
-            *)
-              echo "::error title=标签不在 main 上::v${GITHUB_REF_NAME#v} 指向的 ${GITHUB_SHA} 与 main 的关系是 $status。"
-              echo "先把发版提交合进 main，再从 main 上打标签。"
-              exit 1
-              ;;
-          esac
+          if [ "$status" != "identical" ]; then
+            echo "::error title=标签不是 main 的当前提交::${GITHUB_REF_NAME} 指向的 ${GITHUB_SHA} 与 main 的关系是 $status。"
+            echo "在主干当前提交上打标签再推；需要重发旧版本时请人工确认后再操作。"
+            exit 1
+          fi
+          echo "标签提交就是 main 的当前提交"
 
       - name: Resolve build scope
         id: scope

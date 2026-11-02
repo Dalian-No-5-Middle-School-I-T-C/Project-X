@@ -259,6 +259,32 @@ section("管理员控制台接口的真实行为");
   ok(typeof noBuildBody.reason === "string" && noBuildBody.reason !== "", "无构建信息时给出原因");
   ok(!JSON.stringify(noBuildBody).includes(tmpDir), "整份响应不含临时目录路径");
 
+  // 部署替换实验（评审 P2）：管理员可能先打开过控制台，再把新包拷进来。
+  // 不换文件指针、不清缓存，只改盘上的内容，第二次请求必须读到新的构建时间——
+  // 永久缓存会让「新包已就位但服务没重启」这个承诺在最该看见的场景里失效。
+  process.env.PROJECTX_BUILD_INFO_PATH = builtFile;
+  buildInfoStore.resetBuildInfoCache();
+  const warm = await fetch(`${base}/api/admin/console/build`, { headers: adminHeaders });
+  const warmBody = await warm.json() as { build?: { builtAt?: string } };
+  ok(warmBody.build?.builtAt === builtInfo.builtAt, "替换前读到的是当前这份构建信息");
+
+  const newer = { ...builtInfo, builtAt: new Date(Date.parse(builtInfo.builtAt) + 3_600_000).toISOString(), builder: `${builtInfo.builder} + redeployed-with-longer-suffix` };
+  assert.notEqual(newer.builtAt, builtInfo.builtAt, "夹具要保证换了时间");
+  assert.notEqual(JSON.stringify(newer).length, JSON.stringify(builtInfo).length, "夹具要保证换了字节数（指纹至少有一处变）");
+  writeFileSync(builtFile, `${JSON.stringify(newer, null, 2)}\n`, "utf8");
+  const afterSwap = await fetch(`${base}/api/admin/console/build`, { headers: adminHeaders });
+  const afterBody = await afterSwap.json() as { build?: { builtAt?: string } };
+  ok(afterBody.build?.builtAt === newer.builtAt,
+    `部署替换后不重启也能读到新的构建时间（${builtInfo.builtAt.slice(11, 19)} → ${newer.builtAt.slice(11, 19)}）`);
+
+  // 文件被删掉（回滚、清理）：不能继续报上一次读到的构建时间。
+  rmSync(builtFile, { force: true });
+  const afterDelete = await fetch(`${base}/api/admin/console/build`, { headers: adminHeaders });
+  const deleteBody = await afterDelete.json() as { build: unknown; reason: string | null };
+  ok(deleteBody.build === null && typeof deleteBody.reason === "string" && deleteBody.reason !== "",
+    "构建信息文件消失后不再返回上一次的结果");
+  ok(String(deleteBody.reason).includes("指定的构建信息文件不存在"), "文件消失时如实说明是指定的路径不在");
+
   await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
   closeDatabase();
   process.chdir(originalCwd);

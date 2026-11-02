@@ -95,14 +95,20 @@ function walk(dir) {
 function verifyMsiWithWindowsInstaller(artifact) {
   const checkDir = fs.mkdtempSync(path.join(root, "ignored", "scanner-installer-check-"));
   const statusFile = path.join(checkDir, "msiexec-status.txt");
-  // 只清双引号，反斜杠必须留着（Windows 路径全靠它）；TARGETDIR 不能以反斜杠收尾，
-  // 否则 `"…\"` 里的转义会把闭合引号吃掉，msiexec 收到的参数就烂了。
-  const quote = (value) => `"${value.replace(/"/g, "")}"`;
+  // Start-Process 把 ArgumentList 的元素用空格拼成原生命令行，PowerShell 自己的字符串引号不会留下来：
+  // 写成 "-LiteralPath 值" 这种外层双引号，到 msiexec 手里就只剩值本身，带空格的仓库或临时目录会被拆成
+  // 多个参数，解包直接失败。所以引号必须是**字符串内容**——用 PS 单引号字面量包住一对双引号，
+  // 里面的单引号按 PS 规则翻倍转义，反斜杠原样保留（Windows 路径全靠它）。
+  // TARGETDIR 结尾不能带反斜杠：`"...\out\"` 里的 `\"` 会把闭合引号吃掉。
+  const psArg = (value) => "'" + '"' + value.replace(/'/g, "''") + '"' + "'";
+  // 给 PowerShell 自己的 cmdlet 参数（-LiteralPath）就不能再塞字面双引号：那是原生命令行的规则，
+  // cmdlet 会把引号当成路径的一部分，报「路径无效」。
+  const psString = (value) => "'" + value.replace(/'/g, "''") + "'";
   const script = [
     "$ErrorActionPreference='Stop'",
-    `$p = Start-Process -FilePath msiexec.exe -Wait -PassThru -WindowStyle Hidden -ArgumentList '/a', ${quote(artifact)}, '/qn', ${quote(`TARGETDIR=${checkDir}`)}`,
+    `$p = Start-Process -FilePath msiexec.exe -Wait -PassThru -WindowStyle Hidden -ArgumentList '/a', ${psArg(artifact)}, '/qn', ${psArg(`TARGETDIR=${checkDir}`)}`,
     `$code = if ($null -eq $p.ExitCode) { -1 } else { $p.ExitCode }`,
-    `$code | Set-Content -LiteralPath ${quote(statusFile)} -Encoding ASCII`,
+    `$code | Set-Content -LiteralPath ${psString(statusFile)} -Encoding ASCII`,
     "exit 0"
   ].join("\n");
   try {
