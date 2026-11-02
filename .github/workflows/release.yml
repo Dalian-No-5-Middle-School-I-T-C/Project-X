@@ -27,14 +27,20 @@ on:
   pull_request:
     branches: [main]
     paths:
-      # 只让真正影响发布链路的改动来试跑：这两条线跑一次就是发布链路本身，
-      # 改到打包脚本或工作流定义时先在 PR 上验，别等打标签时才发现红。
+      # 只让真正影响发布链路的改动来试跑：跑一次就是发布链路本身，
+      # 改到打包工序时先在 PR 上验，别等打标签时才发现红。
+      # 两个清单文件必须在内：package-scanner-win32.cjs 直接从它们取 Electron、better-sqlite3、sharp
+      # 的版本与产物版本号，package-server-ubuntu.cjs 也从 package.json 推运行时包与版本；
+      # 升依赖（例如 Electron 大版本）正是最容易把打包弄坏的一类改动。
       - ".github/workflows/release.yml"
+      - "package.json"
+      - "package-lock.json"
       - "scripts/package-scanner-win32.cjs"
       - "scripts/package-server-ubuntu.cjs"
       - "scripts/hash-release-artifacts.cjs"
       - "scripts/build-native-mingw.sh"
       - "resources/native/win-ia32/**"
+      - "resources/native/correction-linux-x64/**"
   workflow_dispatch:
     inputs:
       build_scanner:
@@ -92,6 +98,24 @@ jobs:
             echo "发布不会替你改版本号：先按发版流程更新 package.json 与 CHANGELOG，重新打标签。"
             exit 1
           fi
+
+      - name: Check the tag points at a main commit
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # 发出去的版本必须是主干历史上的提交。标签打在未合并的分支或旧提交上时，
+          # Releases 会出现一个「标题像最新、内容不是最新」的包，教师按它下载就是踩坑。
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${GITHUB_SHA}" --jq '.status')"
+          case "$status" in
+            behind|identical) echo "标签提交在 main 上（compare 状态：$status）" ;;
+            *)
+              echo "::error title=标签不在 main 上::v${GITHUB_REF_NAME#v} 指向的 ${GITHUB_SHA} 与 main 的关系是 $status。"
+              echo "先把发版提交合进 main，再从 main 上打标签。"
+              exit 1
+              ;;
+          esac
 
       - name: Resolve build scope
         id: scope
@@ -246,6 +270,8 @@ jobs:
             while IFS= read -r file; do
               base="$(basename "$file")"
               if [ -e "out/$base" ] && ! cmp -s "$file" "out/$base"; then
+                # 正常情况到不了这里（扫描端只留 Windows 一条线，服务端包名自带版本号）。
+                # 留着是保险：将来若再挂一条构建线或换个产物名，宁可红，也不发挑出来的那一个。
                 echo "::error title=两条产物线交出同名不同物的文件::$base 内容不同，随便发哪一个都和清单对不上。宁可红，不发挑出来的那一个。"
                 exit 1
               fi
@@ -253,12 +279,29 @@ jobs:
             done < <(find "$dir" -type f \( -name '*.msi' -o -name '*.zip' \))
             sums="$(find "$dir" -type f -name SHA256SUMS.txt | head -1)"
             integrity="$(find "$dir" -type f -name BUILD-INTEGRITY.txt | head -1)"
-            if [ -n "$sums" ]; then
-              # 清单按 release/ 目录写路径（服务端包多一层 server-ubuntu24/），资产是平铺的；
-              # 不剥掉那层前缀，收包方 `sha256sum -c` 必然报「找不到文件」。
-              awk '{ path = $2; sub(/^.*\//, "", path); printf "%s  %s\n", $1, path }' "$sums" > "out/${lane}-SHA256SUMS.txt"
+            if [ -n "$integrity" ]; then
+              cp "$integrity" "out/${lane}-BUILD-INTEGRITY.txt"
             fi
-            [ -n "$integrity" ] && cp "$integrity" "out/${lane}-BUILD-INTEGRITY.txt"
+            if [ -n "$sums" ]; then
+              # 清单是 sha256sum 兼容格式（64 位摘要 + 两个空格 + 相对 release/ 的路径）。
+              # 平铺后的资产名没有那层目录，且清单可能列出本次不发布的产物（例如将来多出便携版），
+              # 所以只保留「确实被收进 out/」的行并改成本地文件名——否则收包方 -c 必然报错。
+              kept=0
+              : > "out/${lane}-SHA256SUMS.txt"
+              while IFS= read -r line; do
+                [ -n "$line" ] || continue
+                digest="${line%% *}"
+                rel="${line#*  }"
+                base="$(basename "$rel")"
+                [ -e "out/$base" ] || continue
+                printf '%s  %s\n' "$digest" "$base" >> "out/${lane}-SHA256SUMS.txt"
+                kept=$((kept + 1))
+              done < "$sums"
+              if [ "$kept" -eq 0 ]; then
+                echo "::error title=清单与实际产物对不上::$sums 里没有任何文件被收到 out/ 里，宁可不发也不发一份验不了的清单。"
+                exit 1
+              fi
+            fi
           done
           if [ "$(find out -maxdepth 1 -type f \( -name '*.msi' -o -name '*.zip' \) | wc -l)" -eq 0 ]; then
             echo "::error title=没有可发布的产物::上游构建没交出 msi / zip，终止发布。"
@@ -311,7 +354,9 @@ jobs:
             echo "### 校验与签名"
             echo
             echo "安装包**没有代码签名**（仓库不含证书，证书也不入库），首次安装时 Windows 会提示未知发布者；这是既有口径，不是本次回归。"
-            echo "配套的 \`*-SHA256SUMS.txt\` 与 \`*-BUILD-INTEGRITY.txt\` 逐件列出校验和与签名状态，收到包后请先核对："
+            echo "配套的清单按构建线改名：\`scanner-ia32-windows-SHA256SUMS.txt\` 与 \`server-ubuntu24-SHA256SUMS.txt\`，"
+            echo "另有两份 \`*-BUILD-INTEGRITY.txt\` 写明版本、构建提交与签名状态。"
+            echo "把清单和安装包放在同一个目录里就能直接校验："
             echo
             echo '```powershell'
             echo "# Windows：算出下载文件的 SHA256，与清单里的值对比"
