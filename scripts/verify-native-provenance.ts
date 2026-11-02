@@ -78,7 +78,9 @@ if (!existsSync(manifest)) {
     const lfDigest = createHash("sha256").update(normalized).digest("hex");
     if (lfDigest === expected) {
       fail(`${relative} 与清单只对得上「换行归一后」的哈希：这份工作副本把源码检成了 CRLF，而清单记的是 Linux 上的原始字节哈希。`
-        + `要在关闭行尾转换的检出上跑这道门禁（Windows 上先 \`git config --global core.autocrlf false\` 再检出；发布作业里已经这么做）。`);
+        + "检出要同时设 core.autocrlf=false 与 core.eol=lf：.gitattributes 的 `* text=auto` 把这些文件判成 text 后，"
+        + "用哪个换行由 core.eol 决定（默认 native，在 Windows 上就是 CRLF），只关 autocrlf 不管用"
+        + "（第十跑的日志证明了这点）。发布作业里两个都已设置。");
     } else {
       fail(`${relative} 与清单摘要不一致：源码已改动而随包 ia32 识别器没重编。请按 readus/Windows32位扫描端交叉打包.md 重编并入库。`);
     }

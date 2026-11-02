@@ -151,10 +151,15 @@ jobs:
     steps:
       # Windows runner 的机器级 git 配置是 core.autocrlf=true，检出会把 LF 源码改成 CRLF；
       # 而 source-sha256.txt 是在 Linux 上用 cmake -E sha256sum 记的原始字节哈希。
-      # 不关掉转换，来源核对在这条作业里必然 14 项全红（第九轮实测如此）。
-      # .gitattributes 里显式声明的 eol 属性仍然生效：*.sh 保持 LF、*.bat 保持 CRLF。
+      # 不关掉转换，来源核对在这条作业里必然全红（第九轮实测如此）。
+      # 只关 autocrlf 还不够：.gitattributes 的 `* text=auto` 把这些文件判成 text 后，
+      # 检出用哪个换行由 core.eol 决定（默认 native，在 Windows 上就是 CRLF）——
+      # 第十轮就是这样红的：autocrlf=false 已生效，文件仍是 CRLF。两个都要设。
+      # .gitattributes 里显式声明的 eol 属性优先级更高，仍然生效：*.sh 保持 LF、*.bat 保持 CRLF。
       - name: Disable line-ending conversion for this checkout
-        run: git config --global core.autocrlf false
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
 
       - uses: actions/checkout@v4
         with:
