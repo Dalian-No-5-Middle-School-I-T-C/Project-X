@@ -308,6 +308,11 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
   return enqueueScannerSubmission(() => processScannerSessionInQueue(card, sessionId, mode, saveGroupId, saveGroupIds, blockUnreviewed));
 }
 
+/** Read-only batch view for upload UI polling; must not block page writes on the scanner queue. */
+export async function previewScannerUploadSession(card: AnswerCard, sessionId: string): Promise<ScanBatchResponse> {
+  return processScannerSessionInQueue(card, sessionId, "preview");
+}
+
 /** Caller retains scanner queue ownership through correction and admission. */
 export async function processScannerSessionInQueue(card: AnswerCard, sessionId: string,
   mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string, saveGroupIds?: ReadonlySet<string>,

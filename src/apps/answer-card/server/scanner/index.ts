@@ -41,6 +41,7 @@ import { safeId, dataDir } from "../storage";
 import { findCardForLayout } from "../card-layout";
 import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
 import { collectSessionResults, groupSessionPages } from "./session-results";
+import { resolveScanUploadPayload } from "./scan-upload-payload";
 import { filterDeletableGroups } from "../../../../shared/scanPostprocess";
 import sharp from "sharp";
 
@@ -415,6 +416,19 @@ export function createScannerRouter(twainEnabled = true): Router {
           }
         : recognition;
       res.json({ ...safeRecord, recognition: visible ?? null, hasImage: Boolean(image_path && !image_path.startsWith("pending:")) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/record/:recordId/upload-payload", async (req, res, next) => {
+    try {
+      const payload = await resolveScanUploadPayload(safeId(req.params.recordId));
+      if (!payload) {
+        res.status(404).json({ message: "尚无可用扫描识别结果，请在本机重新识别后再上传" });
+        return;
+      }
+      res.json(payload);
     } catch (error) {
       next(error);
     }

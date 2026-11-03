@@ -117,6 +117,46 @@ async function main() {
     }
 
     {
+      const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+      const values = new Map<string, string>([["projectx_server_url", "https://reuse.test"]]);
+      Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => { values.set(key, value); },
+        removeItem: (key: string) => { values.delete(key); },
+        key: (index: number) => [...values.keys()][index] ?? null,
+        get length() { return values.size; },
+      } });
+      const localCalls: string[] = [];
+      const payload = { status: "ok", studentId: { status: "ok", value: "82048" }, identity: { status: "verified", code: "QR_VERIFIED", cardId: "card_1", pageNumber: 1 },
+        questions: [], subjectiveQuestions: [], geometry: { imageWidth: 100, imageHeight: 100, imageToLayout: [1,0,0,0,1,0,0,0,1], layoutToImage: [1,0,0,0,1,0,0,0,1] } };
+      try {
+        const reuseMgr = createScannerUploadManager(deps({
+          localFetch: async (url, init) => {
+            localCalls.push(String(url));
+            if (String(url).includes("/upload-payload")) return jsonRes(payload);
+            if (init?.method === "POST") throw new Error("扫描上传不应再次 POST 本机识别: " + url);
+            return jsonRes(payload);
+          },
+          remoteFetch: async (url) => {
+            if (String(url).endsWith(SESSIONS)) return jsonRes({ sessionId: "reuse", uploadTokens: ["tok1"] });
+            return jsonRes({ ok: true });
+          },
+        }));
+        const reuseId = reuseMgr.startUpload({
+          kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "扫描_82048",
+          localSessionId: "scan-reuse", identityMode: "strict",
+          pages: [{ pageNum: 1, side: "front", groupId: "0", recordId: "rec_1", getBlob: async () => blob() }],
+        });
+        assert((await waitTerminal(reuseMgr, reuseId)).status === "done", "复用扫描识别结果的上传应完成");
+        assert(localCalls.some(u => u.includes("/upload-payload")), "扫描上传应先读取 upload-payload");
+        assert(!localCalls.some(u => u.includes("/recognition")), "扫描上传不应再调用 /recognition");
+      } finally {
+        if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+        else Reflect.deleteProperty(globalThis, "localStorage");
+      }
+    }
+
+    {
       // 失败但已建远端会话的任务仍会「重试失败页」，此时改分依旧会撕裂快照（评审 P1）。
       // 关闭进度卡只摘掉内存任务，恢复记录还在：重新入队会接回同一个远端会话，
       // 所以锁必须跟着记录走，并给出明确的「放弃续传」出口（评审 P1 复核）。

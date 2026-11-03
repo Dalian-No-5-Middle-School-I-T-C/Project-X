@@ -46,7 +46,7 @@ import { CardRepository } from "../repositories/CardRepository";
 import { ExamRepository } from "../repositories/ExamRepository";
 import { ensureExamParticipants, listMissingParticipants, searchExamParticipantRoster } from "../services/examParticipants";
 import { recomputeExamRankings } from "../services/rankingUpdate";
-import { processScannerSession, enqueueScannerSubmission, writeScannerSession, invalidateScanRecognition, invalidateScanRecognitionInTransaction, savedReceiptOwnerOfPage, discardScannerGroup } from "../services/scannerSubmissions";
+import { processScannerSession, previewScannerUploadSession, enqueueScannerSubmission, writeScannerSession, invalidateScanRecognition, invalidateScanRecognitionInTransaction, savedReceiptOwnerOfPage, discardScannerGroup } from "../services/scannerSubmissions";
 import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
 import { groupSessionPages } from "../../apps/answer-card/server/scanner/session-results";
 import { scannerLegacyRecoveryRouter } from "./scanner-legacy-recovery";
@@ -587,7 +587,7 @@ router.get("/sessions/:sessionId/results", dualAuth, async (req, res, next) => {
     const session = await getMysqlDb().get<{ card_id: string }>("SELECT card_id FROM twain_scan_sessions WHERE id = ?", req.params.sessionId);
     const card = session && await new CardRepository().findById(session.card_id);
     if (!card) { res.status(404).json({ message: "扫描会话或答题卡不存在" }); return; }
-    const batch = await processScannerSession(card, String(req.params.sessionId));
+    const batch = await previewScannerUploadSession(card, String(req.params.sessionId));
     // Teacher edits live in correction snapshots, while upload receipts retain
     // the original recognition. Read the current marks without resaving grades.
     for (const result of batch.results) {

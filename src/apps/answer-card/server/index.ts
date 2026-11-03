@@ -1619,6 +1619,8 @@ export async function createApp(): Promise<express.Express> {
       }
     } catch (error) {
       next(error);
+    } finally {
+      if (req.file?.path) await rm(req.file.path, { force: true }).catch(err => console.warn("[Recognition] upload temp cleanup failed", err));
     }
   });
 

@@ -10,7 +10,7 @@ import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
 import { applyScanStudentId, uniqueScanConflictCards } from "../../../../shared/scanPages";
 import { damagedScanUploadRecoverySessionId, forgetScanUploadRecovery, scanUploadRecoveryState, readScanUploadRecovery, rememberQueuedGroup, writeScanUploadRecovery } from "./scannerUploadLedger";
 import type { ScanBatchFailure, ScanConflictCard, ScanBatchResponse } from "../../../../shared/scanPages";
-import type { CombinedGradingRow } from "../../../../shared/types";
+import type { CombinedGradingRow, CombinedRecognitionResult } from "../../../../shared/types";
 
 export type UploadJobKind = "scan" | "import";
 export type UploadJobStatus =
@@ -450,9 +450,17 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     return { sessionId: data.sessionId, tokens: data.uploadTokens };
   }
 
-  async function uploadPageOnce(j: JobRecord, page: PageRecord): Promise<void> {
-    const blobData = await page.input.getBlob();
-    // Linux receives recognition data; the Windows client owns the native recognizer.
+  async function recognizePageForUpload(j: JobRecord, page: PageRecord, blobData: Blob): Promise<CombinedRecognitionResult & { cropImages?: Array<Record<string, unknown> & { dataBase64: string }> }> {
+    const recordId = page.input.recordId;
+    if (j.kind === "scan" && recordId) {
+      const cached = await (deps.localFetch ?? authFetch)(`/api/scanner/record/${encodeURIComponent(recordId)}/upload-payload`);
+      if (cached.ok) {
+        return await cached.json() as CombinedRecognitionResult & { cropImages?: Array<Record<string, unknown> & { dataBase64: string }> };
+      }
+      if (cached.status !== 404) {
+        throw await httpError(cached);
+      }
+    }
     const localForm = new FormData();
     localForm.append("file", blobData, `page_${page.input.pageNum}.jpg`);
     localForm.append("page", String(page.input.layoutPage ?? (page.input.side === "back" ? 2 : 1)));
@@ -468,17 +476,22 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         ? `单张图片 ${(blobData.size / 1024 / 1024).toFixed(1)} MiB 超过接收限制，请降低扫描分辨率或转换为 PNG/JPEG 后重试`
         : error.message;
       error.message = `本机识别失败（HTTP ${recognized.status}）：${detail}`;
-      // Preserve the status so deterministic 4xx failures are not uploaded repeatedly.
       throw error;
     }
-    const recognition = await recognized.json();
+    return await recognized.json() as CombinedRecognitionResult & { cropImages?: Array<Record<string, unknown> & { dataBase64: string }> };
+  }
+
+  async function uploadPageOnce(j: JobRecord, page: PageRecord): Promise<void> {
+    const blobData = await page.input.getBlob();
+    // Linux receives recognition data; the Windows client owns the native recognizer.
+    const recognition = await recognizePageForUpload(j, page, blobData);
     // Recognition still produces fresh crops; explicit local edits remain authoritative.
     const corrected = await page.input.getCorrection?.();
     if (corrected) {
       recognition.questions = corrected.questions;
       recognition.subjectiveQuestions = corrected.subjectiveQuestions;
       recognition.studentId = corrected.studentId;
-      if (recognition.geometry && recognition.identity?.status !== "rejected") recognition.status = "ok";
+      if (recognition.geometry && (recognition.identity as { status?: string } | undefined)?.status !== "rejected") recognition.status = "ok";
     }
     // Dependencies are fixed when the job is created, independent of array adjacency,
     // retry counts or network latency. Never borrow an ID across physical cards.
@@ -494,7 +507,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     if (recognition.status === "failed" || !recognition.studentId?.value) {
       throw new Error("本机未识别到有效学号，请检查答题卡后重试上传");
     }
-    page.studentId = recognition.studentId;
+    page.studentId = { status: recognition.studentId.status, value: recognition.studentId.value };
     const form = new FormData();
     form.append("image", blobData, `page_${page.input.pageNum}.jpg`);
     form.append("token", page.token);
