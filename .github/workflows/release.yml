@@ -37,6 +37,11 @@ on:
       - "package-lock.json"
       - "scripts/package-scanner-win32.cjs"
       - "scripts/package-server-ubuntu.cjs"
+      # 服务端发布线跑 npm run build:server；只改入口或写 build-info 的工序而不试跑，
+      # 漏写 build-info.json 可能要等到打标签时 ZIP 检查才红。
+      - "scripts/build-server.ts"
+      - "scripts/lib/build-info.ts"
+      - "src/shared/buildInfo.ts"
       - "scripts/hash-release-artifacts.cjs"
       - "scripts/build-native-mingw.sh"
       # 这两道门禁脚本本身就是发布链路的一部分：只改它们而不在 PR 上跑一次，

@@ -133,6 +133,36 @@ if (!bridgeCommit) {
   }
 }
 
+// ── 3. TWAINDSM.dll：随包件与第三方源一致 ─────────────────
+console.log("\n── TWAINDSM.dll 是否与 DSM 第三方源同步");
+const stagedDsm = path.join(root, "resources", "native", "win-ia32", "TWAINDSM.dll");
+const vendorDsm = path.join(
+  root,
+  "native",
+  "ScannerBridge",
+  "third_party",
+  "twain-dsm-2.5.1",
+  "dsm",
+  "win-ia32",
+  "TWAINDSM.dll",
+);
+if (!existsSync(vendorDsm)) {
+  fail(`找不到 DSM 第三方源 ${path.relative(root, vendorDsm)}：无法核对随包 TWAINDSM.dll 是否落后。`);
+} else if (!existsSync(stagedDsm)) {
+  fail(`找不到随包 ${path.relative(root, stagedDsm)}：扫描端安装包不能缺 DSM。`);
+} else {
+  const stagedHash = sha256(stagedDsm);
+  const vendorHash = sha256(vendorDsm);
+  if (stagedHash === vendorHash) {
+    pass("随包 TWAINDSM.dll 与 third_party/dsm/win-ia32 源字节一致");
+  } else {
+    fail(
+      "随包 TWAINDSM.dll 与 native/ScannerBridge/third_party/twain-dsm-2.5.1/dsm/win-ia32/TWAINDSM.dll 不一致："
+        + "第三方 DSM 已升级但未同步 resources/native/win-ia32/，请按交叉打包工序拷贝并入库。",
+    );
+  }
+}
+
 for (const note of notes) console.log(`  · ${note}`);
 console.log(`\nia32 原生件来源核对：${failures.length === 0 ? "通过" : `${failures.length} 项失败`}。`);
 if (failures.length > 0) process.exit(1);

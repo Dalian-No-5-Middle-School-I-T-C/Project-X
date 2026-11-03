@@ -623,6 +623,9 @@ function buildPackage() {
   if (!existsSync(path.join(rootDir, "dist", "server", "schema.mariadb.sql"))) {
     throw new Error("Missing dist/server/schema.mariadb.sql. Run npm run build:server before packaging.");
   }
+  if (!existsSync(path.join(rootDir, "dist", "server", "build-info.json"))) {
+    throw new Error("Missing dist/server/build-info.json. Run npm run build:server before packaging.");
+  }
 
   const correctionDir = path.join(rootDir,"resources","native","correction-linux-x64");
   const correction = readFileSync(path.join(correctionDir,"answer-card-recognizer"));
