@@ -16,7 +16,7 @@
  * 需要完整 git 历史：`fetch-depth: 1` 的检出查不到「 exe 最后一次入库的提交」，
  * 这时本脚本判失败并说明要加深历史，而不是当成通过。
  *
- * 运行：npm run verify:native-provenance（在 .github/workflows/release.yml 的扫描端作业里，
+ * 运行：npm run verify:native-provenance（在 .github/workflows/release-build.yml 的扫描端作业里，
  * 紧跟 ⑥ 门槛之后、打包之前）
  */
 import { execFileSync } from "node:child_process";

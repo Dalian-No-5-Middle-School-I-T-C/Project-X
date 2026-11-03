@@ -329,8 +329,9 @@ node scripts/hash-release-artifacts.cjs --check --root <产物目录>
 答题卡扫描端-2.2.1-ia32.exe
 ```
 
-> 自 2026-11 起，推 `v<版本号>` 标签会由 `.github/workflows/release.yml` 自动出包并发布到 Releases；
-> 32 位扫描工作站点的是 `答题卡扫描端-<版本>-ia32.msi`。发布工序与校验口径见
+> 自 2026-11 起，推 `main` 和指向 `main` 的 PR 会由 `.github/workflows/release-build.yml` 自动打安装包；
+> 正式发版在仓库 Actions 里运行 `Publish release`（`.github/workflows/release-publish.yml`），填写与 `package.json` 一致的 `v<版本号>`。
+> 32 位扫描工作站点的是 `答题卡扫描端-<版本>-ia32.msi`。工序与校验口径见
 > [发布构建与服务器更新时间](./readus/发布构建与服务器更新时间.md)。
 
 > 普通 64 位 Windows 请选择 `x64` 包；需要兼容 32 位 Windows 时选择 `ia32` 包。扫描端含 TWAIN 直扫 + 答题卡选择 + 结果预览。教师/学生功能请通过浏览器访问服务器部署的 Web 端。

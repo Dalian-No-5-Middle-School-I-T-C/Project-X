@@ -1,0 +1,236 @@
+name: Release build
+
+# 安装包构建（可复用）。只出工件，不建 GitHub Release。
+#
+# 触发与 Rhine 的 Platform build 同一形状：
+#  - 推 main、以及指向 main 的 PR：CI 自动做构建检测（不按路径过滤，打包坏了在合并前就能看见）。
+#  - Actions 页面 Run workflow：在仓库里手动构建，可只勾扫描端或只勾服务端。
+#  - workflow_call：由 release-publish.yml 发版时调用，避免再抄一套打包步骤。
+#
+# 32 位原生件不在这里重编：随包的 `resources/native/win-ia32/` 已由 `native-ia32.yml`
+# 的 `[build-native]` 工序出件、入库，并由 `verify:scanner-page-timeout` 的 ⑥ 长期核对
+# 「包内件含源码现有的关键行为」。发布构建只复用入库件，重编仍走那条工序。
+#
+# 32 位包的 MSI 只在 Windows runner 上编（WiX 原生运行）。Linux + Wine 那条线在 2026-11-03 的 CI 上
+# 实测过：WiX 4（.NET）在 Wine 的 experimental wow64 下起不动，红在编译 MSI 这一步，因此不留作「常红的参考」。
+# 需要非 Windows 出包时看 readus/Windows32位扫描端交叉打包.md：macOS/Linux 准备 + Windows（本机或 VM）编 MSI。
+#
+# 产物不保证逐字节复现：同一份源码两次构建的 PE 头里带构建时间戳。核对看 SHA256SUMS 与
+# BUILD-INTEGRITY.txt，以及实际安装运行，不要只比哈希。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      build_scanner:
+        description: 构建 32 位扫描端安装包
+        type: boolean
+        default: true
+      build_server:
+        description: 构建 Ubuntu 服务端包
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      build_scanner:
+        description: 构建 32 位扫描端安装包
+        type: boolean
+        default: true
+      build_server:
+        description: 构建 Ubuntu 服务端包
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # 发版调用（workflow_call）不和同一分支上的检测运行抢同一个组，避免检测把发版取消掉。
+  group: release-build-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_call' }}
+
+env:
+  # 与 ci.yml 一致：CVE-2026-111497 从 22.23.4 起修复，不要用浮动的 22。
+  NODE_VERSION: "22.23.4"
+
+jobs:
+  preflight:
+    name: Version gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build_scanner: ${{ steps.scope.outputs.build_scanner }}
+      build_server: ${{ steps.scope.outputs.build_server }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Read package.json version
+        id: version
+        run: |
+          version="$(node -e 'process.stdout.write(require("./package.json").version)')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "发布版本：v$version"
+
+      - name: Resolve build scope
+        id: scope
+        run: |
+          # 推 main 与 PR 两条线都跑。手动触发和发版调用按传入的开关裁剪。
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event_name }}" = "workflow_call" ]; then
+            echo "build_scanner=${{ inputs.build_scanner }}" >> "$GITHUB_OUTPUT"
+            echo "build_server=${{ inputs.build_server }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_scanner=true" >> "$GITHUB_OUTPUT"
+            echo "build_server=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fail when nothing is selected
+        if: steps.scope.outputs.build_scanner == 'false' && steps.scope.outputs.build_server == 'false'
+        run: |
+          echo "::error title=没选构建内容::两项构建都没勾选，无事可做。"
+          exit 1
+
+  scanner-ia32-windows:
+    name: Scanner ia32 MSI (Windows runner)
+    needs: preflight
+    if: needs.preflight.outputs.build_scanner == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      # Windows runner 的机器级 git 配置是 core.autocrlf=true，检出会把 LF 源码改成 CRLF；
+      # 而 source-sha256.txt 是在 Linux 上用 cmake -E sha256sum 记的原始字节哈希。
+      # 不关掉转换，来源核对在这条作业里必然全红（第九轮实测如此）。
+      # 只关 autocrlf 还不够：.gitattributes 的 `* text=auto` 把这些文件判成 text 后，
+      # 检出用哪个换行由 core.eol 决定（默认 native，在 Windows 上就是 CRLF）——
+      # 第十轮就是这样红的：autocrlf=false 已生效，文件仍是 CRLF。两个都要设。
+      # .gitattributes 里显式声明的 eol 属性优先级更高，仍然生效：*.sh 保持 LF、*.bat 保持 CRLF。
+      - name: Disable line-ending conversion for this checkout
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@v4
+        with:
+          # 来源核对要查「随包 exe 最后一次入库的提交」，depth 1 的浅克隆查不到。
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      # 与 ci.yml 同口径：先跳过安装脚本，构建阶段不需要 Electron 二进制。
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      # ⑥ 门槛：核对入库的 ia32 识别器与扫描桥确实含源码现有的关键行为。
+      # 不跑它等于「CI 闭眼把仓库里现成的二进制发出去」，这条纯静态检查很便宜，必须在打包之前。
+      - name: Check the staged native components against current source
+        run: npm run verify:scanner-page-timeout
+
+      # ⑥ 只搜几颗字串，字串还在就看不出桥接是旧的；这一步按源码摘要 + 「exe 入库后的内容差异」兜住。
+      - name: Check the committed ia32 natives are not older than their sources
+        run: npm run verify:native-provenance
+
+      - name: Stage the committed ia32 native components
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="ignored/native-mingw/stage/win-ia32"
+          src="resources/native/win-ia32"
+          mkdir -p "$stage/licenses"
+          # 与 scripts/build-native-mingw.sh 的 stage 目录同构：三件可执行 + 源码摘要 + licenses。
+          cp "$src/answer-card-recognizer.exe" "$src/scanner-bridge.exe" "$src/TWAINDSM.dll" "$stage/"
+          cp "$src/source-sha256.txt" "$stage/"
+          cp -R "$src/licenses/." "$stage/licenses/"
+          # 随包 licenses 里没有 TWAIN 声明，按同一条工序从源码目录补上，别把第三方声明漏掉。
+          cp native/ScannerBridge/third_party/THIRD_PARTY_NOTICES.md "$stage/licenses/TWAIN-NOTICES.md"
+          # UCRT 按 app-local 随包：识别器导入的是 api-ms-win-crt-* 系列，缺运行库的旧 32 位工作站
+          # 会以 0xC0000142 退出（见 scripts/stage-vc-runtime.cjs 与 recognition.ts 里的同一说明）。
+          # 通配拷贝不会「少拷还报错」：源目录里被删掉一颗，它照样安静成功。所以这里要的是计数下限——
+          # 现随包 15 颗 api-ms-win-crt-*.dll + ucrtbase.dll，少任何一颗都必须让发布红，
+          # 而不是发出一个在老工作站上打不开的包。下限要改得有意识（重编工具集时同步）。
+          shopt -s nullglob
+          ucrt=("$src"/api-ms-win-crt-*.dll)
+          if [ "${#ucrt[@]}" -lt 15 ] || [ ! -f "$src/ucrtbase.dll" ]; then
+            echo "::error title=随包 UCRT 集合不完整::resources/native/win-ia32 里只有 ${#ucrt[@]} 颗 api-ms-win-crt-*.dll（下限 15），ucrtbase.dll 存在=$([ -f "$src/ucrtbase.dll" ] && echo 是 || echo 否)。"
+            echo "旧 ia32 扫描工作站缺任一颗都会让识别器以 0xC0000142 退出。要么补齐随包件，要么在 scripts/stage-vc-runtime.cjs 那侧重新部署后再入库。"
+            exit 1
+          fi
+          cp "${ucrt[@]}" "$src/ucrtbase.dll" "$stage/"
+          # 逐个确认确实落进 stage（拷贝被拦截/磁盘满等不能只靠退出码）
+          for dll in "${ucrt[@]}" "$src/ucrtbase.dll"; do
+            base="$(basename "$dll")"
+            [ -f "$stage/$base" ] || { echo "::error title=$base 没进 stage::"; exit 1; }
+          done
+          echo "UCRT 随包集合完整：api-ms-win-crt-*.dll × ${#ucrt[@]} + ucrtbase.dll"
+          # 不带 msvcp140* / vcruntime140* / concrt140 / opencv_world4130.dll：那批属 MSVC 工序布局，
+          # 交叉构建的 OpenCV 与 libstdc++ 是静态链接的，导入表里也没有它们，带上只让安装包白胖 90 MB。
+          ls -la "$stage"
+
+      - name: Build ia32 MSI
+        env:
+          # 脚本要取 better-sqlite3 的 Electron ABI 预编译包；匿名访问 api.github.com 在共享出口 IP 上
+          # 只有 60 次/小时，超限后脚本会退到 `gh api`——给它一个能用的令牌，别让发布败在限流上。
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/package-scanner-win32.cjs --skip-native-build
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: scanner-ia32-windows
+          path: |
+            release/*.msi
+            release/SHA256SUMS.txt
+            release/BUILD-INTEGRITY.txt
+          if-no-files-found: error
+
+  server-ubuntu:
+    name: Ubuntu server package
+    needs: preflight
+    if: needs.preflight.outputs.build_server == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Install Linux platform binaries (npm bug #4828)
+        run: npm install --no-save --ignore-scripts @rollup/rollup-linux-x64-gnu @esbuild/linux-x64
+
+      - name: Rebuild native module (better-sqlite3)
+        run: npm rebuild better-sqlite3
+
+      - name: Build server package
+        run: npm run package:server:ubuntu24
+
+      - name: Verify package contents carry build info
+        run: |
+          set -euo pipefail
+          unzip -l release/server-ubuntu24/*.zip | grep -E "dist/server/build-info.json"
+          echo "服务端包内带构建信息，部署后管理员页面能读到更新时间"
+
+      - name: Upload server package
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-ubuntu24
+          path: |
+            release/server-ubuntu24/*.zip
+            release/SHA256SUMS.txt
+            release/BUILD-INTEGRITY.txt
+          if-no-files-found: error
