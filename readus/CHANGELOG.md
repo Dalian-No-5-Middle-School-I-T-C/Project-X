@@ -25,6 +25,10 @@
   2. 那条评审还暴露了我脚本里的隐藏弱点：桥接路径原先配了一个**根本不存在**的 `native/ScannerBridge/CMakeLists.txt`，代码用 `.filter(existsSync)` 把它静默丢掉——路径写错等于没配。现在配置的路径缺失直接判失败。
   3. UCRT 随包集合改为**按计数下限校验**（≥15 颗 `api-ms-win-crt-*.dll` + `ucrtbase.dll` 存在 + 拷完逐个确认落进 stage）。原先 `cp $src/api-ms-win-crt-*.dll` 在源目录被删一颗时会安静少拷，而后面的包内核对只认三件可执行，可能发出在老 ia32 工作站上打不开的包。正反两面本机都跑过：15 颗通过；故意少一颗时拒绝并退出 1。
   4. 触发范围补 `scripts/verify-native-provenance.ts` 与 `scripts/verify-scanner-page-timeout.ts`：这两道门禁脚本本身就是发布链路的一部分，而 `ci.yml` 不调用它们——只改脚本又不在 PR 上跑一次，坏掉或被放宽要等到打标签才看得出来。
+- **第七轮评审三条，都已采纳**：
+  1. 构建信息的结构版本改为**白名单判定**（只认 `BUILD_INFO_SCHEMA`）：缺 `schema`、类型不对、或来自未来版本，一律判不可用并显示「—」加原因，不再按字段猜读旧/新语义——那正是版本号想避免的事。
+  2. 采集 git 来源前先确认「构建目录自己就是工作树根」（`rev-parse --show-toplevel` 比对 realpath）。原先从压缩包解出来、落在别的仓库工作树里构建时，`git -C` 会往上找到那个父仓库，把毫不相干的提交记成 Project-X 的来源；现在这种情况如实留 `null`。
+  3. 发布作业改为**每条产物线都必须交齐载荷 + 校验清单 + 完整性报告**：`upload-artifact` 的 `if-no-files-found` 是按整批判的，只缺清单时仍会成功上传，原先的 `[ -n "$sums" ]` 分支会静默跳过，可能带着不完整材料走到 `gh release create`。本机用工作流原文脚本跑过正反两面：缺 `BUILD-INTEGRITY.txt` 时退出 1 并点名缺什么；两线齐备时装配成功且两份改名清单都通过 `sha256sum -c`。
 - **验证**：`typecheck`、`build:web`、`build:scanner:full`、`build:server`（确认 `build-info.json` 落盘）、新增 `verify:build-info` 49/0（归一化、写盘读回、工作区三种状态、部署替换与文件删除后不返回旧值、真实 HTTP 的未登录与教师 403、构建时间与盘上一致、本次启动不随请求抖动、缺失口径、响应不含目录）、新增 `verify:console-build-info-ui` 26/0（挂载真实控制台组件断言渲染结果：有信息时版本/短号/平台/时长/本地日期都在，无信息时显示「—」并给原因，半截字段不漏 `undefined` 字面串，外链带 `rel=noopener`），两者都已接入 `ci.yml`；`verify:release-integrity`、`verify:systemd-hardening` 110/0 通过；LF 检出副本上 `package-server-ubuntu.cjs` 真跑出 zip 并核对包内含 `dist/server/build-info.json`；`@electron/asar` 的分隔符行为用临时归档在本机实测。渲染回归还逮到一个显示缺陷：刚重启 42 秒的服务「已运行」算成「0 分」，看着像没数据，改成说秒。**未验证**：真机安装与扫描验收；本轮不涉及 SQL 与 MariaDB。详见 [发布构建与服务器更新时间](发布构建与服务器更新时间.md)。
 
 ## 2026-11-01：PR #358 上传与备份恢复收尾

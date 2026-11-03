@@ -56,17 +56,21 @@ function isoDateTime(value: unknown): string | null {
 /**
  * 把磁盘上读到的任意 JSON 收敛成 `BuildInfo | null`。
  * 返回 null 表示「没有可用的构建信息」，调用方据此显示「—」，不得回退成当前时间。
+ *
+ * 结构版本按白名单判定：只认 `BUILD_INFO_SCHEMA`。缺字段、版本不认识、来自未来版本，
+ * 一律视为不可用——按字段猜着读旧/新语义正是版本号想避免的事，宁可让管理员看到「—」加原因。
  */
 export function normalizeBuildInfo(raw: unknown): BuildInfo | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const data = raw as Record<string, unknown>;
+  if (data.schema !== BUILD_INFO_SCHEMA) return null;
   const builtAt = isoDateTime(data.builtAt);
   // 没有构建时间就认为这份信息不可信：宁可不显示，也不让管理员把「未知」读成「最新」。
   if (!builtAt) return null;
   const version = str(data.version);
   const commit = str(data.commit);
   return {
-    schema: typeof data.schema === "number" && Number.isFinite(data.schema) ? data.schema : 0,
+    schema: BUILD_INFO_SCHEMA,
     version,
     commit,
     commitShort: str(data.commitShort) ?? (commit ? commit.slice(0, 7) : null),

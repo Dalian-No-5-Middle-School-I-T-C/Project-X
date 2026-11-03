@@ -109,10 +109,11 @@ function loadBuildInfo(file: string): BuildInfoSource {
       return { info: null, path: file, reason: "构建信息文件过大，按不可信内容忽略" };
     }
     const parsed = normalizeBuildInfo(JSON.parse(readFileSync(file, "utf8")));
-    // 文件存在但关键字段缺失：多半是旧版本产物或手工放置，如实说明，不退回当前时间。
+    // 文件存在但内容不被接受：多半是旧版本产物、或结构版本比这份服务端代码更新，
+    // 如实说明，不退回当前时间、也不按字段猜着读。
     return parsed
       ? { info: parsed, path: file, reason: null }
-      : { info: null, path: file, reason: `构建信息字段不完整（${path.basename(file)}，可能是旧版本产物）` };
+      : { info: null, path: file, reason: `构建信息不可用（${path.basename(file)}：结构版本不认识或关键字段缺失，不按字段猜读）` };
   } catch (error) {
     return { info: null, path: file, reason: `构建信息无法解析（${path.basename(file)}，${failureHint(error)}）` };
   }

@@ -7,7 +7,7 @@
  * 拿不到的信息保持 null（无 git、非仓库目录、从压缩包构建），不做猜测性兜底。
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { BUILD_INFO_FILE_NAME, BUILD_INFO_SCHEMA, type BuildInfo } from "../../src/shared/buildInfo";
 
@@ -42,10 +42,27 @@ function ciRunUrl(env: NodeJS.ProcessEnv): string | null {
   return `${GITHUB_SERVER_URL.replace(/\/$/, "")}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`;
 }
 
+/**
+ * 只有当 rootDir 自己就是一个 git 工作树的根时才采集 git 信息。
+ * 不这么判断的话：从压缩包解出来的源码若落在别的仓库工作树里，`git -C` 会往上找到那个父仓库，
+ * 把毫不相干的 HEAD 与工作区状态记成 Project-X 的来源，管理员看到的是一个陌生提交——
+ * 按口径这属于「没有 git 元数据」，应该留 null。
+ */
+function isGitRoot(rootDir: string): boolean {
+  const top = git(rootDir, ["rev-parse", "--show-toplevel"]);
+  if (top === null) return false;
+  try {
+    return realpathSync(top) === realpathSync(rootDir);
+  } catch {
+    return false;
+  }
+}
+
 export function collectBuildInfo(rootDir: string, env: NodeJS.ProcessEnv = process.env): BuildInfo {
-  const revision = git(rootDir, ["rev-parse", "HEAD"]);
+  const inRepo = isGitRoot(rootDir);
+  const revision = inRepo ? git(rootDir, ["rev-parse", "HEAD"]) : null;
   const commit = revision && revision !== "" ? revision : null;
-  const status = git(rootDir, ["status", "--porcelain"]);
+  const status = inRepo ? git(rootDir, ["status", "--porcelain"]) : null;
   // status === null 才是「无法判定」；空串是「干净」。
   const commitDirty = status === null ? null : status !== "";
   return {

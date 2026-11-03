@@ -310,8 +310,15 @@ jobs:
           mkdir -p out
           for lane in scanner-ia32-windows server-ubuntu24; do
             dir="staging/$lane"
-            [ -d "$dir" ] || continue
+            # 每条产物线都必须交齐三样：载荷、校验清单、完整性报告。
+            # upload-artifact 的 if-no-files-found 是按整批判的，只缺清单时它仍会成功上传，
+            # 所以这里逐样点名要求——缺一律不发，不能让 Release 少一份验证材料。
+            if [ ! -d "$dir" ]; then
+              echo "::error title=$lane 没有工件目录::上游作业没交出工件（或被跳过），宁可不发也不发缺包的 Release。"
+              exit 1
+            fi
             # 通配上传的工件平铺在 lane 根下，字面路径上传的会多一层 release/，两种都要收。
+            payloads=0
             while IFS= read -r file; do
               base="$(basename "$file")"
               if [ -e "out/$base" ] && ! cmp -s "$file" "out/$base"; then
@@ -321,31 +328,37 @@ jobs:
                 exit 1
               fi
               cp "$file" "out/$base"
+              payloads=$((payloads + 1))
             done < <(find "$dir" -type f \( -name '*.msi' -o -name '*.zip' \))
+            if [ "$payloads" -eq 0 ]; then
+              echo "::error title=$lane 没交出安装包::工件目录在，但里面没有 msi / zip。"
+              exit 1
+            fi
             sums="$(find "$dir" -type f -name SHA256SUMS.txt | head -1)"
             integrity="$(find "$dir" -type f -name BUILD-INTEGRITY.txt | head -1)"
-            if [ -n "$integrity" ]; then
-              cp "$integrity" "out/${lane}-BUILD-INTEGRITY.txt"
+            if [ -z "$sums" ] || [ -z "$integrity" ]; then
+              echo "::error title=$lane 缺验证材料::$( [ -z "$sums" ] && echo 'SHA256SUMS.txt ' )$( [ -z "$integrity" ] && echo 'BUILD-INTEGRITY.txt' )。"
+              echo "发布时必须把清单与完整性报告连同安装包一起给出，否则收件方没有任何验证手段（README 的 R42 口径）。"
+              exit 1
             fi
-            if [ -n "$sums" ]; then
-              # 清单是 sha256sum 兼容格式（64 位摘要 + 两个空格 + 相对 release/ 的路径）。
-              # 平铺后的资产名没有那层目录，且清单可能列出本次不发布的产物（例如将来多出便携版），
-              # 所以只保留「确实被收进 out/」的行并改成本地文件名——否则收包方 -c 必然报错。
-              kept=0
-              : > "out/${lane}-SHA256SUMS.txt"
-              while IFS= read -r line; do
-                [ -n "$line" ] || continue
-                digest="${line%% *}"
-                rel="${line#*  }"
-                base="$(basename "$rel")"
-                [ -e "out/$base" ] || continue
-                printf '%s  %s\n' "$digest" "$base" >> "out/${lane}-SHA256SUMS.txt"
-                kept=$((kept + 1))
-              done < "$sums"
-              if [ "$kept" -eq 0 ]; then
-                echo "::error title=清单与实际产物对不上::$sums 里没有任何文件被收到 out/ 里，宁可不发也不发一份验不了的清单。"
-                exit 1
-              fi
+            cp "$integrity" "out/${lane}-BUILD-INTEGRITY.txt"
+            # 清单是 sha256sum 兼容格式（64 位摘要 + 两个空格 + 相对 release/ 的路径）。
+            # 平铺后的资产名没有那层目录，且清单可能列出本次不发布的产物（例如将来多出便携版），
+            # 所以只保留「确实被收进 out/」的行并改成本地文件名——否则收包方 -c 必然报错。
+            kept=0
+            : > "out/${lane}-SHA256SUMS.txt"
+            while IFS= read -r line; do
+              [ -n "$line" ] || continue
+              digest="${line%% *}"
+              rel="${line#*  }"
+              base="$(basename "$rel")"
+              [ -e "out/$base" ] || continue
+              printf '%s  %s\n' "$digest" "$base" >> "out/${lane}-SHA256SUMS.txt"
+              kept=$((kept + 1))
+            done < "$sums"
+            if [ "$kept" -eq 0 ]; then
+              echo "::error title=清单与实际产物对不上::$sums 里没有任何文件被收到 out/ 里，宁可不发也不发一份验不了的清单。"
+              exit 1
             fi
           done
           if [ "$(find out -maxdepth 1 -type f \( -name '*.msi' -o -name '*.zip' \) | wc -l)" -eq 0 ]; then

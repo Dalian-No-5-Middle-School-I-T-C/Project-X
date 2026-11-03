@@ -65,7 +65,11 @@ section("构建信息归一化");
   ok(normalizeBuildInfo(null) === null, "null 输入视为无构建信息");
   ok(normalizeBuildInfo({ version: "2.7.1" }) === null, "缺 builtAt 的字段不完整，判为不可用（不退回当前时间）");
   ok(normalizeBuildInfo({ builtAt: "不是时间" }) === null, "builtAt 不可解析时判为不可用");
-  const wrongType = normalizeBuildInfo({ builtAt: "2026-11-02T00:00:00.000Z", version: 3 });
+  // 结构版本按白名单判定：不认识的一律不读，避免按字段猜旧/新语义。
+  ok(normalizeBuildInfo({ builtAt: "2026-11-02T00:00:00Z" }) === null, "缺 schema 的构建信息判为不可用");
+  ok(normalizeBuildInfo({ schema: 2, builtAt: "2026-11-02T00:00:00Z" }) === null, "结构版本比当前代码新时不猜着读");
+  ok(normalizeBuildInfo({ schema: "1", builtAt: "2026-11-02T00:00:00Z" }) === null, "schema 类型不对（字符串）同样不接受");
+  const wrongType = normalizeBuildInfo({ schema: BUILD_INFO_SCHEMA, builtAt: "2026-11-02T00:00:00.000Z", version: 3 });
   ok(wrongType !== null && wrongType.version === null, "version 类型不对时归 null，不转成字符串");
 
   const full = normalizeBuildInfo({
@@ -80,9 +84,9 @@ section("构建信息归一化");
   ok(full?.commitShort === "51faeb4", "commitShort 缺失时从完整提交号推出");
   ok(full?.builtAt === "2026-11-02T00:00:00.000Z", "builtAt 归一化为 ISO UTC");
   ok(full !== null && !("unexpected" in full), "未知字段不带进响应");
-  ok(normalizeBuildInfo({ builtAt: "2026-11-02T00:00:00Z", commitDirty: true })?.commitDirty === true,
+  ok(normalizeBuildInfo({ schema: BUILD_INFO_SCHEMA, builtAt: "2026-11-02T00:00:00Z", commitDirty: true })?.commitDirty === true,
     "commitDirty=true 如实保留（不能当成干净的构建）");
-  ok(normalizeBuildInfo({ builtAt: "2026-11-02T00:00:00Z" })?.commitDirty === null,
+  ok(normalizeBuildInfo({ schema: BUILD_INFO_SCHEMA, builtAt: "2026-11-02T00:00:00Z" })?.commitDirty === null,
     "commitDirty 缺失是「未记录」，不是「干净」");
 }
 
@@ -173,6 +177,14 @@ section("工作区状态三种结论都要能区分");
     const outside = collectBuildInfo(path.join(tmpDir, "no-such-directory"));
     ok(outside.commitDirty === null && outside.commit === null, "取不到 git 时才记为未判定");
     ok(outside.version === null && outside.builtAt.length > 0, "目录不存在时版本为 null，但构建时间仍然如实写入");
+
+    // 落在别的 git 工作树里构建（例如源码压缩包解到某个仓库目录下）不能把父仓库的提交
+    // 当成 Project-X 的来源：只有 rootDir 自己就是工作树根时才采集 git 信息。
+    const inside = collectBuildInfo(path.join(root, "src", "server"));
+    ok(inside.commit === null && inside.commitShort === null && inside.commitDirty === null,
+      "在仓库的子目录里构建时不采集父级 git 信息（宁可 null，不记错来源）");
+    ok(inside.version === null, "该目录没有自己的 package.json 时版本也是 null，不往上猜一个版本号");
+    ok(inside.builtAt.length > 0 && inside.schema === BUILD_INFO_SCHEMA, "构建时间与结构版本仍然如实写入");
   }
 }
 
