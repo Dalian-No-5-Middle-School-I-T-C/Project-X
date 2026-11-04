@@ -5,13 +5,66 @@ import { getScanRecordWithResult } from "../database/scan-store";
 import { loadCorrectionPage } from "../../../../server/services/scanCorrection";
 import { getMysqlDb } from "../../../../server/db";
 import { isInsideDir } from "../../../../server/services/AnswerBlockCropService";
+import type { ScanPageScope } from "../../../../server/middleware/scanner-scope";
+import { buildLayout } from "../../../../shared/layout";
 import { blockCropsDir } from "../storage";
-import type { CombinedRecognitionResult, RecognitionBlockCrop, Rect } from "../../../../shared/types";
+import type { AnswerCard, CombinedRecognitionResult, PageLayout, RecognitionBlockCrop, Rect } from "../../../../shared/types";
 
 export type ScanUploadCropImage = Omit<RecognitionBlockCrop, "path"> & { dataBase64: string };
 
+export type ScanUploadPayload = CombinedRecognitionResult & { cropImages: ScanUploadCropImage[] };
+
+function expectedCropBlockIds(layout: PageLayout): Set<string> {
+  const ids = new Set<string>();
+  for (const block of layout.blocks) {
+    if (block.type === "subjective" || block.type === "objective") ids.add(block.blockId);
+  }
+  return ids;
+}
+
+function cropsCompleteForLayout(layout: PageLayout, cropImages: ScanUploadCropImage[], rowCount: number): boolean {
+  if (cropImages.length !== rowCount || cropImages.length === 0) return false;
+  const expected = expectedCropBlockIds(layout);
+  if (!expected.size) return false;
+  const loaded = new Set(cropImages.map(c => c.blockId));
+  for (const blockId of expected) {
+    if (!loaded.has(blockId)) return false;
+  }
+  return true;
+}
+
+/** Same block scope as GET /record/:recordId — upload must not leak other teachers' crops or scores. */
+export function scopeScanUploadPayload(
+  payload: ScanUploadPayload,
+  scope: ScanPageScope | null,
+  card: AnswerCard | null,
+  layoutPage: number,
+): ScanUploadPayload {
+  if (!scope?.restricted) return payload;
+  const blocks = scope.blocks;
+  const subjectiveQuestions = (payload.subjectiveQuestions ?? []).filter(q => blocks.has(String(q.blockId ?? "")));
+  let questions = payload.questions ?? [];
+  if (card) {
+    const allowedNumbers = new Set<number>();
+    for (const page of buildLayout(card).pages) {
+      if (page.pageNumber !== layoutPage) continue;
+      for (const block of page.blocks) {
+        if (!blocks.has(block.blockId)) continue;
+        if (block.type === "objective") {
+          for (const item of block.items) allowedNumbers.add(item.questionNumber);
+        }
+      }
+    }
+    questions = questions.filter(q => allowedNumbers.has(q.questionNumber));
+  } else {
+    questions = [];
+  }
+  const cropImages = payload.cropImages.filter(c => blocks.has(c.blockId));
+  return { ...payload, subjectiveQuestions, questions, cropImages };
+}
+
 /** Reuse scan-time OMR + persisted block crops for remote upload (no second native run). */
-export async function resolveScanUploadPayload(recordId: string): Promise<(CombinedRecognitionResult & { cropImages?: ScanUploadCropImage[] }) | null> {
+export async function resolveScanUploadPayload(recordId: string): Promise<ScanUploadPayload | null> {
   const record = await getScanRecordWithResult(recordId);
   if (!record?.recognition) return null;
   if (record.ocr_status === "pending" || record.ocr_status === "processing" || record.ocr_status === "failed") return null;
@@ -78,5 +131,7 @@ export async function resolveScanUploadPayload(recordId: string): Promise<(Combi
     });
   }
 
-  return cropImages.length ? { ...recognition, cropImages } : recognition;
+  // Incomplete or missing persisted crops → cache miss; client re-runs native recognition with includeCrops.
+  if (!cropsCompleteForLayout(correction.layout, cropImages, rows.length)) return null;
+  return { ...recognition, cropImages };
 }

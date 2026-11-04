@@ -41,7 +41,7 @@ import { safeId, dataDir } from "../storage";
 import { findCardForLayout } from "../card-layout";
 import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
 import { collectSessionResults, groupSessionPages } from "./session-results";
-import { resolveScanUploadPayload } from "./scan-upload-payload";
+import { resolveScanUploadPayload, scopeScanUploadPayload } from "./scan-upload-payload";
 import { filterDeletableGroups } from "../../../../shared/scanPostprocess";
 import sharp from "sharp";
 
@@ -423,12 +423,29 @@ export function createScannerRouter(twainEnabled = true): Router {
 
   router.get("/record/:recordId/upload-payload", async (req, res, next) => {
     try {
-      const payload = await resolveScanUploadPayload(safeId(req.params.recordId));
+      const recordId = safeId(req.params.recordId);
+      const payload = await resolveScanUploadPayload(recordId);
       if (!payload) {
         res.status(404).json({ message: "尚无可用扫描识别结果，请在本机重新识别后再上传" });
         return;
       }
-      res.json(payload);
+      const scope = scanPageScopeOf(res);
+      let visible = payload;
+      if (scope?.restricted) {
+        const record = await getScanRecordWithResult(recordId);
+        const card = record ? await findCardForLayout(record.card_id) : null;
+        const layoutPage = scanRecordLayoutPage(
+          card,
+          Number(record?.page_num ?? 0),
+          record?.side === "back" ? "back" : "front",
+        );
+        visible = scopeScanUploadPayload(payload, scope, card, layoutPage);
+        if (!visible.cropImages.length) {
+          res.status(404).json({ message: "尚无可用扫描识别结果，请在本机重新识别后再上传" });
+          return;
+        }
+      }
+      res.json(visible);
     } catch (error) {
       next(error);
     }

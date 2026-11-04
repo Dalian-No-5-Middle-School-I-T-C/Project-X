@@ -847,6 +847,58 @@ async function main(): Promise<void> {
   const foreignCardsPreview = await get(`/api/cards/${scanCardId}/grading/preview/b1-page.png`, tokenB);
   ok(foreignCardsPreview.status === 403, `范围外教师走 cards 路径读同一张图同样 403（同级路由不再是收口的绕道，实际 ${foreignCardsPreview.status}）`);
 
+  // PR #373：upload-payload 须带齐持久化切块；题块范围与 GET /record 一致，不得外发他人切块 base64。
+  const { cardFingerprint } = await import("../src/shared/cardVersion");
+  const scanCardFp = cardFingerprint(scanCard!);
+  const uploadGeom = {
+    imageWidth: 100, imageHeight: 100,
+    imageToLayout: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+    layoutToImage: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+  };
+  const uploadLayoutJson = JSON.stringify(scanLayout.pages.find(p => p.pageNumber === pageB1));
+  const uploadRecognitionJson = JSON.stringify({
+    status: "ok",
+    pageNumber: pageB1,
+    geometry: uploadGeom,
+    studentId: { status: "ok", value: "9001" },
+    questions: [],
+    subjectiveQuestions: [
+      { blockId: "B1", questionId: "q-B1", questionNumber: 21, score: 20, maxScore: 20, status: "ok", confidence: 1, validCells: [], invalidCells: [] },
+      { blockId: "B2", questionId: "q-B2", questionNumber: 22, score: 15, maxScore: 20, status: "ok", confidence: 1, validCells: [], invalidCells: [] },
+    ],
+  });
+  db.prepare(
+    `INSERT OR REPLACE INTO scan_correction_pages (source_type, source_id, card_version, layout_json, recognition_json, revision)
+     VALUES ('twain_scan_record', 'rec-p1', ?, ?, ?, 0)`
+  ).run(scanCardFp, uploadLayoutJson, uploadRecognitionJson);
+  const uploadCropDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "recognition", "crops");
+  mkdirSync(uploadCropDir, { recursive: true });
+  for (const [blockId, qn] of [["B1", 21], ["B2", 22]] as Array<[string, number]>) {
+    const cropPath = path.join(uploadCropDir, `rec-p1-${blockId}.png`);
+    writeFileSync(cropPath, `crop-${blockId}`);
+    db.prepare(
+      `INSERT OR REPLACE INTO answer_block_crops
+       (id, card_id, source_type, source_record_id, block_id, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi)
+       VALUES (?, ?, 'twain_scan_record', 'rec-p1', ?, 'subjective', ?, 0, ?, '{}', ?, 10, 10, 300)`
+    ).run(`upload-crop-${blockId}`, scanCardId, blockId, pageB1, JSON.stringify([qn]), cropPath);
+  }
+  const wholeUploadPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+  const wholeCrops = (wholeUploadPayload.body as { cropImages?: Array<{ blockId: string }> })?.cropImages ?? [];
+  ok(wholeUploadPayload.status === 200 && wholeCrops.length === 2
+    && wholeCrops.some(c => c.blockId === "B1") && wholeCrops.some(c => c.blockId === "B2"),
+    `整卷授权教师 upload-payload 返回完整切块（实际 ${wholeUploadPayload.status} / ${wholeCrops.length}）`);
+  db.prepare("DELETE FROM answer_block_crops WHERE id = 'upload-crop-B2'").run();
+  rmSync(path.join(uploadCropDir, "rec-p1-B1.png"), { force: true });
+  const missingCropPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+  ok(missingCropPayload.status === 404,
+    `切块不齐时 upload-payload 按缓存未命中返回 404（实际 ${missingCropPayload.status}）`);
+  writeFileSync(path.join(uploadCropDir, "rec-p1-B1.png"), "crop-B1");
+  db.prepare(
+    `INSERT OR REPLACE INTO answer_block_crops
+     (id, card_id, source_type, source_record_id, block_id, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi)
+     VALUES ('upload-crop-B2', ?, 'twain_scan_record', 'rec-p1', 'B2', 'subjective', ?, 0, '[22]', '{}', ?, 10, 10, 300)`
+  ).run(scanCardId, pageB1, path.join(uploadCropDir, "rec-p1-B2.png"));
+
   // CR5：题块教师只能读到含本人题块的排版页，同页他人题块与整卷总分一并剔除。
   matrix(teacherA.id, { class_id: classA, block_id: "B1" });
   const scopedForeignPage = await get(`/api/scanner/record/rec-p2`, tokenA);
@@ -857,6 +909,17 @@ async function main(): Promise<void> {
     `本人页上他人题块的识别结果被剔除（实际 ${ownObjective.slice(0, 90)}）`);
   ok(scopedOwnPage.body?.recognition?.total_score === null && scopedOwnPage.body?.recognition?.max_score === null,
     "整卷总分不再随识别结果外发");
+  const scopedUploadPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+  const scopedUploadBody = scopedUploadPayload.body as {
+    subjectiveQuestions?: Array<{ blockId?: string }>;
+    cropImages?: Array<{ blockId: string }>;
+  };
+  const scopedUploadJson = JSON.stringify(scopedUploadBody);
+  ok(scopedUploadPayload.status === 200
+    && scopedUploadBody.cropImages?.length === 1 && scopedUploadBody.cropImages[0]?.blockId === "B1"
+    && !scopedUploadJson.includes('"B2"')
+    && (scopedUploadBody.subjectiveQuestions ?? []).every(q => q.blockId === "B1"),
+    `题块教师 upload-payload 只含本人题块识别与切块（实际 ${scopedUploadPayload.status} ${scopedUploadJson.slice(0, 140)}）`);
   const scopedSessionView = await get(`/api/scanner/scan/${scanSession}`, tokenA);
   const listedRecords = (scopedSessionView.body?.records ?? []).map((r: { id: string }) => r.id);
   ok(scopedSessionView.status === 200 && listedRecords.length === 1 && listedRecords[0] === "rec-p1",
