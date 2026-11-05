@@ -104,12 +104,20 @@ try {
     let waitedMs: number | null = null;
     const previewDone = previewScannerUploadSession(card, quiet.id).then(() => { waitedMs = Date.now() - startedAt; });
     await new Promise(resolve => setTimeout(resolve, 60));
-    assert.equal(waitedMs, null, "链上还压着未完成的写时，批内预览不能先读");
+    const blocked = waitedMs === null;
     releaseGate();
     await held;
     await previewDone;
-    if (db.dialect === "sqlite") assert.ok((waitedMs ?? 0) >= 50, `SQLite 下批内预览要等提交链排空（实测 ${waitedMs}ms）`);
-    else assert.ok(waitedMs !== null, "MariaDB 下批内预览留在链外并发读");
+    if (db.dialect === "sqlite") {
+      // SQLite：链上还压着未完成的写时，这条读必须排队等着，不能插进别人 BEGIN..COMMIT 中间
+      // 读到未提交（甚至随后回滚）的行。两个方向都钉：不排队会当场红，排队排过头也不会误红。
+      assert.ok(blocked, "链上还压着未完成的写时，批内预览不能先读");
+      assert.ok((waitedMs ?? 0) >= 50, `SQLite 下批内预览要等提交链排空（实测 ${waitedMs}ms）`);
+    } else {
+      // MariaDB：留在链外并发读是这次改动要保住的收益（连接池里别的连接只看得到已提交快照）。
+      // 这里只记录实测值不做时序断言——CI 机器负载能把「没排队」拖成 60ms 以上，那是 flakes 不是缺陷。
+      console.log(`  · MariaDB 批内预览未排队（链上有写时 ${blocked ? "仍在等，请复查" : "并发读完成"}，实测 ${waitedMs}ms）`);
+    }
   }
   console.log(`PASS scanner correction safety: ${db.dialect}, eight invalid structures preserve saved manual grades/publication; valid published duplicates withdraw both copies and retain manual snapshots; 批内预览按方言取值`);
 } finally { await fixture.close(); }
