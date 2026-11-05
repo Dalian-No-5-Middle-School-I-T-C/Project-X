@@ -37,11 +37,11 @@ export async function storeCorrectionPage(card: AnswerCard, sourceType: Correcti
     sourceType, String(sourceId), cardFingerprint(card), JSON.stringify(layout), JSON.stringify(safe), Date.now());
 }
 export async function loadCorrectionPage(sourceType: CorrectionPage["sourceType"], sourceId: string, imageUrl: string, db = getMysqlDb()): Promise<CorrectionPage | null> {
-  const row = await db.get<{ layout_json: string; recognition_json: string; revision: number }>(
-    "SELECT layout_json,recognition_json,revision FROM scan_correction_pages WHERE source_type=? AND source_id=?",sourceType,sourceId);
+  const row = await db.get<{ layout_json: string; recognition_json: string; revision: number; card_version: string | null }>(
+    "SELECT layout_json,recognition_json,revision,card_version FROM scan_correction_pages WHERE source_type=? AND source_id=?",sourceType,sourceId);
   if (!row) return null;
   const layout = JSON.parse(row.layout_json), recognition = JSON.parse(row.recognition_json);
-  return { sourceType, sourceId, revision: Number(row.revision), layout, recognition, ...recognizedCells(layout, recognition), imageUrl };
+  return { sourceType, sourceId, revision: Number(row.revision), cardVersion: row.card_version ?? null, layout, recognition, ...recognizedCells(layout, recognition), imageUrl };
 }
 export async function sessionCorrection(card: AnswerCard, sessionId: string, groupId: string, remote: boolean, allowRecovery = remote): Promise<CorrectionDocument> {
   return loadSessionCorrection(card, sessionId, groupId, remote, allowRecovery);

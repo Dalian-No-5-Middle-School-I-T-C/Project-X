@@ -36,6 +36,19 @@ export function getDatabase(): Database.Database {
   return dbInstance;
 }
 
+/**
+ * 本机 SQLite 连接当前是否处在一个未提交的事务里。
+ *
+ * better-sqlite3 只有一条连接：`transaction()` 在 BEGIN 与 COMMIT 之间会 `await`
+ * 回调并让出事件循环，这期间同一条连接上的其它读**看得到尚未提交的行**，回调失败
+ * 时那些行又随 ROLLBACK 消失。需要「只读已提交数据」的入口（例如把扫描识别结果
+ * 直接喂给上传判分的路径）先用这道闸自证，读不到就按缓存未命中退回重识别。
+ * MariaDB 走连接池，别的连接只看得到已提交快照，适配器那边恒返回 false。
+ */
+export function sqliteTransactionOpen(): boolean {
+  return dbInstance?.inTransaction === true;
+}
+
 export function closeDatabase(): void {
   if (dbInstance) {
     dbInstance.close();

@@ -94,6 +94,27 @@ export function enqueueScannerSubmission<T>(work: () => Promise<T>): Promise<T> 
   writes = next.catch(() => undefined);
   return next;
 }
+
+/**
+ * 「只读、但读到的内容会喂给入库、判分或终态判断」的读，必须读到已提交的数据。
+ *
+ * SQLite 只有一条连接，`transaction()` 在 BEGIN 与 COMMIT 之间会 `await` 回调并让出
+ * 事件循环（`db/mysql.ts` 的 SQLite 适配器注释：进程内互斥本来就由调用方的串行链
+ * 保证）。链外的读因此能撞见别人尚未提交、随后可能 ROLLBACK 的行——上传队列会把这种
+ * 中间态当成「这一批已保存」，顺手解开「上传中不许改分」的闸。本地模式把这类读排进
+ * 提交链，等上一个写落定再读。
+ *
+ * MariaDB 用连接池，池里的其它连接只看得到已提交快照，没有这种中间态；继续留在链外
+ * 并发读，正是本次改动要保住的收益（轮询不再排在整条写入队列后面）。
+ *
+ * 只给「读了要当结论用」的入口用（目前是上传界面的批内预览轮询）。一次性的短读别往这儿加：
+ * 链上可能压着整场 OCR，会把上传拖成串行；那种路径按连接语义自查 `hasOpenTransaction()`
+ * 更合适（见 `apps/answer-card/server/scanner/scan-upload-payload.ts`）。
+ */
+export function runScannerCommittedRead<T>(work: () => Promise<T>): Promise<T> {
+  return getMysqlDb().dialect === "sqlite" ? enqueueScannerSubmission(work) : work();
+}
+
 async function lockExam(db: DbAdapter, examId: number) {
   await db.run("UPDATE exams SET id = id WHERE id = ?", examId);
 }
@@ -310,7 +331,9 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
 
 /** Read-only batch view for upload UI polling; must not block page writes on the scanner queue. */
 export async function previewScannerUploadSession(card: AnswerCard, sessionId: string): Promise<ScanBatchResponse> {
-  return processScannerSessionInQueue(card, sessionId, "preview");
+  // 本地模式（SQLite）仍要排在提交链后面，否则读到的是别人没提交完的中间态；
+  // MariaDB 生产形态走连接池，链外并发读不会看到未提交数据，队列留给写。
+  return runScannerCommittedRead(() => processScannerSessionInQueue(card, sessionId, "preview"));
 }
 
 /** Caller retains scanner queue ownership through correction and admission. */

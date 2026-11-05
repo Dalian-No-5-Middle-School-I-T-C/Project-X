@@ -4,7 +4,7 @@ import type { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from "mysql
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getDatabase } from "./index";
+import { getDatabase, sqliteTransactionOpen } from "./index";
 import { readDbConfig } from "./config";
 import { scannerSubmissionSchema } from "./scannerSubmissionSchema";
 
@@ -71,6 +71,15 @@ export interface DbAdapter {
   run(sql: string, ...params: any[]): Promise<{ lastInsertRowid: number; changes: number }>;
   /** 执行原始 SQL */
   exec(sql: string): Promise<void>;
+  /**
+   * 当前这条连接上是否有未提交的事务（true 时同连接的其它读会看到未提交数据）。
+   *
+   * 只给「读到的内容会喂给判分、入库或终态判断」的只读入口自查用：SQLite 是单连接，
+   * `transaction()` 在 BEGIN/COMMIT 之间让出事件循环，链外的读能撞见随后回滚的行；
+   * MariaDB 用连接池，其它连接只看得到已提交快照，恒为 false。可选实现——缺省时按
+   * 「不需要这道闸」处理，避免为了这一项去改所有仓储里的适配器替身。
+   */
+  hasOpenTransaction?(): boolean;
   /** 事务 */
   transaction<T>(fn: (db: DbAdapter) => Promise<T>): Promise<T>;
   /**
@@ -210,6 +219,10 @@ class SqliteAdapter implements DbAdapter {
     this.db.exec(sql);
     this.logTiming(sql, Date.now() - start);
   }
+  /** SQLite 单连接：直接问 better-sqlite3 现在是否在事务里。见 `sqliteTransactionOpen`。 */
+  hasOpenTransaction(): boolean {
+    return sqliteTransactionOpen();
+  }
   /**
    * 事务约束（建议 12）：
    * 禁止在 `fn` 内做任何真正的异步 I/O（如 await fetch / 外部服务）。
@@ -343,6 +356,13 @@ class MariadbAdapter implements DbAdapter {
   }
   async exec(sql: string): Promise<void> {
     await this.executor.execute(sql);
+  }
+  /**
+   * MariaDB 的读走连接池：池里的另一条连接只看得到已提交快照（默认 REPEATABLE READ），
+   * 撞不见别人 BEGIN..COMMIT 之间的中间态，所以这道闸恒关。
+   */
+  hasOpenTransaction(): boolean {
+    return false;
   }
   async transaction<T>(fn: (db: DbAdapter) => Promise<T>): Promise<T> {
     const conn = await (this.executor as Pool).getConnection();

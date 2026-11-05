@@ -920,6 +920,33 @@ async function main(): Promise<void> {
     && !scopedUploadJson.includes('"B2"')
     && (scopedUploadBody.subjectiveQuestions ?? []).every(q => q.blockId === "B1"),
     `题块教师 upload-payload 只含本人题块识别与切块（实际 ${scopedUploadPayload.status} ${scopedUploadJson.slice(0, 140)}）`);
+  // PR #373：复用的识别结果会直接变成正式成绩，只能读已提交的那一份。
+  // SQLite 是一条连接，BEGIN..COMMIT 之间同连接的其它读看得到未提交行；本地模式必须
+  // 把这份读排进扫描提交链，并在事务开着时按缓存未命中（404）退回扫描端重新识别。
+  const uncommittedRecognition = (() => {
+    const parsed = JSON.parse(uploadRecognitionJson) as { subjectiveQuestions: Array<{ blockId?: string; score?: number }> };
+    const own = parsed.subjectiveQuestions.find(q => q.blockId === "B1");
+    if (own) own.score = 19;
+    return JSON.stringify(parsed);
+  })();
+  db.prepare("BEGIN").run();
+  db.prepare("UPDATE scan_correction_pages SET recognition_json=? WHERE source_type='twain_scan_record' AND source_id='rec-p1'").run(uncommittedRecognition);
+  const duringTxPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+  db.prepare("ROLLBACK").run();
+  ok(duringTxPayload.status === 404,
+    `订正事务尚未提交时 upload-payload 不外发未提交标记（实际 ${duringTxPayload.status}）`);
+  const afterTxPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+  ok(afterTxPayload.status === 200 && !JSON.stringify(afterTxPayload.body).includes('"score":19'),
+    `回滚后同一请求只读回已提交结果（实际 ${afterTxPayload.status}）`);
+  // 答题卡版本变了：快照里的坐标、题号与切块都属旧版卡，不能当现行版的识别结果外发。
+  const storedPageVersion = (db.prepare(
+    "SELECT card_version AS v FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id='rec-p1'").get() as { v: string | null }).v;
+  db.prepare("UPDATE scan_correction_pages SET card_version=? WHERE source_type='twain_scan_record' AND source_id='rec-p1'").run("f".repeat(24));
+  const staleVersionPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+  db.prepare("UPDATE scan_correction_pages SET card_version=? WHERE source_type='twain_scan_record' AND source_id='rec-p1'").run(storedPageVersion);
+  ok(staleVersionPayload.status === 404,
+    `答题卡版本与快照不一致时 upload-payload 按未命中处理（实际 ${staleVersionPayload.status}）`);
+
   const scopedSessionView = await get(`/api/scanner/scan/${scanSession}`, tokenA);
   const listedRecords = (scopedSessionView.body?.records ?? []).map((r: { id: string }) => r.id);
   ok(scopedSessionView.status === 200 && listedRecords.length === 1 && listedRecords[0] === "rec-p1",

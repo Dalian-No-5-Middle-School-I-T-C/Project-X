@@ -453,7 +453,11 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
   async function recognizePageForUpload(j: JobRecord, page: PageRecord, blobData: Blob): Promise<CombinedRecognitionResult & { cropImages?: Array<Record<string, unknown> & { dataBase64: string }> }> {
     const recordId = page.input.recordId;
     if (j.kind === "scan" && recordId) {
-      const cached = await (deps.localFetch ?? authFetch)(`/api/scanner/record/${encodeURIComponent(recordId)}/upload-payload`);
+      // 与其它页级请求同一份超时预算：这一步卡住不能把整条上传队列挂到无界等待。
+      // 超时或非 404 都按「本机这次没拿到可复用的结果」处理，退回原生识别，不影响正确性。
+      const cached = await (deps.localFetch ?? authFetch)(`/api/scanner/record/${encodeURIComponent(recordId)}/upload-payload`, {
+        signal: timeoutSignal(pageTimeoutMs),
+      });
       if (cached.ok) {
         return await cached.json() as CombinedRecognitionResult & { cropImages?: Array<Record<string, unknown> & { dataBase64: string }> };
       }

@@ -6,6 +6,8 @@ import { loadCorrectionPage } from "../../../../server/services/scanCorrection";
 import { getMysqlDb } from "../../../../server/db";
 import { isInsideDir } from "../../../../server/services/AnswerBlockCropService";
 import type { ScanPageScope } from "../../../../server/middleware/scanner-scope";
+import { findCardForLayout } from "../card-layout";
+import { cardFingerprint } from "../../../../shared/cardVersion";
 import { buildLayout } from "../../../../shared/layout";
 import { blockCropsDir } from "../storage";
 import type { AnswerCard, CombinedRecognitionResult, PageLayout, RecognitionBlockCrop, Rect } from "../../../../shared/types";
@@ -63,14 +65,34 @@ export function scopeScanUploadPayload(
   return { ...payload, subjectiveQuestions, questions, cropImages };
 }
 
-/** Reuse scan-time OMR + persisted block crops for remote upload (no second native run). */
+/**
+ * Reuse scan-time OMR + persisted block crops for remote upload (no second native run).
+ *
+ * 这份结果会直接变成正式成绩，所以只允许读「已提交」的那一份：SQLite 是一条连接，
+ * 别人 BEGIN..COMMIT 之间的读能撞见未提交（甚至随后回滚）的订正标记与切块。这里不排
+ * 扫描提交链（链上可能压着整场 OCR，会把上传拖成串行），改成按连接语义自查：
+ *  1) 进函数时这条连接上有事务 → 缓存未命中；
+ *  2) 组装完再问一次：期间有事务开过，或快照 revision 已经变了（订正写的就是这一列）
+ *     → 同样按未命中处理。
+ * 未命中不是失败：扫描端会退回本机重新识别，代价是一次 OMR，而不是一次错判的成绩。
+ * MariaDB 走连接池，其它连接只看得到已提交快照，`hasOpenTransaction()` 恒为 false。
+ */
 export async function resolveScanUploadPayload(recordId: string): Promise<ScanUploadPayload | null> {
+  const db = getMysqlDb();
+  if (db.hasOpenTransaction?.()) return null;
   const record = await getScanRecordWithResult(recordId);
   if (!record?.recognition) return null;
   if (record.ocr_status === "pending" || record.ocr_status === "processing" || record.ocr_status === "failed") return null;
 
   const correction = await loadCorrectionPage("twain_scan_record", recordId, "");
   if (!correction?.recognition?.geometry) return null;
+
+  // 快照里的坐标、题号与切块都是按「当时那版答题卡」算的。版本对不上（含旧库行没有版本）
+  // 就不能当成当前卡的识别结果外发：入库口有 R35 版本门兜底，这里先把缓存关掉，
+  // 让扫描端按现行版式重新识别，避免出现「按旧版卡识别的分数进了新版卡的正式成绩」。
+  const card = await findCardForLayout(record.card_id);
+  if (!card) return null;
+  if (!correction.cardVersion || correction.cardVersion !== cardFingerprint(card)) return null;
 
   const recognition = { ...correction.recognition } as CombinedRecognitionResult;
   if (!recognition.studentId?.value && record.student_id) {
@@ -133,5 +155,12 @@ export async function resolveScanUploadPayload(recordId: string): Promise<ScanUp
 
   // Incomplete or missing persisted crops → cache miss; client re-runs native recognition with includeCrops.
   if (!cropsCompleteForLayout(correction.layout, cropImages, rows.length)) return null;
+  // 组装这份 payload 期间，如果有写事务开过（订正重写快照会 bump revision），前面读到的行
+  // 与刚读出来的切块文件就可能分属两个状态；事务还正开着则更直接——读到的可能是未提交数据。
+  // 两种情况都按未命中处理，让扫描端重新识别，别把一次撕裂的中间态送进正式成绩。
+  if (db.hasOpenTransaction?.()) return null;
+  const settled = await db.get<{ revision: number }>(
+    "SELECT revision FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?", recordId);
+  if (Number(settled?.revision) !== Number(correction.revision)) return null;
   return { ...recognition, cropImages };
 }

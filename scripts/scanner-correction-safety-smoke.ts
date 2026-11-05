@@ -90,5 +90,26 @@ try {
   assert.equal(Number(snapshot.questions[0].manually_modified), 1);
   assert.equal((await db.get<{exam_id:number|null}>("SELECT exam_id FROM answer_block_crops WHERE id='original-crop'"))!.exam_id, null);
   assert.equal(Number((await db.get<{score_published:number}>("SELECT score_published FROM exams WHERE id=?",exam.id))!.score_published), autoUnpublish ? 0 : 1);
-  console.log(`PASS scanner correction safety: ${db.dialect}, eight invalid structures preserve saved manual grades/publication; valid published duplicates withdraw both copies and retain manual snapshots`);
+  // 批内预览（上传界面轮询用的那条只读路径）在 SQLite 上必须排在扫描提交链之后。
+  // 链外读会撞见别人 BEGIN..COMMIT 之间尚未提交、甚至随后回滚的行，把「这一批已保存」
+  // 当成既成事实，顺手解开「上传中不许改分」的闸。这里用一把占住链首的闸锁钉住这个顺序；
+  // MariaDB 走连接池、读不到未提交数据，因此留在链外并发读（那才是本轮要保住的收益）。
+  {
+    const { enqueueScannerSubmission, previewScannerUploadSession } = await import("../src/server/services/scannerSubmissions");
+    const quiet = await store.createSession(card.id, "preview-order-gate");
+    let releaseGate!: () => void;
+    const gate = new Promise<void>(resolve => { releaseGate = resolve; });
+    const held = enqueueScannerSubmission(() => gate);
+    const startedAt = Date.now();
+    let waitedMs: number | null = null;
+    const previewDone = previewScannerUploadSession(card, quiet.id).then(() => { waitedMs = Date.now() - startedAt; });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(waitedMs, null, "链上还压着未完成的写时，批内预览不能先读");
+    releaseGate();
+    await held;
+    await previewDone;
+    if (db.dialect === "sqlite") assert.ok((waitedMs ?? 0) >= 50, `SQLite 下批内预览要等提交链排空（实测 ${waitedMs}ms）`);
+    else assert.ok(waitedMs !== null, "MariaDB 下批内预览留在链外并发读");
+  }
+  console.log(`PASS scanner correction safety: ${db.dialect}, eight invalid structures preserve saved manual grades/publication; valid published duplicates withdraw both copies and retain manual snapshots; 批内预览按方言取值`);
 } finally { await fixture.close(); }
