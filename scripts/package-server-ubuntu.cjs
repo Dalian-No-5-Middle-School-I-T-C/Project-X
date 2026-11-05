@@ -343,11 +343,19 @@ sudo -u projectx test -r /var/lib/project-x && echo "service account can read da
 ## Package Integrity
 
 The build machine writes \`release/SHA256SUMS.txt\` and \`release/BUILD-INTEGRITY.txt\`
-after packaging (security R42). Distribute them together with this zip. To verify a
-copy you received:
+after packaging (security R42). Distribute them together with this zip. Names differ by
+where the copy came from: on the build machine the manifest is \`SHA256SUMS.txt\` (paths
+relative to \`release/\`), while a GitHub Release publishes one manifest per build line
+(\`server-ubuntu24-SHA256SUMS.txt\`, flat file names) because same-named assets would
+overwrite each other. To verify a copy you received:
 
 \`\`\`bash
-sha256sum -c SHA256SUMS.txt          # in the directory holding the artifacts
+# 本机构建目录（release/）里：
+sha256sum -c SHA256SUMS.txt
+# 从 Release 下载、清单与包在同一目录时（按构建线改名，文件名是平铺的）：
+sha256sum -c server-ubuntu24-SHA256SUMS.txt
+# 只想核一个文件：算出它的 SHA256，与清单里同名那行比对
+sha256sum project-x-server-ubuntu24-<版本>.zip
 \`\`\`
 
 Nothing here is code-signed; the checksum manifest is the only tamper evidence
@@ -629,21 +637,20 @@ function buildPackage() {
 
   const correctionDir = path.join(rootDir,"resources","native","correction-linux-x64");
   const correction = readFileSync(path.join(correctionDir,"answer-card-recognizer"));
-  // 摘要清单按行解析：Windows 工作副本会把它检出成 CRLF，行尾的 \r 会让整行匹配不上，
-  // 于是报出「源码变了」这种误导结论。解析容许 \r，但比对摘要仍然用原始字节。
-  for (const line of readFileSync(path.join(correctionDir,"source-sha256.txt"),"utf8").split(/\r?\n/)) {
-    if (line.trim() === "") continue;
-    const match = line.match(/^([a-f0-9]{64})  (native\/[A-Za-z0-9_./-]+)$/);
-    if (!match) throw new Error(`Unparsable line in correction recognizer source manifest: ${line.slice(0, 80)}`);
-    const bytes = readFileSync(path.join(rootDir,match[2]));
-    if (createHash("sha256").update(bytes).digest("hex") === match[1]) continue;
-    // 摘要对不上时区分两种成因：行尾被 checkout 改写（换个说法让人去 LF 检出上打包），
-    // 还是源码真的动过（保持原来的拒绝打包结论）。都不放行。
-    const lf = Buffer.from(bytes.toString("utf8").replace(/\r\n/g, "\n"), "utf8");
-    if (createHash("sha256").update(lf).digest("hex") === match[1]) {
-      throw new Error(`${match[2]} 是 CRLF 检出的工作副本，无法核对随包 Linux 识别器源码摘要。请在 LF 检出（Linux 构建机或 CI）上打包，不要用 autocrlf=true 的 Windows 副本。`);
-    }
-    throw new Error("Correction recognizer source has changed; rebuild Linux binary before packaging");
+  // 源码摘要核对与 ia32 的发布门禁共用一份判据（scripts/lib/native-source-manifest.cjs）：
+  // 除了逐行比摘要，还要求清单覆盖这条线的必选源码——识别器目录下的每个 .cpp/.hpp、
+  // native/CMakeLists.txt、本线 toolchain 与本线构建脚本。清单被截断或被删行不再是「通过」。
+  const { verifyNativeSourceManifest } = require("./lib/native-source-manifest.cjs");
+  const sourceCheck = verifyNativeSourceManifest({ rootDir, lane: "correction-linux-x64" });
+  // 行尾差异是检出问题，不是源码变更：Windows 的 autocrlf 工作副本要把人引到 LF 检出上去打包，
+  // 而源码真变了才维持原来的拒绝结论。两种成因分开说，别再报成一句误导的「源码变了，请重编」。
+  if (sourceCheck.crlfCheckout.length > 0) {
+    throw new Error(`${sourceCheck.crlfCheckout.join("、")} 是 CRLF 检出的工作副本，无法核对随包 Linux 识别器源码摘要。`
+      + "请在 LF 检出（Linux 构建机或 CI）上打包，不要用 autocrlf=true 的 Windows 副本。");
+  }
+  if (sourceCheck.failures.length > 0) {
+    throw new Error(`随包 Linux 补识别器的源码核对未通过：\n  - ${sourceCheck.failures.join("\n  - ")}`
+      + "\n源码与随包二进制对不上时不能打包：请按 native-ia32 同源工序重编 Linux 补识别器并入库。");
   }
   if (correction.length<64 || correction.subarray(0,4).toString("hex")!=="7f454c46" || correction[4]!==2 || correction[5]!==1 || correction.readUInt16LE(18)!==62) throw new Error("Expected Linux x86_64 ELF correction recognizer");
 

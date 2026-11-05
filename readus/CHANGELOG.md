@@ -29,8 +29,47 @@
   1. 构建信息的结构版本改为**白名单判定**（只认 `BUILD_INFO_SCHEMA`）：缺 `schema`、类型不对、或来自未来版本，一律判不可用并显示「—」加原因，不再按字段猜读旧/新语义——那正是版本号想避免的事。
   2. 采集 git 来源前先确认「构建目录自己就是工作树根」（`rev-parse --show-toplevel` 比对 realpath）。原先从压缩包解出来、落在别的仓库工作树里构建时，`git -C` 会往上找到那个父仓库，把毫不相干的提交记成 Project-X 的来源；现在这种情况如实留 `null`。
   3. 发布作业改为**每条产物线都必须交齐载荷 + 校验清单 + 完整性报告**：`upload-artifact` 的 `if-no-files-found` 是按整批判的，只缺清单时仍会成功上传，原先的 `[ -n "$sums" ]` 分支会静默跳过，可能带着不完整材料走到 `gh release create`。本机用工作流原文脚本跑过正反两面：缺 `BUILD-INTEGRITY.txt` 时退出 1 并点名缺什么；两线齐备时装配成功且两份改名清单都通过 `sha256sum -c`。
-- **验证**：`typecheck`、`build:web`、`build:scanner:full`、`build:server`（确认 `build-info.json` 落盘）、新增 `verify:build-info` 55/0（归一化、写盘读回、工作区三种状态、部署替换与文件删除后不返回旧值、真实 HTTP 的未登录与教师 403、构建时间与盘上一致、本次启动不随请求抖动、缺失口径、响应不含目录）、新增 `verify:console-build-info-ui` 26/0（挂载真实控制台组件断言渲染结果：有信息时版本/短号/平台/时长/本地日期都在，无信息时显示「—」并给原因，半截字段不漏 `undefined` 字面串，外链带 `rel=noopener`），两者都已接入 `ci.yml`，另新增 `verify:native-provenance`（接在发布作业的扫描端线里，`ci.yml` 不跑它）并在第十二、十三跑实机通过；`verify:release-integrity`、`verify:systemd-hardening` 110/0 通过；LF 检出副本上 `package-server-ubuntu.cjs` 真跑出 zip 并核对包内含 `dist/server/build-info.json`；`@electron/asar` 的分隔符行为用临时归档在本机实测。渲染回归还逮到一个显示缺陷：刚重启 42 秒的服务「已运行」算成「0 分」，看着像没数据，改成说秒。**未验证**：真机安装与扫描验收；本轮不涉及 SQL 与 MariaDB。详见 [发布构建与服务器更新时间](发布构建与服务器更新时间.md)。
+- **第八轮评审（独立复核）两条阻塞 + 五条不阻塞，全部改掉**：
+  1. **发布出去的验证材料与说明互相矛盾（阻塞）**：`release-publish.yml` 只把清单按构建线改名并重写路径前缀，
+     `cp` 走的完整性报告仍是打包脚本在原目录里生成的正文——里面教收件方比对 `SHA256SUMS.txt`、跑
+     `node scripts/hash-release-artifacts.cjs --check --root <产物目录>`，而 `--check` 只认精确的 `SHA256SUMS.txt`，
+     且 `SKIP_NAMES` 不认改名后的形态。本机按发布后的文件布局实测：直接报「找不到清单」退出码 1；
+     手工把一份改回 `SHA256SUMS.txt`，另一条线的文件又被判成「清单外多出的文件」，同样退出码 1。
+     现在三处一起收口：`--check` 认 `<构建线>-SHA256SUMS.txt` 并跳过 `<构建线>-BUILD-INTEGRITY.txt`、
+     清单里带目录前缀而产物平铺时按文件名对应；报告正文改成把两种命名都写清楚（本机叫
+     `SHA256SUMS.txt`、Release 上按构建线改名，`--check` 两种都认），发布作业因此只剥产物清单的
+     `server-ubuntu24/` 前缀、**不**再替换正文里的清单名——替换会把叙述句里的本机名也改成线名，
+     编出「本机构建目录里的清单叫 <线名>」这种假话（第八轮复审指出，已避开）；
+     README 那段（还写着「标签触发的发布构建」和带 `-*-` 的错名）、报告正文与 Ubuntu 包内的
+     《部署说明》Package Integrity 一节（原先只教 `sha256sum -c SHA256SUMS.txt`）同步改成两种命名都写清，
+     并提醒「一个目录里只放你要校验那条线的清单」。
+     回归补在 `verify:release-integrity`：同一份产物分别按本机命名与发布命名各跑一次 `--check`。
+  2. **来源门禁没有覆盖面下限（阻塞）**：`verify-native-provenance.ts` 与 `package-server-ubuntu.cjs` 都只遍历
+     `source-sha256.txt` 现有的行，清单被截断成空文件、或 16 行里删掉 15 行，两处照样打印「全部一致」并放行；
+     而 Ubuntu 侧的解析正则只接受 `native/**`，Linux 线连构建脚本自己都记不进清单。判据收到
+     `scripts/lib/native-source-manifest.cjs` 一份实现里（两条线共用）：先算出这条构建线必须由哪些源码决定
+     （识别器目录下每个 `.cpp/.hpp` + `native/CMakeLists.txt` + 该线 toolchain + 该线构建脚本），清单必须逐项覆盖，
+     空清单、缺覆盖、有无法解析的行都判失败；同时补上
+     `resources/native/correction-linux-x64/source-sha256.txt` 缺的那行 `scripts/build-recognizer-linux.sh`
+     （摘要取自 LF 字节，与 `git cat-file blob` 一致）。
+  3. 不阻塞·`scanner-bridge.exe` 的基线可被「重新提交一份 exe」重置（`git log -1 -- <exe>` 随二进制移动）。
+     彻底闭合要把桥接源码摘要写进清单，而那必须与一次 ia32 重编同批做——本机没有 MinGW 出件条件，
+     这轮先把限制写进门禁头注释与文档「已知边界」，不在没重编的情况下伪造覆盖。
+  4. 不阻塞·MSI 解包核对只比 3 颗原生件：被反复强调的 15+1 颗 UCRT、licenses、`source-sha256.txt` 有没有进包没人管
+     （发布作业那道计数下限验的是仓库目录与 stage）。现在改为整个 stage 目录逐字节比对。
+  5. 不阻塞·解包后的有界轮询只看「文件名出现」就 break，紧接着比长度与字节——子进程还在写时会误报
+     「与构建产物不一致」这种查不出原因的假失败。等待判据改成「名称+长度+内容都对上」，
+     顺手把 `execFileSync("ping")` 当 sleep 的写法换成 `Atomics.wait`（这段本来就跑在 async 流程里）。
+  6. 不阻塞·发版调用没把标签传下去：`release-publish.yml` 是在 main 上 dispatch 再 `uses:` 调构建线，
+     那条构建的 `GITHUB_REF_NAME` 永远是 `main`，正式包的 `ciRef` 写不出版本号，而文档与夹具都写着标签。
+     现在 `workflow_call` 收 `ci_ref`，构建步骤导出 `PROJECTX_CI_REF`，`collectBuildInfo` 优先取它、没有才退回
+     `GITHUB_REF_NAME`，`verify:build-info` 钉住三种取值（标签、分支、都缺时 null）。
+  7. 不阻塞·文档「已知边界」留着上一版（标签触发）的三条矛盾：仍写「发布作业只在推标签时执行」、
+     `compare/main...<sha>` 复述两遍、以及「要重发就先删那条 Release」——删 Release 不删 Git 标签，
+     而新加的标签存在性检查会照样把重发拒掉。改成删除标签的真实工序，并把重复两条合并。
 
+  8. 第八轮的验证：`verify:release-integrity`（新增本机命名与发布命名两种 `--check` 回归）、`verify:build-info`（ciRef 标签/分支/空白/都缺四种取值）、`scripts/lib/native-source-manifest.cjs` 的覆盖面判据用真实仓库文件跑通（`verify-native-provenance.ts` 本体要完整 git 历史，另在合成 git 副本里整脚本跑绿：两条线 entries=15 / required=15、missing 空；把 ia32 清单删掉一行立刻判红并点名缺 `vision_utils.cpp`）、`package-server-ubuntu.cjs` 改用的同一份库在 LF 副本上真跑出 zip。**MSI 那条扩断言不再是推断**：把 CI 工件 `scanner-ia32-windows`（run 41671951692 的 142.3 MB）下载到本机，用 `msiexec /a` 解包后与按 workflow 工序重建的 stage 集合逐文件比对——41 个文件全在包里（20 个字节全等，21 个只差行尾，因本机是 CRLF 检出而 CI 两侧同为 LF），所以「必绿」是实测结论。仍未验证：真的建出一条 Release；以及 Windows 作业里由脚本自己跑这段核对（本机只独立验了同一判据的输入输出）。
+- **验证**：`typecheck`、`build:web`、`build:scanner:full`、`build:server`（确认 `build-info.json` 落盘）、新增 `verify:build-info` 55/0（归一化、写盘读回、工作区三种状态、部署替换与文件删除后不返回旧值、真实 HTTP 的未登录与教师 403、构建时间与盘上一致、本次启动不随请求抖动、缺失口径、响应不含目录）、新增 `verify:console-build-info-ui` 26/0（挂载真实控制台组件断言渲染结果：有信息时版本/短号/平台/时长/本地日期都在，无信息时显示「—」并给原因，半截字段不漏 `undefined` 字面串，外链带 `rel=noopener`），两者都已接入 `ci.yml`，另新增 `verify:native-provenance`（接在发布作业的扫描端线里，`ci.yml` 不跑它）并在第十二、十三跑实机通过；`verify:release-integrity`、`verify:systemd-hardening` 110/0 通过；LF 检出副本上 `package-server-ubuntu.cjs` 真跑出 zip 并核对包内含 `dist/server/build-info.json`；`@electron/asar` 的分隔符行为用临时归档在本机实测。渲染回归还逮到一个显示缺陷：刚重启 42 秒的服务「已运行」算成「0 分」，看着像没数据，改成说秒。**未验证**：真机安装与扫描验收；本轮不涉及 SQL 与 MariaDB。详见 [发布构建与服务器更新时间](发布构建与服务器更新时间.md)。
 ## 2026-11-01：PR #358 上传与备份恢复收尾
 
 - 数据变更锁由异步任务持有，统一等待上传写入、断连清理及异常收尾；后台扫描、AI、定时清理与成绩通知加入维护等待。

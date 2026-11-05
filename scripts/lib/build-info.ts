@@ -43,6 +43,21 @@ function ciRunUrl(env: NodeJS.ProcessEnv): string | null {
 }
 
 /**
+ * `ciRef` 要回答的是「这台服务器跑的是哪一次发布的构建」。
+ *
+ * 光看 `GITHUB_REF_NAME` 不够：正式发版是在 main 上手动运行 `release-publish.yml`，
+ * 由它调用构建线，那条构建运行的 `GITHUB_REF_NAME` 永远是 `main`，发出去的包里写不出
+ * 版本标签。所以调用方（发版工作流）用 `PROJECTX_CI_REF` 显式给出标签，没给才退回
+ * 分支/标签名，两者都没有（本机构建）仍按口径留 null。
+ */
+function ciRef(env: NodeJS.ProcessEnv): string | null {
+  const explicit = env.PROJECTX_CI_REF?.trim();
+  if (explicit) return explicit;
+  const refName = env.GITHUB_REF_NAME?.trim();
+  return refName ? refName : null;
+}
+
+/**
  * 只有当 rootDir 自己就是一个 git 工作树的根时才采集 git 信息。
  * 不这么判断的话：从压缩包解出来的源码若落在别的仓库工作树里，`git -C` 会往上找到那个父仓库，
  * 把毫不相干的 HEAD 与工作区状态记成 Project-X 的来源，管理员看到的是一个陌生提交——
@@ -73,7 +88,7 @@ export function collectBuildInfo(rootDir: string, env: NodeJS.ProcessEnv = proce
     commitDirty,
     builtAt: new Date().toISOString(),
     builder: `node ${process.version} / ${process.platform}-${process.arch}`,
-    ciRef: env.GITHUB_REF_NAME && env.GITHUB_REF_NAME.trim() !== "" ? env.GITHUB_REF_NAME.trim() : null,
+    ciRef: ciRef(env),
     ciRunUrl: ciRunUrl(env),
   };
 }

@@ -33,6 +33,10 @@ on:
         description: 构建 Ubuntu 服务端包
         type: boolean
         default: true
+      ci_ref:
+        description: 写进 build-info 的发布标识（留空则记本次运行的分支名）
+        type: string
+        default: ""
   workflow_call:
     inputs:
       build_scanner:
@@ -43,6 +47,10 @@ on:
         description: 构建 Ubuntu 服务端包
         type: boolean
         default: true
+      ci_ref:
+        description: 发版标签，写进 build-info 的 ciRef（由 release-publish.yml 传入）
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -181,6 +189,9 @@ jobs:
           # 脚本要取 better-sqlite3 的 Electron ABI 预编译包；匿名访问 api.github.com 在共享出口 IP 上
           # 只有 60 次/小时，超限后脚本会退到 `gh api`——给它一个能用的令牌，别让发布败在限流上。
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # build-info 里的发布标识：发版调用传标签进来，普通 PR/push 是空串，
+          # scripts/lib/build-info.ts 会退回 `GITHUB_REF_NAME`（见 ciRef 说明）。
+          PROJECTX_CI_REF: ${{ inputs.ci_ref }}
         run: node scripts/package-scanner-win32.cjs --skip-native-build
 
       - name: Upload installer
@@ -217,6 +228,9 @@ jobs:
         run: npm rebuild better-sqlite3
 
       - name: Build server package
+        env:
+          # 与扫描端同一口径：发版时把标签写进 dist/server/build-info.json 的 ciRef。
+          PROJECTX_CI_REF: ${{ inputs.ci_ref }}
         run: npm run package:server:ubuntu24
 
       - name: Verify package contents carry build info

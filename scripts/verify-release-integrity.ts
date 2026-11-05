@@ -120,6 +120,8 @@ try {
   ok(report.includes("signAndEditExecutable=false") && report.includes("证书不得入库"), "报告写明未签名的原因是配置关闭 + 仓库不含证书");
   ok(report.includes("SmartScreen"), "报告写出未签名的现场后果（SmartScreen 拦未知发布者）");
   ok(report.includes("certutil -hashfile"), "报告给出不依赖本仓库的校验方法（certutil）");
+  ok(report.includes("按构建线改名") && report.includes("SHA256SUMS.txt"),
+    "报告同时说明本机命名与发布用的 <构建线>-SHA256SUMS.txt，收件方不会照着对不上号的名字找清单");
   ok(report.includes(`certutil -hashfile "${exeName}" SHA256`),
     "certutil 示例用的是本次真实产物名，不是写死的版本号（现场可直接复制粘贴）");
   if (process.platform === "win32") {
@@ -157,6 +159,36 @@ try {
   const bare = run(["--check", "--root", noManifest]);
   ok(bare.status === 1 && bare.out.includes("没有完整性清单"), "产物目录里根本没有清单时 --check 直接失败，不会静默通过");
   rmSync(noManifest, { recursive: true, force: true });
+
+  section("3b. 发到 GitHub Release 之后的改名清单形态");
+  {
+    // 发版作业把两条线的同名清单按构建线改名上传（否则 Release 资产会互相覆盖），
+    // README 与包内报告教的 `--check` 必须认得这种形态，否则收件方第一步就失败。
+    const published = mkdtempSync(path.join(tmpdir(), "projectx-release-published-"));
+    const msiName = "答题卡扫描端-9.9.9-ia32.msi";
+    const serverName = "project-x-server-ubuntu24-9.9.9.zip";
+    const msiBody = "MSI-published-fixture";
+    const serverBody = "ZIP-published-fixture";
+    writeFileSync(path.join(published, msiName), msiBody, "utf8");
+    writeFileSync(path.join(published, serverName), serverBody, "utf8");
+    writeFileSync(path.join(published, "scanner-ia32-windows-SHA256SUMS.txt"), `${sha256(msiBody)}  ${msiName}\n`, "utf8");
+    writeFileSync(path.join(published, "server-ubuntu24-SHA256SUMS.txt"), `${sha256(serverBody)}  ${serverName}\n`, "utf8");
+    writeFileSync(path.join(published, "scanner-ia32-windows-BUILD-INTEGRITY.txt"), "报告\n", "utf8");
+    writeFileSync(path.join(published, "server-ubuntu24-BUILD-INTEGRITY.txt"), "报告\n", "utf8");
+    const renamed = run(["--check", "--root", published]);
+    ok(renamed.status === 0,
+      `两份 <构建线>-SHA256SUMS.txt 与两份改名报告放在一起时 --check 通过${renamed.status === 0 ? "" : `：${renamed.out.slice(0, 320)}`}`);
+    // 打包机生成的清单里服务端包带 `server-ubuntu24/` 前缀，发布时被剥掉；按文件名要能对应上。
+    writeFileSync(path.join(published, "server-ubuntu24-SHA256SUMS.txt"), `${sha256(serverBody)}  server-ubuntu24/${serverName}\n`, "utf8");
+    const prefixed = run(["--check", "--root", published]);
+    ok(prefixed.status === 0 && prefixed.out.includes("清单里记作"),
+      `清单带目录前缀而产物平铺时按文件名对应，并说明对应关系${prefixed.status === 0 ? "" : `：${prefixed.out.slice(0, 320)}`}`);
+    writeFileSync(path.join(published, serverName), "tampered", "utf8");
+    const broken = run(["--check", "--root", published]);
+    ok(broken.status === 1 && broken.out.includes(serverName) && broken.out.includes("校验和不符"),
+      "改名清单一样能点名被改过的产物");
+    rmSync(published, { recursive: true, force: true });
+  }
 
   const emptyDir = mkdtempSync(path.join(tmpdir(), "projectx-release-empty-"));
   const empty = run(["--root", emptyDir]);

@@ -74,6 +74,9 @@ jobs:
     with:
       build_scanner: true
       build_server: true
+      # 发版标识必须显式传下去：这条构建线是在 main 上被调用的，`GITHUB_REF_NAME` 只有
+      # `main`，写进 build-info 的话管理员在控制台看不到「这台服务器发的是哪个版本标签」。
+      ci_ref: ${{ needs.prepare.outputs.tag }}
 
   release:
     name: Publish GitHub Release
@@ -121,7 +124,12 @@ jobs:
               echo "::error title=$lane 缺验证材料::$( [ -z "$sums" ] && echo 'SHA256SUMS.txt ' )$( [ -z "$integrity" ] && echo 'BUILD-INTEGRITY.txt' )。"
               exit 1
             fi
-            cp "$integrity" "out/${lane}-BUILD-INTEGRITY.txt"
+            # 报告正文里的产物清单带着 `server-ubuntu24/` 这种目录前缀，而 Release 资产是平铺
+            # 的，所以只剥前缀。清单**名字**不做文本替换：正文本身已经写明「本机叫
+            # SHA256SUMS.txt、发到 Release 按构建线改名」两种形态，`--check` 两种都认；
+            # 真去替换会把叙述句里的本机名也改成线名，反而编出「本机构建目录里的清单叫
+            # <线名>」这种假话（评审指出，已避开）。
+            sed -e "s#server-ubuntu24/##g" "$integrity" > "out/${lane}-BUILD-INTEGRITY.txt"
             kept=0
             : > "out/${lane}-SHA256SUMS.txt"
             while IFS= read -r line; do

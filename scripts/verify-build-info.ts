@@ -188,6 +188,23 @@ section("工作区状态三种结论都要能区分");
   }
 }
 
+// ── 3b. 发布标识 ciRef ──────────────────────────────────
+section("ciRef 的取值优先级：发版标签优先于运行分支");
+{
+  // 只喂一个最小的 env，别把宿主机的 GITHUB_* 混进来——这几条要的是「给定输入必有该输出」。
+  const base: NodeJS.ProcessEnv = { PATH: process.env.PATH };
+  const onBranch = collectBuildInfo(root, { ...base, GITHUB_REF_NAME: "main" });
+  ok(onBranch.ciRef === "main", `没传发布标签时退回本次运行的分支名（实际 ${String(onBranch.ciRef)}）`);
+  const onTag = collectBuildInfo(root, { ...base, GITHUB_REF_NAME: "main", PROJECTX_CI_REF: "v2.7.2" });
+  ok(onTag.ciRef === "v2.7.2",
+    "release-publish.yml 调用构建线时把标签传进来，正式包的 ciRef 要能写出这次发版的标签"
+    + `（实际 ${String(onTag.ciRef)}）`);
+  const onBlank = collectBuildInfo(root, { ...base, GITHUB_REF_NAME: "main", PROJECTX_CI_REF: "   " });
+  ok(onBlank.ciRef === "main", `PROJECTX_CI_REF 是空白时按没给处理（实际 ${String(onBlank.ciRef)}）`);
+  const noCi = collectBuildInfo(root, { ...base });
+  ok(noCi.ciRef === null, "本机/无 CI 环境两个来源都没有时留 null，不做猜测性兜底");
+}
+
 // ── 4. 实际 HTTP 路径 ────────────────────────────────────
 section("管理员控制台接口的真实行为");
 {

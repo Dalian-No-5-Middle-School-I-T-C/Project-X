@@ -135,26 +135,33 @@ function verifyMsiWithWindowsInstaller(artifact) {
     }
     // 0 成功；3010 = 需要重启（本工序不涉及），其余都算解包失败。
     if (code !== 0 && code !== 3010) throw new Error(`msiexec /a 退出码 ${code}${logTail()}`);
-    // msiexec 会再拉起一个子进程，-Wait 有可能先回来；按有界轮询等载荷落盘，不等就先比就会误报缺件。
+    // 校验对象从「三颗原生件」扩到整个 stage 目录：随包 UCRT 集合（15 颗 api-ms-win-crt-*.dll +
+    // ucrtbase.dll）、源码摘要与 licenses 同样是发布物。发布作业前面那道计数下限验的是「仓库里有」
+    // 与「拷进了 stage」，而旧 32 位工作站少一颗就以 0xC0000142 退出——还得确认它们真的进了这个 MSI。
+    const staged = walk(nativeDir).map((file) => ({
+      name: path.basename(file).toLowerCase(),
+      label: path.relative(nativeDir, file).split(path.sep).join("/"),
+      bytes: fs.readFileSync(file),
+    }));
+    // msiexec 会再拉起一个子进程，-Wait 有可能先回来。等待的判据必须是「文件名、长度、内容都对上」：
+    // 只看文件名就 break、出去再比字节，会在文件刚创建（0 字节或写了一半）时报出
+    // 「与构建产物不一致」这种查不出原因的假失败。
+    const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
     const deadline = Date.now() + 120_000;
+    let unsettled = [];
     for (;;) {
       const extracted = walk(checkDir);
-      const missing = nativeComponents.filter((component) => !extracted.some(
-        (file) => path.basename(file).toLowerCase() === component.toLowerCase()));
-      if (missing.length === 0) break;
+      unsettled = staged.filter(({ name, bytes }) => !extracted.some((file) =>
+        path.basename(file).toLowerCase() === name
+        && fs.statSync(file).size === bytes.length
+        && fs.readFileSync(file).equals(bytes)));
+      if (unsettled.length === 0) break;
       if (Date.now() >= deadline) {
-        throw new Error(`MSI 解包后找不到原生件：${missing.join(", ")}${logTail()}`);
+        throw new Error(`MSI 解包后缺件或字节尚未落齐：${unsettled.map((item) => item.label).join("、")}（stage 共 ${staged.length} 件）${logTail()}`);
       }
-      execFileSync("ping", ["-n", "3", "127.0.0.1"], { env, stdio: "ignore" }); // Windows 上的可靠短等待（不带 shell 的 sleep 没有）
+      sleep(2000);
     }
-    const extracted = walk(checkDir);
-    for (const component of nativeComponents) {
-      const expected = fs.readFileSync(path.join(nativeDir, component));
-      const match = extracted.find((file) => path.basename(file).toLowerCase() === component.toLowerCase()
-        && fs.statSync(file).size === expected.length && fs.readFileSync(file).equals(expected));
-      if (!match) throw new Error(`MSI 内的 ${component} 与构建产物不一致${logTail()}`);
-    }
-    console.log(`Installer payload verified with Windows Installer: ${nativeComponents.join(", ")}`);
+    console.log(`Installer payload verified with Windows Installer: stage 的 ${staged.length} 个文件逐字节一致（含 ${nativeComponents.join("、")}）`);
   } finally {
     // msiexec 的子进程可能还在写这个目录；删不掉只提示，别把上面真正的失败原因盖掉。
     try {

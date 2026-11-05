@@ -6,12 +6,17 @@
  * 字串还在就看不出来桥接是旧的；`source-sha256.txt` 也只覆盖识别器源码，
  * `native/ScannerBridge/**` 一颗都不在里面。两道检查合起来才够用：
  *
- *  1. 摘要核对：按 `resources/native/win-ia32/source-sha256.txt` 逐行取 `native/**` 与
- *     `scripts/build-native-mingw.sh` 的哈希比对（与 `package-server-ubuntu.cjs` 核对 Linux
- *     补识别器的同一套规则，比对用原始字节）。清单没列的源码不在这一道的保护范围内。
+ *  1. 摘要核对：按 `resources/native/win-ia32/source-sha256.txt` 逐行取源码哈希比对
+ *     （与 `package-server-ubuntu.cjs` 核对 Linux 补识别器共用 `scripts/lib/native-source-manifest.cjs`
+ *     这一份判据，比对用原始字节）。**清单必须覆盖这条构建线的全部必选源码**：识别器目录下每个
+ *     .cpp/.hpp、`native/CMakeLists.txt`、该线的 toolchain 与该线自己的构建脚本。清单空了、
+ *     被删掉一行、或少列了必选文件都算失败——「记了几行只查几行」等于允许随包二进制悄悄落后。
  *  2. 内容核对：拿 `scanner-bridge.exe` 最后一次入库的那个提交，与当前 HEAD 比
  *     `native/ScannerBridge` 的差异；有差异就说明桥接源码动过而包内件没重编。
  *     用内容而不是提交时间比较，merge / rebase 不会造成误报。
+ *     已知边界（要一次 ia32 重编才能收口，也记在 readus/发布构建与服务器更新时间.md）：基线取的是
+ *     「exe 最后一次入库的提交」，改了桥接源码之后又单独重交一份 exe 会把基线一起移动，这道核对
+ *     就看不出来。彻底闭合要把桥接源码摘要写进清单，而那必须与 ia32 原生件的重编同批做。
  *
  * 需要完整 git 历史：`fetch-depth: 1` 的检出查不到「 exe 最后一次入库的提交」，
  * 这时本脚本判失败并说明要加深历史，而不是当成通过。
@@ -22,13 +27,22 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const manifest = path.join(root, "resources", "native", "win-ia32", "source-sha256.txt");
 const bridgeExe = "resources/native/win-ia32/scanner-bridge.exe";
 const bridgeSourceDir = "native/ScannerBridge";
+const nativeManifest = createRequire(import.meta.url)("./lib/native-source-manifest.cjs") as {
+  verifyNativeSourceManifest: (params: { rootDir: string; lane: string }) => {
+    entries: Map<string, string>;
+    failures: string[];
+    missing: string[];
+    crlfCheckout: string[];
+  };
+  requiredSources: (rootDir: string, lane: string) => string[];
+};
 const failures: string[] = [];
 const notes: string[] = [];
 
@@ -49,46 +63,23 @@ function pass(message: string): void {
   console.log(`  ✓ ${message}`);
 }
 
-// ── 1. 源码摘要清单 ──────────────────────────────────────
+// ── 1. 源码摘要清单（逐行摘要 + 必选覆盖面）────────────────
 console.log("\n── 随包 ia32 原生件的源码摘要清单");
-if (!existsSync(manifest)) {
-  fail(`找不到清单 ${path.relative(root, manifest)}：交叉构建工序的产物来源没有被记录下来。`);
-} else {
-  const lines = readFileSync(manifest, "utf8").split(/\r?\n/).filter((line) => line.trim() !== "");
-  const checkedDirs = new Set<string>();
-  for (const line of lines) {
-    const match = /^([a-f0-9]{64})  (native\/[A-Za-z0-9_./-]+|scripts\/[A-Za-z0-9_./-]+)$/.exec(line);
-    if (!match) {
-      fail(`清单里有无法解析的行：${line.slice(0, 80)}`);
-      continue;
-    }
-    const [, expected, relative] = match;
-    const file = path.join(root, relative);
-    if (!existsSync(file)) {
-      fail(`清单列出的文件已不存在：${relative}（源码被移动或删除，包内件对应不到当前仓库）`);
-      continue;
-    }
-    const actual = sha256(file);
-    if (actual === expected) {
-      checkedDirs.add(relative.split("/").slice(0, 2).join("/"));
-      continue;
-    }
-    // 与 package-server-ubuntu.cjs 同一套判读：行尾差异是检出问题，不是源码变更。
-    const normalized = Buffer.from(readFileSync(file).toString("utf8").replace(/\r\n/g, "\n"), "utf8");
-    const lfDigest = createHash("sha256").update(normalized).digest("hex");
-    if (lfDigest === expected) {
-      fail(`${relative} 与清单只对得上「换行归一后」的哈希：这份工作副本把源码检成了 CRLF，而清单记的是 Linux 上的原始字节哈希。`
-        + "检出要同时设 core.autocrlf=false 与 core.eol=lf：.gitattributes 的 `* text=auto` 把这些文件判成 text 后，"
-        + "用哪个换行由 core.eol 决定（默认 native，在 Windows 上就是 CRLF），只关 autocrlf 不管用"
-        + "（第十跑的日志证明了这点）。发布作业里两个都已设置。");
-    } else {
-      fail(`${relative} 与清单摘要不一致：源码已改动而随包 ia32 识别器没重编。请按 readus/Windows32位扫描端交叉打包.md 重编并入库。`);
-    }
+{
+  const check = nativeManifest.verifyNativeSourceManifest({ rootDir: root, lane: "win-ia32" });
+  // CRLF 检出单独给结论：这不是源码变更，是这份工作副本把源码检成了 CRLF。
+  for (const relative of check.crlfCheckout) {
+    fail(`${relative} 与清单只对得上「换行归一后」的哈希：这份工作副本把源码检成了 CRLF，而清单记的是 Linux 上的原始字节哈希。`
+      + "检出要同时设 core.autocrlf=false 与 core.eol=lf：.gitattributes 的 `* text=auto` 把这些文件判成 text 后，"
+      + "用哪个换行由 core.eol 决定（默认 native，在 Windows 上就是 CRLF），只关 autocrlf 不管用"
+      + "（第十跑的日志证明了这点）。发布作业里两个都已设置。");
   }
+  for (const message of check.failures) fail(message);
   if (failures.length === 0) {
-    pass(`清单 ${lines.length} 行全部与当前源码一致（覆盖：${[...checkedDirs].join("、")}）`);
+    const required = nativeManifest.requiredSources(root, "win-ia32");
+    pass(`清单 ${check.entries.size} 行，覆盖必选源码 ${required.length} 项（识别器源码 + ${required.filter(r => !r.startsWith("native/AnswerCardRecognizer")).join("、")}），摘要与当前源码一致`);
   }
-  const coversBridge = lines.some((line) => line.includes("native/ScannerBridge/"));
+  const coversBridge = [...check.entries.keys()].some((relative) => relative.startsWith("native/ScannerBridge/"));
   if (!coversBridge) {
     notes.push("清单不含 native/ScannerBridge 源码，桥接的来源只靠下面的内容核对兜住。"
       + "要让清单也覆盖它，得在 `scripts/build-native-mingw.sh` 的摘要行里加上桥接源码——"

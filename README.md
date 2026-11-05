@@ -227,16 +227,22 @@
 - `SHA256SUMS.txt`：`sha256sum -c` 兼容的校验和清单（LF、按路径排序、不含构建中间物与 `*-unpacked/`）
 - `BUILD-INTEGRITY.txt`：版本、构建提交、每个产物的校验和与**签名状态**，未签名时把原因与后果写明
 
-**发布时必须把这两个文件连同安装包一起给出**，否则收件方没有任何验证手段。标签触发的发布构建同样
-生成这两份清单，并按构建线分别命名上传（`scanner-ia32-*-SHA256SUMS.txt`、`server-ubuntu24-*-SHA256SUMS.txt`），
-避免两条线的同名清单在 Release 资产里互相覆盖。收件方两种校验方式：
+**发布时必须把这两个文件连同安装包一起给出**，否则收件方没有任何验证手段。CI 的发版构建
+（在 Actions 里运行 `Publish release`，见 `.github/workflows/release-publish.yml`）同样生成这两份清单，
+并按构建线改名后作为 Release 资产上传（`scanner-ia32-windows-SHA256SUMS.txt`、`server-ubuntu24-SHA256SUMS.txt`
+与对应的 `*-BUILD-INTEGRITY.txt`），避免两条线的同名清单在 Release 资产里互相覆盖；改名时报告正文里的清单名与
+目录前缀一起改到与真正发出的文件一致。收件方两种校验方式：
 
 ```bash
 # 方式一：不需要本仓库，Windows 自带
 certutil -hashfile "答题卡扫描端-<版本>-x64.exe" SHA256
-# 把输出的 64 位十六进制与 SHA256SUMS.txt 中同名那行比对，全等即未被改动
+# 把输出的 64 位十六进制与清单中同名那行比对，全等即未被改动
 
 # 方式二：有本仓库，一次校验全部产物（任何一项不符即退出码 1 并点名文件）
+# 清单两种命名都认：本机构建的 SHA256SUMS.txt，与发布用的 <构建线>-SHA256SUMS.txt；
+# 清单里带目录前缀而产物平铺时按文件名对应。
+# 注意：一个目录里只放**你要校验那条线**的清单——两条线的清单放一起，另一条线的包没下载
+# 就会被判成「清单里有、目录里缺」。
 node scripts/hash-release-artifacts.cjs --check --root <产物目录>
 ```
 
