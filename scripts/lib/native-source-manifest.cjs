@@ -1,5 +1,5 @@
 /**
- * 随包原生组件的源码摘要清单核对（两条构建线共用一份判据）。
+ * 随包原生组件的源码摘要清单核对（三条构建线共用一份判据：win-ia32 / win-x64 / correction-linux-x64）。
  *
  * 要解决的问题：清单只是「记了哪些就查哪些」，于是把 `source-sha256.txt` 截断成空文件、
  * 或删掉其中几行，核对照样全绿——随包二进制相对当前源码已经旧了，门禁却看不见。
@@ -12,6 +12,12 @@
  *
  * `lane` 决定必选源码集合：识别器源码目录下的全部 .cpp/.hpp、该线的 CMake 入口与
  * toolchain、以及那条线自己的构建脚本（脚本改了同样会改变产出的二进制）。
+ *
+ * 两处真相要留意：这里的必选集合，与 `scripts/build-native-mingw.sh`、
+ * `scripts/build-recognizer-linux.sh` 里那条 `sha256sum` 生成的文件列表必须保持同步。
+ * 构建脚本不能引这个库（它们要在只有 cmake/coreutils 的 Linux 构建机上跑），所以清单少写一项时
+ * 这里报的是「缺必选覆盖」——看到这条先去看构建脚本的 `sha256sum` 调用，别只往清单里手工补一行
+ * （手工补的那行下一次重编会被脚本自己冲掉）。清单也没有注释语法：加 `#` 表头会被判「无法解析的行」。
  */
 const { existsSync, readFileSync, readdirSync } = require("node:fs");
 const { createHash } = require("node:crypto");
@@ -26,6 +32,12 @@ const LANES = {
     label: "Windows ia32 识别器",
     manifest: "resources/native/win-ia32/source-sha256.txt",
     toolchains: ["native/cmake/mingw-ia32.cmake"],
+    buildScripts: ["scripts/build-native-mingw.sh"],
+  },
+  "win-x64": {
+    label: "Windows x64 识别器",
+    manifest: "resources/native/win-x64/source-sha256.txt",
+    toolchains: ["native/cmake/mingw-x64.cmake"],
     buildScripts: ["scripts/build-native-mingw.sh"],
   },
   "correction-linux-x64": {

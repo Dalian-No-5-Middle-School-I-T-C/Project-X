@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 随包 Windows ia32 原生件的来源核对（发布链路专用）。
+ * 随包 Windows 原生件（ia32 与 x64）的来源核对（发布链路专用）。
  *
  * 要堵的是「发出去的包里的二进制，比审过的源码旧」这件事。⑥ 门槛只搜几颗字串，
  * 字串还在就看不出来桥接是旧的；`source-sha256.txt` 也只覆盖识别器源码，
@@ -63,10 +63,12 @@ function pass(message: string): void {
   console.log(`  ✓ ${message}`);
 }
 
-// ── 1. 源码摘要清单（逐行摘要 + 必选覆盖面）────────────────
-console.log("\n── 随包 ia32 原生件的源码摘要清单");
-{
-  const check = nativeManifest.verifyNativeSourceManifest({ rootDir: root, lane: "win-ia32" });
+// ── 1. 源码摘要清单（逐行摘要 + 必选覆盖面，两条 Windows 线各查一遍）──
+// win-x64 的识别器同样随包分发（x64 扫描端用它），它的 source-sha256.txt 与 ia32 同构，
+// 但原先没有任何人按新判据核对——「清单记了几行就只查几行」这个洞在那条线上还在。
+for (const lane of ["win-ia32", "win-x64"]) {
+  console.log(`\n── 随包 ${lane} 原生件的源码摘要清单`);
+  const check = nativeManifest.verifyNativeSourceManifest({ rootDir: root, lane });
   // CRLF 检出单独给结论：这不是源码变更，是这份工作副本把源码检成了 CRLF。
   for (const relative of check.crlfCheckout) {
     fail(`${relative} 与清单只对得上「换行归一后」的哈希：这份工作副本把源码检成了 CRLF，而清单记的是 Linux 上的原始字节哈希。`
@@ -75,15 +77,17 @@ console.log("\n── 随包 ia32 原生件的源码摘要清单");
       + "（第十跑的日志证明了这点）。发布作业里两个都已设置。");
   }
   for (const message of check.failures) fail(message);
-  if (failures.length === 0) {
-    const required = nativeManifest.requiredSources(root, "win-ia32");
-    pass(`清单 ${check.entries.size} 行，覆盖必选源码 ${required.length} 项（识别器源码 + ${required.filter(r => !r.startsWith("native/AnswerCardRecognizer")).join("、")}），摘要与当前源码一致`);
+  if (check.failures.length === 0 && check.crlfCheckout.length === 0) {
+    const required = nativeManifest.requiredSources(root, lane);
+    pass(`${lane}: 清单 ${check.entries.size} 行，覆盖必选源码 ${required.length} 项（识别器源码 + ${required.filter(r => !r.startsWith("native/AnswerCardRecognizer")).join("、")}），摘要与当前源码一致`);
   }
-  const coversBridge = [...check.entries.keys()].some((relative) => relative.startsWith("native/ScannerBridge/"));
-  if (!coversBridge) {
-    notes.push("清单不含 native/ScannerBridge 源码，桥接的来源只靠下面的内容核对兜住。"
-      + "要让清单也覆盖它，得在 `scripts/build-native-mingw.sh` 的摘要行里加上桥接源码——"
-      + "但清单本身记录了那个脚本的哈希，所以这一步只能与 ia32 原生件的重编同批做，否则会立刻要求重发二进制。");
+  if (lane === "win-ia32") {
+    const coversBridge = [...check.entries.keys()].some((relative) => relative.startsWith("native/ScannerBridge/"));
+    if (!coversBridge) {
+      notes.push("清单不含 native/ScannerBridge 源码，桥接的来源只靠下面的内容核对兜住。"
+        + "要让清单也覆盖它，得在 `scripts/build-native-mingw.sh` 的摘要行里加上桥接源码——"
+        + "但清单本身记录了那个脚本的哈希，所以这一步只能与 ia32 原生件的重编同批做，否则会立刻要求重发二进制。");
+    }
   }
 }
 
@@ -155,5 +159,5 @@ if (!existsSync(vendorDsm)) {
 }
 
 for (const note of notes) console.log(`  · ${note}`);
-console.log(`\nia32 原生件来源核对：${failures.length === 0 ? "通过" : `${failures.length} 项失败`}。`);
+console.log(`\nWindows 原生件（ia32 + x64）来源核对：${failures.length === 0 ? "通过" : `${failures.length} 项失败`}。`);
 if (failures.length > 0) process.exit(1);
