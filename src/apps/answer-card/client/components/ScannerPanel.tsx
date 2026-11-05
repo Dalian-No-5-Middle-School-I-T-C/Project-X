@@ -952,12 +952,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
         const staleSid = data.sessionId;
         // /scan 晚于卸载或取消返回：服务端可能已落页，必须先登记占位再取消并对账。
         onScanSessionStartedRef.current?.(staleSid);
-        void authFetch(`/api/scanner/scan/${encodeURIComponent(staleSid)}/cancel`, { method: "POST" }).then((response) => {
-          if (!response.ok) notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
-        }, (error: unknown) => {
-          console.error("[scanner] 停止扫描失败", error);
-          notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
-        });
+        cancelScannerSession(staleSid);
         void reconcileSessionHandoff(staleSid, 0);
         return;
       }
@@ -976,6 +971,21 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
     }
   }
 
+  /**
+   * 通知后端终止 scanner-bridge.exe 子进程（只关 SSE 不停设备，ADF 会继续送纸）。
+   * authFetch 只在网络失败时拒绝，401/500 仍是正常 Response；不看 ok 就会在设备还在
+   * 送纸时宣称已取消。老师点「停止 / 结束」和晚到的 /scan 响应两条路径共用这一份提示。
+   */
+  function cancelScannerSession(sid: string) {
+    const notice = "未能确认扫描仪已停止，请检查设备是否还在送纸";
+    void authFetch(`/api/scanner/scan/${encodeURIComponent(sid)}/cancel`, { method: "POST" }).then((response) => {
+      if (!response.ok) notify.error(notice);
+    }, (error: unknown) => {
+      console.error("[scanner] 停止扫描失败", error);
+      notify.error(notice);
+    });
+  }
+
   function cancelScan() {
     scanAttemptRef.current++;
     sessionUploadRef.current = null;
@@ -990,13 +1000,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
     // 通知后端终止 scanner-bridge.exe 子进程（不再只是关闭 SSE，否则 ADF 会继续送纸）
     const sid = sessionIdRef.current;
     if (sid) {
-      // authFetch 只在网络失败时拒绝，401/500 仍是正常 Response；不看 ok 就会在设备还在送纸时宣称已取消。
-      void authFetch(`/api/scanner/scan/${sid}/cancel`, { method: "POST" }).then((response) => {
-        if (!response.ok) notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
-      }, (error: unknown) => {
-        console.error("[scanner] 停止扫描失败", error);
-        notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
-      });
+      cancelScannerSession(sid);
       handoffCurrentSession();
     }
   }
