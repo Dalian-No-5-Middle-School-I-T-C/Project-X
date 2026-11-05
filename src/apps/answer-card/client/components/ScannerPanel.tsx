@@ -997,7 +997,8 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
     setState("idle");
     setProgressMessage("扫描已取消");
 
-    // 通知后端终止 scanner-bridge.exe 子进程（不再只是关闭 SSE，否则 ADF 会继续送纸）
+    // 停设备的动作在 `cancelScannerSession` 里（含「取消不成功必须提示」）；这里先撤界面状态，
+    // 再把这一批交给后处理页，顺序不能反：交接要用还没清掉的 sessionIdRef。
     const sid = sessionIdRef.current;
     if (sid) {
       cancelScannerSession(sid);
