@@ -453,8 +453,9 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
   async function recognizePageForUpload(j: JobRecord, page: PageRecord, blobData: Blob): Promise<CombinedRecognitionResult & { cropImages?: Array<Record<string, unknown> & { dataBase64: string }> }> {
     const recordId = page.input.recordId;
     if (j.kind === "scan" && recordId) {
-      // 与其它页级请求同一份超时预算：这一步卡住不能把整条上传队列挂到无界等待。
-      // 超时或非 404 都按「本机这次没拿到可复用的结果」处理，退回原生识别，不影响正确性。
+      // 与其它页级请求共用一份超时预算：这一步卡住不能把整条上传队列挂到无界等待上。
+      // 语义按状态分：404 = 缓存未命中，直接退回本机重新识别；超时或其它非 2xx 抛错，
+      // 由页级重试处理（读不通却当未命中，会把一次真实故障伪装成「重识别一次就好」）。
       const cached = await (deps.localFetch ?? authFetch)(`/api/scanner/record/${encodeURIComponent(recordId)}/upload-payload`, {
         signal: timeoutSignal(pageTimeoutMs),
       });

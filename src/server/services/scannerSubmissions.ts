@@ -329,10 +329,15 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
   return enqueueScannerSubmission(() => processScannerSessionInQueue(card, sessionId, mode, saveGroupId, saveGroupIds, blockUnreviewed));
 }
 
-/** Read-only batch view for upload UI polling; must not block page writes on the scanner queue. */
+/**
+ * 上传界面轮询用的只读批内视图。
+ *
+ * MariaDB（生产）下它不走提交链，轮询因此不再排在整条写入队列后面；
+ * SQLite（本地/单机）下仍排在链里——同一连接在 BEGIN..COMMIT 之间会被链外的读
+ * 撞见未提交行，这里宁可等，也不能把「还没提交」看成「这一批已保存」。
+ * 见 `runScannerCommittedRead`。
+ */
 export async function previewScannerUploadSession(card: AnswerCard, sessionId: string): Promise<ScanBatchResponse> {
-  // 本地模式（SQLite）仍要排在提交链后面，否则读到的是别人没提交完的中间态；
-  // MariaDB 生产形态走连接池，链外并发读不会看到未提交数据，队列留给写。
   return runScannerCommittedRead(() => processScannerSessionInQueue(card, sessionId, "preview"));
 }
 

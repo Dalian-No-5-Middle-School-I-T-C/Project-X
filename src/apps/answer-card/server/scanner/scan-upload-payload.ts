@@ -78,6 +78,18 @@ export function scopeScanUploadPayload(
  * MariaDB 走连接池，其它连接只看得到已提交快照，`hasOpenTransaction()` 恒为 false。
  */
 export async function resolveScanUploadPayload(recordId: string): Promise<ScanUploadPayload | null> {
+  try {
+    return await readScanUploadPayload(recordId);
+  } catch (error) {
+    // 这条路径上任何一步读不通都按「缓存未命中」处理：404 是客户端认识的合法降级信号（回本机
+    // 重新识别），而 500 会让整页上传判定成失败。旧卷的 layout_json 解不出来、切块目录被清理等
+    // 都属于「这份缓存不能用」，不是设备或数据故障，不该把作业打掉。
+    console.warn(`[scanner] upload-payload 读取失败，按缓存未命中处理：${recordId}`, error);
+    return null;
+  }
+}
+
+async function readScanUploadPayload(recordId: string): Promise<ScanUploadPayload | null> {
   const db = getMysqlDb();
   if (db.hasOpenTransaction?.()) return null;
   const record = await getScanRecordWithResult(recordId);
