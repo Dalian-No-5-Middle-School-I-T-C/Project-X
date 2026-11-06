@@ -847,7 +847,7 @@ async function main(): Promise<void> {
   const foreignCardsPreview = await get(`/api/cards/${scanCardId}/grading/preview/b1-page.png`, tokenB);
   ok(foreignCardsPreview.status === 403, `范围外教师走 cards 路径读同一张图同样 403（同级路由不再是收口的绕道，实际 ${foreignCardsPreview.status}）`);
 
-  // PR #373：upload-payload 须带齐持久化切块；题块范围与 GET /record 一致，不得外发他人切块 base64。
+  // PR #373：upload-payload 须带齐持久化切块；题块范围账号不得复用部分页缓存（404），GET /record 仍按块过滤。
   const { cardFingerprint } = await import("../src/shared/cardVersion");
   const scanCardFp = cardFingerprint(scanCard!);
   const uploadGeom = {
@@ -910,16 +910,9 @@ async function main(): Promise<void> {
   ok(scopedOwnPage.body?.recognition?.total_score === null && scopedOwnPage.body?.recognition?.max_score === null,
     "整卷总分不再随识别结果外发");
   const scopedUploadPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
-  const scopedUploadBody = scopedUploadPayload.body as {
-    subjectiveQuestions?: Array<{ blockId?: string }>;
-    cropImages?: Array<{ blockId: string }>;
-  };
-  const scopedUploadJson = JSON.stringify(scopedUploadBody);
-  ok(scopedUploadPayload.status === 200
-    && scopedUploadBody.cropImages?.length === 1 && scopedUploadBody.cropImages[0]?.blockId === "B1"
-    && !scopedUploadJson.includes('"B2"')
-    && (scopedUploadBody.subjectiveQuestions ?? []).every(q => q.blockId === "B1"),
-    `题块教师 upload-payload 只含本人题块识别与切块（实际 ${scopedUploadPayload.status} ${scopedUploadJson.slice(0, 140)}）`);
+  ok(scopedUploadPayload.status === 404,
+    `题块教师 upload-payload 不得返回部分页缓存（须 404 迫使本机整页重识别，实际 ${scopedUploadPayload.status}）`);
+  clearMatrix(teacherA.id);
   // PR #373：复用的识别结果会直接变成正式成绩，只能读已提交的那一份。
   // SQLite 是一条连接，BEGIN..COMMIT 之间同连接的其它读看得到未提交行；本地模式必须
   // 把这份读排进扫描提交链，并在事务开着时按缓存未命中（404）退回扫描端重新识别。
@@ -947,6 +940,7 @@ async function main(): Promise<void> {
   ok(staleVersionPayload.status === 404,
     `答题卡版本与快照不一致时 upload-payload 按未命中处理（实际 ${staleVersionPayload.status}）`);
 
+  matrix(teacherA.id, { class_id: classA, block_id: "B1" });
   const scopedSessionView = await get(`/api/scanner/scan/${scanSession}`, tokenA);
   const listedRecords = (scopedSessionView.body?.records ?? []).map((r: { id: string }) => r.id);
   ok(scopedSessionView.status === 200 && listedRecords.length === 1 && listedRecords[0] === "rec-p1",

@@ -41,7 +41,7 @@ import { safeId, dataDir } from "../storage";
 import { findCardForLayout } from "../card-layout";
 import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
 import { collectSessionResults, groupSessionPages } from "./session-results";
-import { resolveScanUploadPayload, scopeScanUploadPayload } from "./scan-upload-payload";
+import { resolveScanUploadPayload } from "./scan-upload-payload";
 import { filterDeletableGroups } from "../../../../shared/scanPostprocess";
 import sharp from "sharp";
 
@@ -430,22 +430,13 @@ export function createScannerRouter(twainEnabled = true): Router {
         return;
       }
       const scope = scanPageScopeOf(res);
-      let visible = payload;
+      // 上传复用必须代表整页完整识别；题块范围账号读 GET /record 时仍只看到自己块，
+      // 但若在此返回过滤后的 payload，客户端会把缓存当整页并跳过本机 includeCrops，漏判他人题块。
       if (scope?.restricted) {
-        const record = await getScanRecordWithResult(recordId);
-        const card = record ? await findCardForLayout(record.card_id) : null;
-        const layoutPage = scanRecordLayoutPage(
-          card,
-          Number(record?.page_num ?? 0),
-          record?.side === "back" ? "back" : "front",
-        );
-        visible = scopeScanUploadPayload(payload, scope, card, layoutPage);
-        if (!visible.cropImages.length) {
-          res.status(404).json({ message: "尚无可用扫描识别结果，请在本机重新识别后再上传" });
-          return;
-        }
+        res.status(404).json({ message: "尚无可用扫描识别结果，请在本机重新识别后再上传" });
+        return;
       }
-      res.json(visible);
+      res.json(payload);
     } catch (error) {
       next(error);
     }
