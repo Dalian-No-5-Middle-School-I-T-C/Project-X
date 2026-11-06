@@ -864,7 +864,6 @@ async function main(): Promise<void> {
     questions: [],
     subjectiveQuestions: [
       { blockId: "B1", questionId: "q-B1", questionNumber: 21, score: 20, maxScore: 20, status: "ok", confidence: 1, validCells: [], invalidCells: [] },
-      { blockId: "B2", questionId: "q-B2", questionNumber: 22, score: 15, maxScore: 20, status: "ok", confidence: 1, validCells: [], invalidCells: [] },
     ],
   });
   db.prepare(
@@ -873,31 +872,58 @@ async function main(): Promise<void> {
   ).run(scanCardFp, uploadLayoutJson, uploadRecognitionJson);
   const uploadCropDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "recognition", "crops");
   mkdirSync(uploadCropDir, { recursive: true });
-  for (const [blockId, qn] of [["B1", 21], ["B2", 22]] as Array<[string, number]>) {
-    const cropPath = path.join(uploadCropDir, `rec-p1-${blockId}.png`);
-    writeFileSync(cropPath, `crop-${blockId}`);
+  const { expectedCropSegmentsForLayoutPage } = await import("../src/apps/answer-card/server/scanner/scan-upload-payload");
+  const uploadSegmentMeta = new Map<string, { segmentIndex: number; questionKey: string; pageNumber: number }>();
+  for (const page of scanLayout.pages) {
+    for (const s of expectedCropSegmentsForLayoutPage(page)) {
+      uploadSegmentMeta.set(s.blockId, { segmentIndex: s.segmentIndex, questionKey: s.questionKey, pageNumber: s.pageNumber });
+    }
+  }
+  {
+    const metaB1 = uploadSegmentMeta.get("B1");
+    if (!metaB1) throw new Error("upload-payload 夹具：无法在布局页上解析 B1 切块元数据");
+    const cropPathB1 = path.join(uploadCropDir, "rec-p1-B1.png");
+    writeFileSync(cropPathB1, "crop-B1");
     db.prepare(
       `INSERT OR REPLACE INTO answer_block_crops
        (id, card_id, source_type, source_record_id, block_id, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi)
-       VALUES (?, ?, 'twain_scan_record', 'rec-p1', ?, 'subjective', ?, 0, ?, '{}', ?, 10, 10, 300)`
-    ).run(`upload-crop-${blockId}`, scanCardId, blockId, pageB1, JSON.stringify([qn]), cropPath);
+       VALUES ('upload-crop-B1', ?, 'twain_scan_record', 'rec-p1', 'B1', 'subjective', ?, ?, ?, '{}', ?, 10, 10, 300)`
+    ).run(scanCardId, metaB1.pageNumber, metaB1.segmentIndex, metaB1.questionKey, cropPathB1);
   }
   const wholeUploadPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
   const wholeCrops = (wholeUploadPayload.body as { cropImages?: Array<{ blockId: string }> })?.cropImages ?? [];
-  ok(wholeUploadPayload.status === 200 && wholeCrops.length === 2
-    && wholeCrops.some(c => c.blockId === "B1") && wholeCrops.some(c => c.blockId === "B2"),
-    `整卷授权教师 upload-payload 返回完整切块（实际 ${wholeUploadPayload.status} / ${wholeCrops.length}）`);
-  db.prepare("DELETE FROM answer_block_crops WHERE id = 'upload-crop-B2'").run();
+  ok(wholeUploadPayload.status === 200 && wholeCrops.length === 1 && wholeCrops[0]?.blockId === "B1",
+    `整卷授权教师 upload-payload 返回本页完整切块（实际 ${wholeUploadPayload.status} / ${wholeCrops.length}）`);
+  db.prepare("DELETE FROM answer_block_crops WHERE id = 'upload-crop-B1'").run();
   rmSync(path.join(uploadCropDir, "rec-p1-B1.png"), { force: true });
   const missingCropPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
   ok(missingCropPayload.status === 404,
     `切块不齐时 upload-payload 按缓存未命中返回 404（实际 ${missingCropPayload.status}）`);
+  const metaB1Restore = uploadSegmentMeta.get("B1")!;
   writeFileSync(path.join(uploadCropDir, "rec-p1-B1.png"), "crop-B1");
   db.prepare(
     `INSERT OR REPLACE INTO answer_block_crops
      (id, card_id, source_type, source_record_id, block_id, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi)
-     VALUES ('upload-crop-B2', ?, 'twain_scan_record', 'rec-p1', 'B2', 'subjective', ?, 0, '[22]', '{}', ?, 10, 10, 300)`
-  ).run(scanCardId, pageB1, path.join(uploadCropDir, "rec-p1-B2.png"));
+     VALUES ('upload-crop-B1', ?, 'twain_scan_record', 'rec-p1', 'B1', 'subjective', ?, ?, ?, '{}', ?, 10, 10, 300)`
+  ).run(scanCardId, metaB1Restore.pageNumber, metaB1Restore.segmentIndex, metaB1Restore.questionKey, path.join(uploadCropDir, "rec-p1-B1.png"));
+
+  {
+    const dupPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+    ok(
+      dupPayload.status === 200 && Array.isArray((dupPayload.body as { cropImages?: unknown }).cropImages)
+        && (dupPayload.body as { cropImages: unknown[] }).cropImages.length === 1,
+      `本页期望切段齐全时 upload-payload 命中缓存（实际 ${dupPayload.status}）`,
+    );
+    // 库表对 (source, record, block, page, segment_index) 有唯一约束，无法用第二行模拟「同段重复」；
+    // 走错题号并集（一道切段写成两题题号）会偏离期望段落键 → 须未命中。
+    db.prepare("UPDATE answer_block_crops SET question_numbers = ? WHERE id = 'upload-crop-B1'").run('["21","99"]');
+    const wrongQuestionKeyPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+    ok(wrongQuestionKeyPayload.status === 404,
+      `题号集合与版式切段不一致时 upload-payload 按整页未命中处理（实际 ${wrongQuestionKeyPayload.status}）`);
+    db.prepare("UPDATE answer_block_crops SET question_numbers = ? WHERE id = 'upload-crop-B1'").run(metaB1Restore.questionKey);
+    const afterRestoreKey = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+    ok(afterRestoreKey.status === 200, `恢复正确题号后缓存再次命中（实际 ${afterRestoreKey.status}）`);
+  }
 
   // CR5：题块教师只能读到含本人题块的排版页，同页他人题块与整卷总分一并剔除。
   matrix(teacherA.id, { class_id: classA, block_id: "B1" });
