@@ -161,8 +161,14 @@ function testPostprocessResume(): void {
     new URL("../src/apps/answer-card/client/components/ScannerPanel.tsx", import.meta.url),
     "utf8",
   );
+  // 顺序判据靠两个唯一锚点就够了：`onScanSessionStartedRef.current?.(staleSid)` 与
+  // `reconcileSessionHandoff(staleSid, 0)` 在全文件各只出现一次。原先给两个锚点之间加了
+  // 字数预算（{0,420}/{0,320}），结果这一小段里补一句失败提示、或把重复逻辑抽成函数，
+  // 都会把这条「补充性」检查挤红——AGENTS.md 明确「源码文本、正则、日志字串与顺序检查只作补充」。
+  // 「先登记占位 → 再取消 → 再对账」的真实行为由 scripts/scanner-panel-session-smoke.ts 的
+  // 晚到 /scan 响应场景端到端断言（含真实 fetch 顺序），这里不再用长度当判据。
   assert.match(scannerPanelSource,
-    /attempt !== scanAttemptRef\.current[\s\S]{0,420}onScanSessionStartedRef\.current\?\.\(staleSid\)[\s\S]{0,320}reconcileSessionHandoff\(staleSid, 0\)/,
+    /attempt !== scanAttemptRef\.current[\s\S]*?onScanSessionStartedRef\.current\?\.\(staleSid\)[\s\S]*?reconcileSessionHandoff\(staleSid, 0\)/,
     "晚到的 /scan 响应要先登记占位再取消并对账");
   const postprocessSource = readFileSync(
     new URL("../src/apps/answer-card/client/components/ScannerPostprocessPage.tsx", import.meta.url),
