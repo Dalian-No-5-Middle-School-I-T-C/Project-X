@@ -930,6 +930,29 @@ async function main(): Promise<void> {
     const afterRestoreKey = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
     ok(afterRestoreKey.status === 200, `恢复正确题号后缓存再次命中（实际 ${afterRestoreKey.status}）`);
   }
+  {
+    const mismatchedRecognition = JSON.parse(uploadRecognitionJson) as {
+      studentId?: { status: string; value: string };
+    };
+    mismatchedRecognition.studentId = { status: "ok", value: "9999" };
+    db.prepare(
+      "UPDATE scan_correction_pages SET recognition_json=? WHERE source_type='twain_scan_record' AND source_id='rec-p1'"
+    ).run(JSON.stringify(mismatchedRecognition));
+    const studentMismatchPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+    ok(
+      studentMismatchPayload.status === 404,
+      `扫描主行学号与订正快照学号不一致时 upload-payload 按未命中处理（实际 ${studentMismatchPayload.status}）`,
+    );
+    db.prepare(
+      "UPDATE scan_correction_pages SET recognition_json=? WHERE source_type='twain_scan_record' AND source_id='rec-p1'"
+    ).run(uploadRecognitionJson);
+    const studentAlignedPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+    ok(
+      studentAlignedPayload.status === 200
+        && (studentAlignedPayload.body as { studentId?: { value?: string } })?.studentId?.value === "9001",
+      `学号与快照对齐后 upload-payload 恢复命中（实际 ${studentAlignedPayload.status}）`,
+    );
+  }
 
   // CR5：题块教师只能读到含本人题块的排版页，同页他人题块与整卷总分一并剔除。
   matrix(teacherA.id, { class_id: classA, block_id: "B1" });

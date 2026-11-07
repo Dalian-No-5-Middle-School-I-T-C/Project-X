@@ -239,6 +239,7 @@ async function readScanUploadPayload(recordId: string): Promise<ScanUploadPayloa
   const record = await getScanRecordWithResult(recordId);
   if (!record?.recognition) return null;
   if (record.ocr_status === "pending" || record.ocr_status === "processing" || record.ocr_status === "failed") return null;
+  const recordStudentAtRead = record.student_id ?? null;
 
   const correction = await loadCorrectionPage("twain_scan_record", recordId, "");
   if (!correction?.recognition?.geometry) return null;
@@ -253,8 +254,11 @@ async function readScanUploadPayload(recordId: string): Promise<ScanUploadPayloa
   const layoutPageNumber = correction.layout.pageNumber;
 
   const recognition = { ...correction.recognition } as CombinedRecognitionResult;
-  if (record.student_id && recognition.studentId?.value !== record.student_id) {
-    recognition.studentId = { status: "ok", value: record.student_id };
+  const correctionStudent = recognition.studentId?.value ? String(recognition.studentId.value) : null;
+  // 订正快照与扫描主行可能在不同时刻提交：不能用较早读到的 student_id 覆盖较新的订正学号。
+  if (recordStudentAtRead && correctionStudent && recordStudentAtRead !== correctionStudent) return null;
+  if (!correctionStudent && recordStudentAtRead) {
+    recognition.studentId = { status: "ok", value: recordStudentAtRead };
   }
   if (recognition.status !== "ok" && recognition.status !== "partial") {
     recognition.status = record.ocr_status === "review" ? "partial" : "ok";
@@ -325,8 +329,25 @@ async function readScanUploadPayload(recordId: string): Promise<ScanUploadPayloa
   // 与刚读出来的切块文件就可能分属两个状态；事务还正开着则更直接——读到的可能是未提交数据。
   // 两种情况都按未命中处理，让扫描端重新识别，别把一次撕裂的中间态送进正式成绩。
   if (db.hasOpenTransaction?.()) return null;
-  const settled = await db.get<{ revision: number }>(
-    "SELECT revision FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?", recordId);
-  if (Number(settled?.revision) !== Number(correction.revision)) return null;
+  const settled = await db.get<{ revision: number; recognition_json: string }>(
+    "SELECT revision, recognition_json FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?",
+    recordId,
+  );
+  if (!settled || Number(settled.revision) !== Number(correction.revision)) return null;
+  let settledStudent: string | null = null;
+  try {
+    const parsed = JSON.parse(settled.recognition_json) as { studentId?: { value?: string | null } };
+    settledStudent = parsed.studentId?.value ? String(parsed.studentId.value) : null;
+  } catch {
+    return null;
+  }
+  if (correctionStudent && settledStudent && correctionStudent !== settledStudent) return null;
+  const recordStudentSettled = (await db.get<{ student_id: string | null }>(
+    "SELECT student_id FROM twain_scan_records WHERE id = ?", recordId,
+  ))?.student_id ?? null;
+  if (recordStudentAtRead !== recordStudentSettled) return null;
+  const payloadStudent = recognition.studentId?.value ? String(recognition.studentId.value) : null;
+  if (recordStudentSettled && payloadStudent && recordStudentSettled !== payloadStudent) return null;
+  if (settledStudent && payloadStudent && settledStudent !== payloadStudent) return null;
   return { ...recognition, cropImages, cardVersion: correction.cardVersion, correctionRevision: correction.revision };
 }
