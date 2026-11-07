@@ -1091,6 +1091,42 @@ async function main() {
       else Reflect.deleteProperty(globalThis, "localStorage");
     }
   }
+  // Recognition/image/crop retries have independent checkpoints. Manual retry of
+  // an acknowledged image must also reuse its exact payload and resend only crops.
+  for (const kind of ["scan", "import"] as const) {
+    let reads = 0, recognitions = 0, corrections = 0, images = 0, crops = 0, failCrops = true;
+    const mgr = createScannerUploadManager(deps({
+      localFetch: async url => {
+        recognitions++;
+        assert(String(url).includes("upload-payload"), "reuse must avoid native OCR");
+        return jsonRes({ status: "ok", cardVersion: TEST_CARD_VERSION,
+          ...(kind === "scan" ? { correctionRevision: 42 } : {}),
+          studentId: { status: "ok", value: "82048" }, questions: [], subjectiveQuestions: [],
+          cropImages: [{ blockId: "b", dataBase64: btoa("crop") }] });
+      },
+      remoteFetch: async (url, init) => {
+        if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "staged", uploadTokens: ["t"] });
+        if (url.endsWith(PAGES)) { images++; return jsonRes({ ok: true }); }
+        if (url.endsWith("/crops")) {
+          crops++;
+          assert(await ((init!.body as FormData).get("crops") as Blob).text() === "crop", "retries keep crop bytes");
+          return failCrops ? jsonRes({ message: "temporary failure" }, 503) : jsonRes({ count: 1 });
+        }
+        return jsonRes({ ok: true });
+      },
+    }));
+    const id = mgr.startUpload({ ...baseInput(1), kind, pages: [{ pageNum: 1, side: "front", recordId: "local-record",
+      uploadPayloadUrl: "/api/cards/card_1/grading/upload-payload/import.png",
+      getBlob: async () => { reads++; return blob(); },
+      ...(kind === "scan" ? { getCorrection: async () => { corrections++; throw new Error("redundant correction fetch"); } } : {}),
+    }] });
+    assert((await waitTerminal(mgr, id)).status === "error", "crop failure exhausts its retries");
+    assert(reads === 1 && recognitions === 1 && corrections === 0 && images === 1 && crops === 3,
+      "failed crops must not repeat image reads, recognition, correction or original upload");
+    failCrops = false; mgr.retryFailed(id);
+    assert((await waitTerminal(mgr, id)).status === "done", "manual retry completes remaining crops");
+    assert(reads === 1 && recognitions === 1 && images === 1 && Number(crops) === 4, "manual crop retry resumes its stage");
+  }
   console.log("scanner-upload-manager-smoke: 全部通过");
 }
 

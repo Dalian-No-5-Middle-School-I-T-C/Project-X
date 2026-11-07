@@ -522,10 +522,24 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
     }
     let all = await receipts(db, exam.id);
     const cached: StudentGradingResultRow[] = [];
-    for (const row of all.filter(r => r.session_id === sessionId && r.state === "saved" && r.result_json
-      && candidates.some(candidate => candidate.groupId === r.group_id))) {
-      const exists = await db.get("SELECT ss.id FROM student_scores ss JOIN users u ON u.id = ss.student_id WHERE ss.exam_id = ? AND u.student_number = ?", exam.id, row.student_number);
-      if (!exists) continue;
+    const savedRows = all.filter(r => r.session_id === sessionId && r.state === "saved" && r.result_json
+      && candidates.some(candidate => candidate.groupId === r.group_id));
+    const savedGroups = new Set<string>();
+    // Keep student-number matching in SQL: MariaDB may compare case/accent
+    // insensitively, and old users/receipt columns can have different collations.
+    // Binding each number preserves the original comparison without a column
+    // join, while bounded UNION batches avoid a database round trip per receipt.
+    for (let start = 0; start < savedRows.length; start += 100) {
+      const chunk = savedRows.slice(start, start + 100);
+      const found = await db.all<{ group_id: string }>(chunk.map(() =>
+        `SELECT ? AS group_id WHERE EXISTS (
+          SELECT 1 FROM student_scores ss JOIN users u ON u.id = ss.student_id
+          WHERE ss.exam_id = ? AND u.student_number = ?)`
+      ).join(" UNION ALL "), ...chunk.flatMap(row => [row.group_id, exam.id, row.student_number]));
+      for (const row of found) savedGroups.add(row.group_id);
+    }
+    for (const row of savedRows) {
+      if (!savedGroups.has(row.group_id)) continue;
       // Historical partial saves can have grades and receipts but unbound crops.
       // Replay repairs their ownership without rewriting scores or publication.
       if (mode === "save" && (saveGroupId === undefined || row.group_id === saveGroupId) && (!saveGroupIds || saveGroupIds.has(row.group_id))) await db.transaction(async tx => {

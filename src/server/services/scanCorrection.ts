@@ -54,7 +54,12 @@ async function loadSessionCorrection(card: AnswerCard, sessionId: string, groupI
   const session = await getMysqlDb().get<{card_version:string|null;version_source:string}>("SELECT card_version,version_source FROM twain_scan_sessions WHERE id=?",sessionId);
   if (!session) throw new Error("扫描会话不存在");
   if (session.card_version && session.card_version !== cardFingerprint(card)) throw new Error("答题卡版本已变化，请核对原卷版本后重新扫描");
-  const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
+  const groupIndex = Number(groupId);
+  if (!Number.isSafeInteger(groupIndex) || groupIndex < 0 || String(groupIndex) !== groupId) throw new Error("答题卡分组不存在");
+  const sheetsPerGroup = Math.ceil(buildLayout(card).pages.length / (card.sided === "double" ? 2 : 1));
+  const records = (await listScanRecordsGroupedByStudent(sessionId, {
+    first: groupIndex * sheetsPerGroup + 1, last: (groupIndex + 1) * sheetsPerGroup,
+  })).flatMap(g => g.records);
   const group = groupSessionPages(card, records).groups.get(groupId);
   if (!group) throw new Error("答题卡分组不存在");
   if (receipt) {

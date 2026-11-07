@@ -21,7 +21,7 @@ import type {
 
 export type ScanUploadCropImage = Omit<RecognitionBlockCrop, "path"> & { dataBase64: string };
 
-export type ScanUploadPayload = CombinedRecognitionResult & { cropImages: ScanUploadCropImage[] };
+export type ScanUploadPayload = CombinedRecognitionResult & { cropImages: ScanUploadCropImage[]; cardVersion?: string; correctionRevision?: number };
 
 /**
  * Expected croppable segment: mirrors native `block_crops_from_page` in layout_io.cpp
@@ -253,7 +253,7 @@ async function readScanUploadPayload(recordId: string): Promise<ScanUploadPayloa
   const layoutPageNumber = correction.layout.pageNumber;
 
   const recognition = { ...correction.recognition } as CombinedRecognitionResult;
-  if (!recognition.studentId?.value && record.student_id) {
+  if (record.student_id && recognition.studentId?.value !== record.student_id) {
     recognition.studentId = { status: "ok", value: record.student_id };
   }
   if (recognition.status !== "ok" && recognition.status !== "partial") {
@@ -328,5 +328,5 @@ async function readScanUploadPayload(recordId: string): Promise<ScanUploadPayloa
   const settled = await db.get<{ revision: number }>(
     "SELECT revision FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?", recordId);
   if (Number(settled?.revision) !== Number(correction.revision)) return null;
-  return { ...recognition, cropImages };
+  return { ...recognition, cropImages, cardVersion: correction.cardVersion, correctionRevision: correction.revision };
 }

@@ -850,6 +850,12 @@ async function main(): Promise<void> {
   // PR #373：upload-payload 须带齐持久化切块；题块范围账号不得复用部分页缓存（404），GET /record 仍按块过滤。
   const { cardFingerprint } = await import("../src/shared/cardVersion");
   const scanCardFp = cardFingerprint(scanCard!);
+  const { storeImportUploadPayload } = await import("../src/apps/answer-card/server/import-upload-payload");
+  const importPayloadUrl = await storeImportUploadPayload(scanCardId, scanCardFp, previewFile,
+    { status: "ok", questions: [], subjectiveQuestions: [], studentId: { status: "ok", value: "91001" } });
+  ok((await get(importPayloadUrl, tokenA)).status === 200, "整卷教师可以读取导入上传缓存");
+  ok((await get(importPayloadUrl, tokenB)).status === 403, "范围外教师不能读取导入上传缓存");
+
   const uploadGeom = {
     imageWidth: 100, imageHeight: 100,
     imageToLayout: [1, 0, 0, 0, 1, 0, 0, 0, 1],
@@ -983,6 +989,8 @@ async function main(): Promise<void> {
   const scopedCardsPreview = await get(`/api/cards/${scanCardId}/grading/preview/b1-page.png`, tokenA);
   ok(scopedCardsPreview.status === 403,
     `题块级教师走 cards 路径读整卷原图同样 403（grading-image 的收口不再有绕道，实际 ${scopedCardsPreview.status}）`);
+  ok((await get(importPayloadUrl, tokenA)).status === 403, "题块教师不能读取整卷导入上传缓存");
+  rmSync(`${previewFile}.upload.json`, { force: true });
   rmSync(previewFile, { force: true });
   clearMatrix(teacherA.id);
   const wholePaperResults = await get(`/api/scanner/session/${scanSession}/results`, tokenA);
