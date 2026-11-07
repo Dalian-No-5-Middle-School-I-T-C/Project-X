@@ -70,6 +70,11 @@
 
   8. 第八轮的验证：`verify:release-integrity`（新增本机命名与发布命名两种 `--check` 回归）、`verify:build-info`（ciRef 标签/分支/空白/都缺四种取值）、`scripts/lib/native-source-manifest.cjs` 的覆盖面判据用真实仓库文件跑通（`verify-native-provenance.ts` 本体要完整 git 历史，另在合成 git 副本里整脚本跑绿：两条线 entries=15 / required=15、missing 空；把 ia32 清单删掉一行立刻判红并点名缺 `vision_utils.cpp`）、`package-server-ubuntu.cjs` 改用的同一份库在 LF 副本上真跑出 zip。**MSI 那条扩断言不再是推断**：把 CI 工件 `scanner-ia32-windows`（run 41671951692 的 142.3 MB）下载到本机，用 `msiexec /a` 解包后与按 workflow 工序重建的 stage 集合逐文件比对——41 个文件全在包里（20 个字节全等，21 个只差行尾，因本机是 CRLF 检出而 CI 两侧同为 LF），所以「必绿」是实测结论。仍未验证：真的建出一条 Release；以及 Windows 作业里由脚本自己跑这段核对（本机只独立验了同一判据的输入输出）。
 - **验证**：`typecheck`、`build:web`、`build:scanner:full`、`build:server`（确认 `build-info.json` 落盘）、新增 `verify:build-info` 55/0（归一化、写盘读回、工作区三种状态、部署替换与文件删除后不返回旧值、真实 HTTP 的未登录与教师 403、构建时间与盘上一致、本次启动不随请求抖动、缺失口径、响应不含目录）、新增 `verify:console-build-info-ui` 26/0（挂载真实控制台组件断言渲染结果：有信息时版本/短号/平台/时长/本地日期都在，无信息时显示「—」并给原因，半截字段不漏 `undefined` 字面串，外链带 `rel=noopener`），两者都已接入 `ci.yml`，另新增 `verify:native-provenance`（接在发布作业的扫描端线里，`ci.yml` 不跑它）并在第十二、十三跑实机通过；`verify:release-integrity`、`verify:systemd-hardening` 110/0 通过；LF 检出副本上 `package-server-ubuntu.cjs` 真跑出 zip 并核对包内含 `dist/server/build-info.json`；`@electron/asar` 的分隔符行为用临时归档在本机实测。渲染回归还逮到一个显示缺陷：刚重启 42 秒的服务「已运行」算成「0 分」，看着像没数据，改成说秒。**未验证**：真机安装与扫描验收；本轮不涉及 SQL 与 MariaDB。详见 [发布构建与服务器更新时间](发布构建与服务器更新时间.md)。
+## 2026-11-03：扫描端一直待命
+
+- 工作台在已有扫描批次时增加「继续扫描」，沿用当前扫描仪和分辨率直接开下一批，不必先打开扫描后处理。
+- 扫描设置增加「一直待命」。打开后，一班答题卡扫完会自动再等下一班；把卡放进进纸器就接着扫，点「结束」才停。进纸器空等超时会再开一轮等待，打不开设备或扫到一半失败则停下来让老师处理。各班结果仍汇总在同一张答题卡的扫描后处理页。
+
 ## 2026-11-01：PR #358 上传与备份恢复收尾
 
 - 数据变更锁由异步任务持有，统一等待上传写入、断连清理及异常收尾；后台扫描、AI、定时清理与成绩通知加入维护等待。

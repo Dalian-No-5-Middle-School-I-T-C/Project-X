@@ -23,6 +23,7 @@ import type { ScannerSourcesResult, ScanProgressEvent } from "../../server/scann
 import { ScanPreviewModal } from "./ScanPreviewModal";
 import type { AnswerCard } from "../../../../shared/types";
 import { cardFingerprint } from "../../../../shared/cardVersion";
+import { isStandbyIdleMiss, STANDBY_REARM_MIN_MS } from "../../../../shared/scannerStandby";
 import {
   Badge,
   Button,
@@ -42,6 +43,7 @@ import {
   SelectTrigger,
   SelectValue,
   Spinner,
+  Switch,
   Table,
   TableBody,
   TableCell,
@@ -63,6 +65,8 @@ interface ScannerPanelProps {
   /** 从后处理页点「继续扫描」进入时自动开始下一批；消费后回调避免刷新重复触发。 */
   autoStartScan?: boolean;
   onAutoStartConsumed?: () => void;
+  /** 一直待命被「结束」停下，且已经有扫完的批次时，打开扫描后处理。 */
+  onStandbyEnded?: () => void;
   onClose?: () => void;
 }
 
@@ -101,6 +105,8 @@ type StoredScanSettings = {
   pageTimeoutSec: number;
   showUi: boolean;
   selectedSource: string;
+  /** 一直待命：一班扫完自动再等下一班，直到点「结束」。 */
+  standby?: boolean;
 };
 
 function readStoredScanSettings(): Partial<StoredScanSettings> {
@@ -112,7 +118,7 @@ function readStoredScanSettings(): Partial<StoredScanSettings> {
   }
 }
 
-export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanSessionStarted, onScanSessionAbandoned, autoStartScan, onAutoStartConsumed, onClose }: ScannerPanelProps) {
+export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanSessionStarted, onScanSessionAbandoned, autoStartScan, onAutoStartConsumed, onStandbyEnded, onClose }: ScannerPanelProps) {
   const storedSettings = useRef(readStoredScanSettings()).current;
   const [state, setState] = useState<ScannerState>("idle");
   const [sources, setSources] = useState<string[]>([]);
@@ -129,6 +135,16 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
   // 等纸空闲超时（秒）：0=用 native 默认 60s。厚纸/慢速 ADF 进纸间隔大时需要调高，
   // 否则会出现「扫到一半提前收尾」。历史默认 15s 对 300/600dpi ADF 偏短。
   const [pageTimeoutSec, setPageTimeoutSec] = useState(storedSettings.pageTimeoutSec ?? 0);
+  const [standby, setStandby] = useState(storedSettings.standby === true);
+  const standbyRef = useRef(standby);
+  standbyRef.current = standby;
+  /** 点「结束」后不再自动开下一轮；老师再次点开始/继续扫描时清掉。 */
+  const endStandbyRef = useRef(false);
+  /** 已经正常扫完并交出去的批次数。结束时即使当前这一轮还没出纸，也要能回到后处理。 */
+  const finishedBatchesRef = useRef(0);
+  const rearmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const armStartedAtRef = useRef(0);
+  const onStandbyEndedRef = useRef(onStandbyEnded);
   // 检测诊断（根因/建议/原始输出）：把「未检测到扫描仪」这一类笼统文案拆成可操作结论
   const [sourcesDiag, setSourcesDiag] = useState<ScannerSourcesResult | null>(null);
   const [sessionId, setSessionId] = useState("");
@@ -172,6 +188,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
   useEffect(() => { onBatchArchivedRef.current = onBatchArchived; }, [onBatchArchived]);
   useEffect(() => { onScanSessionStartedRef.current = onScanSessionStarted; }, [onScanSessionStarted]);
   useEffect(() => { onScanSessionAbandonedRef.current = onScanSessionAbandoned; }, [onScanSessionAbandoned]);
+  useEffect(() => { onStandbyEndedRef.current = onStandbyEnded; }, [onStandbyEnded]);
 
   // UI-5: SSE 断开重连状态
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -222,17 +239,17 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
   // 扫描设置跨批次记忆：继续扫描重挂载后仍用上一次的 DPI/色彩/纸型/数据源。
   useEffect(() => {
     try {
-      const settings: StoredScanSettings = { dpi, colorMode, paperSize, maxSheets, pageTimeoutSec, showUi, selectedSource };
+      const settings: StoredScanSettings = { dpi, colorMode, paperSize, maxSheets, pageTimeoutSec, showUi, selectedSource, standby };
       localStorage.setItem(SCAN_SETTINGS_KEY, JSON.stringify(settings));
     } catch { /* 存储不可用不影响本次扫描 */ }
-  }, [dpi, colorMode, paperSize, maxSheets, pageTimeoutSec, showUi, selectedSource]);
+  }, [dpi, colorMode, paperSize, maxSheets, pageTimeoutSec, showUi, selectedSource, standby]);
 
   // 从后处理页点「继续扫描」：面板挂载并读到答题卡设置后自动开下一批。
   useEffect(() => {
     if (!autoStartScan || !cardSettingsReady || !sourcesReady || autoStartedRef.current) return;
     autoStartedRef.current = true;
     onAutoStartConsumed?.();
-    void startScan();
+    armScan();
     // startScan 是组件内函数声明；只允许在进入时消费一次自动开扫标记。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoStartScan, cardSettingsReady, sourcesReady]);
@@ -243,6 +260,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
     return () => {
       eventSourceRef.current?.close();
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (rearmTimerRef.current) clearTimeout(rearmTimerRef.current);
       // 卸载后仍有在途的启动请求：自增尝试号让它在返回时走取消分支，别在新会话上继续开流。
       scanAttemptRef.current += 1;
       // 离开面板（关闭 / 返回工作台 / 切走卡片）不等于放弃这一批：扫描还在跑就先停设备，
@@ -408,7 +426,9 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
         switch (data.type) {
           case "scanning":
             setState("scanning");
-            setProgressMessage(data.message || "正在扫描...");
+            setProgressMessage(standbyRef.current && pagesRef.current.length === 0
+              ? "扫描仪开着。放入答题卡就会开始；这一班扫完后继续等下一班。"
+              : (data.message || "正在扫描..."));
             break;
           case "warning": {
             // 不能并进 progressMessage：紧随其后的 ocr_start 会把它冲掉，老师根本看不到
@@ -454,6 +474,15 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
           case "error":
             completedRef.current = true;
             es.close();
+            // 一直待命时，进纸器空着等到超时不是故障：撤掉这场空会话，隔一小会儿再开一轮等待。
+            if (standbyRef.current && !endStandbyRef.current && isStandbyIdleMiss(data.message, pagesRef.current.length)) {
+              dropEmptyStandbySession();
+              setState("scanning");
+              setScanErrorMessage("");
+              setProgressMessage("进纸器里还没有答题卡。放上去就会开始，也可以点「结束」。");
+              scheduleIdleRearm();
+              break;
+            }
             // 首次订阅或重连可能只收到终态，页面以持久化记录为准。
             partialSessionRef.current = true;
             setState("partial");
@@ -469,6 +498,11 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
           case "done":
             completedRef.current = true;
             es.close();
+            if (standbyRef.current && !endStandbyRef.current) {
+              // 先核对页数再汇总。本地 0 页可能只是重连没补到逐页事件，不能当成空等撤掉。
+              continueStandbyAfterBatch(sid, scanAttemptRef.current);
+              break;
+            }
             setState("done");
             // 通过 ref 读取最新页数，避免闭包捕获扫描开始时的空数组
             onScansComplete?.(sid, pagesRef.current.length);
@@ -559,7 +593,19 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
         }
       }
       const data = await readResults(sid);
-      if (!current()) return;
+      if (!current()) {
+        // 整理这一班时老师可能已经点结束、关闭面板或离开答题卡。界面不再写回，
+        // 但这班成功卷仍要入队；下一轮开扫会清掉上传快照，快照对不上就交给后处理补传。
+        if (!partial && getScannerMode() === "remote" && isRemoteServerConfigured()
+            && sessionUploadRef.current?.sessionId === sid) {
+          const queuedExamId = examFromSnapshot !== undefined
+            ? (typeof examFromSnapshot === "number" ? examFromSnapshot : null)
+            : null;
+          queueSuccessfulUploads(data, sid, queuedExamId);
+          if (queuedExamId != null) scannerUploadManager.assignLocalSessionExamId(sid, queuedExamId);
+        }
+        return;
+      }
       applyResults(data);
       // 姓名联想只服务重复卷。先丢掉上一场的考试，避免新请求慢或失败时仍按旧名册填考号。
       assignSessionExamId(null);
@@ -728,8 +774,108 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
     await reconcileSessionHandoff(sid, pagesRef.current.length);
   }
 
+  /** 空等结束的会话没有页面，不能留在后处理列表里占一个批次。 */
+  function dropEmptyStandbySession() {
+    const sid = sessionIdRef.current;
+    if (!sid || pagesRef.current.length > 0) return;
+    sessionIdRef.current = "";
+    setSessionId("");
+    onScanSessionAbandonedRef.current?.(cardId, sid);
+  }
+
+  function scheduleIdleRearm() {
+    if (rearmTimerRef.current) clearTimeout(rearmTimerRef.current);
+    const attempt = scanAttemptRef.current;
+    const wait = Math.max(0, STANDBY_REARM_MIN_MS - (Date.now() - armStartedAtRef.current));
+    rearmTimerRef.current = setTimeout(() => {
+      rearmTimerRef.current = null;
+      if (attempt !== scanAttemptRef.current || !standbyRef.current || endStandbyRef.current) return;
+      void startScan();
+    }, wait);
+  }
+
+  /**
+   * 本地页数。重连时终态会补发、逐页事件不会，0 不能直接当成没扫到。
+   * 返回 null 表示服务端暂时对不上，调用方要保留占位，不能撤批次。
+   */
+  async function standbyKnownPageCount(sid: string): Promise<number | null> {
+    const local = pagesRef.current.length;
+    if (local > 0) return local;
+    try {
+      const response = await authFetch(`/api/scanner/scan/${encodeURIComponent(sid)}`);
+      if (!response.ok) return null;
+      const data = await response.json() as {
+        session?: { status?: string };
+        records?: unknown;
+        workerActive?: boolean;
+      };
+      if (!Array.isArray(data.records)) return null;
+      if (data.records.length > 0) return data.records.length;
+      if (data.workerActive === true) return null;
+      const status = data.session?.status;
+      if (status === "completed" || status === "error" || status === "cancelled") return 0;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  function continueStandbyAfterBatch(sid: string, attempt: number) {
+    setState("scanning");
+    setProgressMessage("这一班已经扫完，正在整理。整理完会继续等下一班答题卡。");
+    void (async () => {
+      const pages = await standbyKnownPageCount(sid);
+      if (attempt !== scanAttemptRef.current || !standbyRef.current || endStandbyRef.current) return;
+      if (pages === 0) {
+        dropEmptyStandbySession();
+        setProgressMessage("进纸器里还没有答题卡。放上去就会开始，也可以点「结束」。");
+        scheduleIdleRearm();
+        return;
+      }
+      if (pages !== null && pagesRef.current.length === 0) {
+        onBatchArchivedRef.current?.(cardId, sid, pages);
+      }
+      // 先记下这一班，整理上传还没完时老师点「结束」也能回到后处理。
+      if (pages !== null) finishedBatchesRef.current += 1;
+      await fetchCombinedResults(sid);
+      if (attempt !== scanAttemptRef.current || !standbyRef.current || endStandbyRef.current) return;
+      void startScan();
+    })();
+  }
+
+  /** 老师主动开始或继续：清掉「结束」标记，让这一轮再次按一直待命循环。 */
+  function armScan() {
+    endStandbyRef.current = false;
+    void startScan();
+  }
+
+  function requestStandbyEnd() {
+    endStandbyRef.current = true;
+    if (rearmTimerRef.current) {
+      clearTimeout(rearmTimerRef.current);
+      rearmTimerRef.current = null;
+    }
+    const sid = sessionIdRef.current;
+    const pages = pagesRef.current.length;
+    const hadBatches = finishedBatchesRef.current > 0 || pages > 0;
+    // 会话号还没回来时也要作废这一轮。否则「结束」只把界面设回空闲，后面的启动请求仍会打开进纸器。
+    if (!completedRef.current) {
+      cancelScan();
+    } else if (sid && pages > 0) {
+      onBatchArchivedRef.current?.(cardId, sid, pages);
+      setState("idle");
+      setProgressMessage("已结束");
+    } else {
+      // 已完成但本地还是 0 页时，可能正在向服务端核对。结束只停下一轮，不撤这一班。
+      setState("idle");
+      setProgressMessage("已结束");
+    }
+    if (hadBatches) onStandbyEndedRef.current?.();
+  }
+
   async function startScan() {
     const attempt = ++scanAttemptRef.current;
+    armStartedAtRef.current = Date.now();
     handoffCurrentSession();
     // 继续扫描/重开前先断开上一批的 SSE：旧批次在后台跑完时不能再把界面从新批次切走。
     eventSourceRef.current?.close();
@@ -740,6 +886,9 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
     // 留空是合法输入：服务端 sourceName 缺省为 ""，桥接在枚举为空或名称无匹配时
     // 回退 MSG_GETDEFAULT（系统默认数据源）；真失败时由 bridge 返回可诊断的错误。
     setState("scanning");
+    if (standbyRef.current) {
+      setProgressMessage("扫描仪开着。放入答题卡就会开始；这一班扫完后继续等下一班。");
+    }
     setErrorMessage("");
     setScanErrorMessage("");
     partialSessionRef.current = false;
@@ -803,7 +952,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
         const staleSid = data.sessionId;
         // /scan 晚于卸载或取消返回：服务端可能已落页，必须先登记占位再取消并对账。
         onScanSessionStartedRef.current?.(staleSid);
-        void authFetch(`/api/scanner/scan/${encodeURIComponent(staleSid)}/cancel`, { method: "POST" }).catch(() => undefined);
+        cancelScannerSession(staleSid);
         void reconcileSessionHandoff(staleSid, 0);
         return;
       }
@@ -822,6 +971,21 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
     }
   }
 
+  /**
+   * 通知后端终止 scanner-bridge.exe 子进程（只关 SSE 不停设备，ADF 会继续送纸）。
+   * authFetch 只在网络失败时拒绝，401/500 仍是正常 Response；不看 ok 就会在设备还在
+   * 送纸时宣称已取消。老师点「停止 / 结束」和晚到的 /scan 响应两条路径共用这一份提示。
+   */
+  function cancelScannerSession(sid: string) {
+    const notice = "未能确认扫描仪已停止，请检查设备是否还在送纸";
+    void authFetch(`/api/scanner/scan/${encodeURIComponent(sid)}/cancel`, { method: "POST" }).then((response) => {
+      if (!response.ok) notify.error(notice);
+    }, (error: unknown) => {
+      console.error("[scanner] 停止扫描失败", error);
+      notify.error(notice);
+    });
+  }
+
   function cancelScan() {
     scanAttemptRef.current++;
     sessionUploadRef.current = null;
@@ -833,16 +997,11 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
     setState("idle");
     setProgressMessage("扫描已取消");
 
-    // 通知后端终止 scanner-bridge.exe 子进程（不再只是关闭 SSE，否则 ADF 会继续送纸）
+    // 停设备的动作在 `cancelScannerSession` 里（含「取消不成功必须提示」）；这里先撤界面状态，
+    // 再把这一批交给后处理页，顺序不能反：交接要用还没清掉的 sessionIdRef。
     const sid = sessionIdRef.current;
     if (sid) {
-      // authFetch 只在网络失败时拒绝，401/500 仍是正常 Response；不看 ok 就会在设备还在送纸时宣称已取消。
-      void authFetch(`/api/scanner/scan/${sid}/cancel`, { method: "POST" }).then((response) => {
-        if (!response.ok) notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
-      }, (error: unknown) => {
-        console.error("[scanner] 停止扫描失败", error);
-        notify.error("未能确认扫描仪已停止，请检查设备是否还在送纸");
-      });
+      cancelScannerSession(sid);
       handoffCurrentSession();
     }
   }
@@ -856,7 +1015,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
   function continueScan() {
     if (resultsBusyRef.current) return;
     archiveCurrentBatch();
-    void startScan();
+    armScan();
   }
 
   function reset() {
@@ -1094,9 +1253,16 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
               />
             </Field>
             <p className="m-0 text-xs text-muted-foreground">
-              进纸后若超过该时长没有下一张，扫描即视为结束。多张连续扫描时建议不低于 30 秒；
+              进纸后若超过该时长没有下一张，这一班即视为扫完。多张连续扫描时建议不低于 30 秒；
               留 0 使用默认值 60 秒（有效范围 2–120 秒）。
             </p>
+
+            <ControlRow
+              htmlFor="scanner-standby"
+              control={<Switch id="scanner-standby" checked={standby} onCheckedChange={setStandby} />}
+              label="一直待命"
+              description="这一班扫完后继续等下一班。放上答题卡就会接着扫，直到点「结束」。适合按班级分批扫描。"
+            />
 
             <ControlRow
               control={<Checkbox checked={legacyIdentity} onCheckedChange={(c) => setLegacyIdentity(c === true)} />}
@@ -1141,7 +1307,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
               )}
             </div>
 
-            <Button variant="primary" block icon={<Play size={17} />} onClick={startScan}>
+            <Button variant="primary" block icon={<Play size={17} />} onClick={armScan}>
               开始扫描
             </Button>
 
@@ -1189,9 +1355,14 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
             </div>
           )}
 
-          <Button variant="outline" block icon={<Square size={16} />} onClick={cancelScan}>
-            停止扫描
+          <Button variant="outline" block icon={<Square size={16} />} onClick={standby ? requestStandbyEnd : cancelScan}>
+            {standby ? "结束" : "停止扫描"}
           </Button>
+          {standby && (
+            <p className="m-0 text-xs text-muted-foreground">
+              扫描仪会一直等着。这一班扫完后，放上下一班答题卡就会接着扫。点「结束」停止，已扫完的各班可以到扫描后处理里一起核对。
+            </p>
+          )}
         </div>
       )}
 
@@ -1380,6 +1551,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
             </Button>
             <p className="m-0 text-xs text-muted-foreground">
               继续扫描会在同一张答题卡下再扫一批，已扫结果保留在「扫描后处理」，可一起核对和保存。
+              打开「一直待命」后不用每次再点，放上下一班答题卡就会接着扫。
             </p>
           </div>
         </div>
