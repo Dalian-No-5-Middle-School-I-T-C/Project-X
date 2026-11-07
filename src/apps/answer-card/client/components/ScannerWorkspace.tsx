@@ -156,48 +156,18 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
     setIsBusy(true);
     setLastLegacyIdentity(legacyIdentity);
     setGradingJobs([]);
-    // v2.5.1: remote 档位时图片同时后台排队上传（不阻塞判分）
+    // 先完成本机判分并保存识别缓存，再将原图与同一份识别结果交给后台上传。
     let uploadQueued = false;
     let serverUnconfigured = false;
     try {
-      if (getScannerMode() === "remote") {
-        if (isRemoteServerConfigured()) {
-          const card = await fetchJson<AnswerCard>(`/api/cards/${encodeURIComponent(cardId)}`);
-          const pages = mapImportedScanPages(gradingFiles.length, buildLayout(card).pages.length, card.sided);
-          const groups = new Map<string, Array<{ file: File; page: typeof pages[number] }>>();
-          gradingFiles.forEach((file, i) => {
-            const group = groups.get(pages[i].groupId) ?? [];
-            group.push({ file, page: pages[i] });
-            groups.set(pages[i].groupId, group);
-          });
-          const jobs: typeof gradingJobs = [];
-          for (const [groupId, group] of groups) {
-            const id = scannerUploadManager.startUpload({
-              trackResults: true,
-              kind: "import",
-              identityMode: legacyIdentity ? "legacy" : "strict",
-              cardId,
-              // 安全 R35：本机识别用的就是这份卡，上传时把它的版本指纹交给服务器核验
-              cardVersion: cardFingerprint(card),
-              name: `导入_${cardTitle}_第${Number(groupId) + 1}份`,
-              paperSize: card.paper.size,
-              pages: group.map(({ file, page }) => ({
-                ...page,
-                getBlob: () => Promise.resolve(file),
-              })),
-            });
-            for (const { page } of group) jobs.push({ id, pageNum: page.pageNum, side: page.side });
-          }
-          setGradingJobs(jobs);
-          uploadQueued = true;
-        } else {
-          serverUnconfigured = true;
-        }
-      }
+      const prepareUpload = getScannerMode() === "remote" && isRemoteServerConfigured();
+      serverUnconfigured = getScannerMode() === "remote" && !isRemoteServerConfigured();
+      const uploadCard = prepareUpload ? await fetchJson<AnswerCard>(`/api/cards/${encodeURIComponent(cardId)}`) : null;
       setStatus("正在识别答题卡...");
       const form = new FormData();
       form.append("identityMode", legacyIdentity ? "legacy" : "strict");
       form.append("pageOrder", "sequential");
+      if (prepareUpload) form.append("prepareUpload", "1");
       for (const file of gradingFiles) {
         form.append("files", file);
       }
@@ -206,6 +176,31 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
         body: form
       });
       setGradingResult(result);
+      if (uploadCard) {
+        if (result.cardVersion !== cardFingerprint(uploadCard)) throw new Error("识别期间答题卡版本发生变化，请重新导入");
+        const pages = mapImportedScanPages(result.rows.length, buildLayout(uploadCard).pages.length, uploadCard.sided);
+        const groups = new Map<string, Array<{ file: File; page: typeof pages[number]; uploadPayloadUrl?: string }>>();
+        result.rows.forEach((row, index) => {
+          const file = gradingFiles[row.inputIndex ?? index];
+          if (!file) throw new Error("导入图片与识别结果不匹配，请重新导入");
+          const group = groups.get(pages[index].groupId) ?? [];
+          group.push({ file, page: pages[index], uploadPayloadUrl: row.uploadPayloadUrl });
+          groups.set(pages[index].groupId, group);
+        });
+        const jobs: typeof gradingJobs = [];
+        for (const [groupId, group] of groups) {
+          const id = scannerUploadManager.startUpload({
+            trackResults: true, kind: "import", identityMode: legacyIdentity ? "legacy" : "strict",
+            cardId, cardVersion: result.cardVersion, name: `导入_${cardTitle}_第${Number(groupId) + 1}份`,
+            paperSize: uploadCard.paper.size,
+            pages: group.map(({ file, page, uploadPayloadUrl }) => ({ ...page, uploadPayloadUrl, getBlob: async () => file })),
+          });
+          for (const { page } of group) jobs.push({ id, pageNum: page.pageNum, side: page.side });
+        }
+        setGradingJobs(jobs);
+        uploadQueued = true;
+      }
+
       const reviewCount = result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0);
       setStatus(
         `阅卷完成：${result.rows.length} 张，${reviewCount} 题待复核${uploadQueued ? "；图片已后台排队上传到服务器" : ""}${serverUnconfigured ? "；未配置服务器地址，本次仅本地判分" : ""}`,

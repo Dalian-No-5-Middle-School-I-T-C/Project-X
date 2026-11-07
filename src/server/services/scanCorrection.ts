@@ -37,11 +37,11 @@ export async function storeCorrectionPage(card: AnswerCard, sourceType: Correcti
     sourceType, String(sourceId), cardFingerprint(card), JSON.stringify(layout), JSON.stringify(safe), Date.now());
 }
 export async function loadCorrectionPage(sourceType: CorrectionPage["sourceType"], sourceId: string, imageUrl: string, db = getMysqlDb()): Promise<CorrectionPage | null> {
-  const row = await db.get<{ layout_json: string; recognition_json: string; revision: number }>(
-    "SELECT layout_json,recognition_json,revision FROM scan_correction_pages WHERE source_type=? AND source_id=?",sourceType,sourceId);
+  const row = await db.get<{ layout_json: string; recognition_json: string; revision: number; card_version: string | null }>(
+    "SELECT layout_json,recognition_json,revision,card_version FROM scan_correction_pages WHERE source_type=? AND source_id=?",sourceType,sourceId);
   if (!row) return null;
   const layout = JSON.parse(row.layout_json), recognition = JSON.parse(row.recognition_json);
-  return { sourceType, sourceId, revision: Number(row.revision), layout, recognition, ...recognizedCells(layout, recognition), imageUrl };
+  return { sourceType, sourceId, revision: Number(row.revision), cardVersion: row.card_version ?? null, layout, recognition, ...recognizedCells(layout, recognition), imageUrl };
 }
 export async function sessionCorrection(card: AnswerCard, sessionId: string, groupId: string, remote: boolean, allowRecovery = remote): Promise<CorrectionDocument> {
   return loadSessionCorrection(card, sessionId, groupId, remote, allowRecovery);
@@ -54,7 +54,12 @@ async function loadSessionCorrection(card: AnswerCard, sessionId: string, groupI
   const session = await getMysqlDb().get<{card_version:string|null;version_source:string}>("SELECT card_version,version_source FROM twain_scan_sessions WHERE id=?",sessionId);
   if (!session) throw new Error("扫描会话不存在");
   if (session.card_version && session.card_version !== cardFingerprint(card)) throw new Error("答题卡版本已变化，请核对原卷版本后重新扫描");
-  const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
+  const groupIndex = Number(groupId);
+  if (!Number.isSafeInteger(groupIndex) || groupIndex < 0 || String(groupIndex) !== groupId) throw new Error("答题卡分组不存在");
+  const sheetsPerGroup = Math.ceil(buildLayout(card).pages.length / (card.sided === "double" ? 2 : 1));
+  const records = (await listScanRecordsGroupedByStudent(sessionId, {
+    first: groupIndex * sheetsPerGroup + 1, last: (groupIndex + 1) * sheetsPerGroup,
+  })).flatMap(g => g.records);
   const group = groupSessionPages(card, records).groups.get(groupId);
   if (!group) throw new Error("答题卡分组不存在");
   if (receipt) {

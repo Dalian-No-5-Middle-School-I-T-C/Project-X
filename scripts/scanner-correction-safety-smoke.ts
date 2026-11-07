@@ -90,5 +90,34 @@ try {
   assert.equal(Number(snapshot.questions[0].manually_modified), 1);
   assert.equal((await db.get<{exam_id:number|null}>("SELECT exam_id FROM answer_block_crops WHERE id='original-crop'"))!.exam_id, null);
   assert.equal(Number((await db.get<{score_published:number}>("SELECT score_published FROM exams WHERE id=?",exam.id))!.score_published), autoUnpublish ? 0 : 1);
-  console.log(`PASS scanner correction safety: ${db.dialect}, eight invalid structures preserve saved manual grades/publication; valid published duplicates withdraw both copies and retain manual snapshots`);
+  // 批内预览（上传界面轮询用的那条只读路径）在 SQLite 上必须排在扫描提交链之后。
+  // 链外读会撞见别人 BEGIN..COMMIT 之间尚未提交、甚至随后回滚的行，把「这一批已保存」
+  // 当成既成事实，顺手解开「上传中不许改分」的闸。这里用一把占住链首的闸锁钉住这个顺序；
+  // MariaDB 走连接池、读不到未提交数据，因此留在链外并发读（那才是本轮要保住的收益）。
+  {
+    const { enqueueScannerSubmission, previewScannerUploadSession } = await import("../src/server/services/scannerSubmissions");
+    const quiet = await store.createSession(card.id, "preview-order-gate");
+    let releaseGate!: () => void;
+    const gate = new Promise<void>(resolve => { releaseGate = resolve; });
+    const held = enqueueScannerSubmission(() => gate);
+    const startedAt = Date.now();
+    let waitedMs: number | null = null;
+    const previewDone = previewScannerUploadSession(card, quiet.id).then(() => { waitedMs = Date.now() - startedAt; });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    const blocked = waitedMs === null;
+    releaseGate();
+    await held;
+    await previewDone;
+    if (db.dialect === "sqlite") {
+      // SQLite：链上还压着未完成的写时，这条读必须排队等着，不能插进别人 BEGIN..COMMIT 中间
+      // 读到未提交（甚至随后回滚）的行。两个方向都钉：不排队会当场红，排队排过头也不会误红。
+      assert.ok(blocked, "链上还压着未完成的写时，批内预览不能先读");
+      assert.ok((waitedMs ?? 0) >= 50, `SQLite 下批内预览要等提交链排空（实测 ${waitedMs}ms）`);
+    } else {
+      // MariaDB：留在链外并发读是这次改动要保住的收益（连接池里别的连接只看得到已提交快照）。
+      // 这里只记录实测值不做时序断言——CI 机器负载能把「没排队」拖成 60ms 以上，那是 flakes 不是缺陷。
+      console.log(`  · MariaDB 批内预览未排队（链上有写时 ${blocked ? "仍在等，请复查" : "并发读完成"}，实测 ${waitedMs}ms）`);
+    }
+  }
+  console.log(`PASS scanner correction safety: ${db.dialect}, eight invalid structures preserve saved manual grades/publication; valid published duplicates withdraw both copies and retain manual snapshots; 批内预览按方言取值`);
 } finally { await fixture.close(); }

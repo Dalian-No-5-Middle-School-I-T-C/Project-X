@@ -1,3 +1,5 @@
+import { cardFingerprint } from "../../../shared/cardVersion";
+import { readImportUploadPayload, storeImportUploadPayload } from "./import-upload-payload";
 import { runServiceTask } from "../../../server/lib/serviceTasks";
 import { loadRestoreRecoveryState } from "../../../server/lib/restoreRecovery";
 import { isServiceMaintenanceActive } from "../../../server/lib/serviceTasks";
@@ -1584,6 +1586,10 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "答题卡不存在" });
         return;
       }
+      if (req.body.cardVersion && req.body.cardVersion !== cardFingerprint(card)) {
+        res.status(409).json({ message: "答题卡版本已变化，请重新识别后上传" });
+        return;
+      }
       if (!req.file) {
         res.status(400).json({ message: "没有收到答题卡图片" });
         return;
@@ -1619,6 +1625,8 @@ export async function createApp(): Promise<express.Express> {
       }
     } catch (error) {
       next(error);
+    } finally {
+      if (req.file?.path) await rm(req.file.path, { force: true }).catch(err => console.warn("[Recognition] upload temp cleanup failed", err));
     }
   });
 
@@ -1868,8 +1876,12 @@ export async function createApp(): Promise<express.Express> {
             cropsDir
           })) as CombinedRecognitionResult;
           recognition.subjectiveQuestions = recognition.subjectiveQuestions ?? [];
+          const uploadPayloadUrl = boolField(req.body.prepareUpload)
+            ? await storeImportUploadPayload(cardId, cardFingerprint(card), file.path, recognition) : undefined;
           return {
             ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition, confidenceThreshold),
+            inputIndex: files.indexOf(file),
+            uploadPayloadUrl,
             previewUrl: gradingPreviewUrl(cardId, file.path),
             actualPath: file.path
           };
@@ -1884,6 +1896,7 @@ export async function createApp(): Promise<express.Express> {
           };
           return {
             ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition, confidenceThreshold),
+            inputIndex: files.indexOf(file),
             previewUrl: gradingPreviewUrl(cardId, file.path),
             actualPath: file.path
           };
@@ -1907,6 +1920,7 @@ export async function createApp(): Promise<express.Express> {
       const result: CombinedGradingBatchResult = {
         batchId: `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         cardId,
+        cardVersion: cardFingerprint(card),
         rows,
         ...(persistence ? { persistence } : {})
       };
@@ -1924,6 +1938,18 @@ export async function createApp(): Promise<express.Express> {
       }
       next(error);
     }
+  });
+
+  app.get("/api/cards/:cardId/grading/upload-payload/:fileName", async (req, res, next) => {
+    try {
+      const cardId = safeId(paramValue(req.params.cardId));
+      if (!await enforceScannerCardScope(req, res, cardId, { wholePaperRead: true })) return;
+      const card = await cardRepo.findById(cardId);
+      const payload = card && await readImportUploadPayload(cardId, paramValue(req.params.fileName), cardFingerprint(card));
+      res.setHeader("Cache-Control", "no-store");
+      if (!payload) { res.status(404).json({ message: "导入识别缓存已失效" }); return; }
+      res.json(payload);
+    } catch (error) { next(error); }
   });
 
   app.get("/api/cards/:cardId/grading/preview/:fileName", async (req, res, next) => {

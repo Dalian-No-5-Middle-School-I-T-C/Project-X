@@ -1,5 +1,5 @@
 import { scanCorrectionRouter } from "./scan-correction";
-import { loadCorrectionPage, storeCorrectionPage } from "../services/scanCorrection";
+import { storeCorrectionPage } from "../services/scanCorrection";
 import { gradeCombinedRecognition, gradeSessionStudentResults } from "../../shared/grading";
 /**
  * v1.6.0 — 扫描上传端点
@@ -29,8 +29,8 @@ import {
 } from "../../shared/scanUploadLimits";
 import { requestUploadBudget } from "../lib/uploadBudget";
 import path from "node:path";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { existsSync, mkdirSync } from "node:fs";
+import { rm, writeFile } from "node:fs/promises";
 import crypto from "node:crypto";
 import { dualAuth } from "../middleware/scanner-auth";
 import { hasViewPermission } from "../../apps/answer-card/server/middleware";
@@ -38,15 +38,14 @@ import { requireScannerExamScope, requireScannerRecordScope, enforceScannerCardS
 import { resolveScannerExam } from "../services/scannerExam";
 import { getMysqlDb } from "../db";
 import { persistAnswerBlockCrops, isInsideDir, type CropPersistenceStats } from "../services/AnswerBlockCropService";
-import { isValidImageBuffer } from "../../apps/answer-card/server/validate-upload";
-import type { RecognitionBlockCrop } from "../../shared/types";
+import { isValidImageBuffer, safeImageExtension } from "../../apps/answer-card/server/validate-upload";
+import type { CombinedRecognitionResult, RecognitionBlockCrop } from "../../shared/types";
 import { z } from "zod";
 import { assertScanImageDimensions, ScanImageBudgetError } from "../lib/scanImageBudget";
 import { CardRepository } from "../repositories/CardRepository";
 import { ExamRepository } from "../repositories/ExamRepository";
 import { ensureExamParticipants, listMissingParticipants, searchExamParticipantRoster } from "../services/examParticipants";
-import { recomputeExamRankings } from "../services/rankingUpdate";
-import { processScannerSession, enqueueScannerSubmission, writeScannerSession, invalidateScanRecognition, invalidateScanRecognitionInTransaction, savedReceiptOwnerOfPage, discardScannerGroup } from "../services/scannerSubmissions";
+import { processScannerSession, processScannerSessionInQueue, runScannerCommittedRead, enqueueScannerSubmission, writeScannerSession, invalidateScanRecognition, invalidateScanRecognitionInTransaction, savedReceiptOwnerOfPage, discardScannerGroup } from "../services/scannerSubmissions";
 import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
 import { groupSessionPages } from "../../apps/answer-card/server/scanner/session-results";
 import { scannerLegacyRecoveryRouter } from "./scanner-legacy-recovery";
@@ -293,6 +292,8 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
 
 // ── POST /api/scanner/sessions/:sessionId/pages ─────────
 router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload.single("image"), async (req: Request, res: Response) => {
+  let stagedImage: string | undefined;
+  let committedImage = false;
   try {
     const { sessionId } = req.params;
     const token = (req.body?.token ?? req.query?.token) as string;
@@ -320,6 +321,20 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
     }
 
     const image = req.file;
+    try { await assertScanImageDimensions(image.buffer); }
+    catch (error) {
+      res.status(error instanceof ScanImageBudgetError ? error.status : 400).json({
+        code: error instanceof ScanImageBudgetError ? error.code : "SCAN_IMAGE_INVALID",
+        message: error instanceof ScanImageBudgetError ? error.message : "扫描图片尺寸无法读取，请检查图片格式",
+      });
+      return;
+    }
+    const ext = safeImageExtension(image.originalname);
+    const fileName = `${path.basename(String(sessionId))}_${crypto.randomUUID()}${ext}`;
+    stagedImage = path.join(scannerUploadDir(), fileName);
+    // Write an immutable candidate before holding the exam transaction. A rejected
+    // or rolled-back upload removes it without replacing the previous original.
+    await writeFile(stagedImage, image.buffer);
     const uploaded = await writeScannerSession(String(sessionId), async db => {
 
       // 验证 session
@@ -329,8 +344,8 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
         res.status(404).json({ message: "会话不存在" });
         return;
       }
-      const record = await db.get<{ ocr_status: string }>(
-        "SELECT id, ocr_status FROM twain_scan_records WHERE id = ? AND session_id = ?", token, sessionId);
+      const record = await db.get<{ ocr_status: string; image_path: string }>(
+        "SELECT id, ocr_status, image_path FROM twain_scan_records WHERE id = ? AND session_id = ?", token, sessionId);
       if (!record) { res.status(400).json({ message: "扫描页不属于当前会话" }); return; }
       // 安全（R02）：会话完成（或该页已入库）后，令牌即失效。
       // 此前令牌在 ocr_status='completed' 后仍然可用，任何持有旧令牌者都能覆盖已判分页面
@@ -351,14 +366,6 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
         res.status(409).json({
           message: "该扫描页的成绩已入库或原卷已撤销，不能由上传直接改写",
           code: savedOwner.state === "discarded" ? "SCAN_PAGE_DISCARDED" : "SCAN_PAGE_SAVED", examId: savedOwner.exam_id,
-        });
-        return;
-      }
-      try { await assertScanImageDimensions(image.buffer); }
-      catch (error) {
-        res.status(error instanceof ScanImageBudgetError ? error.status : 400).json({
-          code: error instanceof ScanImageBudgetError ? error.code : "SCAN_IMAGE_INVALID",
-          message: error instanceof ScanImageBudgetError ? error.message : "扫描图片尺寸无法读取，请检查图片格式",
         });
         return;
       }
@@ -384,13 +391,8 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
         res.status(409).json({ message: "页面未通过二维码身份校验，请在 Windows 扫描端重新识别" }); return;
       }
 
-      // 保存图片（对扩展名做白名单，session id 用 basename 兜底，避免路径遍历）
-      const rawExt = path.extname(image.originalname).toLowerCase();
-      const ext = [".jpg", ".jpeg", ".png", ".webp", ".bmp"].includes(rawExt) ? rawExt : ".jpg";
-      const safeSessionId = path.basename(String(sessionId));
-      const fileName = `${safeSessionId}_p${String(pageNum).padStart(2, "0")}_${side}${ext}`;
-      const filePath = path.join(scannerUploadDir(), fileName);
-      writeFileSync(filePath, image.buffer);
+      // The immutable file is ready; publish its path only inside this transaction.
+      const filePath = stagedImage!;
 
       // 更新记录
       if (token) {
@@ -411,13 +413,31 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
           recognition.studentId.value, token, sessionId);
       }
 
-      return { ok: true, pageNum, side, fileName };
+      return { ok: true, pageNum, side, fileName, previousImage: record.image_path };
     });
-    if (uploaded) res.json(uploaded);
+    if (uploaded) {
+      committedImage = true;
+      const { previousImage, ...body } = uploaded;
+      // Older versions reused paths for a physical sheet; retain any file another
+      // record still references. New uploads each own an immutable file.
+      if (previousImage && isInsideDir(path.resolve(scannerUploadDir()), path.resolve(previousImage))) {
+        try {
+          // SQLite shares a connection: a concurrent, later-rolled-back upload
+          // must not hide another record's reference while we remove the file.
+          await enqueueScannerSubmission(async () => {
+            const referenced = await getMysqlDb().get("SELECT id FROM twain_scan_records WHERE image_path = ? LIMIT 1", previousImage);
+            if (!referenced) await rm(previousImage, { force: true });
+          });
+        } catch (error) { console.warn("[scanner-upload] previous image cleanup failed", error); }
+      }
+      res.json(body);
+    }
   } catch (err: any) {
     // 安全审计（F-12-1）：不向客户端回传内部错误原文，仅写服务端日志
     console.error("[scanner-upload] 请求处理失败:", err);
     res.status(500).json({ message: "请求处理失败，请查看服务器日志" });
+  } finally {
+    if (stagedImage && !committedImage) await rm(stagedImage, { force: true }).catch(error => console.warn("[scanner-upload] image cleanup failed", error));
   }
 });
 
@@ -490,7 +510,7 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, cropUploadBu
           const targetPath = path.join(tempDir, `${index}_${path.basename(file.originalname || "crop.png")}`);
           // 安全（R07）：写入前再确认一次路径仍在本次请求的临时目录内
           if (!insideDir(tempDir, targetPath)) continue;
-          writeFileSync(targetPath, file.buffer);
+          await writeFile(targetPath, file.buffer);
           // 只采用校验过的字段；客户端上报的 path 与其它额外字段一律丢弃
           crops.push({
             blockId: crop.blockId,
@@ -587,28 +607,42 @@ router.get("/sessions/:sessionId/results", dualAuth, async (req, res, next) => {
     const session = await getMysqlDb().get<{ card_id: string }>("SELECT card_id FROM twain_scan_sessions WHERE id = ?", req.params.sessionId);
     const card = session && await new CardRepository().findById(session.card_id);
     if (!card) { res.status(404).json({ message: "扫描会话或答题卡不存在" }); return; }
-    const batch = await processScannerSession(card, String(req.params.sessionId));
-    // Teacher edits live in correction snapshots, while upload receipts retain
-    // the original recognition. Read the current marks without resaving grades.
-    for (const result of batch.results) {
-      const currentPages = await Promise.all(result.pages.map(async page => {
-        const correction = await loadCorrectionPage("twain_scan_record", page.recordId, "");
-        const recognition = correction ? { ...correction.recognition, studentId: { status: "ok", value: result.studentId } }
-          : page.grading?.recognition;
-        if (!recognition) return null;
-        const grading = gradeCombinedRecognition(card, page.recordId, recognition);
-        Object.assign(page, { grading, objectiveScore: grading.objectiveScore, subjectiveScore: grading.subjectiveScore,
-          totalScore: grading.totalScore, totalMaxScore: grading.totalMaxScore });
-        return { ...page, imagePath: page.recordId, ocrStatus: "completed", recognition };
-      }));
-      if (currentPages.every(page => page !== null)) {
-        const combined = gradeSessionStudentResults(card, currentPages);
-        Object.assign(result, { totalScore: combined.totalScore, maxScore: combined.totalMaxScore,
-          objectiveScore: combined.objectiveScore, subjectiveScore: combined.subjectiveScore,
-          objectiveMaxScore: combined.objectiveMaxScore, subjectiveMaxScore: combined.subjectiveMaxScore,
-          needsReviewCount: combined.needsReviewCount });
+    const batch = await runScannerCommittedRead(async () => {
+      const batch = await processScannerSessionInQueue(card, String(req.params.sessionId), "preview");
+      const recordIds = [...new Set(batch.results.flatMap(result => result.pages.map(page => page.recordId)))];
+      const current = new Map<string, string>();
+      // Bind identifiers instead of joining text columns: existing MariaDB
+      // installations can have different collations in these two tables.
+      for (let start = 0; start < recordIds.length; start += 100) {
+        const chunk = recordIds.slice(start, start + 100);
+        const snapshots = await getMysqlDb().all<{ source_id: string; recognition_json: string }>(
+          `SELECT source_id, recognition_json FROM scan_correction_pages
+           WHERE source_type = 'twain_scan_record' AND source_id IN (${chunk.map(() => "?").join(",")})`, ...chunk);
+        for (const row of snapshots) current.set(row.source_id, row.recognition_json);
       }
-    }
+      // Teacher edits live in correction snapshots, while upload receipts retain
+      // the original recognition. Read the current marks without resaving grades.
+      for (const result of batch.results) {
+        const currentPages = result.pages.map(page => {
+          const raw = current.get(page.recordId);
+          const recognition = raw ? { ...JSON.parse(raw) as CombinedRecognitionResult, studentId: { status: "ok", value: result.studentId } }
+            : page.grading?.recognition;
+          if (!recognition) return null;
+          const grading = gradeCombinedRecognition(card, page.recordId, recognition);
+          Object.assign(page, { grading, objectiveScore: grading.objectiveScore, subjectiveScore: grading.subjectiveScore,
+            totalScore: grading.totalScore, totalMaxScore: grading.totalMaxScore });
+          return { ...page, imagePath: page.recordId, ocrStatus: "completed", recognition };
+        });
+        if (currentPages.every(page => page !== null)) {
+          const combined = gradeSessionStudentResults(card, currentPages);
+          Object.assign(result, { totalScore: combined.totalScore, maxScore: combined.totalMaxScore,
+            objectiveScore: combined.objectiveScore, subjectiveScore: combined.subjectiveScore,
+            objectiveMaxScore: combined.objectiveMaxScore, subjectiveMaxScore: combined.subjectiveMaxScore,
+            needsReviewCount: combined.needsReviewCount });
+        }
+      }
+      return batch;
+    });
     res.json(batch);
   } catch (error) { next(error); }
 });
@@ -740,7 +774,6 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
       const { exam: savedExam } = await resolveScannerExam(session.card_id, String(sessionId));
       const linkedExams = savedExam?.status === "grading" ? [savedExam] : [];
       for (const exam of linkedExams) {
-        await recomputeExamRankings(db, exam.id);
         const roster = await ensureExamParticipants(db, exam.id);
         if (roster.rosterKnown && roster.participantCount > 0 && (await listMissingParticipants(db, exam.id)).length === 0) {
           await new ExamRepository(db).updateStatus(exam.id, "closed");
