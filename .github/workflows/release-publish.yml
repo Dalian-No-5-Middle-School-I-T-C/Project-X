@@ -2,19 +2,27 @@ name: Publish release
 
 # 在仓库 Actions 里手动发版，形状对齐 Rhine 的 Publish Versioned Release：
 # 先核对版本与主干，再调用 release-build.yml 出包，最后建 GitHub Release。
-# 工作流自己打标签，不要求事先 git push tag；已有同名标签或 Release 直接拒绝，避免覆盖。
+# 工作流自己打标签，不要求事先 git push tag。同名标签只在解析到本次提交时沿用；
+# 同名 Release 只在「仍未公开、且带本工作流标记」时清理后重传，已公开的 Release 不覆盖。
+#
+# 共用查询函数在 scripts/lib/release-helpers.sh：标签按 refs/tags 精确解析，
+# Release 走列表接口（releases/tags 端点只返回已发布的 Release，查不到草稿）。
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 发布标签（v主.次.修订，须与 package.json 一致，且仓库里还没有这个标签）
+        description: 发布标签（v主.次.修订，须与 package.json 一致；同名标签需指向本次提交）
         required: true
         type: string
 
 permissions:
   actions: read
   contents: write
+
+env:
+  # 与 ci.yml 一致：CVE-2026-111497 从 22.23.4 起修复，不要用浮动的 22。
+  NODE_VERSION: "22.23.4"
 
 concurrency:
   group: release-publish-${{ inputs.tag }}
@@ -28,20 +36,28 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read package.json version
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Read package.json version and check preconditions
         id: version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          source scripts/lib/release-helpers.sh
           version="$(node -e 'process.stdout.write(require("./package.json").version)')"
           tag="$RELEASE_TAG"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
           expected="v$version"
           if [ "$tag" != "$expected" ]; then
             echo "::error title=版本对不上::要发布的标签是 $tag，package.json 是 $expected。先改版本号再发，工作流不替你改。"
@@ -52,20 +68,33 @@ jobs:
             exit 1
           fi
           # 发出去的必须是主干当前提交。behind 表示更早的提交，放行就会把旧源码发成最新版。
-          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${GITHUB_SHA}" --jq '.status')"
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${RELEASE_SHA}" --jq '.status')"
           if [ "$status" != "identical" ]; then
-            echo "::error title=不是 main 的当前提交::本次运行的 ${GITHUB_SHA} 与 main 的关系是 $status。请在 main 上运行 Publish release。"
+            echo "::error title=不是 main 的当前提交::本次运行的 ${RELEASE_SHA} 与 main 的关系是 $status。请在 main 上运行 Publish release。"
             exit 1
           fi
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::error title=$tag 已经发布过::换版本号。不覆盖已有 Release。"
+
+          tag_commit="$(resolve_tag_commit "$tag")"
+          if [ -n "$tag_commit" ] && [ "$tag_commit" != "$RELEASE_SHA" ]; then
+            echo "::error title=标签已指向其它提交::$tag 现在指向 $tag_commit，本次要发布的是 $RELEASE_SHA。升版本号后再发，不覆盖已有标签。"
             exit 1
           fi
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "::error title=标签已存在::$tag 已经在仓库里。升版本后再发，不复用旧标签。"
-            exit 1
+
+          release_json="$(find_release_json "$tag")"
+          if [ -n "$release_json" ]; then
+            draft="$(release_field "$release_json" draft)"
+            body="$(release_field "$release_json" body)"
+            if [ "$draft" != "true" ]; then
+              echo "::error title=$tag 已经发布过::换版本号。不覆盖已有 Release。"
+              exit 1
+            fi
+            if [[ "$body" != *"$RELEASE_MARKER"* ]]; then
+              echo "::error title=同名草稿不是这条发布链创建的::$tag 已有一份草稿，正文缺少本工作流标记。请人工确认后再处理。"
+              exit 1
+            fi
+            echo "发现上次未完成的草稿，构建完成后会先清理再重传"
           fi
-          echo "将在 main 的 ${GITHUB_SHA} 上发布 $tag"
+          echo "将在 main 的 ${RELEASE_SHA} 上发布 $tag"
 
   build:
     name: Build packages
@@ -83,8 +112,16 @@ jobs:
     needs: [prepare, build]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -118,8 +155,8 @@ jobs:
               echo "::error title=$lane 没交出安装包::工件目录在，但里面没有 msi / zip。"
               exit 1
             fi
-            sums="$(find "$dir" -type f -name SHA256SUMS.txt | head -1)"
-            integrity="$(find "$dir" -type f -name BUILD-INTEGRITY.txt | head -1)"
+            sums="$(find "$dir" -type f -name SHA256SUMS.txt -print -quit)"
+            integrity="$(find "$dir" -type f -name BUILD-INTEGRITY.txt -print -quit)"
             if [ -z "$sums" ] || [ -z "$integrity" ]; then
               echo "::error title=$lane 缺验证材料::$( [ -z "$sums" ] && echo 'SHA256SUMS.txt ' )$( [ -z "$integrity" ] && echo 'BUILD-INTEGRITY.txt' )。"
               exit 1
@@ -159,9 +196,12 @@ jobs:
       - name: Write release notes
         run: |
           set -euo pipefail
+          source scripts/lib/release-helpers.sh
           version="${{ needs.prepare.outputs.version }}"
-          commit="$(git rev-parse --short HEAD)"
+          commit="${RELEASE_SHA:0:7}"
           {
+            echo "$RELEASE_MARKER"
+            echo
             echo "## Project-X v${version}"
             echo
             echo "- 构建提交：\`${commit}\`"
@@ -207,14 +247,140 @@ jobs:
           } > notes.md
           cat notes.md
 
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Revalidate main and create the tag atomically
         run: |
           set -euo pipefail
-          gh release create "${{ needs.prepare.outputs.tag }}" \
+          source scripts/lib/release-helpers.sh
+          # 构建期间 main 可能前移，或同名标签被别的路径建到另一个提交；发布前重查一次。
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${RELEASE_SHA}" --jq '.status')"
+          if [ "$status" != "identical" ]; then
+            echo "::error title=构建期间 main 已前移::本次构建的是 ${RELEASE_SHA}，main 与它的关系现在是 $status。产物不能发布，请重新运行。"
+            exit 1
+          fi
+          tag_commit="$(resolve_tag_commit "$RELEASE_TAG")"
+          if [ -n "$tag_commit" ]; then
+            if [ "$tag_commit" != "$RELEASE_SHA" ]; then
+              echo "::error title=标签被其它提交占用::$RELEASE_TAG 现在指向 $tag_commit，本次要发布的是 $RELEASE_SHA，终止发布。"
+              exit 1
+            fi
+            echo "标签已存在且指向本次提交，沿用"
+          else
+            if ! gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${RELEASE_TAG}" -f sha="$RELEASE_SHA" >/dev/null; then
+              # 并发窗口：创建冲突时重查一次，只有仍指向本次提交才继续。
+              created="$(resolve_tag_commit "$RELEASE_TAG")"
+              if [ -n "$created" ] && [ "$created" = "$RELEASE_SHA" ]; then
+                echo "标签在本次发布期间由另一路径创建，且指向本次提交，沿用"
+              else
+                echo "::error title=标签创建失败::$RELEASE_TAG 未能指向 ${RELEASE_SHA}，发布终止。"
+                exit 1
+              fi
+            else
+              echo "$RELEASE_TAG" > "$RUNNER_TEMP/projectx-release-tag-created"
+              echo "已在 ${RELEASE_SHA} 创建标签 $RELEASE_TAG"
+            fi
+          fi
+
+      - name: Create draft release and upload assets
+        run: |
+          set -euo pipefail
+          source scripts/lib/release-helpers.sh
+          echo "$RELEASE_TAG" > "$RUNNER_TEMP/projectx-release-attempted"
+          release_json="$(find_release_json "$RELEASE_TAG")"
+          if [ -n "$release_json" ]; then
+            draft="$(release_field "$release_json" draft)"
+            body="$(release_field "$release_json" body)"
+            if [ "$draft" != "true" ]; then
+              echo "::error title=$RELEASE_TAG 已经发布::不覆盖已有 Release。"
+              exit 1
+            fi
+            if [[ "$body" != *"$RELEASE_MARKER"* ]]; then
+              echo "::error title=同名草稿不是这条发布链创建的::$RELEASE_TAG 已有一份草稿，正文缺少本工作流标记。请人工确认后再处理。"
+              exit 1
+            fi
+            tag_commit="$(resolve_tag_commit "$RELEASE_TAG")"
+            if [ "$tag_commit" != "$RELEASE_SHA" ]; then
+              echo "::error title=标签已变化::$RELEASE_TAG 现在指向 $tag_commit，本次发布的是 $RELEASE_SHA，保留草稿不删除。"
+              exit 1
+            fi
+            if ! gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes; then
+              echo "::error title=清理旧草稿失败::${RELEASE_TAG} 的旧草稿未删除，本次不继续上传。"
+              exit 1
+            fi
+            echo "已清理上次未完成的草稿，重新上传"
+          fi
+          gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
+            --verify-tag \
+            --draft \
+            --target "$RELEASE_SHA" \
             --title "Project-X v${{ needs.prepare.outputs.version }}" \
             --notes-file notes.md \
             out/*
+
+      - name: Verify the target again and publish
+        run: |
+          set -euo pipefail
+          source scripts/lib/release-helpers.sh
+          # 上传资产期间 main 或标签仍可能变化；公开前再核对一次，不符就不公开。
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${RELEASE_SHA}" --jq '.status')"
+          if [ "$status" != "identical" ]; then
+            echo "::error title=发布前 main 已前移::本次发布的是 ${RELEASE_SHA}，main 与它的关系现在是 $status。Release 不会公开，失败清理会删除本次创建的草稿与标签。"
+            exit 1
+          fi
+          tag_commit="$(resolve_tag_commit "$RELEASE_TAG")"
+          if [ "$tag_commit" != "$RELEASE_SHA" ]; then
+            echo "::error title=发布前标签已变化::$RELEASE_TAG 现在指向 $tag_commit，本次发布的是 $RELEASE_SHA。Release 不会公开，失败清理会保留已经变化的标签。"
+            exit 1
+          fi
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          echo "已发布 $RELEASE_TAG"
+
+      - name: Clean up this run's incomplete release on failure or cancellation
+        if: cancelled() || failure()
+        run: |
+          set -uo pipefail
+          source scripts/lib/release-helpers.sh
+          preserve_tag=false
+          if [ -f "$RUNNER_TEMP/projectx-release-attempted" ]; then
+            release_error="$(mktemp)"
+            if ! release_json="$(find_release_json "$RELEASE_TAG" 2>"$release_error")"; then
+              preserve_tag=true
+              echo "::warning title=清理时查询 Release 失败::保留标签与现场供人工核对。"
+              cat "$release_error"
+            elif [ -n "$release_json" ]; then
+              draft="$(release_field "$release_json" draft)"
+              body="$(release_field "$release_json" body)"
+              tag_error="$(mktemp)"
+              if ! tag_commit="$(resolve_tag_commit "$RELEASE_TAG" 2>"$tag_error")"; then
+                preserve_tag=true
+                echo "::warning title=清理时查询标签失败::保留标签与现场供人工核对。"
+                cat "$tag_error"
+              elif [ "$draft" = "true" ] && [ "$tag_commit" = "$RELEASE_SHA" ] && [[ "$body" == *"$RELEASE_MARKER"* ]]; then
+                if gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes; then
+                  echo "已删除本次失败留下的草稿"
+                else
+                  preserve_tag=true
+                  echo "::warning title=删除草稿失败::保留标签与草稿供人工核对。"
+                fi
+              else
+                preserve_tag=true
+                echo "同名 Release 已不是本次运行的草稿，保留草稿与标签不动"
+              fi
+            fi
+          fi
+          if [ -f "$RUNNER_TEMP/projectx-release-tag-created" ] && [ "$preserve_tag" = false ]; then
+            tag_error="$(mktemp)"
+            if ! tag_commit="$(resolve_tag_commit "$RELEASE_TAG" 2>"$tag_error")"; then
+              echo "::warning title=清理时查询标签失败::保留标签供人工核对。"
+              cat "$tag_error"
+            elif [ "$tag_commit" = "$RELEASE_SHA" ]; then
+              if gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${RELEASE_TAG}" >/dev/null; then
+                echo "已删除本次创建的标签，可直接重跑"
+              else
+                echo "::warning title=删除标签失败::保留标签供人工核对。"
+              fi
+            else
+              echo "标签已指向其它提交，保留不动"
+            fi
+          fi

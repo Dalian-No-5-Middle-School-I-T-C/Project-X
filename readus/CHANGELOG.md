@@ -1,5 +1,14 @@
 # Project-X CHANGELOG
 
+## 2026-11-07：发布构建只跳过纯文档改动，发版核对与失败重试收口
+
+- **构建触发**：推 `main` 与指向 `main` 的 PR 只跳过纯文档改动（根目录 `*.md`、`readus/**`、`docs/**`）。安装包内的 `licenses/*.md` 仍会触发；排除表不会漏掉新增代码目录，工作流、脚本、源码与原生件改动仍会触发完整打包检测。
+- **发版的提交固定**：`Publish release` 预检把本次运行的完整 SHA 传给后续作业；构建结束后重新核对 `main` 仍停在该提交，再用 Git references 接口创建标签。标签已存在时，只有解析到本次提交才沿用；指向其它提交直接终止。
+- **草稿发布**：先创建草稿 Release 并上传资产，公开前再次核对标签与 `main`。核对不通过时 Release 不会公开，失败清理会删除本次创建的草稿与标签（清理失败时保留现场）。
+- **失败重试**：上传失败或核对不通过时，工作流删除本次创建且仍指向本次提交的草稿与标签；运行器被强杀留下的残留由下一次预检识别（草稿带本工作流标记、标签仍指向本次提交）后清理。已发布的 Release 不会被删除或覆盖。
+- **并发分组**：发版调用把标签写进 `release-build.yml` 的并发组，不同标签的构建互不取消；推 `main` 与 PR 检测仍按分支取消旧运行。
+- **验证**：工作流 YAML 解析与 21 段 `run` 的 `bash -n` 语法检查通过；用真实 GitHub API 确认不存在的标签返回空数组且被正确判为「不存在」；`verify:release-integrity` 76/0、`verify:build-info` 59/0（本地临时目录避开 Windows 8.3 短路径）、`npm run typecheck` 通过。
+
 ## 2026-11-03：发布构建进 CI，控制台显示服务器更新时间
 
 - **发布工序**：安装包构建在 `.github/workflows/release-build.yml`。推 `main` 和指向 `main` 的 PR 自动打 32 位扫描端 MSI 与 Ubuntu 服务端包并上传工件；Actions 里也可以手动 Run workflow。正式发版在 `.github/workflows/release-publish.yml`：Actions 里填 `v<版本号>`，核对与 `package.json`、`main` 当前提交一致且标签尚未存在后，调用同一套构建再建 GitHub Release。版本号仍以 `package.json` 为准，工作流不替人改版本。Releases 此前停在 `V1.9.6` 而主干已到 v2.7.1，就是这条手工断点的结果。
