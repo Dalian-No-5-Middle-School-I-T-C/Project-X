@@ -1,5 +1,84 @@
 # Project-X CHANGELOG
 
+## 2026-11-07：发布构建只跳过纯文档改动，发版核对与失败重试收口
+
+- **构建触发**：推 `main` 与指向 `main` 的 PR 只跳过纯文档改动（根目录 `*.md`、`readus/**`、`docs/**`）。安装包内的 `licenses/*.md` 仍会触发；排除表不会漏掉新增代码目录，工作流、脚本、源码与原生件改动仍会触发完整打包检测。
+- **发版的提交固定**：`Publish release` 预检把本次运行的完整 SHA 传给后续作业；构建结束后重新核对 `main` 仍停在该提交，再用 Git references 接口创建标签。标签已存在时，只有解析到本次提交才沿用；指向其它提交直接终止。
+- **草稿发布**：先创建草稿 Release 并上传资产，公开前再次核对标签与 `main`。核对不通过时 Release 不会公开，失败清理会删除本次创建的草稿与标签（清理失败时保留现场）。
+- **失败重试**：上传失败或核对不通过时，工作流删除本次创建且仍指向本次提交的草稿与标签；运行器被强杀留下的残留由下一次预检识别（草稿带本工作流标记、标签仍指向本次提交）后清理。已发布的 Release 不会被删除或覆盖。
+- **并发分组**：发版调用把标签写进 `release-build.yml` 的并发组，不同标签的构建互不取消；推 `main` 与 PR 检测仍按分支取消旧运行。
+- **验证**：工作流 YAML 解析与 21 段 `run` 的 `bash -n` 语法检查通过；用真实 GitHub API 确认不存在的标签返回空数组且被正确判为「不存在」；`verify:release-integrity` 76/0、`verify:build-info` 59/0（本地临时目录避开 Windows 8.3 短路径）、`npm run typecheck` 通过。
+
+## 2026-11-03：发布构建进 CI，控制台显示服务器更新时间
+
+- **发布工序**：安装包构建在 `.github/workflows/release-build.yml`。推 `main` 和指向 `main` 的 PR 自动打 32 位扫描端 MSI 与 Ubuntu 服务端包并上传工件；Actions 里也可以手动 Run workflow。正式发版在 `.github/workflows/release-publish.yml`：Actions 里填 `v<版本号>`，核对与 `package.json`、`main` 当前提交一致且标签尚未存在后，调用同一套构建再建 GitHub Release。版本号仍以 `package.json` 为准，工作流不替人改版本。Releases 此前停在 `V1.9.6` 而主干已到 v2.7.1，就是这条手工断点的结果。
+- **32 位包的 MSI 只在 Windows runner 上编**（`windows-latest`，WiX 原生运行，不需要 Wine）。曾并列的 `ubuntu-latest` + Wine 线在本 PR 的 CI 上实测红在编 MSI 那一步：WiX 4 是 .NET 程序，Wine 只给到 `experimental wow64 mode`，`candle.exe` 一起就撞 `Wine Mono` / CLR 不可用；留一条常年红的线只会变成「环境问题」的借口，故删除。非 Windows 出包仍按 `readus/Windows32位扫描端交叉打包.md`（macOS/Linux 准备 + Windows 编）。本 PR 的第三跑 `41488043846` 已实测通过：Windows 线编出 `答题卡扫描端-2.7.1-ia32.msi` 并通过包内件核对（工件 142.3 MB），服务端包 9.3 MB。预置的 stage 目录与 `build-native-mingw.sh` 同构：三件可执行 + `source-sha256.txt` + `licenses/`（TWAIN 第三方声明从源码目录补，随包 licenses 里原本没有）+ `ucrtbase.dll` 与 15 颗 `api-ms-win-crt-*.dll`；不带 `msvcp140*` / `vcruntime140*` / `concrt140` / `opencv_world4130.dll`——交叉件的 OpenCV 与 libstdc++ 确实静态链接，但 C 运行库按 `api-ms-win-crt-*` 导入，缺 UCRT 的旧 32 位工作站会以 `0xC0000142` 退出。打包前先跑 `verify:scanner-page-timeout` 的 ⑥ 核对入库 exe；重编原生件仍走 `native-ia32.yml`，产物不逐字节可复现。
+- **打包脚本四处改动**：Windows 上不再直接起 `npm`——`execFileSync("npm")` 报 `ENOENT`（npm 其实是 `npm.cmd`，不走 shell），改成 `npm.cmd` 又撞上 Node 20+「不带 shell 不许 spawn `.cmd`」的 `EINVAL`；现在用当前 `node` 直接跑官方发行版自带的 `npm-cli.js`（`node_modules/` 与 `lib/node_modules/` 两种布局都找），找不到就明确报错，POSIX 仍走 PATH 上的 `npm`、原路不改。新增 `--skip-native-build`，只跳过 MinGW 原生编译，其余工序与架构核对一步不少，且与 `--prepared` / `--verify-msi` 互斥、缺件在装依赖前就报错；包内入口文件的核对改按本机分隔符拼路径——原先写死正斜杠字面量，而 `@electron/asar` 按 `path.sep` 切分归档路径，在 Windows 构建机上必然查不到，会在 MSI 已编好之后误报「缺入口文件」把整条线判红（同一归档实测：正斜杠查不到、`path.join` 查得到）；Windows 主机上的 MSI 载荷核对改用系统自己的 Windows Installer（`msiexec /a` 解包后与 stage 逐字节比），因为 electron-builder 给 Windows 下的那颗 `7za` 读不出 WiX 4 包的压缩流（对每个文件报 `ERROR: Data Error : xxx_f`），而同一结构的包在 macOS/Linux 上用 7za 验一直是对的——坏的是解包器不是包；换 msiexec 还多证明了一层「安装程序本身读得动这份包」。`npm run package:scanner:win32:cross` 行为不变。
+- **服务器更新时间**：`npm run build:server` 在 `dist/server/` 写 `build-info.json`（版本、提交、是否脏、构建时刻、CI 引用与运行链接），随 Ubuntu 包一起部署；`GET /api/admin/console/build`（要求 `system:manage`，只给文件名不给目录，`no-store`）返回构建信息与本次启动/运行时长，管理员「控制台」新增「服务器版本与更新时间」区块。构建时间新、启动时间旧＝包到位没重启；缺依据显示「—」并给原因，不拿当前时间冒充构建时间。公开健康检查未加字段。构建信息只认与服务端产物同目录那一份，**不按 cwd 兜底**：源码直跑时仓库里那份 `dist/` 属于上一次构建，当成这次运行的构建时间恰好会误导「这台服务器是不是新包」。「本次启动」在模块加载时定一次——每次请求用 `now - floor(uptime)` 反推会在跨秒时抖一秒，看起来像服务在反复重启。
+- **一处误导报错改正**：`package-server-ubuntu.cjs` 核对随包 Linux 补识别器源码摘要时，CRLF 检出的 Windows 工作副本也会被它报成「源码变了，请重编」。现在按行解析容许 `\r`，并区分两种成因：行尾被改写就直说是检出问题、要换 LF 检出（CI 的 ubuntu runner 不受影响），源码真变了才维持原来的拒绝打包。摘要比对仍用原始字节，门禁没有放松。
+- **CI 首跑逮到一个只有 CI 能发现的问题**：`collectBuildInfo` 里把 `git status --porcelain` 的空输出折叠成了 `null`，而空串的含义是「工作区干净」。本机工作区常年有改动，所以本地一路是 `true`、看不出来；CI 的检出永远是干净的，正式版本的构建信息会被全部写成「未记录」，恰好丢掉管理员最该看到的事实。现在区分三种结论：干净 → `false`、有改动 → `true`、git 取不到 → `null`，并用临时 git 仓库把三条分支都钉住（`verify:build-info` 新增该段）。
+- **评审采纳情况（PR #372）**：Codex 三条意见里，「npm→npm.cmd 没分平台」的锚点是旧提交 `de2f6069`，该映射已在 `48488802` 整段换成官方 `npm-cli.js` 走法并由三跑验证；「两条扫描端线同名 MSI 会挡住发布」的前提也不成立——Wine 线在 `6913f58a` 已删除，现只留一条线（同名保险逻辑留着，注释改成说明它何时才会触发）。第三条成立并已采纳：PR 触发范围补上 `package.json` 与 `package-lock.json`（打包脚本直接从它们取 Electron、better-sqlite3、sharp 版本与产物版本号，升依赖正是最容易把打包弄坏的一类改动），并把 `resources/native/correction-linux-x64/**` 一并纳入。另有一轮专门针对「打标签→发布」这条 CI 跑不到的路径做事前检查，改掉四处：`[ -n "$integrity" ] && cp` 在 `set -e` 下会静默中断；清单会列出本次不发布的产物，导致收包方 `-c` 报错（改为只保留确实发布的行，一条都不匹配时直接中止）；按空格切列会截断含空格的文件名（改为按固定列位取摘要与路径）；标签可能打在未合并分支上，发出「标题像最新、内容不是最新」的包（预检用 `compare/main...<sha>` 拒绝）。发布说明里的校验步骤也改成按真实改名后的清单文件名写。
+- **第二轮评审（维护者 chuh2006 + Codex 新一轮）改掉三处**：
+  1. 构建信息不再是进程级永久缓存，改按文件 mtime + 大小失效后重读。原写法让「构建时间已更新而启动时间更早」这条判据在最该起作用时失效：管理员先打开过控制台，再把新包拷进来，进程仍返回第一次读到的内容（`no-store` 管的是 HTTP 缓存，管不到进程内缓存）。文件被删（回滚、清理）时也不再返回旧结果。回归按此演：两次请求之间换盘上的文件，不清缓存、不动环境变量指针。
+  2. 标签预检从「`identical` 或 `behind` 都放行」收紧为**只接受 `identical`**：`behind` 表示标签指向主干上更早的提交，放过去等于把旧源码发成最新版本。
+  3. `msiexec` 参数引号修对了两层规则：给 `Start-Process -ArgumentList` 的元素必须让双引号成为**字符串内容**（PS 单引号字面量包住一对双引号），否则引号只是 PowerShell 的定界符、到 msiexec 就消失，带空格的目录被拆成多个参数；同一个字面引号又不能用在传给 cmdlet 的 `-LiteralPath` 上，那里会被当成路径字符。本机用带空格、带单引号、带中文的路径逐项验（4 个参数不散、退出码落文件）。
+  维护者提的前两条（npm 起法、干净工作区被写成未判定）与上一轮修复同源，已在 `48488802` 改掉并由 `41488043846`、`41535020397` 跑绿，回复里附了日志依据。
+- **第五跑我自己改坏的一处，已修**：为评审调整 `msiexec` 引号时把属性写成整段包裹的 `"TARGETDIR=D:\out"`。msiexec 认的是 `TARGETDIR="D:\out"`，整段包裹会被当成未知参数并弹出用法对话框；非交互会话里没人应答，`-Wait` 挂满 15 分钟，日志只留下一句 `ETIMEDOUT`。现在属性形态改对，超时收到 5 分钟并在报错里带上 `/l*v` 日志尾部，`-Wait` 之后改有界轮询等载荷落盘（msiexec 会再拉子进程，先返回就立刻比对会误报缺件）。参数形态用产品代码里的同一组拼接函数在本机回显核过：`/a "包" /qn /l*v "日志" TARGETDIR="目录"`，带空格与中文的路径各自成整体、闭合引号前无反斜杠；没有真起 msiexec（形态错会弹框，不该在桌面上试）。五跑 Windows 线红在这一步，MSI 本身已编出；六跑 `41540594987` 已复绿（同批 `CI` `41540595057` 全绿）。
+- **第三轮评审两条，都已采纳**：PR 触发范围补上 `native/ScannerBridge/third_party/THIRD_PARTY_NOTICES.md`——打包工序无条件把这份 TWAIN 声明拷进 stage，它被重命名或删除时原先要等到打标签执行 `cp` 才第一次报错，而普通 CI 不跑这条命令；发布说明里让 macOS 用户跑 `sha256sum` 也是错的（macOS 自带的是 `shasum -a 256`），Linux 与 macOS 分行写清。
+- **第四轮评审一条，已采纳**：PR 触发范围再补 `native/**`。服务端打包会按 `resources/native/correction-linux-x64/source-sha256.txt` 逐个哈希比对 `native/**` 源码，⑥ 门槛比对 win-ia32 两颗 exe，而 `ci.yml` 不跑打包器——只改 C++ 源码而没重编随包件时，原先要等打标签才第一次报错，现在合并前就会跑（第八轮 `41543678446` 与同批 `CI` `41543678063` 均全绿）。
+- **第五轮评审一条，已采纳并加了一道门禁**：随包 `scanner-bridge.exe` 的来源原先没人核对——⑥ 门槛只搜几颗字串（字串还在就看不出包内件是旧的），而 `resources/native/win-ia32/source-sha256.txt` 只列识别器源码、`native/ScannerBridge/**` 一颗都不在里面，且这份 win-ia32 清单此前没有任何地方校验过（只有 Linux 补识别器那份在打包时逐个哈希比对）。新增 `npm run verify:native-provenance`（扫描端作业里紧跟 ⑥、打包之前，该作业改 `fetch-depth: 0`）：按清单逐行哈希比对 ia32 源码（沿用「CRLF 检出」与「源码真变」分开的判读），并按内容比对 `scanner-bridge.exe` 入库提交与 HEAD 之间的桥接源码差异，有差异就拒绝发布。清单补全桥接源码这一步没做：改 `scripts/build-native-mingw.sh` 的摘要行会立刻让清单里记录的该脚本哈希失配、要求重发现场在用的二进制，实测确实如此，故与下次 ia32 重编同批做。
+- **第九跑红因与修法**：新门禁在 CI 上第一次跑就红，红的是我自己脚本的一个假设——它写「请在 LF 检出（Linux 构建机或 CI）上跑」，可这道门禁住在 Windows 作业里，而 Windows runner 的机器级 git 配置就是 `core.autocrlf=true`：14 个源码文件全被检出成 CRLF，而清单是 Linux 上 `cmake -E sha256sum` 记的原始字节哈希，永远对不上（门禁本身没查出任何真漂移，桥接那条内容核对是通过的）。修法是该作业检出前先关掉行尾转换，`.gitattributes` 显式声明的 `eol` 仍生效（`*.sh` LF、`*.bat` CRLF）。
+- **第十跑仍红，说明上面那个修法不完整**：`core.autocrlf=false` 确实执行了，文件还是 CRLF。原因是 `.gitattributes` 的 `* text=auto` 把这些源码判成 text 之后，检出用哪种换行由 `core.eol` 决定（默认 `native`，在 Windows 上就是 CRLF），只关 autocrlf 管不住它——这个坑我在本机做 LF 副本时踩过一次，写工作流时却忘了。现在两个设置一起关，报错文案也改成给出具体动作。修完在本机复现验证：同一套设置做 LF 检出后逐行比对，15 行清单全部与原始字节哈希相符（CRLF 工作副本连字节数都不一样）。第十一跑 `41548200173` 与同批 `CI` `41548200323` 全绿。
+- **第六轮评审三条，都已采纳**：
+  1. 来源核对原先只比 `native/ScannerBridge/scanner-bridge`，漏了 TWAIN 头 `third_party/twain-dsm-2.5.1/include/twain.h`——它是 `native/CMakeLists.txt` 直接引用、`twain_controller.cpp` 实际 `#include` 的编译输入，头改了而包内件没重编同样会发出行为对不上的 exe。现已一并纳入比对。
+  2. 那条评审还暴露了我脚本里的隐藏弱点：桥接路径原先配了一个**根本不存在**的 `native/ScannerBridge/CMakeLists.txt`，代码用 `.filter(existsSync)` 把它静默丢掉——路径写错等于没配。现在配置的路径缺失直接判失败。
+  3. UCRT 随包集合改为**按计数下限校验**（≥15 颗 `api-ms-win-crt-*.dll` + `ucrtbase.dll` 存在 + 拷完逐个确认落进 stage）。原先 `cp $src/api-ms-win-crt-*.dll` 在源目录被删一颗时会安静少拷，而后面的包内核对只认三件可执行，可能发出在老 ia32 工作站上打不开的包。正反两面本机都跑过：15 颗通过；故意少一颗时拒绝并退出 1。
+  4. 触发范围补 `scripts/verify-native-provenance.ts` 与 `scripts/verify-scanner-page-timeout.ts`：这两道门禁脚本本身就是发布链路的一部分，而 `ci.yml` 不调用它们——只改脚本又不在 PR 上跑一次，坏掉或被放宽要等到打标签才看得出来。
+- **第七轮评审三条，都已采纳**：
+  1. 构建信息的结构版本改为**白名单判定**（只认 `BUILD_INFO_SCHEMA`）：缺 `schema`、类型不对、或来自未来版本，一律判不可用并显示「—」加原因，不再按字段猜读旧/新语义——那正是版本号想避免的事。
+  2. 采集 git 来源前先确认「构建目录自己就是工作树根」（`rev-parse --show-toplevel` 比对 realpath）。原先从压缩包解出来、落在别的仓库工作树里构建时，`git -C` 会往上找到那个父仓库，把毫不相干的提交记成 Project-X 的来源；现在这种情况如实留 `null`。
+  3. 发布作业改为**每条产物线都必须交齐载荷 + 校验清单 + 完整性报告**：`upload-artifact` 的 `if-no-files-found` 是按整批判的，只缺清单时仍会成功上传，原先的 `[ -n "$sums" ]` 分支会静默跳过，可能带着不完整材料走到 `gh release create`。本机用工作流原文脚本跑过正反两面：缺 `BUILD-INTEGRITY.txt` 时退出 1 并点名缺什么；两线齐备时装配成功且两份改名清单都通过 `sha256sum -c`。
+- **第八轮评审（独立复核）两条阻塞 + 五条不阻塞，全部改掉**：
+  1. **发布出去的验证材料与说明互相矛盾（阻塞）**：`release-publish.yml` 只把清单按构建线改名并重写路径前缀，
+     `cp` 走的完整性报告仍是打包脚本在原目录里生成的正文——里面教收件方比对 `SHA256SUMS.txt`、跑
+     `node scripts/hash-release-artifacts.cjs --check --root <产物目录>`，而 `--check` 只认精确的 `SHA256SUMS.txt`，
+     且 `SKIP_NAMES` 不认改名后的形态。本机按发布后的文件布局实测：直接报「找不到清单」退出码 1；
+     手工把一份改回 `SHA256SUMS.txt`，另一条线的文件又被判成「清单外多出的文件」，同样退出码 1。
+     现在三处一起收口：`--check` 认 `<构建线>-SHA256SUMS.txt` 并跳过 `<构建线>-BUILD-INTEGRITY.txt`、
+     清单里带目录前缀而产物平铺时按文件名对应；报告正文改成把两种命名都写清楚（本机叫
+     `SHA256SUMS.txt`、Release 上按构建线改名，`--check` 两种都认），发布作业因此只剥产物清单的
+     `server-ubuntu24/` 前缀、**不**再替换正文里的清单名——替换会把叙述句里的本机名也改成线名，
+     编出「本机构建目录里的清单叫 <线名>」这种假话（第八轮复审指出，已避开）；
+     README 那段（还写着「标签触发的发布构建」和带 `-*-` 的错名）、报告正文与 Ubuntu 包内的
+     《部署说明》Package Integrity 一节（原先只教 `sha256sum -c SHA256SUMS.txt`）同步改成两种命名都写清，
+     并提醒「一个目录里只放你要校验那条线的清单」。
+     回归补在 `verify:release-integrity`：同一份产物分别按本机命名与发布命名各跑一次 `--check`。
+  2. **来源门禁没有覆盖面下限（阻塞）**：`verify-native-provenance.ts` 与 `package-server-ubuntu.cjs` 都只遍历
+     `source-sha256.txt` 现有的行，清单被截断成空文件、或 16 行里删掉 15 行，两处照样打印「全部一致」并放行；
+     而 Ubuntu 侧的解析正则只接受 `native/**`，Linux 线连构建脚本自己都记不进清单。判据收到
+     `scripts/lib/native-source-manifest.cjs` 一份实现里（两条线共用）：先算出这条构建线必须由哪些源码决定
+     （识别器目录下每个 `.cpp/.hpp` + `native/CMakeLists.txt` + 该线 toolchain + 该线构建脚本），清单必须逐项覆盖，
+     空清单、缺覆盖、有无法解析的行都判失败；同时补上
+     `resources/native/correction-linux-x64/source-sha256.txt` 缺的那行 `scripts/build-recognizer-linux.sh`
+     （摘要取自 LF 字节，与 `git cat-file blob` 一致）。
+  3. 不阻塞·`scanner-bridge.exe` 的基线可被「重新提交一份 exe」重置（`git log -1 -- <exe>` 随二进制移动）。
+     彻底闭合要把桥接源码摘要写进清单，而那必须与一次 ia32 重编同批做——本机没有 MinGW 出件条件，
+     这轮先把限制写进门禁头注释与文档「已知边界」，不在没重编的情况下伪造覆盖。
+  4. 不阻塞·MSI 解包核对只比 3 颗原生件：被反复强调的 15+1 颗 UCRT、licenses、`source-sha256.txt` 有没有进包没人管
+     （发布作业那道计数下限验的是仓库目录与 stage）。现在改为整个 stage 目录逐字节比对。
+  5. 不阻塞·解包后的有界轮询只看「文件名出现」就 break，紧接着比长度与字节——子进程还在写时会误报
+     「与构建产物不一致」这种查不出原因的假失败。等待判据改成「名称+长度+内容都对上」，
+     顺手把 `execFileSync("ping")` 当 sleep 的写法换成 `Atomics.wait`（这段本来就跑在 async 流程里）。
+  6. 不阻塞·发版调用没把标签传下去：`release-publish.yml` 是在 main 上 dispatch 再 `uses:` 调构建线，
+     那条构建的 `GITHUB_REF_NAME` 永远是 `main`，正式包的 `ciRef` 写不出版本号，而文档与夹具都写着标签。
+     现在 `workflow_call` 收 `ci_ref`，构建步骤导出 `PROJECTX_CI_REF`，`collectBuildInfo` 优先取它、没有才退回
+     `GITHUB_REF_NAME`，`verify:build-info` 钉住三种取值（标签、分支、都缺时 null）。
+  7. 不阻塞·文档「已知边界」留着上一版（标签触发）的三条矛盾：仍写「发布作业只在推标签时执行」、
+     `compare/main...<sha>` 复述两遍、以及「要重发就先删那条 Release」——删 Release 不删 Git 标签，
+     而新加的标签存在性检查会照样把重发拒掉。改成删除标签的真实工序，并把重复两条合并。
+
+  8. 第八轮的验证：`verify:release-integrity`（新增本机命名与发布命名两种 `--check` 回归）、`verify:build-info`（ciRef 标签/分支/空白/都缺四种取值）、`scripts/lib/native-source-manifest.cjs` 的覆盖面判据用真实仓库文件跑通（`verify-native-provenance.ts` 本体要完整 git 历史，另在合成 git 副本里整脚本跑绿：两条线 entries=15 / required=15、missing 空；把 ia32 清单删掉一行立刻判红并点名缺 `vision_utils.cpp`）、`package-server-ubuntu.cjs` 改用的同一份库在 LF 副本上真跑出 zip。**MSI 那条扩断言不再是推断**：把 CI 工件 `scanner-ia32-windows`（run 41671951692 的 142.3 MB）下载到本机，用 `msiexec /a` 解包后与按 workflow 工序重建的 stage 集合逐文件比对——41 个文件全在包里（20 个字节全等，21 个只差行尾，因本机是 CRLF 检出而 CI 两侧同为 LF），所以「必绿」是实测结论。仍未验证：真的建出一条 Release；以及 Windows 作业里由脚本自己跑这段核对（本机只独立验了同一判据的输入输出）。
+- **验证**：`typecheck`、`build:web`、`build:scanner:full`、`build:server`（确认 `build-info.json` 落盘）、新增 `verify:build-info` 55/0（归一化、写盘读回、工作区三种状态、部署替换与文件删除后不返回旧值、真实 HTTP 的未登录与教师 403、构建时间与盘上一致、本次启动不随请求抖动、缺失口径、响应不含目录）、新增 `verify:console-build-info-ui` 26/0（挂载真实控制台组件断言渲染结果：有信息时版本/短号/平台/时长/本地日期都在，无信息时显示「—」并给原因，半截字段不漏 `undefined` 字面串，外链带 `rel=noopener`），两者都已接入 `ci.yml`，另新增 `verify:native-provenance`（接在发布作业的扫描端线里，`ci.yml` 不跑它）并在第十二、十三跑实机通过；`verify:release-integrity`、`verify:systemd-hardening` 110/0 通过；LF 检出副本上 `package-server-ubuntu.cjs` 真跑出 zip 并核对包内含 `dist/server/build-info.json`；`@electron/asar` 的分隔符行为用临时归档在本机实测。渲染回归还逮到一个显示缺陷：刚重启 42 秒的服务「已运行」算成「0 分」，看着像没数据，改成说秒。**未验证**：真机安装与扫描验收；本轮不涉及 SQL 与 MariaDB。详见 [发布构建与服务器更新时间](发布构建与服务器更新时间.md)。
 ## 2026-11-03：扫描端一直待命
 
 - 工作台在已有扫描批次时增加「继续扫描」，沿用当前扫描仪和分辨率直接开下一批，不必先打开扫描后处理。

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, RefreshCw } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { cn } from "../lib/utils";
+import type { BuildInfo } from "../../../../shared/buildInfo";
 import { Button, Field, Input, Switch, Card } from "./ui/v2";
 
 interface Props {
@@ -41,6 +42,21 @@ type DataQuality = {
 type RetentionPolicy = { id: number; name: string; retainDays: number; autoArchive: number; autoDelete: number };
 type SoftDeletedExam = { examId: number; examName: string | null; subject: string | null; status: string | null; deletedAt: string | null; archivedAt: string | null };
 
+/** GET /api/admin/console/build：构建期写入的 build-info + 运行期进程信息，两者来源不同。 */
+type BuildStatus = {
+  ok: boolean;
+  build: BuildInfo | null;
+  buildInfoFile: string | null;
+  reason?: string | null;
+  runtime?: {
+    now: string;
+    startedAt: string;
+    uptimeSeconds: number;
+    node: string;
+    platform: string;
+  };
+};
+
 // ── 工具 ──
 
 function fmtNum(n: number | null | undefined): string {
@@ -58,6 +74,26 @@ function fmtPct(n: number | string | null | undefined): string {
 function rateOf(success: number, failed: number): string {
   const completed = success + failed;
   return completed > 0 ? `${Math.round((success / completed) * 1000) / 10}%` : "—";
+}
+
+/** 服务器返回的是 UTC ISO；按浏览器所在时区展开成完整时刻，缺依据一律 —，不用当前时间顶替。 */
+function fmtDateTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("zh-CN", { hour12: false });
+}
+
+/** 进程运行时长，用于区分「包已就位」与「服务已重启」。 */
+function fmtUptime(seconds: number | null | undefined): string {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return "—";
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days > 0) return `${days} 天 ${hours} 小时`;
+  if (hours > 0) return `${hours} 小时 ${minutes} 分`;
+  // 刚重启的服务要说「多少秒」，落到「0 分」会被读成没有数据，恰好丢掉最该看得见的时刻。
+  if (minutes > 0) return `${minutes} 分`;
+  return `${Math.floor(seconds)} 秒`;
 }
 
 function DistBar({ label, dist }: { label: string; dist: Distribution }) {
@@ -131,6 +167,7 @@ export function AdminConsolePage({ onBack }: Props) {
   const [dataQuality, setDataQuality] = useState<DataQuality | null>(null);
   const [policies, setPolicies] = useState<RetentionPolicy[]>([]);
   const [softDeleted, setSoftDeleted] = useState<SoftDeletedExam[] | null>(null);
+  const [build, setBuild] = useState<BuildStatus | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [msg, setMsg] = useState<{ tone: "success" | "error"; text: string } | null>(null);
 
@@ -145,7 +182,7 @@ export function AdminConsolePage({ onBack }: Props) {
       }
     };
 
-    const [s, a, p, ai, dq, pol, sd] = await Promise.all([
+    const [s, a, p, ai, dq, pol, sd, bd] = await Promise.all([
       tryFetch<Summary>("/api/admin/console/summary"),
       tryFetch<Activity>("/api/admin/console/activity"),
       tryFetch<Preferences>("/api/admin/console/preferences"),
@@ -153,6 +190,7 @@ export function AdminConsolePage({ onBack }: Props) {
       tryFetch<DataQuality>("/api/admin/console/data-quality"),
       tryFetch<{ ok: boolean; data: RetentionPolicy[] }>("/api/admin/data-retention-policies"),
       tryFetch<{ exams: SoftDeletedExam[] }>("/api/admin/console/soft-deleted-exams"),
+      tryFetch<BuildStatus>("/api/admin/console/build"),
     ]);
     setSummary(s);
     setActivity(a);
@@ -161,6 +199,7 @@ export function AdminConsolePage({ onBack }: Props) {
     setDataQuality(dq);
     setPolicies(pol?.data ?? []);
     setSoftDeleted(sd?.exams ?? null);
+    setBuild(bd?.ok ? bd : null);
   }, []);
 
   useEffect(() => { load(); }, [load, refreshTick]);
@@ -227,6 +266,44 @@ export function AdminConsolePage({ onBack }: Props) {
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">概览加载失败或暂无数据。</p>
+        )}
+      </SectionCard>
+
+      {/* 服务器版本与更新时间 */}
+      <SectionCard
+        title="服务器版本与更新时间"
+        desc="「构建时间」是这套程序打包出来的时刻，来自发布包内的构建信息；「本次启动」是这台服务器进程真正起来的时刻。构建时间已更新而启动时间更早，说明新包到位了但服务还没重启。"
+      >
+        {build ? (
+          <div className="flex flex-col gap-3">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+              <StatTile label="版本" value={build.build?.version ?? "—"} />
+              <StatTile label="构建时间" value={fmtDateTime(build.build?.builtAt)} />
+              <StatTile label="构建提交" value={build.build?.commitShort ?? "—"} />
+              <StatTile label="本次启动" value={fmtDateTime(build.runtime?.startedAt)} />
+              <StatTile label="已运行" value={fmtUptime(build.runtime?.uptimeSeconds)} />
+              <StatTile label="运行环境" value={build.runtime?.platform ?? "—"} hint={build.runtime?.node} />
+            </div>
+            {build.reason && <p className="text-xs text-muted-foreground">{build.reason}</p>}
+            {build.build?.commitDirty === true && (
+              <p className="text-xs text-destructive-fg">这次构建的工作区有未提交改动，产物对应不到具体提交。</p>
+            )}
+            {build.build?.ciRunUrl && (
+              <p className="text-xs">
+                <a
+                  className="text-accent-foreground underline underline-offset-2"
+                  href={build.build.ciRunUrl}
+                  target="_blank"
+                  rel="noopener"
+                >
+                  查看这次构建的流水线记录
+                </a>
+                {build.build.ciRef ? ` · ${build.build.ciRef}` : ""}
+              </p>
+            )}
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">构建信息加载失败，或服务端未提供该接口。</p>
         )}
       </SectionCard>
 

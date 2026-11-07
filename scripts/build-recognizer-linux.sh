@@ -46,6 +46,9 @@ if [ "$(uname -m)" = x86_64 ]; then CXX_BIN=g++; else CXX_BIN=x86_64-linux-gnu-g
 GCC_MAJOR="$($CXX_BIN -dumpversion | cut -d. -f1)"
 cp "/usr/share/doc/gcc-$GCC_MAJOR-base/copyright" "$STAGE/licenses/GCC-runtime-copyright.txt"
 cp /usr/share/common-licenses/GPL-3 "$STAGE/licenses/GPL-3.txt"
-(cd "$ROOT_DIR" && sha256sum native/CMakeLists.txt native/cmake/linux-x64.cmake native/AnswerCardRecognizer/answer-card-recognizer/*.cpp native/AnswerCardRecognizer/answer-card-recognizer/*.hpp) > "$STAGE/source-sha256.txt"
+# 摘要清单要把「本线构建脚本自己」也记进去：脚本改了同样会改产出的 ELF。
+# 与 build-native-mingw.sh 同一套做法，也是 package-server-ubuntu.cjs 覆盖面下限的必选项之一
+# （scripts/lib/native-source-manifest.cjs），漏记会让下一次重编后打包被判「缺必选覆盖」。
+(cd "$ROOT_DIR" && sha256sum native/CMakeLists.txt native/cmake/linux-x64.cmake native/AnswerCardRecognizer/answer-card-recognizer/*.cpp native/AnswerCardRecognizer/answer-card-recognizer/*.hpp scripts/build-recognizer-linux.sh) > "$STAGE/source-sha256.txt"
 file "$STAGE/answer-card-recognizer"
 sha256sum "$STAGE/answer-card-recognizer"

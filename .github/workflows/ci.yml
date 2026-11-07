@@ -44,6 +44,14 @@ jobs:
       - name: Auth / RBAC test suite
         run: npm run verify:auth
 
+      # 发布链路的依据：构建信息随产物落盘、管理员接口如实返回「服务器更新时间」。
+      - name: Build info and server update time regression
+        run: npm run verify:build-info
+
+      # 上面那块的渲染结果：缺依据要显示「—」并给原因，不能漏 undefined、不能拿请求时间冒充构建时间。
+      - name: Console build-info panel mounted regression
+        run: npm run verify:console-build-info-ui
+
       - name: Core logic verify suite
         run: npm run verify:core-logic
 
