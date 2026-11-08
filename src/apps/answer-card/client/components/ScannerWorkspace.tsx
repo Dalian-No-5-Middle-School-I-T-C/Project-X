@@ -173,7 +173,8 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
       });
       setGradingResult(result);
       if (uploadCard) {
-        if (result.cardVersion !== cardFingerprint(uploadCard)) throw new Error("识别期间答题卡版本发生变化，请重新导入");
+        const card = uploadCard;
+        if (result.cardVersion !== cardFingerprint(card)) throw new Error("识别期间答题卡版本发生变化，请重新导入");
         const pages = mapImportedScanPages(result.rows.length, buildLayout(uploadCard).pages.length, uploadCard.sided);
         const groups = new Map<string, Array<{ file: File; page: typeof pages[number]; uploadPayloadUrl?: string }>>();
         result.rows.forEach((row, index) => {
@@ -187,7 +188,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
         for (const [groupId, group] of groups) {
           const id = scannerUploadManager.startUpload({
             trackResults: true, kind: "import", identityMode: legacyIdentity ? "legacy" : "strict",
-            cardId, cardVersion: result.cardVersion, name: `导入_${cardTitle}_第${Number(groupId) + 1}份`,
+            cardId, cardVersion: cardFingerprint(card), name: `导入_${cardTitle}_第${Number(groupId) + 1}份`,
             paperSize: uploadCard.paper.size,
             pages: group.map(({ file, page, uploadPayloadUrl }) => ({ ...page, uploadPayloadUrl, getBlob: async () => file })),
           });

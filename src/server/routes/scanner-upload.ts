@@ -321,20 +321,6 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
     }
 
     const image = req.file;
-    try { await assertScanImageDimensions(image.buffer); }
-    catch (error) {
-      res.status(error instanceof ScanImageBudgetError ? error.status : 400).json({
-        code: error instanceof ScanImageBudgetError ? error.code : "SCAN_IMAGE_INVALID",
-        message: error instanceof ScanImageBudgetError ? error.message : "扫描图片尺寸无法读取，请检查图片格式",
-      });
-      return;
-    }
-    const ext = safeImageExtension(image.originalname);
-    const fileName = `${path.basename(String(sessionId))}_${crypto.randomUUID()}${ext}`;
-    stagedImage = path.join(scannerUploadDir(), fileName);
-    // Write an immutable candidate before holding the exam transaction. A rejected
-    // or rolled-back upload removes it without replacing the previous original.
-    await writeFile(stagedImage, image.buffer);
     const uploaded = await writeScannerSession(String(sessionId), async db => {
 
       // 验证 session
@@ -369,6 +355,19 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
         });
         return;
       }
+      try { await assertScanImageDimensions(image.buffer); }
+      catch (error) {
+        res.status(error instanceof ScanImageBudgetError ? error.status : 400).json({
+          code: error instanceof ScanImageBudgetError ? error.code : "SCAN_IMAGE_INVALID",
+          message: error instanceof ScanImageBudgetError ? error.message : "扫描图片尺寸无法读取，请检查图片格式",
+        });
+        return;
+      }
+      const ext = safeImageExtension(image.originalname);
+      const fileName = `${path.basename(String(sessionId))}_${crypto.randomUUID()}${ext}`;
+      stagedImage = path.join(scannerUploadDir(), fileName);
+      // Immutable candidate after overwrite gates pass; rolled-back uploads drop it in finally.
+      await writeFile(stagedImage, image.buffer);
       let recognition: z.infer<typeof recognitionSchema> | undefined;
       if (req.body.recognition) {
         try { recognition = recognitionSchema.parse(JSON.parse(req.body.recognition)); }
