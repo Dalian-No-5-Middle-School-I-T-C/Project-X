@@ -529,17 +529,17 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     const recognition = await recognizePageForUpload(j, page, blobData);
     // A versioned scan payload already contains the saved correction for this page.
     // Older servers and native fallback still need the existing correction read.
-    const corrected = recognition.correctionRevision !== undefined && recognition.cardVersion === j.cardVersion
-      ? recognition : await page.input.getCorrection?.();
+    const usedVersionedCache = recognition.correctionRevision !== undefined && recognition.cardVersion === j.cardVersion;
+    const corrected = usedVersionedCache ? recognition : await page.input.getCorrection?.();
     if (corrected) {
       recognition.questions = corrected.questions;
       recognition.subjectiveQuestions = corrected.subjectiveQuestions;
       recognition.studentId = corrected.studentId;
       if (recognition.geometry && (recognition.identity as { status?: string } | undefined)?.status !== "rejected") recognition.status = "ok";
     }
-    // Dependencies are fixed when the job is created, independent of array adjacency,
-    // retry counts or network latency. Never borrow an ID across physical cards.
-    if (!corrected && page.input.studentId) {
+    // 命中 upload-payload 缓存时订正已内嵌在 payload 里；教师在 correctStudentId / 页级 studentId
+    // 的改动仍要压住。走 getCorrection 时以服务器订正为准，不拿页上可能过期的捕捉学号覆盖。
+    if (page.input.studentId && (usedVersionedCache || !corrected)) {
       applyScanStudentId(recognition, page.input.studentId);
     } else if (page.anchor) {
       const inherited = page.anchor.studentId;

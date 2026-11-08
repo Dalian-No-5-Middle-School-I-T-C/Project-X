@@ -157,6 +157,63 @@ async function main() {
     }
 
     {
+      let uploadedStudent = "";
+      const cachedPayload = {
+        status: "ok",
+        correctionRevision: 2,
+        cardVersion: TEST_CARD_VERSION,
+        studentId: { status: "ok", value: "11111" },
+        questions: [],
+        subjectiveQuestions: [],
+        geometry: { imageWidth: 100, imageHeight: 100, imageToLayout: [1, 0, 0, 0, 1, 0, 0, 0, 1], layoutToImage: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+      };
+      const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+      const values = new Map<string, string>([["projectx_server_url", "https://reuse-correction.test"]]);
+      Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => { values.set(key, value); },
+        removeItem: (key: string) => { values.delete(key); },
+        key: (index: number) => [...values.keys()][index] ?? null,
+        get length() { return values.size; },
+      } });
+      try {
+        const mgr = createScannerUploadManager(deps({
+          localFetch: async (url) => {
+            if (String(url).includes("/upload-payload")) return jsonRes(cachedPayload);
+            throw new Error("复用路径不应再调本机识别: " + url);
+          },
+          remoteFetch: async (url, init) => {
+            if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "reuse-correct", uploadTokens: ["p1"] });
+            if (url.endsWith(PAGES)) {
+              uploadedStudent = JSON.parse(String((init!.body as FormData).get("recognition"))).studentId.value;
+              return jsonRes({ ok: true });
+            }
+            if (url.endsWith("/results")) return jsonRes({ results: [], failures: [], reviewCards: [] });
+            if (url.endsWith(COMPLETE)) return jsonRes({ ok: true });
+            return jsonRes({ ok: true });
+          },
+        }));
+        const retryId = mgr.startUpload({
+          kind: "scan",
+          cardId: "card_1",
+          cardVersion: TEST_CARD_VERSION,
+          name: "扫描_订正",
+          localSessionId: "scan-retry-cache",
+          identityMode: "strict",
+          pages: [{
+            pageNum: 1, side: "front", groupId: "0", recordId: "rec_retry", studentId: "22222",
+            getBlob: async () => blob(),
+          }],
+        });
+        assert((await waitTerminal(mgr, retryId)).status === "done", "带手工学号的上传应完成");
+        assert(uploadedStudent === "22222", "upload-payload 缓存命中时 page.input.studentId 须压住快照学号");
+      } finally {
+        if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+        else Reflect.deleteProperty(globalThis, "localStorage");
+      }
+    }
+
+    {
       // 失败但已建远端会话的任务仍会「重试失败页」，此时改分依旧会撕裂快照（评审 P1）。
       // 关闭进度卡只摘掉内存任务，恢复记录还在：重新入队会接回同一个远端会话，
       // 所以锁必须跟着记录走，并给出明确的「放弃续传」出口（评审 P1 复核）。
