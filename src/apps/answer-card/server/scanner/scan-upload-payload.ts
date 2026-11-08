@@ -102,24 +102,49 @@ type CropSegmentIdentity = {
   questionKey: string;
 };
 
-function parseQuestionNumbersJson(raw: string): string[] | null {
+/** SQLite 存 JSON 文本；MariaDB 驱动可能直接解码为数组。 */
+export function parseQuestionNumbersFromDb(raw: unknown): string[] | null {
   let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  } else if (Array.isArray(raw)) {
+    parsed = raw;
+  } else {
     return null;
   }
   if (!Array.isArray(parsed)) return null;
   const out: string[] = [];
   for (const el of parsed) {
-    if (typeof el !== "string") return null;
-    const t = el.trim();
-    if (!t.length) return null;
-    out.push(t);
+    const s = validQuestionNumberString(el);
+    if (!s) return null;
+    out.push(s);
   }
   const unique = Array.from(new Set(out));
   unique.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   return unique;
+}
+
+function parseRectFromDb(raw: unknown): Rect | null {
+  let parsed: unknown;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  } else if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+    parsed = raw;
+  } else {
+    return null;
+  }
+  const rect = parsed as Rect;
+  if (typeof rect?.x !== "number" || typeof rect?.y !== "number"
+    || typeof rect?.width !== "number" || typeof rect?.height !== "number") return null;
+  return rect;
 }
 
 function identityFromParsedRow(
@@ -270,8 +295,8 @@ async function readScanUploadPayload(recordId: string): Promise<ScanUploadPayloa
     block_type: string;
     page_number: number;
     segment_index: number;
-    question_numbers: string;
-    rect_json: string;
+    question_numbers: string | Array<number | string>;
+    rect_json: string | Rect;
     image_path: string;
     width_px: number;
     height_px: number;
@@ -292,14 +317,10 @@ async function readScanUploadPayload(recordId: string): Promise<ScanUploadPayloa
   for (const row of rows) {
     const imagePath = path.resolve(row.image_path);
     if (!existsSync(imagePath) || !isInsideDir(cropBase, imagePath)) continue;
-    const questionNumbers = parseQuestionNumbersJson(row.question_numbers);
+    const questionNumbers = parseQuestionNumbersFromDb(row.question_numbers);
     if (!questionNumbers) continue;
-    let rect: Rect;
-    try {
-      rect = JSON.parse(row.rect_json) as Rect;
-    } catch {
-      continue;
-    }
+    const rect = parseRectFromDb(row.rect_json);
+    if (!rect) continue;
     const identity = identityFromParsedRow(
       row.page_number,
       row.segment_index,

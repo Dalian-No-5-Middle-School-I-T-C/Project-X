@@ -849,6 +849,15 @@ async function main(): Promise<void> {
 
   // PR #373：upload-payload 须带齐持久化切块；题块范围账号不得复用部分页缓存（404），GET /record 仍按块过滤。
   const { cardFingerprint } = await import("../src/shared/cardVersion");
+  const { parseQuestionNumbersFromDb } = await import("../src/apps/answer-card/server/scanner/scan-upload-payload");
+  ok(
+    parseQuestionNumbersFromDb('["21","22"]')?.join(",") === "21,22",
+    "upload-payload 切块题号：SQLite 文本 JSON 可解析",
+  );
+  ok(
+    parseQuestionNumbersFromDb([21, 22])?.join(",") === "21,22",
+    "upload-payload 切块题号：MariaDB 已解码数组可解析",
+  );
   const scanCardFp = cardFingerprint(scanCard!);
   const { storeImportUploadPayload } = await import("../src/apps/answer-card/server/import-upload-payload");
   const importPayloadUrl = await storeImportUploadPayload(scanCardId, scanCardFp, previewFile,
@@ -877,6 +886,7 @@ async function main(): Promise<void> {
      VALUES ('twain_scan_record', 'rec-p1', ?, ?, ?, 0)`
   ).run(scanCardFp, uploadLayoutJson, uploadRecognitionJson);
   const uploadCropDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "recognition", "crops");
+  const uploadCropRectJson = JSON.stringify({ x: 0, y: 0, width: 10, height: 10 });
   mkdirSync(uploadCropDir, { recursive: true });
   const { expectedCropSegmentsForLayoutPage } = await import("../src/apps/answer-card/server/scanner/scan-upload-payload");
   const uploadSegmentMeta = new Map<string, { segmentIndex: number; questionKey: string; pageNumber: number }>();
@@ -893,8 +903,8 @@ async function main(): Promise<void> {
     db.prepare(
       `INSERT OR REPLACE INTO answer_block_crops
        (id, card_id, source_type, source_record_id, block_id, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi)
-       VALUES ('upload-crop-B1', ?, 'twain_scan_record', 'rec-p1', 'B1', 'subjective', ?, ?, ?, '{}', ?, 10, 10, 300)`
-    ).run(scanCardId, metaB1.pageNumber, metaB1.segmentIndex, metaB1.questionKey, cropPathB1);
+       VALUES ('upload-crop-B1', ?, 'twain_scan_record', 'rec-p1', 'B1', 'subjective', ?, ?, ?, ?, ?, 10, 10, 300)`
+    ).run(scanCardId, metaB1.pageNumber, metaB1.segmentIndex, metaB1.questionKey, uploadCropRectJson, cropPathB1);
   }
   const wholeUploadPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
   const wholeCrops = (wholeUploadPayload.body as { cropImages?: Array<{ blockId: string }> })?.cropImages ?? [];
@@ -910,8 +920,8 @@ async function main(): Promise<void> {
   db.prepare(
     `INSERT OR REPLACE INTO answer_block_crops
      (id, card_id, source_type, source_record_id, block_id, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi)
-     VALUES ('upload-crop-B1', ?, 'twain_scan_record', 'rec-p1', 'B1', 'subjective', ?, ?, ?, '{}', ?, 10, 10, 300)`
-  ).run(scanCardId, metaB1Restore.pageNumber, metaB1Restore.segmentIndex, metaB1Restore.questionKey, path.join(uploadCropDir, "rec-p1-B1.png"));
+     VALUES ('upload-crop-B1', ?, 'twain_scan_record', 'rec-p1', 'B1', 'subjective', ?, ?, ?, ?, ?, 10, 10, 300)`
+  ).run(scanCardId, metaB1Restore.pageNumber, metaB1Restore.segmentIndex, metaB1Restore.questionKey, uploadCropRectJson, path.join(uploadCropDir, "rec-p1-B1.png"));
 
   {
     const dupPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);

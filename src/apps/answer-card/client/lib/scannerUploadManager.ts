@@ -461,20 +461,46 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     return { sessionId: data.sessionId, tokens: data.uploadTokens };
   }
 
+  /**
+   * 扫描端复用缓存：404 / 超时 / 5xx / 畸形 JSON 都当未命中，退回本机 includeCrops 识别。
+   * 401/403 与版本冲突仍向上抛出，不能静默吞掉。
+   */
+  async function tryReuseScanUploadPayload(
+    payloadUrl: string,
+    cardVersion: string,
+  ): Promise<UploadRecognition | null> {
+    try {
+      const cached = await (deps.localFetch ?? authFetch)(payloadUrl, { signal: timeoutSignal(pageTimeoutMs) });
+      if (cached.ok) {
+        let result: UploadRecognition;
+        try {
+          result = await cached.json() as UploadRecognition;
+        } catch {
+          return null;
+        }
+        if (result.cardVersion && result.cardVersion !== cardVersion) {
+          throw Object.assign(new Error("答题卡版本已变化，请重新识别后上传"), { noRetry: true });
+        }
+        return result;
+      }
+      if (cached.status === 404) return null;
+      if (cached.status === 401 || cached.status === 403) throw await httpError(cached);
+      return null;
+    } catch (error) {
+      if (error && typeof error === "object" && "noRetry" in error) throw error;
+      const status = (error as { status?: number }).status;
+      if (status === 401 || status === 403) throw error;
+      return null;
+    }
+  }
+
   async function recognizePageForUpload(j: JobRecord, page: PageRecord, blobData: Blob): Promise<UploadRecognition> {
     const recordId = page.input.recordId;
     const payloadUrl = j.kind === "scan" && recordId
       ? `/api/scanner/record/${encodeURIComponent(recordId)}/upload-payload` : page.input.uploadPayloadUrl;
     if (payloadUrl) {
-      const cached = await (deps.localFetch ?? authFetch)(payloadUrl, { signal: timeoutSignal(pageTimeoutMs) });
-      if (cached.ok) {
-        const result = await cached.json() as UploadRecognition;
-        if (result.cardVersion && result.cardVersion !== j.cardVersion) {
-          throw Object.assign(new Error("答题卡版本已变化，请重新识别后上传"), { noRetry: true });
-        }
-        return result;
-      }
-      if (cached.status !== 404) throw await httpError(cached);
+      const cachedRecognition = await tryReuseScanUploadPayload(payloadUrl, j.cardVersion);
+      if (cachedRecognition) return cachedRecognition;
     }
     const localForm = new FormData();
     localForm.append("file", blobData, `page_${page.input.pageNum}.jpg`);
