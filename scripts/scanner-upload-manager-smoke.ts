@@ -201,12 +201,81 @@ async function main() {
           localSessionId: "scan-retry-cache",
           identityMode: "strict",
           pages: [{
-            pageNum: 1, side: "front", groupId: "0", recordId: "rec_retry", studentId: "22222",
+            pageNum: 1, side: "front", groupId: "0", recordId: "rec_retry",
             getBlob: async () => blob(),
           }],
         });
-        assert((await waitTerminal(mgr, retryId)).status === "done", "带手工学号的上传应完成");
-        assert(uploadedStudent === "22222", "upload-payload 缓存命中时 page.input.studentId 须压住快照学号");
+        assert((await waitTerminal(mgr, retryId)).status === "done", "复用 upload-payload 的上传应完成");
+        assert(uploadedStudent === "11111", "命中版本化缓存时以 payload 内学号为准，不用入队快照");
+      } finally {
+        if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+        else Reflect.deleteProperty(globalThis, "localStorage");
+      }
+    }
+
+    {
+      // P1：入队时携带的 result.studentId 是汇总时刻快照；若在入队后、prepare 前保存了学号订正，
+      // 命中 versioned upload-payload 时仍须以 getCorrection 为准，不得用旧快照覆盖。
+      let uploadedStudent = "";
+      const cachedPayload = {
+        status: "ok",
+        correctionRevision: 1,
+        cardVersion: TEST_CARD_VERSION,
+        studentId: { status: "ok", value: "91001" },
+        questions: [],
+        subjectiveQuestions: [],
+        geometry: { imageWidth: 100, imageHeight: 100, imageToLayout: [1, 0, 0, 0, 1, 0, 0, 0, 1], layoutToImage: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+      };
+      const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+      const values = new Map<string, string>([["projectx_server_url", "https://stale-enqueue-id.test"]]);
+      Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => { values.set(key, value); },
+        removeItem: (key: string) => { values.delete(key); },
+        key: (index: number) => [...values.keys()][index] ?? null,
+        get length() { return values.size; },
+      } });
+      try {
+        let correctionReads = 0;
+        const mgr = createScannerUploadManager(deps({
+          localFetch: async (url) => {
+            if (String(url).includes("/upload-payload")) return jsonRes(cachedPayload);
+            throw new Error("不应再走本机识别: " + url);
+          },
+          remoteFetch: async (url, init) => {
+            if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "stale-cache", uploadTokens: ["p1"] });
+            if (url.endsWith(PAGES)) {
+              uploadedStudent = JSON.parse(String((init!.body as FormData).get("recognition"))).studentId.value;
+              return jsonRes({ ok: true });
+            }
+            return jsonRes({ ok: true });
+          },
+        }));
+        const jobId = mgr.startUpload({
+          kind: "scan",
+          cardId: "card_1",
+          cardVersion: TEST_CARD_VERSION,
+          name: "扫描_91002",
+          localSessionId: "stale-snapshot",
+          identityMode: "strict",
+          pages: [{
+            pageNum: 1, side: "front", groupId: "0", recordId: "rec_stale",
+            studentId: "91001",
+            getCorrection: async () => {
+              correctionReads++;
+              return {
+                status: "ok",
+                studentId: { status: "ok", value: "91002" },
+                questions: [],
+                subjectiveQuestions: [],
+              };
+            },
+            getBlob: async () => blob(),
+          }],
+        });
+        assert((await waitTerminal(mgr, jobId)).status === "done", "带缓存且事后订正学号的上传应完成");
+        assert(correctionReads >= 1, "命中 upload-payload 仍须读取已保存订正");
+        assert(uploadedStudent === "91002", "保存的学号订正须压住缓存与入队快照");
       } finally {
         if (previous) Object.defineProperty(globalThis, "localStorage", previous);
         else Reflect.deleteProperty(globalThis, "localStorage");
@@ -1175,10 +1244,11 @@ async function main() {
     const id = mgr.startUpload({ ...baseInput(1), kind, pages: [{ pageNum: 1, side: "front", recordId: "local-record",
       uploadPayloadUrl: "/api/cards/card_1/grading/upload-payload/import.png",
       getBlob: async () => { reads++; return blob(); },
-      ...(kind === "scan" ? { getCorrection: async () => { corrections++; throw new Error("redundant correction fetch"); } } : {}),
+      ...(kind === "scan" ? { getCorrection: async () => { corrections++; return undefined; } } : {}),
     }] });
     assert((await waitTerminal(mgr, id)).status === "error", "crop failure exhausts its retries");
-    assert(reads === 1 && recognitions === 1 && corrections === 0 && images === 1 && crops === 3,
+    const expectedCorrections = kind === "scan" ? 1 : 0;
+    assert(reads === 1 && recognitions === 1 && corrections === expectedCorrections && images === 1 && crops === 3,
       "failed crops must not repeat image reads, recognition, correction or original upload");
     failCrops = false; mgr.retryFailed(id);
     assert((await waitTerminal(mgr, id)).status === "done", "manual retry completes remaining crops");

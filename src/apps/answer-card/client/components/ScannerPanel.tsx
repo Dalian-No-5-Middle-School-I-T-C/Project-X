@@ -612,7 +612,7 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
         pages: result.pages.map(page => ({
           recordId: page.recordId,
           pageNum: page.pageNum, side: page.side, groupId: result.groupId,
-          layoutPage: page.layoutPage, studentId: result.studentId,
+          layoutPage: page.layoutPage,
           getCorrection: async () => {
             const response = await authFetch(`/api/scanner/session/${sid}/groups/${result.groupId}/correction`);
             if (response.status === 409) return undefined; // Older scans have no alignment snapshot.
