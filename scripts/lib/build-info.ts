@@ -8,6 +8,9 @@
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+const realPathCanonical = "native" in realpathSync
+  ? (realpathSync as typeof realpathSync & { native: (path: string) => string }).native
+  : realpathSync;
 import path from "node:path";
 import { BUILD_INFO_FILE_NAME, BUILD_INFO_SCHEMA, type BuildInfo } from "../../src/shared/buildInfo";
 
@@ -67,7 +70,7 @@ function isGitRoot(rootDir: string): boolean {
   const top = git(rootDir, ["rev-parse", "--show-toplevel"]);
   if (top === null) return false;
   try {
-    return realpathSync(top) === realpathSync(rootDir);
+    return realPathCanonical(top) === realPathCanonical(rootDir);
   } catch {
     return false;
   }

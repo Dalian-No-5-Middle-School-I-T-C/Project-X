@@ -319,7 +319,7 @@ section("管理员控制台接口的真实行为");
   process.chdir(originalCwd);
 }
 
-rmSync(tmpDir, { recursive: true, force: true });
+rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 
 console.log(`\n通过 ${results.length} 项，失败 ${failures} 项。`);
 if (failures > 0) process.exit(1);
