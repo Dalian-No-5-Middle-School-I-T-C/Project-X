@@ -1,7 +1,6 @@
 import { useRef, useState, type FormEvent } from "react";
 import { BookOpen, ChevronDown, ChevronRight, Globe, LogIn, Shield } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
-import { BeianFooter } from "./BeianFooter";
 import { ServerConfigDialog } from "./ServerConfigDialog";
 import { SkinSwitcher } from "./SkinSwitcher";
 import { UserGuideModal } from "./UserGuideModal";
@@ -145,7 +144,6 @@ export function LoginPageScanner({ skin, onSkinChange }: Props) {
           </Button>
         </form>
       </Card>
-      <BeianFooter className="text-xs" floating />
       <UserGuideModal open={showGuide} onClose={() => setShowGuide(false)} />
     </div>
   );

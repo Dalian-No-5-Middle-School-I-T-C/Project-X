@@ -249,6 +249,12 @@ node scripts/hash-release-artifacts.cjs --check --root <产物目录>
 
 > 多端详细说明见 [`readus/多端使用说明.md`](./readus/多端使用说明.md)
 
+#### Ubuntu 服务端打包的备案配置
+
+在打包机的仓库根目录创建 `beian.local.json`，填写 `icp` 和 `publicSecurity` 字符串，值为完整的备案显示文字。两个字段均可省略，公安备案链接会从 `publicSecurity` 中读取备案数字。
+
+运行 `npm run package:server:ubuntu24` 时，脚本会读取这份 Git 忽略的本机配置，写入安装包的 `dist/web/beian.json`。缺少本机配置时，安装包使用空配置，网页隐藏备案页脚。部署后可编辑这份 JSON 并刷新页面查看变更。
+
 ---
 
 ### 移动端 Web 适配
