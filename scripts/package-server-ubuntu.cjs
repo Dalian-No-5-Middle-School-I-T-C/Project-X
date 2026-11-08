@@ -11,6 +11,7 @@ const {
   writeFileSync
 } = require("node:fs");
 const path = require("node:path");
+const { z } = require("zod");
 
 const rootDir = path.resolve(__dirname, "..");
 const packageJson = require(path.join(rootDir, "package.json"));
@@ -43,6 +44,28 @@ const packageName = `project-x-server-ubuntu24-${packageJson.version}`;
 const packageDir = path.join(outputRoot, packageName);
 const zipPath = path.join(outputRoot, `${packageName}.zip`);
 const deployReadmeName = "Ubuntu24\u6d4f\u89c8\u5668\u7248\u90e8\u7f72\u8bf4\u660e.md";
+
+const beianConfigSchema = z.strictObject({
+  icp: z.string().trim().min(1).optional(),
+  publicSecurity: z.string().trim().regex(/\d+/).optional()
+});
+
+function readBeianConfig() {
+  const configPath = path.join(rootDir, "beian.local.json");
+  let content;
+  try {
+    content = readFileSync(configPath, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return {};
+    throw error;
+  }
+
+  try {
+    return beianConfigSchema.parse(JSON.parse(content));
+  } catch {
+    throw new Error(`Invalid ${configPath}: expected a JSON object with optional icp and publicSecurity strings. publicSecurity must contain the record number.`);
+  }
+}
 
 function assertInsideRoot(targetPath) {
   const relative = path.relative(rootDir, path.resolve(targetPath));
@@ -225,6 +248,13 @@ export PROJECTX_DB_PATH=/var/lib/project-x/projectx.db
 export ANSWER_CARD_DATA_DIR=/var/lib/project-x/answer-card
 ./start.sh
 \`\`\`
+
+## Website Registration
+
+The browser reads \`dist/web/beian.json\` for the login and status footers. Set
+\`icp\` and/or \`publicSecurity\` to the full registration labels. The digits in
+\`publicSecurity\` are used for the police lookup link. Use \`{}\` to hide the footer.
+Refresh the page after editing the file.
 
 ## PDF Chinese Font
 
@@ -629,10 +659,12 @@ function buildPackage() {
   }
   if (correction.length<64 || correction.subarray(0,4).toString("hex")!=="7f454c46" || correction[4]!==2 || correction[5]!==1 || correction.readUInt16LE(18)!==62) throw new Error("Expected Linux x86_64 ELF correction recognizer");
 
+  const beianConfig = readBeianConfig();
   rmSync(outputRoot, { recursive: true, force: true });
   mkdirSync(packageDir, { recursive: true });
 
   copyDirectoryIfExists(path.join(rootDir, "dist", "web"), path.join(packageDir, "dist", "web"));
+  writeTextFile(path.join(packageDir, "dist", "web", "beian.json"), `${JSON.stringify(beianConfig, null, 2)}\n`);
   copyDirectoryIfExists(path.join(rootDir, "dist", "server"), path.join(packageDir, "dist", "server"));
   copyDirectoryIfExists(correctionDir,path.join(packageDir,"resources","native","correction-linux-x64"));
   cpSync(path.join(rootDir, "llmclient"), path.join(packageDir, "llmclient"), {

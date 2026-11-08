@@ -15,6 +15,7 @@ data/sponsor/qr/*
 .electron-builder-cache/
 release/
 *.env
+/beian.local.json
 *.pdf
 test*
 !testdata/
