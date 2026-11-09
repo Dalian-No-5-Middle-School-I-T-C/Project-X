@@ -148,16 +148,34 @@ function verifyMsiWithWindowsInstaller(artifact) {
     // 「与构建产物不一致」这种查不出原因的假失败。
     const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
     const deadline = Date.now() + 120_000;
-    let unsettled = [];
+    const asar = require("@electron/asar");
+    const buildInfoEntry = path.join("dist", "server", "build-info.json");
+    const buildInfoPath = path.join(root, buildInfoEntry);
+    // 单独核验 MSI 时，调用者可能只保留了安装包和原生件暂存目录。
+    const buildInfo = verifyMsi && !fs.existsSync(buildInfoPath) ? null : fs.readFileSync(buildInfoPath);
     for (;;) {
       const extracted = walk(checkDir);
-      unsettled = staged.filter(({ name, bytes }) => !extracted.some((file) =>
+      const pending = staged.filter(({ name, bytes }) => !extracted.some((file) =>
         path.basename(file).toLowerCase() === name
         && fs.statSync(file).size === bytes.length
-        && fs.readFileSync(file).equals(bytes)));
-      if (unsettled.length === 0) break;
+        && fs.readFileSync(file).equals(bytes))).map(({ label }) => label);
+      if (pending.length === 0) {
+        if (!buildInfo) break;
+        const archive = extracted.find((file) =>
+          path.basename(file).toLowerCase() === "app.asar"
+          && path.basename(path.dirname(file)).toLowerCase() === "resources");
+        try {
+          if (!archive) throw new Error("缺少 resources/app.asar");
+          if (!asar.extractFile(archive, buildInfoEntry).equals(buildInfo)) {
+            throw new Error("构建信息与本次构建不一致");
+          }
+          break;
+        } catch (error) {
+          pending.push(`resources/app.asar/${buildInfoEntry}（${error.message}）`);
+        }
+      }
       if (Date.now() >= deadline) {
-        throw new Error(`MSI 解包后缺件或字节尚未落齐：${unsettled.map((item) => item.label).join("、")}（stage 共 ${staged.length} 件）${logTail()}`);
+        throw new Error(`MSI 解包后缺件或字节尚未落齐：${pending.join("、")}（stage 共 ${staged.length} 件）${logTail()}`);
       }
       sleep(2000);
     }
@@ -336,6 +354,7 @@ async function main() {
   const asarEntries = [
     path.join("dist", "scanner", "index.html"),
     path.join("dist", "server", "index.mjs"),
+    path.join("dist", "server", "build-info.json"),
     path.join("electron", "main.cjs")
   ];
   for (const entry of asarEntries) asar.statFile(archive, entry);

@@ -1,29 +1,11 @@
-/**
- * 随包原生组件的源码摘要清单核对（三条构建线共用一份判据：win-ia32 / win-x64 / correction-linux-x64）。
- *
- * 要解决的问题：清单只是「记了哪些就查哪些」，于是把 `source-sha256.txt` 截断成空文件、
- * 或删掉其中几行，核对照样全绿——随包二进制相对当前源码已经旧了，门禁却看不见。
- * 这里把判据收成一个方向：**先算出这条构建线必须由哪些源码决定，再要求清单逐条覆盖**，
- * 缺覆盖就是失败，而不是「少写少查」。
- *
- * 用法（ESM 侧用 createRequire，与 scripts/verify-scanner-recovery.ts 取 .cjs 同一套路）：
- *   const { verifyNativeSourceManifest } = require("./lib/native-source-manifest.cjs");
- *   const result = verifyNativeSourceManifest({ rootDir, lane: "win-ia32" });
- *
- * `lane` 决定必选源码集合：识别器源码目录下的全部 .cpp/.hpp、该线的 CMake 入口与
- * toolchain、以及那条线自己的构建脚本（脚本改了同样会改变产出的二进制）。
- *
- * 两处真相要留意：这里的必选集合，与 `scripts/build-native-mingw.sh`、
- * `scripts/build-recognizer-linux.sh` 里那条 `sha256sum` 生成的文件列表必须保持同步。
- * 构建脚本不能引这个库（它们要在只有 cmake/coreutils 的 Linux 构建机上跑），所以清单少写一项时
- * 这里报的是「缺必选覆盖」——看到这条先去看构建脚本的 `sha256sum` 调用，别只往清单里手工补一行
- * （手工补的那行下一次重编会被脚本自己冲掉）。清单也没有注释语法：加 `#` 表头会被判「无法解析的行」。
- */
+// 输入清单记录原生构建读取的文件。构建记录同时校验清单和最终二进制。
 const { existsSync, readFileSync, readdirSync } = require("node:fs");
 const { createHash } = require("node:crypto");
 const path = require("node:path");
 
 const RECOGNIZER_SOURCE_DIR = "native/AnswerCardRecognizer/answer-card-recognizer";
+const BRIDGE_SOURCE_DIR = "native/ScannerBridge/scanner-bridge";
+const TWAIN_INCLUDE_DIR = "native/ScannerBridge/third_party/twain-dsm-2.5.1/include";
 const CMAKE_ENTRY = "native/CMakeLists.txt";
 
 /** 每条构建线的必选源码。新增源码文件会自动进必选集合，不需要再维护一份列表。 */
@@ -33,89 +15,82 @@ const LANES = {
     manifest: "resources/native/win-ia32/source-sha256.txt",
     toolchains: ["native/cmake/mingw-ia32.cmake"],
     buildScripts: ["scripts/build-native-mingw.sh"],
-    packagedBinary: "resources/native/win-ia32/answer-card-recognizer.exe",
-    packagedBinaryDigest: "resources/native/win-ia32/binary.sha256",
-    packagedBinaryBasename: "answer-card-recognizer.exe",
+    binaries: ["answer-card-recognizer.exe", "scanner-bridge.exe"],
   },
   "win-x64": {
     label: "Windows x64 识别器",
     manifest: "resources/native/win-x64/source-sha256.txt",
     toolchains: ["native/cmake/mingw-x64.cmake"],
     buildScripts: ["scripts/build-native-mingw.sh"],
-    packagedBinary: "resources/native/win-x64/answer-card-recognizer.exe",
-    packagedBinaryDigest: "resources/native/win-x64/binary.sha256",
-    packagedBinaryBasename: "answer-card-recognizer.exe",
+    binaries: ["answer-card-recognizer.exe", "scanner-bridge.exe"],
   },
   "correction-linux-x64": {
     label: "Linux x86_64 补识别器",
     manifest: "resources/native/correction-linux-x64/source-sha256.txt",
     toolchains: ["native/cmake/linux-x64.cmake"],
     buildScripts: ["scripts/build-recognizer-linux.sh"],
-    packagedBinary: "resources/native/correction-linux-x64/answer-card-recognizer",
-    packagedBinaryDigest: "resources/native/correction-linux-x64/binary.sha256",
-    packagedBinaryBasename: "answer-card-recognizer",
+    binaries: ["answer-card-recognizer"],
   },
 };
 
-function joinPosix(...parts) {
-  return parts.filter(Boolean).join("/");
-}
-
-/** 识别器源码目录里当前存在的 .cpp/.hpp（相对仓库根，正斜杠）。 */
-function recognizerSources(rootDir) {
-  const dir = path.join(rootDir, ...RECOGNIZER_SOURCE_DIR.split("/"));
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && /\.(cpp|hpp)$/.test(entry.name))
-    .map((entry) => joinPosix(RECOGNIZER_SOURCE_DIR, entry.name))
-    .sort();
-}
-
-function requiredSources(rootDir, lane) {
+function requiredSources(rootDir, lane, failures) {
   const spec = LANES[lane];
-  if (!spec) throw new Error(`未知的原生件构建线：${lane}`);
-  return [...recognizerSources(rootDir), CMAKE_ENTRY, ...spec.toolchains, ...spec.buildScripts];
+  const inputs = new Set([
+    CMAKE_ENTRY,
+    "scripts/lib/native-build-record.sh",
+    ...spec.toolchains,
+    ...spec.buildScripts,
+  ]);
+  const sourceDirs = [RECOGNIZER_SOURCE_DIR];
+  if (lane.startsWith("win-")) {
+    sourceDirs.push(BRIDGE_SOURCE_DIR, TWAIN_INCLUDE_DIR);
+    inputs.add(`${TWAIN_INCLUDE_DIR}/twain.h`);
+  }
+  for (const sourceDir of sourceDirs) {
+    const directory = path.join(rootDir, sourceDir);
+    const files = existsSync(directory)
+      ? readdirSync(directory, { recursive: true, withFileTypes: true })
+          .filter((entry) => entry.isFile() && /\.(cpp|h|hpp)$/.test(entry.name))
+      : [];
+    if (files.length === 0) failures.push(`找不到 ${spec.label} 的构建输入：${sourceDir}`);
+    for (const entry of files) {
+      inputs.add(path.relative(rootDir, path.join(entry.parentPath, entry.name)).split(path.sep).join("/"));
+    }
+  }
+  return [...inputs];
 }
 
 function sha256Bytes(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/**
- * 随包识别器二进制与入库的 `binary.sha256` 绑定。
- * 源码清单被手工改齐而二进制没重编时，仅靠 source-sha256.txt 仍会通过——这里单独核对磁盘上的 exe/ELF。
- */
-function verifyPackagedBinaryDigest(rootDir, lane) {
-  const spec = LANES[lane];
-  if (!spec?.packagedBinary) return [];
+function verifyBuildRecord(rootDir, spec, sourceManifest) {
+  const directory = path.dirname(sourceManifest);
+  const record = path.join(directory, "binary.sha256");
+  const label = path.relative(rootDir, record);
+  if (!existsSync(record)) return [`找不到 ${spec.label} 的构建记录：${label}`];
+
+  const files = new Map([
+    ["source-sha256.txt", sourceManifest],
+    ...spec.binaries.map((name) => [name, path.join(directory, name)]),
+  ]);
   const failures = [];
-  const digestPath = path.join(rootDir, ...spec.packagedBinaryDigest.split("/"));
-  const binaryPath = path.join(rootDir, ...spec.packagedBinary.split("/"));
-  if (!existsSync(digestPath)) {
-    failures.push(`找不到 ${spec.label} 的随包二进制摘要：${spec.packagedBinaryDigest}`);
-    return failures;
+  for (const line of readFileSync(record, "utf8").trimEnd().split(/\r?\n/)) {
+    const match = /^([a-f0-9]{64})  ([A-Za-z0-9_.-]+)$/.exec(line);
+    if (!match || !files.has(match[2])) {
+      failures.push(`${label} 包含无效或重复的记录：${line.slice(0, 80)}`);
+      continue;
+    }
+    const [, expected, name] = match;
+    const file = files.get(name);
+    files.delete(name);
+    if (!existsSync(file)) {
+      failures.push(`找不到构建产物：${path.relative(rootDir, file)}`);
+    } else if (sha256Bytes(readFileSync(file)) !== expected) {
+      failures.push(`${name} 与 ${label} 的摘要不一致。请重编 ${spec.label} 并一起导入产物与清单。`);
+    }
   }
-  if (!existsSync(binaryPath)) {
-    failures.push(`找不到随包二进制：${spec.packagedBinary}`);
-    return failures;
-  }
-  const lines = readFileSync(digestPath, "utf8").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const match = /^([a-f0-9]{64})\s+(\S+)\s*$/.exec(lines[0] ?? "");
-  if (!match) {
-    failures.push(`${spec.packagedBinaryDigest} 无法解析（须为 sha256sum 单行格式）`);
-    return failures;
-  }
-  const [, expected, basename] = match;
-  if (basename !== spec.packagedBinaryBasename) {
-    failures.push(`${spec.packagedBinaryDigest} 记录的文件名应为 ${spec.packagedBinaryBasename}，实际为 ${basename}`);
-  }
-  const actual = sha256Bytes(readFileSync(binaryPath));
-  if (actual !== expected) {
-    failures.push(
-      `随包 ${spec.packagedBinaryBasename} 与 ${spec.packagedBinaryDigest} 不一致（清单 ${actual.slice(0, 12)}… ≠ 仓库 ${expected.slice(0, 12)}…）。`
-        + "重编识别器后须同时更新 binary.sha256 与源码清单，不能只改 source-sha256.txt。",
-    );
-  }
+  for (const name of files.keys()) failures.push(`${label} 缺少 ${name} 的摘要。`);
   return failures;
 }
 
@@ -135,9 +110,10 @@ function verifyNativeSourceManifest({ rootDir, lane, manifestPath }) {
   const failures = [];
   const crlfCheckout = [];
   const entries = new Map();
+  const required = requiredSources(rootDir, lane, failures);
   if (!existsSync(file)) {
     failures.push(`找不到 ${spec.label} 的源码摘要清单：${path.relative(rootDir, file).split(path.sep).join("/")}`);
-    return { entries, failures, missing: requiredSources(rootDir, lane), unparsable: [], crlfCheckout };
+    return { entries, failures, missing: required, unparsable: [], crlfCheckout };
   }
   const lines = readFileSync(file, "utf8").split(/\r?\n/).filter((line) => line.trim() !== "");
   if (lines.length === 0) {
@@ -172,21 +148,13 @@ function verifyNativeSourceManifest({ rootDir, lane, manifestPath }) {
     failures.push(`${relative} 与清单摘要不一致：源码已改动而随包 ${spec.label} 没有重编。`);
     entries.set(relative, expected);
   }
-  const missing = requiredSources(rootDir, lane).filter((relative) => !entries.has(relative));
+  const missing = required.filter((relative) => !entries.has(relative));
   if (missing.length > 0) {
     failures.push(`${spec.label} 的源码摘要清单缺 ${missing.length} 项必选覆盖：${missing.join("、")}。`
       + "清单没记的源码改动不会触发任何失败，等于允许随包二进制悄悄落后于审过的源码。");
   }
-  for (const message of verifyPackagedBinaryDigest(rootDir, lane)) failures.push(message);
+  failures.push(...verifyBuildRecord(rootDir, spec, file));
   return { entries, failures, missing, unparsable, crlfCheckout, manifest: spec.manifest, label: spec.label };
 }
 
-module.exports = {
-  LANES,
-  RECOGNIZER_SOURCE_DIR,
-  recognizerSources,
-  requiredSources,
-  sha256Bytes,
-  verifyPackagedBinaryDigest,
-  verifyNativeSourceManifest,
-};
+module.exports = { verifyNativeSourceManifest };

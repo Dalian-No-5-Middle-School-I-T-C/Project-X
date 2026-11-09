@@ -17,7 +17,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -209,6 +209,47 @@ try {
   ok(threw, "清单里出现格式不符的行时抛错，而不是当成「没有这个文件」悄悄放过");
   ok(hasher.parseManifest("").size === 0, "空清单解析为空表（由 --check 的缺失分支负责报错）");
   ok(hasher.SCAN_ROOTS.length === 2 && hasher.SCAN_ROOTS[0] === "", "扫描根包含 release/ 本身与 server-ubuntu24/");
+
+  section("原生构建记录");
+  {
+    const { verifyNativeSourceManifest } = require("./lib/native-source-manifest.cjs") as {
+      verifyNativeSourceManifest: (options: { rootDir: string; lane: string }) => { failures: string[] };
+    };
+    const lane = "win-ia32";
+    const nativeRoot = path.join(fixture, "native-record");
+    const nativeResources = path.join("resources", "native", lane);
+    const resources = path.join(nativeRoot, nativeResources);
+    const manifest = path.join(resources, "source-sha256.txt");
+    mkdirSync(path.join(nativeRoot, "scripts", "lib"), { recursive: true });
+    mkdirSync(resources, { recursive: true });
+    cpSync("native", path.join(nativeRoot, "native"), { recursive: true });
+    for (const file of ["scripts/build-native-mingw.sh", "scripts/lib/native-build-record.sh"]) {
+      cpSync(file, path.join(nativeRoot, file));
+    }
+    for (const file of ["source-sha256.txt", "binary.sha256", "answer-card-recognizer.exe", "scanner-bridge.exe"]) {
+      cpSync(path.join(nativeResources, file), path.join(resources, file));
+    }
+    const verify = () => verifyNativeSourceManifest({ rootDir: nativeRoot, lane }).failures;
+    ok(verify().length === 0, "同一次构建的源码清单、识别器和扫描桥通过校验");
+
+    const originalManifest = readFileSync(manifest, "utf8");
+    const source = "native/ScannerBridge/scanner-bridge/main.cpp";
+    const sourceFile = path.join(nativeRoot, source);
+    const originalSource = readFileSync(sourceFile);
+    appendFileSync(sourceFile, "\n#error Source changed after native build\n");
+    const rewrittenManifest = originalManifest.split("\n")
+      .map((line) => line.endsWith(`  ${source}`) ? `${hasher.sha256Of(sourceFile)}  ${source}` : line)
+      .join("\n");
+    writeFileSync(manifest, rewrittenManifest);
+    ok(verify().some((failure) => failure.includes("source-sha256.txt 与")),
+      "只刷新扫描桥源码清单、沿用旧二进制时拒绝");
+    writeFileSync(sourceFile, originalSource);
+    writeFileSync(manifest, originalManifest);
+
+    appendFileSync(path.join(resources, "scanner-bridge.exe"), "modified binary");
+    ok(verify().some((failure) => failure.includes("scanner-bridge.exe 与")),
+      "只替换扫描桥二进制时拒绝");
+  }
 
   section("5. 打包命令接线");
   const wired = ["electron:dist", "electron:dist:ia32", "electron:msi", "electron:msi:ia32", "package:server:ubuntu24"];

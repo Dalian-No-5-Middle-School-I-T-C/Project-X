@@ -614,6 +614,28 @@ function createZip(sourceDir, targetZipPath) {
   zip.writeZip(targetZipPath);
 }
 
+function verifyCorrectionRecognizer(directory) {
+  const { verifyNativeSourceManifest } = require("./lib/native-source-manifest.cjs");
+  const sourceCheck = verifyNativeSourceManifest({
+    rootDir,
+    lane: "correction-linux-x64",
+    manifestPath: path.join(directory, "source-sha256.txt"),
+  });
+  if (sourceCheck.crlfCheckout.length > 0) {
+    throw new Error(`${sourceCheck.crlfCheckout.join("、")} 是 CRLF 检出的工作副本，无法核对随包 Linux 识别器源码摘要。`
+      + "请在 LF 检出（Linux 构建机或 CI）上打包，不要用 autocrlf=true 的 Windows 副本。");
+  }
+  if (sourceCheck.failures.length > 0) {
+    throw new Error(`随包 Linux 补识别器的构建记录未通过：\n  - ${sourceCheck.failures.join("\n  - ")}`
+      + "\n请重新运行 npm run native:build:correction:linux-x64，并一并导入生成的构建记录。");
+  }
+  const binary = readFileSync(path.join(directory, "answer-card-recognizer"));
+  if (binary.length < 64 || binary.subarray(0, 4).toString("hex") !== "7f454c46"
+    || binary[4] !== 2 || binary[5] !== 1 || binary.readUInt16LE(18) !== 62) {
+    throw new Error("Expected Linux x86_64 ELF correction recognizer");
+  }
+}
+
 function buildPackage() {
   assertInsideRoot(outputRoot);
   assertInsideRoot(packageDir);
@@ -635,31 +657,18 @@ function buildPackage() {
     throw new Error("Missing dist/server/build-info.json. Run npm run build:server before packaging.");
   }
 
-  const correctionDir = path.join(rootDir,"resources","native","correction-linux-x64");
-  const correction = readFileSync(path.join(correctionDir,"answer-card-recognizer"));
-  // 源码摘要核对与 ia32 的发布门禁共用一份判据（scripts/lib/native-source-manifest.cjs）：
-  // 除了逐行比摘要，还要求清单覆盖这条线的必选源码——识别器目录下的每个 .cpp/.hpp、
-  // native/CMakeLists.txt、本线 toolchain 与本线构建脚本。清单被截断或被删行不再是「通过」。
-  const { verifyNativeSourceManifest } = require("./lib/native-source-manifest.cjs");
-  const sourceCheck = verifyNativeSourceManifest({ rootDir, lane: "correction-linux-x64" });
-  // 行尾差异是检出问题，不是源码变更：Windows 的 autocrlf 工作副本要把人引到 LF 检出上去打包，
-  // 而源码真变了才维持原来的拒绝结论。两种成因分开说，别再报成一句误导的「源码变了，请重编」。
-  if (sourceCheck.crlfCheckout.length > 0) {
-    throw new Error(`${sourceCheck.crlfCheckout.join("、")} 是 CRLF 检出的工作副本，无法核对随包 Linux 识别器源码摘要。`
-      + "请在 LF 检出（Linux 构建机或 CI）上打包，不要用 autocrlf=true 的 Windows 副本。");
-  }
-  if (sourceCheck.failures.length > 0) {
-    throw new Error(`随包 Linux 补识别器的源码核对未通过：\n  - ${sourceCheck.failures.join("\n  - ")}`
-      + "\n源码与随包二进制对不上时不能打包：请按 native-ia32 同源工序重编 Linux 补识别器并入库。");
-  }
-  if (correction.length<64 || correction.subarray(0,4).toString("hex")!=="7f454c46" || correction[4]!==2 || correction[5]!==1 || correction.readUInt16LE(18)!==62) throw new Error("Expected Linux x86_64 ELF correction recognizer");
+  const correctionPath = path.join("resources", "native", "correction-linux-x64");
+  const correctionDir = path.join(rootDir, correctionPath);
+  verifyCorrectionRecognizer(correctionDir);
 
   rmSync(outputRoot, { recursive: true, force: true });
   mkdirSync(packageDir, { recursive: true });
 
   copyDirectoryIfExists(path.join(rootDir, "dist", "web"), path.join(packageDir, "dist", "web"));
   copyDirectoryIfExists(path.join(rootDir, "dist", "server"), path.join(packageDir, "dist", "server"));
-  copyDirectoryIfExists(correctionDir,path.join(packageDir,"resources","native","correction-linux-x64"));
+  const packagedCorrectionDir = path.join(packageDir, correctionPath);
+  copyDirectoryIfExists(correctionDir, packagedCorrectionDir);
+  verifyCorrectionRecognizer(packagedCorrectionDir);
   cpSync(path.join(rootDir, "llmclient"), path.join(packageDir, "llmclient"), {
     recursive: true,
     filter: (source) => {
