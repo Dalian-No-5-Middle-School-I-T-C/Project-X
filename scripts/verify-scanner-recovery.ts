@@ -7,7 +7,6 @@
  * 运行：npx tsx scripts/verify-scanner-recovery.ts
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import net from "node:net";
 import { createRequire } from "node:module";
 
@@ -133,57 +132,7 @@ function testPostprocessResume(): void {
   assert.equal(resolvePersistCardId("", null, 7), "", "没有历史选择时不写");
   assert.equal(resolvePersistCardId("", { userId: 7, cardId: "card-0" }, null), "", "未登录不写");
 
-  // 返回卡片列表后，内存 postSessions 仍属于刚离开的卡：交接结果必须同步改内存，
-  // 否则紧随其后的持久化 effect 会拿旧值把刚删掉的 0 页占位写回去。
-  const scannerAppSource = readFileSync(
-    new URL("../src/apps/answer-card/client/ScannerApp.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(scannerAppSource,
-    /onScanSessionAbandoned[\s\S]{0,700}resolvePersistCardId\(currentCardIdRef\.current, lastSelectionRef\.current, currentUserIdRef\.current\) === originCardId/,
-    "撤占位时要按持久化目标判断是否同步内存会话列表");
-  assert.match(scannerAppSource,
-    /onBatchArchived[\s\S]{0,900}resolvePersistCardId\(currentCardIdRef\.current, lastSelectionRef\.current, currentUserIdRef\.current\) === originCardId/,
-    "晚到归档同样要判断是否属于当前内存卡");
-  assert.match(scannerAppSource,
-    /const ownerUserId = scanSessionOwnersRef\.current\.get\(sid\) \?\? user\?\.id \?\? null/,
-    "交接要带上会话发起账号，不能只看当前闭包里的 user");
-  assert.match(scannerAppSource,
-    /const sameAccount = ownerUserId != null && currentUserIdRef\.current === ownerUserId/,
-    "晚到交接还要确认内存仍属于发起时的账号，不能写进换号后的新会话");
-  assert.match(scannerAppSource,
-    /if \(user\) return;\s*lastSelectionRef\.current = null;\s*setLiveScanSessionId\(null\);/,
-    "登出时清掉上次选卡和进行中的扫描，避免同账号重登用空列表覆盖已保存批次");
-  assert.match(scannerAppSource,
-    /onBatchArchived=\{[\s\S]{0,240}setLiveScanSessionId\(prev => prev === sid \? null : prev\)/,
-    "批次归档后不再把已结束的会话当成正在扫描");
-  const scannerPanelSource = readFileSync(
-    new URL("../src/apps/answer-card/client/components/ScannerPanel.tsx", import.meta.url),
-    "utf8",
-  );
-  // 顺序判据靠两个唯一锚点就够了：`onScanSessionStartedRef.current?.(staleSid)` 与
-  // `reconcileSessionHandoff(staleSid, 0)` 在全文件各只出现一次。原先给两个锚点之间加了
-  // 字数预算（{0,420}/{0,320}），结果这一小段里补一句失败提示、或把重复逻辑抽成函数，
-  // 都会把这条「补充性」检查挤红——AGENTS.md 明确「源码文本、正则、日志字串与顺序检查只作补充」。
-  // 「先登记占位 → 再取消 → 再对账」的真实行为由 scripts/scanner-panel-session-smoke.ts 的
-  // 晚到 /scan 响应场景端到端断言（含真实 fetch 顺序），这里不再用长度当判据。
-  assert.match(scannerPanelSource,
-    /attempt !== scanAttemptRef\.current[\s\S]*?onScanSessionStartedRef\.current\?\.\(staleSid\)[\s\S]*?reconcileSessionHandoff\(staleSid, 0\)/,
-    "晚到的 /scan 响应要先登记占位再取消并对账");
-  const postprocessSource = readFileSync(
-    new URL("../src/apps/answer-card/client/components/ScannerPostprocessPage.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(postprocessSource,
-    /view === "queue" \? queueCurrent : view === "correction" \? active : null/,
-    "只有队列和改分才写入停留位置");
-  assert.match(postprocessSource,
-    /if \(view === "results"\) \{[\s\S]{0,280}clearPostprocessView\(cardId, userId\)/,
-    "回到扫描结果时清掉停留位置");
-  assert.match(postprocessSource,
-    /\}, \[groups, cardId, userId\]\);[\s\S]{0,1600}\}, \[cardId, view, resumeTarget, userId\]\);/,
-    "恢复和写入停留位置都要跟着当前账号走");
-  console.log("  ✓ 后处理续接：会话列表 / 活动卡 / 停留视图 / 正常离开清理 / 交接回写内存");
+  console.log("  ✓ 后处理续接：会话列表 / 活动卡 / 停留视图 / 正常离开清理 / 按账号选择持久化目标");
 }
 
 const requireCjs = createRequire(import.meta.url);

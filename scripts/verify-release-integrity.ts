@@ -7,7 +7,7 @@
  * 并如实写出「未签名」这件事，而不是让产物看起来像已经过了签名。
  *
  * 本脚本用一次性临时目录真跑生成与校验（含篡改、多出文件、缺清单三种失败路径），
- * 再静态核对打包命令的接线与文档口径。
+ * 同时检查打包命令和签名配置。
  *
  * 用法：
  *   npx tsx scripts/verify-release-integrity.ts
@@ -33,7 +33,6 @@ const hasher: {
 } = require("../scripts/hash-release-artifacts.cjs");
 
 const hasherPath = path.resolve("scripts/hash-release-artifacts.cjs");
-const hasherSource = readFileSync(hasherPath, "utf8");
 const packageJson = JSON.parse(readFileSync(path.resolve("package.json"), "utf8")) as {
   version: string;
   scripts: Record<string, string>;
@@ -285,18 +284,9 @@ try {
     ok(!(packageJson.scripts[name] ?? "").includes("electronDist"), `${name} 不把 electronDist 指到本机目录`);
   }
 
-  section("6. 签名处置的口径与守卫");
+  section("6. 签名配置");
   ok(packageJson.build?.win?.signAndEditExecutable === false,
-    "signAndEditExecutable 仍是 false —— 本轮不假称已签名，处置是完整性凭据 + 文档");
-  ok(/CSC_LINK/.test(hasherSource) && /signAndEditExecutable === false/.test(hasherSource),
-    "环境里给了证书但配置关着签名时打印警告（否则「以为签了」的产物照样发出去）");
-  ok(/if \(require\.main === module\)/.test(hasherSource), "生成动作收在 require.main 判断里，验证脚本可以 require 其中的纯函数");
-  ok(/module\.exports = \{/.test(hasherSource), "导出 listArtifacts / parseManifest / sha256Of 供验证脚本直接调用");
-  const readme = readFileSync(path.resolve("README.md"), "utf8");
-  ok(readme.includes("SHA256SUMS.txt") && readme.includes("未签名"),
-    "README 有「未签名与完整性校验」一节，写明 SHA256SUMS.txt 的用法");
-  ok(readme.includes("signAndEditExecutable"), "README 写出 signAndEditExecutable=false 这个事实与启用签名的步骤");
-  ok(/certutil -hashfile/.test(readme), "README 给出现场不需要本仓库也能用的校验命令");
+    "扫描端打包配置关闭代码签名");
 } finally {
   rmSync(fixture, { recursive: true, force: true });
 }

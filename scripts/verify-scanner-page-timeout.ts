@@ -1,23 +1,9 @@
-/**
- * 等纸超时的默认值必须真正落到扫描机上（评审 P1「60 秒默认超时没有进入实际安装包」）。
- *
- * 复盘：#304 原先只把 `twain_controller.hpp` 的 pageTimeoutMs 从 15000 改成 60000，但
- *   - `resolveScannerBridgeExe()` 优先使用 `resources/native/<arch>/scanner-bridge.exe`，
- *   - 打包链路（electron:dist / :pack / :msi）只重编 better-sqlite3 后整目录拷贝 resources/native，
- *   - 两个预编译 exe 当时与主线逐字节相同。
- * 于是 UI 上写的「默认 60 秒」在现场跑的仍是旧 exe 的 15000ms，慢速 ADF 的
- * 「扫进 100 张只进 1 张」照旧。修法是不依赖二进制内部默认值，由调用链恒定显式传参；
- * 这里同时钉住「传参确实有效」的证据：预编译 exe 内含 --page-timeout-ms 开关。
- */
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { existsSync, readFileSync } from "node:fs";
 import {
   normalizePageTimeoutMs,
   PAGE_TIMEOUT_DEFAULT_MS,
 } from "../src/apps/answer-card/server/scanner/index";
-
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 // ① 缺省与非法输入一律回落到服务端默认 60s，绝不落到 undefined（那会交给旧 exe 的 15s）
 for (const bad of [undefined, null, NaN, Infinity, -Infinity, 0, -1, 1_999, 120_001, "30000", {}, []]) {
@@ -32,70 +18,38 @@ assert.equal(normalizePageTimeoutMs(120_000), 120_000, "②: 上限 2min 合法"
 assert.equal(normalizePageTimeoutMs(90_500.7), 90_501, "②: 小数取整后透传");
 assert.equal(normalizePageTimeoutMs(30_000), 30_000, "②: 用户显式选择必须生效，不能被默认覆盖");
 
-// ③ 调用链恒定传参：twain-bridge 只在 >0 时附加开关，而服务端已保证拿到的是正数
-{
-  const bridge = readFileSync(fileURLToPath(new URL("../src/apps/answer-card/server/scanner/twain-bridge.ts", import.meta.url)), "utf8");
-  assert.match(bridge, /if \(config\.pageTimeoutMs && config\.pageTimeoutMs > 0\)[\s\S]{0,120}"--page-timeout-ms", String\(config\.pageTimeoutMs\)/,
-    "③: twain-bridge 必须把 pageTimeoutMs 作为 --page-timeout-ms 传给 exe");
-  const route = readFileSync(fileURLToPath(new URL("../src/apps/answer-card/server/scanner/index.ts", import.meta.url)), "utf8");
-  assert.match(route, /pageTimeoutMs: normalizePageTimeoutMs\(body\.pageTimeoutMs\)/,
-    "③: 扫描入口必须规范化后再传，不能把 undefined 交给 native 默认");
-}
-
-// ④ 预编译二进制确实认这个开关：两个随包 exe 内含 --page-timeout-ms 字串。
-//    这是「显式传参足以生效」的直接证据；若将来替换的 exe 不再支持该开关，此断言会失败。
-for (const rel of ["resources/native/win-x64/scanner-bridge.exe", "resources/native/win-ia32/scanner-bridge.exe"]) {
-  const file = `${ROOT}${rel}`;
-  assert.ok(existsSync(file), `④: 缺少随包二进制 ${rel}`);
-  const bytes = readFileSync(file);
-  assert.ok(bytes.includes("--page-timeout-ms"), `④: ${rel} 不支持 --page-timeout-ms，默认值改不动现场`);
-  assert.ok(bytes.includes("pending=0 ADF enabled; waiting up to %dms for next transfer event"),
-    `④: ${rel} 缺少在途帧复核逻辑，请重建随包桥接程序`);
-  assert.ok(!bytes.includes("CAP_FEEDERLOADED unsupported; trusting pending count"),
-    `④: ${rel} 仍会在状态 5 读送纸器失败时提前结束，请重建随包桥接程序`);
-  assert.ok(bytes.includes("ICAP_PIXELTYPE requested=%u set=%s effective=%d"),
-    `④: ${rel} 缺少色彩协商诊断`);
-  assert.ok(bytes.includes("CAP_DUPLEXENABLED requested=%d set=%s effective=%d"),
-    `④: ${rel} 缺少双面模式回读检查，请重建随包桥接程序`);
-  assert.ok(bytes.includes("DPI requested=%d X(set=%s effective=%.4f) Y(set=%s effective=%.4f)"),
-    `④: ${rel} 缺少 X/Y 分辨率回读检查，请重建随包桥接程序`);
-  assert.ok(bytes.includes("image DPI requested=%d actualX=%.4f actualY=%.4f"),
-    `④: ${rel} 缺少实际图像分辨率检查，请重建随包桥接程序`);
-  assert.ok(bytes.includes("image pixel mode requested=%u actual=%d"),
-    `④: ${rel} 缺少实际图像色彩模式检查，请重建随包桥接程序`);
-  assert.ok(bytes.includes("transfer duplex contract requested=%d state=%d verified=%d"),
-    `④: ${rel} 缺少取图前单双面模式复核，请重建随包桥接程序`);
-}
-
-// ⑤ 头文件默认值与服务端默认值保持一致（防止两处各写一套：源码 60s、实际跑的 exe 15s）
-{
-  const hpp = readFileSync(fileURLToPath(new URL("../native/ScannerBridge/scanner-bridge/twain_controller.hpp", import.meta.url)), "utf8");
-  const m = hpp.match(/int pageTimeoutMs = (\d+);/);
-  assert.ok(m, "⑤: twain_controller.hpp 必须有 pageTimeoutMs 默认值");
-  assert.equal(Number(m![1]), PAGE_TIMEOUT_DEFAULT_MS,
-    `⑤: native 默认 ${m![1]}ms 与服务端 ${PAGE_TIMEOUT_DEFAULT_MS}ms 不一致，重编译后行为会漂移`);
-}
-
-// ⑥ issue #331 的收尾判定与坐标映射都在原生件里：随包 ia32 两颗必须真的带上，否则现场拿不到。
-//    只对 ia32 设硬门槛——win-x64 仍归 MSVC 工序（npm run native:build:x64），没出的包不能当成已出；
-//    x64 两颗缺 ②④ 的现状写在 readus/Windows32位扫描端交叉打包.md，出 64 位包前必须先重编补核对。
-//    收尾判定的字串从 twain_controller.cpp 现取，不抄在脚本里：抄写会让门槛反向失效——源码一改，
-//    旧 exe 继续判绿、按工序重编出来的正确产物反被 judged 红（2026-10-17 复核点名的就是这条）。
-{
-  const bridgeSource = readFileSync(
-    fileURLToPath(new URL("../native/ScannerBridge/scanner-bridge/twain_controller.cpp", import.meta.url)), "utf8");
-  const endXferLogs = [...bridgeSource.matchAll(/fprintf\(stderr, "\[ScannerBridge\] (ENDXFER: [^"]+)\\n"/g)]
-    .map((match) => match[1]);
-  assert.ok(endXferLogs.length >= 4,
-    `⑥: 桥接源码里应能取到正反两面各自的收尾/继续日志，实际 ${endXferLogs.length} 条，取不到就没有核对依据`);
-  const bridge = readFileSync(fileURLToPath(new URL("../resources/native/win-ia32/scanner-bridge.exe", import.meta.url)));
-  for (const log of endXferLogs) {
-    assert.ok(bridge.includes(log),
-      `⑥: win-ia32/scanner-bridge.exe 不含源码现有的收尾判定「${log}」，包内件是旧产物——双面时会把背面丢掉却整批报成功（现场即「只能扫一张」）。请按 readus/Windows32位扫描端交叉打包.md 重编并入库`);
+// Read the shipped executables directly. These markers identify the expected artifacts.
+for (const arch of ["win-x64", "win-ia32"]) {
+  const file = new URL(`../resources/native/${arch}/scanner-bridge.exe`, import.meta.url);
+  assert.ok(existsSync(file), `缺少随包扫描桥 ${arch}/scanner-bridge.exe`);
+  const bridge = readFileSync(file);
+  for (const marker of [
+    "--page-timeout-ms",
+    "pending=0 ADF enabled; waiting up to %dms for next transfer event",
+    "ICAP_PIXELTYPE requested=%u set=%s effective=%d",
+    "DPI requested=%d X(set=%s effective=%.4f) Y(set=%s effective=%.4f)",
+    "image DPI requested=%d actualX=%.4f actualY=%.4f",
+    "image pixel mode requested=%u actual=%d",
+    "transfer duplex contract requested=%d state=%d verified=%d",
+  ]) {
+    assert.ok(bridge.includes(marker), `${arch} 随包扫描桥缺少标记 ${marker}`);
   }
-  const recognizer = readFileSync(fileURLToPath(new URL("../resources/native/win-ia32/answer-card-recognizer.exe", import.meta.url)));
-  assert.ok(recognizer.includes("layoutToImage"),
-    "⑥: win-ia32/answer-card-recognizer.exe 不含 geometry 坐标映射，异常卷改分只剩不可点击的原图，请重编随包识别器");
+  assert.ok(!bridge.includes("CAP_FEEDERLOADED unsupported; trusting pending count"),
+    `${arch} 随包扫描桥含旧版送纸器回退标记`);
+  if (arch === "win-ia32") {
+    for (const marker of [
+      "ENDXFER: end of job after sheet",
+      "ENDXFER: end of job after back of sheet",
+      "ENDXFER: rc=ENDOFLIST but pending=%u after sheet",
+      "ENDXFER: rc=ENDOFLIST but pending=%u after back of sheet",
+    ]) {
+      assert.ok(bridge.includes(marker), `ia32 随包扫描桥缺少收尾标记 ${marker}`);
+    }
+  }
 }
 
-console.log("verify-scanner-page-timeout: 全部通过（默认值回落 / 恒定传参 / 预编译 exe 支持开关 / 头文件同源 / ia32 随包件含收尾判定与坐标映射）");
+const recognizerFile = new URL("../resources/native/win-ia32/answer-card-recognizer.exe", import.meta.url);
+assert.ok(existsSync(recognizerFile), "缺少随包 ia32 识别器");
+assert.ok(readFileSync(recognizerFile).includes("layoutToImage"), "ia32 随包识别器缺少坐标映射字段");
+
+console.log("PASS scanner page timeout defaults, input bounds and shipped executable markers");

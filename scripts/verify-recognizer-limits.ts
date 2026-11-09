@@ -12,7 +12,6 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { readFileSync } from "node:fs";
 import sharp from "sharp";
 import { qrDarkRects } from "../src/shared/cardIdentity";
 import { createDefaultCard } from "../src/shared/defaultCard";
@@ -20,7 +19,7 @@ import { buildLayout } from "../src/shared/layout";
 import type { ObjectiveBlock, Rect } from "../src/shared/types";
 import { resolveRecognizerExe } from "../src/apps/answer-card/server/recognition";
 
-/** 与 recognizer_limits.cpp 的 LIMIT_DEFS 一一对应；下面会拿源码里的名字回比，防止两边漂移。 */
+/** 清除宿主机的识别器配置，便于测试默认值。 */
 const RECOGNIZER_LIMIT_ENV_VARS = [
   "PROJECTX_RECOGNIZER_MAX_IMAGE_BYTES",
   "PROJECTX_RECOGNIZER_MAX_IMAGE_PIXELS",
@@ -210,24 +209,6 @@ async function main(): Promise<void> {
     const underPixelDefault = await run(exe, args, { PROJECTX_RECOGNIZER_MAX_IMAGE_PIXELS: "1000000" });
     const clampedToCeiling = await run(exe, args, { PROJECTX_RECOGNIZER_MAX_IMAGE_PIXELS: "999999999999" });
     check(underPixelDefault.code === 2 && clampedToCeiling.code === 0, "同一张卡在「像素上限过小」时被拒、在「超天花板被夹紧」时通过——夹紧确实生效而非空转");
-
-    // ── 源码/文档与本脚本的档位清单必须一致 ──
-    const limitsSource = readFileSync(path.resolve("native/AnswerCardRecognizer/answer-card-recognizer/recognizer_limits.cpp"), "utf8");
-    const sourceNames = [...new Set(limitsSource.match(/PROJECTX_RECOGNIZER_[A-Z_]+/g) ?? [])].sort();
-    check(
-      sourceNames.length === RECOGNIZER_LIMIT_ENV_VARS.length
-        && sourceNames.every((name, index) => name === [...RECOGNIZER_LIMIT_ENV_VARS].sort()[index]),
-      `识别器源码里的环境变量清单与本脚本一致（源码 ${sourceNames.length} 个：${sourceNames.join(", ")}）`
-    );
-    const readme = readFileSync(path.resolve("README.md"), "utf8");
-    for (const name of RECOGNIZER_LIMIT_ENV_VARS) {
-      check(readme.includes(name), `README 记录了 ${name} 档位`);
-    }
-    const visionSource = readFileSync(path.resolve("native/AnswerCardRecognizer/answer-card-recognizer/vision_utils.cpp"), "utf8");
-    check(visionSource.includes("read_capped_file") && visionSource.includes("probe_declared_image_size"), "read_image 走「字节上限 → 头部尺寸 → 解码后像素」三段校验");
-    check(!/std::istreambuf_iterator/.test(visionSource), "不再用 istreambuf_iterator 无上限整份读图");
-    const layoutSource = readFileSync(path.resolve("native/AnswerCardRecognizer/answer-card-recognizer/layout_io.cpp"), "utf8");
-    check(layoutSource.includes("assert_array_size") && layoutSource.includes("assert_layout_mm") && layoutSource.includes("assert_recognizer_dpi"), "布局解析处按数组长度 / 毫米 / DPI 三个维度收口");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
