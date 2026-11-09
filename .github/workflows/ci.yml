@@ -520,7 +520,11 @@ jobs:
 
       # 其余 CI 用 --ignore-scripts，没有 Electron 二进制，Chromium 实机检查会被跳过。
       - name: Download Electron
-        run: node node_modules/electron/install.js
+        env:
+          electron_config_cache: ${{ runner.temp }}/projectx-electron
+        run: |
+          node scripts/lib/download-electron.cjs
+          node node_modules/electron/install.js
 
       - name: Install Xvfb
         run: |

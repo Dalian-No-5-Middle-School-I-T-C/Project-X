@@ -315,12 +315,27 @@ async function main() {
   fs.rmSync(path.join(appDir, "electron"), { recursive: true, force: true });
   fs.cpSync(path.join(root, "electron"), path.join(appDir, "electron"), { recursive: true });
   const manifestPath = path.join(appDir, "msi-project.wxs");
-  const hookPath = path.join(appDir, "msi-project-hook.cjs");
-  fs.writeFileSync(hookPath, `module.exports = (project) => { require("node:fs").copyFileSync(project, ${JSON.stringify(manifestPath)}); ${prepareMsi ? 'throw new Error("PROJECTX_MSI_PROJECT_PREPARED");' : ""} };\n`);
+  const hookPath = path.join(appDir, "builder-hooks.cjs");
+  fs.writeFileSync(hookPath, `const fs = require("node:fs");
+const path = require("node:path");
+
+// electron-builder keeps these stock files when given a custom Electron ZIP.
+exports.afterExtract = ({ appOutDir }) => {
+  fs.rmSync(path.join(appOutDir, "resources", "default_app.asar"), { force: true });
+  fs.rmSync(path.join(appOutDir, "version"), { force: true });
+};
+exports.msiProjectCreated = (project) => {
+  fs.copyFileSync(project, ${JSON.stringify(manifestPath)});
+  ${prepareMsi ? 'throw new Error("PROJECTX_MSI_PROJECT_PREPARED");' : ""}
+};
+`);
   const output = path.join(root, "release");
+  const { downloadElectronZip } = require("./lib/download-electron.cjs");
+  const electronDist = await downloadElectronZip({
+    platform: "win32", arch: "ia32", cacheRoot: process.env.ELECTRON_CACHE, expectedVersion: electronVersion,
+  });
   const config = {
-    appId: pkg.build.appId, productName: pkg.build.productName, electronVersion,
-    electronDownload: { cache: process.env.ELECTRON_CACHE },
+    appId: pkg.build.appId, productName: pkg.build.productName, electronVersion, electronDist,
     directories: { app: appDir, output }, npmRebuild: false, asar: true,
     files: ["dist/scanner/**/*", "dist/server/**/*", "electron/**/*", "package.json"],
     extraResources: [
@@ -329,6 +344,7 @@ async function main() {
     ],
     win: { ...pkg.build.win, icon: path.join(root, "resources", "icon.png"), target: [{ target, arch: ["ia32"] }] },
     msi: pkg.build.msi,
+    afterExtract: hookPath,
     msiProjectCreated: hookPath
   };
   // A config object is merged into package.json's build arrays, which would also include x64 resources.
