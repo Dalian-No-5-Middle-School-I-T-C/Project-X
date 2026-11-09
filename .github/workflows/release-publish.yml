@@ -1,0 +1,386 @@
+name: Publish release
+
+# 在仓库 Actions 里手动发版，形状对齐 Rhine 的 Publish Versioned Release：
+# 先核对版本与主干，再调用 release-build.yml 出包，最后建 GitHub Release。
+# 工作流自己打标签，不要求事先 git push tag。同名标签只在解析到本次提交时沿用；
+# 同名 Release 只在「仍未公开、且带本工作流标记」时清理后重传，已公开的 Release 不覆盖。
+#
+# 共用查询函数在 scripts/lib/release-helpers.sh：标签按 refs/tags 精确解析，
+# Release 走列表接口（releases/tags 端点只返回已发布的 Release，查不到草稿）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 发布标签（v主.次.修订，须与 package.json 一致；同名标签需指向本次提交）
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+env:
+  # 与 ci.yml 一致：CVE-2026-111497 从 22.23.4 起修复，不要用浮动的 22。
+  NODE_VERSION: "22.23.4"
+
+concurrency:
+  group: release-publish-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Version gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Read package.json version and check preconditions
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          source scripts/lib/release-helpers.sh
+          version="$(node -e 'process.stdout.write(require("./package.json").version)')"
+          tag="$RELEASE_TAG"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          expected="v$version"
+          if [ "$tag" != "$expected" ]; then
+            echo "::error title=版本对不上::要发布的标签是 $tag，package.json 是 $expected。先改版本号再发，工作流不替你改。"
+            exit 1
+          fi
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=标签格式不对::请用 v主.次.修订，例如 v2.7.2。"
+            exit 1
+          fi
+          # 发出去的必须是主干当前提交。behind 表示更早的提交，放行就会把旧源码发成最新版。
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${RELEASE_SHA}" --jq '.status')"
+          if [ "$status" != "identical" ]; then
+            echo "::error title=不是 main 的当前提交::本次运行的 ${RELEASE_SHA} 与 main 的关系是 $status。请在 main 上运行 Publish release。"
+            exit 1
+          fi
+
+          tag_commit="$(resolve_tag_commit "$tag")"
+          if [ -n "$tag_commit" ] && [ "$tag_commit" != "$RELEASE_SHA" ]; then
+            echo "::error title=标签已指向其它提交::$tag 现在指向 $tag_commit，本次要发布的是 $RELEASE_SHA。升版本号后再发，不覆盖已有标签。"
+            exit 1
+          fi
+
+          release_json="$(find_release_json "$tag")"
+          if [ -n "$release_json" ]; then
+            draft="$(release_field "$release_json" draft)"
+            body="$(release_field "$release_json" body)"
+            if [ "$draft" != "true" ]; then
+              echo "::error title=$tag 已经发布过::换版本号。不覆盖已有 Release。"
+              exit 1
+            fi
+            if [[ "$body" != *"$RELEASE_MARKER"* ]]; then
+              echo "::error title=同名草稿不是这条发布链创建的::$tag 已有一份草稿，正文缺少本工作流标记。请人工确认后再处理。"
+              exit 1
+            fi
+            echo "发现上次未完成的草稿，构建完成后会先清理再重传"
+          fi
+          echo "将在 main 的 ${RELEASE_SHA} 上发布 $tag"
+
+  build:
+    name: Build packages
+    needs: prepare
+    uses: ./.github/workflows/release-build.yml
+    with:
+      build_scanner: true
+      build_server: true
+      # 发版标识必须显式传下去：这条构建线是在 main 上被调用的，`GITHUB_REF_NAME` 只有
+      # `main`，写进 build-info 的话管理员在控制台看不到「这台服务器发的是哪个版本标签」。
+      ci_ref: ${{ needs.prepare.outputs.tag }}
+
+  release:
+    name: Publish GitHub Release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: staging
+
+      - name: Assemble release files
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for lane in scanner-ia32-windows server-ubuntu24; do
+            dir="staging/$lane"
+            # 每条产物线都必须交齐三样：载荷、校验清单、完整性报告。
+            # upload-artifact 的 if-no-files-found 是按整批判的，只缺清单时它仍会成功上传，
+            # 所以这里逐样点名要求——缺一律不发，不能让 Release 少一份验证材料。
+            if [ ! -d "$dir" ]; then
+              echo "::error title=$lane 没有工件目录::上游作业没交出工件（或被跳过），宁可不发也不发缺包的 Release。"
+              exit 1
+            fi
+            payloads=0
+            while IFS= read -r file; do
+              base="$(basename "$file")"
+              if [ -e "out/$base" ] && ! cmp -s "$file" "out/$base"; then
+                echo "::error title=两条产物线交出同名不同物的文件::$base 内容不同，随便发哪一个都和清单对不上。"
+                exit 1
+              fi
+              cp "$file" "out/$base"
+              payloads=$((payloads + 1))
+            done < <(find "$dir" -type f \( -name '*.msi' -o -name '*.zip' \))
+            if [ "$payloads" -eq 0 ]; then
+              echo "::error title=$lane 没交出安装包::工件目录在，但里面没有 msi / zip。"
+              exit 1
+            fi
+            sums="$(find "$dir" -type f -name SHA256SUMS.txt -print -quit)"
+            integrity="$(find "$dir" -type f -name BUILD-INTEGRITY.txt -print -quit)"
+            if [ -z "$sums" ] || [ -z "$integrity" ]; then
+              echo "::error title=$lane 缺验证材料::$( [ -z "$sums" ] && echo 'SHA256SUMS.txt ' )$( [ -z "$integrity" ] && echo 'BUILD-INTEGRITY.txt' )。"
+              exit 1
+            fi
+            # 报告正文里的产物清单带着 `server-ubuntu24/` 这种目录前缀，而 Release 资产是平铺
+            # 的，所以只剥前缀。清单**名字**不做文本替换：正文本身已经写明「本机叫
+            # SHA256SUMS.txt、发到 Release 按构建线改名」两种形态，`--check` 两种都认；
+            # 真去替换会把叙述句里的本机名也改成线名，反而编出「本机构建目录里的清单叫
+            # <线名>」这种假话（评审指出，已避开）。
+            sed -e "s#server-ubuntu24/##g" "$integrity" > "out/${lane}-BUILD-INTEGRITY.txt"
+            kept=0
+            : > "out/${lane}-SHA256SUMS.txt"
+            while IFS= read -r line; do
+              [ -n "$line" ] || continue
+              digest="${line%% *}"
+              rel="${line#*  }"
+              base="$(basename "$rel")"
+              [ -e "out/$base" ] || continue
+              printf '%s  %s\n' "$digest" "$base" >> "out/${lane}-SHA256SUMS.txt"
+              kept=$((kept + 1))
+            done < "$sums"
+            if [ "$kept" -eq 0 ]; then
+              echo "::error title=清单与实际产物对不上::$sums 里没有任何文件被收到 out/ 里。"
+              exit 1
+            fi
+          done
+          if [ "$(find out -maxdepth 1 -type f \( -name '*.msi' -o -name '*.zip' \) | wc -l)" -eq 0 ]; then
+            echo "::error title=没有可发布的产物::上游构建没交出 msi / zip，终止发布。"
+            exit 1
+          fi
+          ls -la out
+          for manifest in out/*-SHA256SUMS.txt; do
+            [ -e "$manifest" ] || continue
+            (cd out && sha256sum -c "$(basename "$manifest")")
+          done
+
+      - name: Write release notes
+        run: |
+          set -euo pipefail
+          source scripts/lib/release-helpers.sh
+          version="${{ needs.prepare.outputs.version }}"
+          commit="${RELEASE_SHA:0:7}"
+          {
+            echo "$RELEASE_MARKER"
+            echo
+            echo "## Project-X v${version}"
+            echo
+            echo "- 构建提交：\`${commit}\`"
+            echo "- 发布构建：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            echo "### 安装包"
+            echo
+            for f in out/*.msi out/*.zip; do
+              [ -e "$f" ] || continue
+              base="$(basename "$f")"
+              size="$(numfmt --to=iec --suffix=B -- "$(stat -c%s "$f")")"
+              sha="$(sha256sum "$f" | cut -d' ' -f1)"
+              echo "- \`$base\` · $size"
+              echo "  - SHA256 \`${sha}\`"
+            done
+            echo
+            echo "### 怎么选"
+            echo
+            echo "- **答题卡扫描端-…-ia32.msi**：32 位 Windows 扫描工作站用这个，现场部署就是 ia32；装之前先装好扫描仪的 32 位 TWAIN 驱动。"
+            echo "- **project-x-server-ubuntu24-….zip**：Ubuntu 24 服务端包，部署入口见包内《Ubuntu24浏览器版部署说明.md》。"
+            echo
+            echo "### 校验与签名"
+            echo
+            echo "安装包**没有代码签名**（仓库不含证书，证书也不入库），首次安装时 Windows 会提示未知发布者。"
+            echo "配套的清单按构建线改名：\`scanner-ia32-windows-SHA256SUMS.txt\` 与 \`server-ubuntu24-SHA256SUMS.txt\`，"
+            echo "另有两份 \`*-BUILD-INTEGRITY.txt\` 写明版本、构建提交与签名状态。"
+            echo "把清单和安装包放在同一个目录里就能直接校验："
+            echo
+            echo '```powershell'
+            echo "# Windows：算出下载文件的 SHA256，与清单里的值对比"
+            echo "Get-FileHash .\\答题卡扫描端-${version}-ia32.msi -Algorithm SHA256"
+            echo '```'
+            echo
+            echo '```bash'
+            echo "# Linux（GNU coreutils）"
+            echo "sha256sum project-x-server-ubuntu24-${version}.zip"
+            echo "# macOS 没有 sha256sum，用自带的："
+            echo "shasum -a 256 project-x-server-ubuntu24-${version}.zip"
+            echo '```'
+            echo
+            echo "安装包不保证逐字节复现：同一份源码两次构建的 PE 头里带构建时间戳，SHA256 会变。"
+            echo "核对请看清单与实际安装运行，不要只比哈希。"
+          } > notes.md
+          cat notes.md
+
+      - name: Revalidate main and create the tag atomically
+        run: |
+          set -euo pipefail
+          source scripts/lib/release-helpers.sh
+          # 构建期间 main 可能前移，或同名标签被别的路径建到另一个提交；发布前重查一次。
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${RELEASE_SHA}" --jq '.status')"
+          if [ "$status" != "identical" ]; then
+            echo "::error title=构建期间 main 已前移::本次构建的是 ${RELEASE_SHA}，main 与它的关系现在是 $status。产物不能发布，请重新运行。"
+            exit 1
+          fi
+          tag_commit="$(resolve_tag_commit "$RELEASE_TAG")"
+          if [ -n "$tag_commit" ]; then
+            if [ "$tag_commit" != "$RELEASE_SHA" ]; then
+              echo "::error title=标签被其它提交占用::$RELEASE_TAG 现在指向 $tag_commit，本次要发布的是 $RELEASE_SHA，终止发布。"
+              exit 1
+            fi
+            echo "标签已存在且指向本次提交，沿用"
+          else
+            if ! gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${RELEASE_TAG}" -f sha="$RELEASE_SHA" >/dev/null; then
+              # 并发窗口：创建冲突时重查一次，只有仍指向本次提交才继续。
+              created="$(resolve_tag_commit "$RELEASE_TAG")"
+              if [ -n "$created" ] && [ "$created" = "$RELEASE_SHA" ]; then
+                echo "标签在本次发布期间由另一路径创建，且指向本次提交，沿用"
+              else
+                echo "::error title=标签创建失败::$RELEASE_TAG 未能指向 ${RELEASE_SHA}，发布终止。"
+                exit 1
+              fi
+            else
+              echo "$RELEASE_TAG" > "$RUNNER_TEMP/projectx-release-tag-created"
+              echo "已在 ${RELEASE_SHA} 创建标签 $RELEASE_TAG"
+            fi
+          fi
+
+      - name: Create draft release and upload assets
+        run: |
+          set -euo pipefail
+          source scripts/lib/release-helpers.sh
+          echo "$RELEASE_TAG" > "$RUNNER_TEMP/projectx-release-attempted"
+          release_json="$(find_release_json "$RELEASE_TAG")"
+          if [ -n "$release_json" ]; then
+            draft="$(release_field "$release_json" draft)"
+            body="$(release_field "$release_json" body)"
+            if [ "$draft" != "true" ]; then
+              echo "::error title=$RELEASE_TAG 已经发布::不覆盖已有 Release。"
+              exit 1
+            fi
+            if [[ "$body" != *"$RELEASE_MARKER"* ]]; then
+              echo "::error title=同名草稿不是这条发布链创建的::$RELEASE_TAG 已有一份草稿，正文缺少本工作流标记。请人工确认后再处理。"
+              exit 1
+            fi
+            tag_commit="$(resolve_tag_commit "$RELEASE_TAG")"
+            if [ "$tag_commit" != "$RELEASE_SHA" ]; then
+              echo "::error title=标签已变化::$RELEASE_TAG 现在指向 $tag_commit，本次发布的是 $RELEASE_SHA，保留草稿不删除。"
+              exit 1
+            fi
+            if ! gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes; then
+              echo "::error title=清理旧草稿失败::${RELEASE_TAG} 的旧草稿未删除，本次不继续上传。"
+              exit 1
+            fi
+            echo "已清理上次未完成的草稿，重新上传"
+          fi
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --draft \
+            --target "$RELEASE_SHA" \
+            --title "Project-X v${{ needs.prepare.outputs.version }}" \
+            --notes-file notes.md \
+            out/*
+
+      - name: Verify the target again and publish
+        run: |
+          set -euo pipefail
+          source scripts/lib/release-helpers.sh
+          # 上传资产期间 main 或标签仍可能变化；公开前再核对一次，不符就不公开。
+          status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...${RELEASE_SHA}" --jq '.status')"
+          if [ "$status" != "identical" ]; then
+            echo "::error title=发布前 main 已前移::本次发布的是 ${RELEASE_SHA}，main 与它的关系现在是 $status。Release 不会公开，失败清理会删除本次创建的草稿与标签。"
+            exit 1
+          fi
+          tag_commit="$(resolve_tag_commit "$RELEASE_TAG")"
+          if [ "$tag_commit" != "$RELEASE_SHA" ]; then
+            echo "::error title=发布前标签已变化::$RELEASE_TAG 现在指向 $tag_commit，本次发布的是 $RELEASE_SHA。Release 不会公开，失败清理会保留已经变化的标签。"
+            exit 1
+          fi
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          echo "已发布 $RELEASE_TAG"
+
+      - name: Clean up this run's incomplete release on failure or cancellation
+        if: cancelled() || failure()
+        run: |
+          set -uo pipefail
+          source scripts/lib/release-helpers.sh
+          preserve_tag=false
+          if [ -f "$RUNNER_TEMP/projectx-release-attempted" ]; then
+            release_error="$(mktemp)"
+            if ! release_json="$(find_release_json "$RELEASE_TAG" 2>"$release_error")"; then
+              preserve_tag=true
+              echo "::warning title=清理时查询 Release 失败::保留标签与现场供人工核对。"
+              cat "$release_error"
+            elif [ -n "$release_json" ]; then
+              draft="$(release_field "$release_json" draft)"
+              body="$(release_field "$release_json" body)"
+              tag_error="$(mktemp)"
+              if ! tag_commit="$(resolve_tag_commit "$RELEASE_TAG" 2>"$tag_error")"; then
+                preserve_tag=true
+                echo "::warning title=清理时查询标签失败::保留标签与现场供人工核对。"
+                cat "$tag_error"
+              elif [ "$draft" = "true" ] && [ "$tag_commit" = "$RELEASE_SHA" ] && [[ "$body" == *"$RELEASE_MARKER"* ]]; then
+                if gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes; then
+                  echo "已删除本次失败留下的草稿"
+                else
+                  preserve_tag=true
+                  echo "::warning title=删除草稿失败::保留标签与草稿供人工核对。"
+                fi
+              else
+                preserve_tag=true
+                echo "同名 Release 已不是本次运行的草稿，保留草稿与标签不动"
+              fi
+            fi
+          fi
+          if [ -f "$RUNNER_TEMP/projectx-release-tag-created" ] && [ "$preserve_tag" = false ]; then
+            tag_error="$(mktemp)"
+            if ! tag_commit="$(resolve_tag_commit "$RELEASE_TAG" 2>"$tag_error")"; then
+              echo "::warning title=清理时查询标签失败::保留标签供人工核对。"
+              cat "$tag_error"
+            elif [ "$tag_commit" = "$RELEASE_SHA" ]; then
+              if gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${RELEASE_TAG}" >/dev/null; then
+                echo "已删除本次创建的标签，可直接重跑"
+              else
+                echo "::warning title=删除标签失败::保留标签供人工核对。"
+              fi
+            else
+              echo "标签已指向其它提交，保留不动"
+            fi
+          fi

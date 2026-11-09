@@ -47,6 +47,17 @@ const SKIP_NAMES = new Set([
 ]);
 /** 扫描这两个目录的第一层：release/ 是 Windows 产物，server-ubuntu24/ 是服务器包。 */
 const SCAN_ROOTS = ["", "server-ubuntu24"];
+/**
+ * 发到 GitHub Release 时两条构建线的同名清单会互相覆盖，所以发布环节把它们按构建线改名：
+ * `scanner-ia32-windows-SHA256SUMS.txt`、`server-ubuntu24-SHA256SUMS.txt` 与对应的
+ * `*-BUILD-INTEGRITY.txt`。收件方从 Release 拿到的就是这种名字，本机的构建目录里则是
+ * 原来的 `SHA256SUMS.txt`。`--check` 两种形态都要认，否则 README 与包内报告教的命令
+ * 对发布物 100% 跑不通（只认 `SHA256SUMS.txt` 时会直接报「找不到清单」）。
+ */
+const LANE_MANIFEST_RE = /^[A-Za-z0-9._-]+-SHA256SUMS\.txt$/;
+const LANE_REPORT_RE = /^[A-Za-z0-9._-]+-BUILD-INTEGRITY\.txt$/;
+function isManifestName(name) { return name === MANIFEST_NAME || LANE_MANIFEST_RE.test(name); }
+function isReportName(name) { return name === REPORT_NAME || LANE_REPORT_RE.test(name); }
 
 function parseArgs(argv) {
   const args = { check: false, root: path.join(repoRoot, "release") };
@@ -66,7 +77,7 @@ function listArtifacts(rootDir) {
     const dir = path.join(rootDir, scanRoot);
     if (!existsSync(dir) || !statSync(dir).isDirectory()) continue;
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.isFile() || SKIP_NAMES.has(entry.name)) continue;
+      if (!entry.isFile() || isManifestName(entry.name) || isReportName(entry.name) || SKIP_NAMES.has(entry.name)) continue;
       // 相对 rootDir 的路径，统一用正斜杠：清单要能被 sha256sum 与 --check 双方同样解读。
       found.push(path.posix.join(scanRoot, entry.name));
     }
@@ -145,34 +156,80 @@ function parseManifest(text) {
   return entries;
 }
 
+/** 读出目录里所有清单（本机形态的 `SHA256SUMS.txt` + 发布形态的 `<lane>-SHA256SUMS.txt`）。 */
+function readManifests(rootDir) {
+  const files = readdirSync(rootDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && isManifestName(entry.name))
+    .map((entry) => entry.name)
+    .sort();
+  const entries = new Map();
+  for (const name of files) {
+    for (const [rel, digest] of parseManifest(readFileSync(path.join(rootDir, name), "utf8"))) {
+      const previous = entries.get(rel);
+      if (previous !== undefined && previous !== digest) {
+        throw new Error(`两份清单对 ${rel} 给出了不同校验和（${name}）——它们不是同一次构建的产物。`);
+      }
+      entries.set(rel, digest);
+    }
+  }
+  return { files, entries };
+}
+
 function runCheck(rootDir) {
-  const manifestPath = path.join(rootDir, MANIFEST_NAME);
-  if (!existsSync(manifestPath)) {
-    console.error(`[release-integrity] 找不到 ${manifestPath}`);
-    console.error("[release-integrity] 这份产物没有完整性清单，无法验证——请先在打包机上运行 npm run release:hash。");
+  let manifests;
+  try {
+    manifests = readManifests(rootDir);
+  } catch (error) {
+    console.error(`[release-integrity] 清单读不通：${error.message}`);
     process.exitCode = 1;
     return;
   }
-  const expected = parseManifest(readFileSync(manifestPath, "utf8"));
+  if (manifests.files.length === 0) {
+    console.error(`[release-integrity] 找不到完整性清单：${rootDir} 里既没有 ${MANIFEST_NAME}，也没有按构建线改名的 *-SHA256SUMS.txt`);
+    console.error("[release-integrity] 这份产物没有完整性清单，无法验证——本机构建请先在打包机上运行 npm run release:hash；"
+      + "从 Release 下载的产物请把安装包与各构建线的 *-SHA256SUMS.txt 放进同一目录再校验。");
+    process.exitCode = 1;
+    return;
+  }
+  const expected = manifests.entries;
   const actual = new Map(listArtifacts(rootDir).map((rel) => [rel, sha256Of(path.join(rootDir, rel))]));
+  // 发布时清单里的目录前缀会被剥掉（资产是平铺的），所以按文件名兜一次匹配：
+  // 只有「同名候选唯一」才算命中，两条线都有同名文件时仍然要求真实路径一致。
+  const byBase = new Map();
+  for (const rel of expected.keys()) {
+    const base = rel.split("/").pop();
+    byBase.set(base, [...(byBase.get(base) ?? []), rel]);
+  }
 
   let bad = 0;
+  const matched = new Set();
   for (const [rel, digest] of actual) {
-    const want = expected.get(rel);
+    let want = expected.get(rel);
+    let listedAs = rel;
+    if (want === undefined) {
+      const candidates = byBase.get(rel.split("/").pop()) ?? [];
+      if (candidates.length === 1) {
+        listedAs = candidates[0];
+        want = expected.get(listedAs);
+      }
+    }
     if (want === undefined) {
       bad++;
       console.error(`  ✗ 清单外多出的文件：${rel}`);
-    } else if (want !== digest) {
+      continue;
+    }
+    matched.add(listedAs);
+    if (want !== digest) {
       bad++;
       console.error(`  ✗ 校验和不符：${rel}`);
       console.error(`    清单：${want}`);
       console.error(`    实际：${digest}`);
     } else {
-      console.log(`  ✓ ${rel}`);
+      console.log(listedAs === rel ? `  ✓ ${rel}` : `  ✓ ${rel}（清单里记作 ${listedAs}）`);
     }
   }
   for (const rel of expected.keys()) {
-    if (!actual.has(rel)) {
+    if (!actual.has(rel) && !matched.has(rel)) {
       bad++;
       console.error(`  ✗ 清单里有、目录里缺：${rel}`);
     }
@@ -184,7 +241,7 @@ function runCheck(rootDir) {
     process.exitCode = 1;
     return;
   }
-  console.log(`[release-integrity] ${actual.size} 个产物全部与清单一致。`);
+  console.log(`[release-integrity] ${actual.size} 个产物全部与清单一致（清单：${manifests.files.join("、")}）。`);
   console.log("[release-integrity] 注意：一致只说明「与打包机产出时相同」，不代表已签名——签名状态见 BUILD-INTEGRITY.txt。");
 }
 
@@ -250,7 +307,9 @@ function runWrite(rootDir) {
       `未签名产物：${unsigned.length} / ${signable.length} 个。`,
       "原因：build.win.signAndEditExecutable=false，且仓库内不含代码签名证书（证书不得入库）。",
       "后果：Windows SmartScreen 会拦「未知发布者」，用户也无法用签名判断文件真伪。",
-      "补偿手段：把本文件与 SHA256SUMS.txt 和安装包一起发布，收件方按下面的方法自行校验。",
+      "补偿手段：把本文件与配套清单和安装包一起发布，收件方按下面的方法自行校验。",
+      "配套清单在本机构建目录里叫 SHA256SUMS.txt；发到 GitHub Release 时按构建线改名"
+      + "（scanner-ia32-windows-SHA256SUMS.txt、server-ubuntu24-SHA256SUMS.txt），内容一一对应，--check 两种名字都认。",
       "启用签名的步骤见 README「Windows 扫描端安装包：未签名与完整性校验」。"
     );
   }
@@ -260,12 +319,13 @@ function runWrite(rootDir) {
     "----------------",
     "方法一（无需本仓库，Windows 自带）：",
     `  certutil -hashfile "${signable[0] ?? artifacts[0]}" SHA256`,
-    "  把输出的 64 位十六进制与 SHA256SUMS.txt 里同名文件那行比对，全等即未被改动。",
+    "  把输出的 64 位十六进制与配套清单里同名文件那行比对，全等即未被改动。",
+    "  清单名字：本机构建目录里是 SHA256SUMS.txt；从 GitHub Release 下载的是 <构建线>-SHA256SUMS.txt。",
     "",
     "方法二（有本仓库时，一次校验全部产物）：",
-    "  把 SHA256SUMS.txt 与产物放在同一目录，然后运行",
+    "  把清单（两种命名都认）与产物放在同一目录，然后运行",
     "  node scripts/hash-release-artifacts.cjs --check --root <产物目录>",
-    "  任何一项不符都会退出码 1 并点名文件。"
+    "  任何一项不符都会退出码 1 并点名文件；清单里带目录前缀、产物平铺时按文件名对应。"
   );
   writeFileSync(path.join(rootDir, REPORT_NAME), `${lines.join("\n")}\n`, "utf8");
 
@@ -291,4 +351,7 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { listArtifacts, parseManifest, sha256Of, MANIFEST_NAME, REPORT_NAME, SCAN_ROOTS };
+module.exports = {
+  listArtifacts, parseManifest, sha256Of, readManifests, isManifestName, isReportName,
+  MANIFEST_NAME, REPORT_NAME, SCAN_ROOTS
+};
