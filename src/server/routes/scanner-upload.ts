@@ -45,7 +45,7 @@ import { assertScanImageDimensions, ScanImageBudgetError } from "../lib/scanImag
 import { CardRepository } from "../repositories/CardRepository";
 import { ExamRepository } from "../repositories/ExamRepository";
 import { ensureExamParticipants, listMissingParticipants, searchExamParticipantRoster } from "../services/examParticipants";
-import { processScannerSession, processScannerSessionInQueue, runScannerCommittedRead, enqueueScannerSubmission, writeScannerSession, invalidateScanRecognition, invalidateScanRecognitionInTransaction, savedReceiptOwnerOfPage, discardScannerGroup } from "../services/scannerSubmissions";
+import { processScannerSession, processScannerSessionInQueue, runScannerCommittedRead, enqueueScannerSubmission, writeScannerSession, runScannerSessionTransaction, invalidateScanRecognition, invalidateScanRecognitionInTransaction, savedReceiptOwnerOfPage, discardScannerGroup } from "../services/scannerSubmissions";
 import { scannerPageImageStaging } from "../services/scannerPageImageStaging";
 import type { DbAdapter } from "../db/mysql";
 import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
@@ -362,74 +362,79 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
     }
 
     const image = req.file;
-    const gated = await writeScannerSession(String(sessionId), db => pageUploadOverwriteGates(db, String(sessionId), token, res));
-    if (!gated) return;
+    // Keep gate, staging, and commit on one queue slot so teacher confirmation cannot
+    // slip between the ownership read and the committed page evidence.
+    const uploaded = await enqueueScannerSubmission(async () => {
+      const gated = await runScannerSessionTransaction(String(sessionId), db =>
+        pageUploadOverwriteGates(db, String(sessionId), token, res));
+      if (!gated) return;
 
-    try { await assertScanImageDimensions(image.buffer); }
-    catch (error) {
-      res.status(error instanceof ScanImageBudgetError ? error.status : 400).json({
-        code: error instanceof ScanImageBudgetError ? error.code : "SCAN_IMAGE_INVALID",
-        message: error instanceof ScanImageBudgetError ? error.message : "扫描图片尺寸无法读取，请检查图片格式",
-      });
-      return;
-    }
-    const ext = safeImageExtension(image.originalname);
-    const fileName = `${path.basename(String(sessionId))}_${crypto.randomUUID()}${ext}`;
-    stagedImage = path.join(scannerUploadDir(), fileName);
-    // Async disk I/O must finish before the exam transaction: SQLite shares one connection,
-    // and awaiting here inside BEGIN..ROLLBACK would undo other requests' committed writes.
-    await scannerPageImageStaging.write(stagedImage, image.buffer);
+      try { await assertScanImageDimensions(image.buffer); }
+      catch (error) {
+        res.status(error instanceof ScanImageBudgetError ? error.status : 400).json({
+          code: error instanceof ScanImageBudgetError ? error.code : "SCAN_IMAGE_INVALID",
+          message: error instanceof ScanImageBudgetError ? error.message : "扫描图片尺寸无法读取，请检查图片格式",
+        });
+        return;
+      }
+      const ext = safeImageExtension(image.originalname);
+      const fileName = `${path.basename(String(sessionId))}_${crypto.randomUUID()}${ext}`;
+      stagedImage = path.join(scannerUploadDir(), fileName);
+      // Async disk I/O must finish before the exam transaction: SQLite shares one connection,
+      // and awaiting here inside BEGIN..ROLLBACK would undo other requests' committed writes.
+      await scannerPageImageStaging.write(stagedImage, image.buffer);
 
-    const { session, record } = gated;
-    const uploaded = await writeScannerSession(String(sessionId), async db => {
-      const again = await pageUploadOverwriteGates(db, String(sessionId), token, res);
-      if (!again) return;
+      const { session, record } = gated;
+      return runScannerSessionTransaction(String(sessionId), async db => {
+        const again = await pageUploadOverwriteGates(db, String(sessionId), token, res);
+        if (!again) return;
 
-      let recognition: z.infer<typeof recognitionSchema> | undefined;
-      if (req.body.recognition) {
-        try { recognition = recognitionSchema.parse(JSON.parse(req.body.recognition)); }
-        catch {
-          await invalidateScanRecognitionInTransaction(db, String(sessionId), token);
-          await db.run("UPDATE twain_scan_records SET ocr_status = 'failed', ocr_error = ? WHERE id = ?", "识别结果格式无效，请更新扫描端后重试", token);
-          res.status(400).json({ message: "识别结果格式无效，请更新扫描端后重试" }); return;
+        let recognition: z.infer<typeof recognitionSchema> | undefined;
+        if (req.body.recognition) {
+          try { recognition = recognitionSchema.parse(JSON.parse(req.body.recognition)); }
+          catch {
+            await invalidateScanRecognitionInTransaction(db, String(sessionId), token);
+            await db.run("UPDATE twain_scan_records SET ocr_status = 'failed', ocr_error = ? WHERE id = ?", "识别结果格式无效，请更新扫描端后重试", token);
+            res.status(400).json({ message: "识别结果格式无效，请更新扫描端后重试" }); return;
+          }
         }
-      }
 
-      const card = await new CardRepository(db).findById(session.card_id);
-      if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
-      const mapped = mapScanPageToLayout(pageNum, side, buildLayout(card).pages.length, card.sided);
-      const identity = recognition?.identity;
-      const verified = identity?.status === "verified" && identity.cardId === card.id && identity.pageNumber === mapped.layoutPage;
-      const legacy = session.identity_mode === "legacy" && identity?.status === "unverified" && ["QR_MISSING", "QR_UNREADABLE"].includes(identity.code);
-      if (mapped.unusedSide || (!verified && !legacy)) {
-        await invalidateScanRecognitionInTransaction(db, String(sessionId), token);
-        await db.run("UPDATE twain_scan_records SET ocr_status = 'failed', ocr_error = ? WHERE id = ?", "页面未通过二维码身份校验", token);
-        res.status(409).json({ message: "页面未通过二维码身份校验，请在 Windows 扫描端重新识别" }); return;
-      }
+        const card = await new CardRepository(db).findById(session.card_id);
+        if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+        const mapped = mapScanPageToLayout(pageNum, side, buildLayout(card).pages.length, card.sided);
+        const identity = recognition?.identity;
+        const verified = identity?.status === "verified" && identity.cardId === card.id && identity.pageNumber === mapped.layoutPage;
+        const legacy = session.identity_mode === "legacy" && identity?.status === "unverified" && ["QR_MISSING", "QR_UNREADABLE"].includes(identity.code);
+        if (mapped.unusedSide || (!verified && !legacy)) {
+          await invalidateScanRecognitionInTransaction(db, String(sessionId), token);
+          await db.run("UPDATE twain_scan_records SET ocr_status = 'failed', ocr_error = ? WHERE id = ?", "页面未通过二维码身份校验", token);
+          res.status(409).json({ message: "页面未通过二维码身份校验，请在 Windows 扫描端重新识别" }); return;
+        }
 
-      // The immutable file is ready; publish its path only inside this transaction.
-      const filePath = stagedImage!;
+        // The immutable file is ready; publish its path only inside this transaction.
+        const filePath = stagedImage!;
 
-      // 更新记录
-      if (token) {
-        await db.run(
-          `UPDATE twain_scan_records SET image_path = ?, page_num = ?, side = ?, ocr_status = 'uploaded'
-           WHERE id = ? AND session_id = ?`,
-          filePath, pageNum, side, token, sessionId
-        );
-      }
+        // 更新记录
+        if (token) {
+          await db.run(
+            `UPDATE twain_scan_records SET image_path = ?, page_num = ?, side = ?, ocr_status = 'uploaded'
+             WHERE id = ? AND session_id = ?`,
+            filePath, pageNum, side, token, sessionId
+          );
+        }
 
-      if (recognition) {
-        await storeCorrectionPage(card, "twain_scan_record", token, { ...recognition, pageNumber: mapped.layoutPage }, db);
-        await db.run("UPDATE twain_scan_records SET identity_json = ? WHERE id = ?", JSON.stringify(recognition.identity), token);
-        await upsertRecognitionResult({ scanRecordId: token,
-          objectiveJson: JSON.stringify(recognition.questions),
-          subjectiveJson: JSON.stringify(recognition.subjectiveQuestions), gradeStatus: "recognized" }, db);
-        await db.run("UPDATE twain_scan_records SET student_id = ?, recognized_at = CURRENT_TIMESTAMP WHERE id = ? AND session_id = ?",
-          recognition.studentId.value, token, sessionId);
-      }
+        if (recognition) {
+          await storeCorrectionPage(card, "twain_scan_record", token, { ...recognition, pageNumber: mapped.layoutPage }, db);
+          await db.run("UPDATE twain_scan_records SET identity_json = ? WHERE id = ?", JSON.stringify(recognition.identity), token);
+          await upsertRecognitionResult({ scanRecordId: token,
+            objectiveJson: JSON.stringify(recognition.questions),
+            subjectiveJson: JSON.stringify(recognition.subjectiveQuestions), gradeStatus: "recognized" }, db);
+          await db.run("UPDATE twain_scan_records SET student_id = ?, recognized_at = CURRENT_TIMESTAMP WHERE id = ? AND session_id = ?",
+            recognition.studentId.value, token, sessionId);
+        }
 
-      return { ok: true, pageNum, side, fileName, previousImage: record.image_path };
+        return { ok: true, pageNum, side, fileName, previousImage: record.image_path };
+      });
     });
     if (uploaded) {
       committedImage = true;

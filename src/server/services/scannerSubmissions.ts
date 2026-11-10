@@ -118,18 +118,20 @@ export function runScannerCommittedRead<T>(work: () => Promise<T>): Promise<T> {
 async function lockExam(db: DbAdapter, examId: number) {
   await db.run("UPDATE exams SET id = id WHERE id = ?", examId);
 }
+/** Exam row locks and one DB transaction for scanner session mutations (caller supplies queue scope). */
+export async function runScannerSessionTransaction<T>(sessionId: string, work: (tx: DbAdapter) => Promise<T>): Promise<T> {
+  const db = getMysqlDb();
+  // Discover locks before BEGIN so MariaDB's first consistent read follows the locks.
+  const exams = await db.all<{ id: number }>(
+    "SELECT e.id FROM exams e JOIN twain_scan_sessions s ON s.card_id=e.card_id WHERE s.id=? ORDER BY e.id", sessionId);
+  return db.transaction(async tx => {
+    for (const exam of exams) await lockExam(tx, exam.id);
+    return work(tx);
+  });
+}
 /** Upload mutations share the grading queue and exam row locks through commit. */
 export function writeScannerSession<T>(sessionId: string, work: (tx: DbAdapter) => Promise<T>): Promise<T> {
-  return enqueueScannerSubmission(async () => {
-    const db = getMysqlDb();
-    // Discover locks before BEGIN so MariaDB's first consistent read follows the locks.
-    const exams = await db.all<{ id: number }>(
-      "SELECT e.id FROM exams e JOIN twain_scan_sessions s ON s.card_id=e.card_id WHERE s.id=? ORDER BY e.id", sessionId);
-    return db.transaction(async tx => {
-      for (const exam of exams) await lockExam(tx, exam.id);
-      return work(tx);
-    });
-  });
+  return enqueueScannerSubmission(() => runScannerSessionTransaction(sessionId, work));
 }
 async function receipts(db: DbAdapter, examId: number): Promise<Receipt[]> {
   return db.all<Receipt>("SELECT * FROM scanner_submissions WHERE exam_id = ? AND state NOT IN ('superseded', 'discarded')", examId);
