@@ -191,7 +191,7 @@ jobs:
 
       # Ubuntu 服务器包的 systemd 单元与安装脚本（R37）：非 root 身份、UMask=0027、
       # 数据目录 0750、沙箱指令齐全，且刻意不启用会打死 V8 JIT 的 MemoryDenyWriteExecute。
-      # 纯静态断言 + bash -n 语法检查，直接 require 生成器，不需要 dist/。
+      # 检查生成的单元与脚本，并用临时目录运行安装路径重写和 ZIP 权限用例。
       - name: Ubuntu server package systemd hardening (R37)
         run: npm run verify:systemd-hardening
 

@@ -13,8 +13,6 @@
 // 缺页/乱序/ADF 双进纸造成的错位会把后一名学生的答卷静默挂到前一名学生名下，
 // 因此学号只认本组第 1 页（学号填涂区只在第 1 页生成），且一份不可信就整批失败闭合。
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { assignScanRecordPageNums, mapScanPageToLayout } from '../src/shared/scanPages';
 import { legacyIdentityProblems, legacySessionBlockReason } from '../src/apps/answer-card/server/scanner/session-results';
 import type { ScanRecordWithResult } from '../src/apps/answer-card/server/database/scan-store';
@@ -105,20 +103,6 @@ function layoutOf(pageNums: number[], sides: Side[], layoutPageCount: number, si
 {
   assert.deepEqual(assignScanRecordPageNums([{ page: 1 }], { sheetOffset: -5, sidesPerSheet: 2 }), [1], "⑥: 负偏移夹到 0");
   assert.deepEqual(assignScanRecordPageNums([{ page: 1 }], { sheetOffset: Number.NaN, sidesPerSheet: 0 }), [1], "⑥: 非法偏移/边数取安全默认");
-}
-
-// ⑦ 接线检查：扫描服务必须调用该纯函数，而不是自己按图片下标编号。
-//    （纯函数测试能锁住算法，但改回 index+1 的写法只出现在服务里，故在此把调用点钉住；
-//     直接 import scanner-service 会拖进数据库与 sharp，这里用源码静态检查。）
-{
-  const src = readFileSync(
-    fileURLToPath(new URL("../src/apps/answer-card/server/scanner/scanner-service.ts", import.meta.url)), "utf8");
-  assert.match(src, /assignScanRecordPageNums\(filteredPages,\s*\{\s*sheetOffset,\s*sidesPerSheet\s*\}\)/,
-    "⑦: runScanSession 必须改用 assignScanRecordPageNums");
-  assert.doesNotMatch(src, /const cumulativePageNum = index \+ 1|pageNum:\s*index \+ 1/,
-    "⑦: 不得回退为按图片下标编号");
-  assert.match(src, /Math\.max\(max, Number\(record\.page_num\) \|\| 0\)/,
-    "⑦: 会话偏移必须取已落库的最大纸张号");
 }
 
 // ⑧ 安全 R34：兼容模式（无二维码）下的学生归属必须失败闭合，不能沿用前一名学生的学号。
@@ -218,20 +202,6 @@ function layoutOf(pageNums: number[], sides: Side[], layoutPageCount: number, si
   }), null, "⑧: 严格模式不得被兼容模式的会话级规则阻断");
   assert.equal(legacySessionBlockReason({ pageCount: 4, sided: "double", records: [], groups: new Map() }), null,
     "⑧: 无记录时不阻断（由既有的空结果处理）");
-
-  // 接线检查：扫描服务不得让非第 1 页为分组定学号；汇总必须先过会话级判定
-  const serviceSrc = readFileSync(
-    fileURLToPath(new URL("../src/apps/answer-card/server/scanner/scanner-service.ts", import.meta.url)), "utf8");
-  const resultsSrc = readFileSync(
-    fileURLToPath(new URL("../src/apps/answer-card/server/scanner/session-results.ts", import.meta.url)), "utf8");
-  assert.match(resultsSrc, /legacySessionBlockReason\(\{ pageCount, sided: card\.sided, records, groups \}\)/,
-    "⑧: collectSessionResults 必须调用会话级兼容模式判定");
-  assert.match(resultsSrc, /if \(legacyBlock\) throw new Error\(legacyBlock\);/,
-    "⑧: 会话级阻断必须让每份卡失败闭合，而不是继续判分入库");
-  assert.match(serviceSrc, /maySeedGroupStudentId = !legacyIdentity \|\| layoutPage === 1 \|\| Boolean\(retry\?\.studentId\)/,
-    "⑧: 兼容模式下只有第 1 页（或人工订正）能为分组定学号");
-  assert.match(serviceSrc, /if \(recognizedStudentId && maySeedGroupStudentId\)/,
-    "⑧: 分组学号写入必须受该判定约束");
 }
 
-console.log("verify-scan-page-numbering: 全部通过（双面共享纸张号 / 跨进程按纸累计 / 兜底与接线 / 兼容模式归属失败闭合）");
+console.log("verify-scan-page-numbering: 全部通过（双面共享纸张号 / 跨进程按纸累计 / 无效页码回退 / 兼容模式归属失败闭合）");

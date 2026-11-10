@@ -137,6 +137,7 @@ system:manage               系统维护（仅管理员）
 | `hasExamOrganizationAffinity` / `canManageExamOrganization` | 删除/解绑答题卡时只能作用于与自己有组织归属（年级/班级/学科）的考试；无归属者只拿到引用**数量**，不拿到考试名单 | 403 / 名单置空 |
 | `getPermittedBlocks` | 题块级阅卷人的题块集合，`[]` 表示什么都看不到（空集合不等于「未配置」） | 403 / 空列表 |
 | `hasClassViewPermission` | 花名册、应考名单写入按教师可访问班级收敛（`getAccessibleClassIds`：null=全校，`[]`=无） | 403 |
+| `scanner-auth.ts` / `scanner-scope.ts` 机器凭据绑定门 | 扫描端 `X-Api-Key` 仅代表机器身份，不授予任意 ID 读取豁免；携带 `recordId` / `cardId` / `examId` 的扫描与原卷端点需校验记录、会话、答题卡、考试真实存在且未被数据保留期清理 | 404（与用户侧保持一致） |
 
 学生侧的三条硬约束（学生只有 `score:read`，因此凡带 `grade:read` 的门都不得挡在学生自助路径上）：
 

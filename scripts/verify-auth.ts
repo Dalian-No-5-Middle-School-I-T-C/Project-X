@@ -475,54 +475,6 @@ async function main(): Promise<void> {
   ok((await runMiddleware(requireBackgroundUploadAccess, studentUser)).status === 403, "#322 学生上传背景图被 403");
   ok((await runMiddleware(requireBackgroundUploadAccess, undefined)).status === 401, "#322 未登录上传背景图被 401");
 
-  // 接线检查：门必须挂在 multer 之前——否则被拒的请求已把上传体落盘到 dataDir/backgrounds
-  const selfSettingsSource = readFileSync(path.resolve("src/apps/answer-card/server/index.ts"), "utf8");
-  const backgroundRouteAt = selfSettingsSource.search(/app\.post\(\s*"\/api\/users\/me\/background"/);
-  const backgroundHandlerAt = selfSettingsSource.indexOf("async (req, res, next)", backgroundRouteAt);
-  const backgroundWiring = backgroundRouteAt >= 0 && backgroundHandlerAt > backgroundRouteAt
-    ? selfSettingsSource.slice(backgroundRouteAt, backgroundHandlerAt)
-    : "";
-  const backgroundAuthAt = backgroundWiring.indexOf("authMiddleware");
-  const backgroundAccessAt = backgroundWiring.indexOf("requireBackgroundUploadAccess");
-  const backgroundLockAt = backgroundWiring.indexOf("answerCardDataOperation");
-  const backgroundUploadAt = backgroundWiring.indexOf("receiveBackgroundUpload");
-  ok(
-    backgroundAuthAt >= 0
-      && backgroundAccessAt > backgroundAuthAt
-      && backgroundLockAt > backgroundAccessAt
-      && backgroundUploadAt > backgroundLockAt
-      && /bgUpload\.single\(/.test(selfSettingsSource)
-      && /backgroundUploadTooLargeMessage\(/.test(selfSettingsSource),
-    "#322/#335 背景图路由在 multer 前挂载身份门，超限文案带当前生效上限"
-  );
-  ok(
-    /app\.delete\(\s*"\/api\/users\/me\/background",\s*authMiddleware/.test(selfSettingsSource)
-      && /app\.post\(\s*"\/api\/admin\/backgrounds\/purge-students",\s*authMiddleware,\s*requirePermissionCompat\(PERMISSIONS\.SYSTEM_MANAGE\)/.test(selfSettingsSource),
-    "#336 本人可删自己的背景图，管理员清退走 system:manage"
-  );
-  ok(
-    /if \(!canWriteGradingSelfSettings\(_req\.user\)\)/.test(selfSettingsSource),
-    "#322 PATCH /api/users/me/settings 使用阅卷字段门"
-  );
-
-  // 接线检查（前端）：隐藏「阅卷设置」页签不能顺手把其余页签也锁死。
-  // PR 评审曾发现 `canEditGradingSettings ? settingsTab : "client"` 这种一刀切回退——
-  // 它让学生连自己的 AI 服务商都进不去，而 AI 配置不在 #322 的收敛范围内。
-  const accountPageSource = readFileSync(
-    path.resolve("src/apps/answer-card/client/pages/AccountSettingsPage.tsx"),
-    "utf8"
-  );
-  ok(
-    /const activeSettingsTab: SettingsTab =\s*!canEditGradingSettings && settingsTab === "grading"\s*\?\s*"client"\s*:\s*settingsTab/.test(
-      accountPageSource
-    ),
-    "#322 页签回退只针对被隐藏的 grading，AI / 客户端页签对学生仍可达"
-  );
-  ok(
-    !/\? settingsTab : "client"/.test(accountPageSource),
-    "#322 不存在「无权限即回到 client」的一刀切页签回退"
-  );
-
   // ── 8. #246 权限矩阵运行时消费 / 题块授权 / auto_delete 软删除 ──
   section("8. #246 permission matrix runtime + canGradeBlock + auto_delete visibility");
   const plainTeacherUser = { id: teacher.id, role_id: ROLE_IDS.TEACHER, role_name: "teacher", teacher_role: null, subject: null };

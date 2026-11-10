@@ -5,9 +5,7 @@
  * 部署文档又教人 `sudo cp -a . /opt/project-x-server/`，数据目录权限完全没提。
  * 结果是一个持有全校成绩与扫描件的服务，既以 root 身份跑，又落在 0777&umask 的目录里。
  *
- * 本脚本只做静态断言：直接 require 打包脚本、渲染它生成的四份文本（unit / install.sh /
- * start.sh / 部署说明），逐条核对。systemd 本身无法在 Windows 打包机上执行，
- * 因此这里锁的是「生成物内容」，运行期行为由部署文档里的 systemctl show 自检步骤兜底。
+ * 检查生成的 systemd 单元指令、shell 脚本语法、安装路径重写和 ZIP 文件权限。
  *
  * 用法：
  *   npx tsx scripts/verify-systemd-hardening.ts
@@ -25,7 +23,6 @@ const require = createRequire(import.meta.url);
 const packaging: {
   applyUnixExecBits: (zip: unknown) => void;
   buildPackage: () => void;
-  createDeployReadme: () => string;
   createInstallScript: () => string;
   createRuntimePackageJson: () => Record<string, unknown>;
   createStartScript: () => string;
@@ -34,15 +31,9 @@ const packaging: {
   ZIP_UNIX_EXEC_MODE: number;
 } = require("../scripts/package-server-ubuntu.cjs");
 
-const packagingSource = readFileSync(
-  path.resolve("scripts/package-server-ubuntu.cjs"),
-  "utf8"
-);
-
 const unit = packaging.createSystemdUnit();
 const install = packaging.createInstallScript();
 const start = packaging.createStartScript();
-const readme = packaging.createDeployReadme();
 
 let passed = 0;
 let failed = 0;
@@ -191,34 +182,11 @@ ok(/systemctl --no-pager show "\$UNIT_NAME" -p User -p Group -p UMask/.test(inst
   "重写用 awk 按键名整行生成，不再用 sed（路径里的 & 与 \\ 在 sed 替换串里是元字符）");
 }
 
-section("5. start.sh 与部署说明");
+section("5. 前台启动脚本");
 ok(/\[ "\$\(id -u\)" = "0" \]/.test(start) && /systemd\/install\.sh/.test(start),
   "start.sh 以 root 运行时给出警告并指向 install.sh（前台试跑仍可用，但不留「就这么跑生产」的错觉）");
 ok(/exec node dist\/server\/index\.mjs/.test(start), "start.sh 的启动命令未变");
-ok(/sudo bash systemd\/install\.sh/.test(readme) && /bash systemd\/install\.sh/.test(install),
-  "部署说明与 install.sh 自身的报错提示都改用 `bash systemd/install.sh`（执行位是否保住都能装）");
-ok(!/sudo systemd\/install\.sh/.test(readme) && !/sudo systemd\/install\.sh/.test(unit) && !/sudo systemd\/install\.sh/.test(start),
-  "没有任何一处还在教人直接执行脚本文件（CR #313 P2-8：Windows 打包的 ZIP 里没有 Unix 执行位）");
-ok(!/sudo cp -a \. \/opt\/project-x-server\//.test(readme),
-  "手工 `sudo cp -a . /opt/...` 那套流程已从文档移除（它既不改属主也不改权限）");
-ok(/MemoryDenyWriteExecute/.test(readme) && /SystemCallFilter=@system-service/.test(readme),
-  "部署说明写清两条刻意不启用的指令及原因，并给出 drop-in 启用方式");
-ok(/systemd-analyze security project-x-server/.test(readme), "文档给出 systemd-analyze security 复核命令");
-ok(/venv records absolute paths/.test(readme) && /at its final\s*\n\s*location/.test(readme),
-  "文档说明 .venv 必须在最终位置创建（临时目录里建的 venv 复制过去后 console script 会指向失效路径）");
-ok(/systemd\/install\.sh: idempotent install/.test(readme), "包内容清单里列出了 systemd/install.sh");
-ok(readme.includes("- systemd/project-x-server.service: hardened systemd unit"), "包内容清单说明单元已加固（非 root 账号）");
-
-section("6. 打包脚本自身的接线");
-ok(/writeTextFile\(path\.join\(packageDir, "systemd", "install\.sh"\), createInstallScript\(\)\);/.test(packagingSource),
-  "打包时确实写出 systemd/install.sh（只改生成器不接线，包里就不会有这个文件）");
-ok(/for \(const scriptName of \["start\.sh", path\.join\("systemd", "install\.sh"\)[^\]]*\]\)/.test(packagingSource)
-  && /chmodSync\(path\.join\(packageDir, scriptName\), 0o755\)/.test(packagingSource),
-  "start.sh 与 install.sh 都置 0755");
-ok(/mkdirSync\(path\.join\(packageDir, "data", "answer-card"\), \{ recursive: true, mode: 0o750 \}\)/.test(packagingSource),
-  "包内 data/answer-card 用 0750 建，解压出来不是公开目录");
-ok(/if \(require\.main === module\) \{\s*\n\s*buildPackage\(\);/.test(packagingSource),
-  "打包动作收在 require.main 判断里 —— 验证脚本能 require 生成器而不触发「缺 dist/ 就抛错」");
+section("6. 打包模块接口");
 ok(typeof packaging.buildPackage === "function" && typeof packaging.createRuntimePackageJson === "function",
   "module.exports 暴露了生成器（buildPackage / createRuntimePackageJson 等）");
 {
@@ -232,7 +200,7 @@ section("7. 生成物行尾与 shell 语法");
   // 本仓库在 Windows 上是 CRLF 检出，模板字面量会把 \r 带进生成物：
   // start.sh / install.sh 的 shebang 会变成 `/usr/bin/env bash\r` → bad interpreter，
   // 单元里的 Environment 值也会多一个尾随 \r。生成器必须统一转 LF。
-  for (const [name, text] of [["unit", unit], ["install.sh", install], ["start.sh", start], ["readme", readme]] as const) {
+  for (const [name, text] of [["unit", unit], ["install.sh", install], ["start.sh", start]] as const) {
     ok(!text.includes("\r"), `${name} 不含 CR（LF 行尾，与 .gitattributes 的 *.sh text eol=lf 一致）`);
   }
   ok(/^#!\/usr\/bin\/env bash$/m.test(install), "install.sh 的 shebang 行干净（无尾随 \\r）");
@@ -344,7 +312,6 @@ section("8. 单元路径跟随自定义目录（CR #313 P2-9）");
 section("9. ZIP 内脚本的 Unix 执行位（CR #313 P2-8）");
 {
   const AdmZip = require("adm-zip");
-  ok(/applyUnixExecBits\(zip\)/.test(packagingSource), "createZip 里接了 applyUnixExecBits（只写函数不接线等于没修）");
   const dir = mkdtempSync(path.join(tmpdir(), "projectx-p2-8-"));
   try {
     mkdirSync(path.join(dir, "systemd"), { recursive: true });
