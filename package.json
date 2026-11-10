@@ -120,6 +120,7 @@
     "verify:stage-vc-runtime": "tsx scripts/verify-stage-vc-runtime.ts",
     "verify:grading-published-exam": "tsx scripts/verify-grading-published-exam.ts",
     "verify:scanner-upload-performance": "tsx scripts/scanner-upload-performance-smoke.ts",
+    "verify:scanner-upload-sqlite-staging": "tsx scripts/scanner-upload-sqlite-staging-smoke.ts",
     "verify:scanner-saved-receipt": "tsx scripts/scanner-saved-receipt-smoke.ts",
     "verify:scanner-upload-manager": "tsx scripts/scanner-upload-manager-smoke.ts",
     "verify:scanner-batch-results": "tsx scripts/scanner-batch-results-smoke.ts",

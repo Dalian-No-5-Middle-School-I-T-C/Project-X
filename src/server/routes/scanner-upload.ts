@@ -46,6 +46,8 @@ import { CardRepository } from "../repositories/CardRepository";
 import { ExamRepository } from "../repositories/ExamRepository";
 import { ensureExamParticipants, listMissingParticipants, searchExamParticipantRoster } from "../services/examParticipants";
 import { processScannerSession, processScannerSessionInQueue, runScannerCommittedRead, enqueueScannerSubmission, writeScannerSession, invalidateScanRecognition, invalidateScanRecognitionInTransaction, savedReceiptOwnerOfPage, discardScannerGroup } from "../services/scannerSubmissions";
+import { scannerPageImageStaging } from "../services/scannerPageImageStaging";
+import type { DbAdapter } from "../db/mysql";
 import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
 import { groupSessionPages } from "../../apps/answer-card/server/scanner/session-results";
 import { scannerLegacyRecoveryRouter } from "./scanner-legacy-recovery";
@@ -164,6 +166,45 @@ function genId(): string {
 function scannerDataDir(): string {
   return process.env.ANSWER_CARD_DATA_DIR
     || path.join(process.cwd(), "data", "answer-card");
+}
+
+type PageUploadGate = {
+  session: { id: string; card_id: string; identity_mode: string; status: string };
+  record: { id: string; ocr_status: string; image_path: string };
+};
+
+async function pageUploadOverwriteGates(
+  db: DbAdapter,
+  sessionId: string,
+  token: string,
+  res: Response,
+): Promise<PageUploadGate | undefined> {
+  const session = await db.get<{ id: string; card_id: string; identity_mode: string; status: string }>(
+    "SELECT id, card_id, identity_mode, status FROM twain_scan_sessions WHERE id = ?", sessionId);
+  if (!session) {
+    res.status(404).json({ message: "会话不存在" });
+    return;
+  }
+  const record = await db.get<{ id: string; ocr_status: string; image_path: string }>(
+    "SELECT id, ocr_status, image_path FROM twain_scan_records WHERE id = ? AND session_id = ?", token, sessionId);
+  if (!record) { res.status(400).json({ message: "扫描页不属于当前会话" }); return; }
+  if (session.status === "completed" || record.ocr_status === "completed") {
+    res.status(409).json({ message: "该扫描会话已完成，页面不可再改写；请新建扫描会话后重新上传" });
+    return;
+  }
+  if (record.ocr_status === "review") {
+    res.status(409).json({ code: "SCAN_PAGE_CORRECTED", message: "此页已保存填涂订正，不能由上传改写；请通过整卡订正继续修改" });
+    return;
+  }
+  const savedOwner = await savedReceiptOwnerOfPage(String(sessionId), token, true, db);
+  if (savedOwner) {
+    res.status(409).json({
+      message: "该扫描页的成绩已入库或原卷已撤销，不能由上传直接改写",
+      code: savedOwner.state === "discarded" ? "SCAN_PAGE_DISCARDED" : "SCAN_PAGE_SAVED", examId: savedOwner.exam_id,
+    });
+    return;
+  }
+  return { session, record };
 }
 
 function scannerUploadDir(): string {
@@ -321,53 +362,29 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
     }
 
     const image = req.file;
-    const uploaded = await writeScannerSession(String(sessionId), async db => {
+    const gated = await writeScannerSession(String(sessionId), db => pageUploadOverwriteGates(db, String(sessionId), token, res));
+    if (!gated) return;
 
-      // 验证 session
-      const session = await db.get<{ id: string; card_id: string; identity_mode: string; status: string }>(
-        "SELECT id, card_id, identity_mode, status FROM twain_scan_sessions WHERE id = ?", sessionId);
-      if (!session) {
-        res.status(404).json({ message: "会话不存在" });
-        return;
-      }
-      const record = await db.get<{ ocr_status: string; image_path: string }>(
-        "SELECT id, ocr_status, image_path FROM twain_scan_records WHERE id = ? AND session_id = ?", token, sessionId);
-      if (!record) { res.status(400).json({ message: "扫描页不属于当前会话" }); return; }
-      // 安全（R02）：会话完成（或该页已入库）后，令牌即失效。
-      // 此前令牌在 ocr_status='completed' 后仍然可用，任何持有旧令牌者都能覆盖已判分页面
-      // 的图片与识别结果，把「已完成扫描」变成对既有成绩的静默改写。
-      // 需要重扫时由扫描端新建会话，归属仍按原会话回执保持不变。
-      if (session.status === "completed" || record.ocr_status === "completed") {
-        res.status(409).json({ message: "该扫描会话已完成，页面不可再改写；请新建扫描会话后重新上传" });
-        return;
-      }
-      if (record.ocr_status === "review") {
-        res.status(409).json({ code: "SCAN_PAGE_CORRECTED", message: "此页已保存填涂订正，不能由上传改写；请通过整卡订正继续修改" });
-        return;
-      }
-      // 安全（PR #312 复核 CR2）：/complete 部分失败时已保存的分组既没有 completed 会话也没有
-      // completed 页面，只看状态会漏掉它们——那一页的成绩其实已经入库。改看回执归属。
-      const savedOwner = await savedReceiptOwnerOfPage(String(sessionId), token, true, db);
-      if (savedOwner) {
-        res.status(409).json({
-          message: "该扫描页的成绩已入库或原卷已撤销，不能由上传直接改写",
-          code: savedOwner.state === "discarded" ? "SCAN_PAGE_DISCARDED" : "SCAN_PAGE_SAVED", examId: savedOwner.exam_id,
-        });
-        return;
-      }
-      try { await assertScanImageDimensions(image.buffer); }
-      catch (error) {
-        res.status(error instanceof ScanImageBudgetError ? error.status : 400).json({
-          code: error instanceof ScanImageBudgetError ? error.code : "SCAN_IMAGE_INVALID",
-          message: error instanceof ScanImageBudgetError ? error.message : "扫描图片尺寸无法读取，请检查图片格式",
-        });
-        return;
-      }
-      const ext = safeImageExtension(image.originalname);
-      const fileName = `${path.basename(String(sessionId))}_${crypto.randomUUID()}${ext}`;
-      stagedImage = path.join(scannerUploadDir(), fileName);
-      // Immutable candidate after overwrite gates pass; rolled-back uploads drop it in finally.
-      await writeFile(stagedImage, image.buffer);
+    try { await assertScanImageDimensions(image.buffer); }
+    catch (error) {
+      res.status(error instanceof ScanImageBudgetError ? error.status : 400).json({
+        code: error instanceof ScanImageBudgetError ? error.code : "SCAN_IMAGE_INVALID",
+        message: error instanceof ScanImageBudgetError ? error.message : "扫描图片尺寸无法读取，请检查图片格式",
+      });
+      return;
+    }
+    const ext = safeImageExtension(image.originalname);
+    const fileName = `${path.basename(String(sessionId))}_${crypto.randomUUID()}${ext}`;
+    stagedImage = path.join(scannerUploadDir(), fileName);
+    // Async disk I/O must finish before the exam transaction: SQLite shares one connection,
+    // and awaiting here inside BEGIN..ROLLBACK would undo other requests' committed writes.
+    await scannerPageImageStaging.write(stagedImage, image.buffer);
+
+    const { session, record } = gated;
+    const uploaded = await writeScannerSession(String(sessionId), async db => {
+      const again = await pageUploadOverwriteGates(db, String(sessionId), token, res);
+      if (!again) return;
+
       let recognition: z.infer<typeof recognitionSchema> | undefined;
       if (req.body.recognition) {
         try { recognition = recognitionSchema.parse(JSON.parse(req.body.recognition)); }
