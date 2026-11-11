@@ -1,6 +1,7 @@
 /** SQLite: unrelated committed writes survive when crop staging fails outside the upload transaction. */
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { scannerCropStaging } from "../src/server/services/scannerCropStaging";
@@ -126,6 +127,46 @@ try {
   assert.equal(await verifyPassword(oldPassword, hashAfterCrop), false);
   scannerCropStaging.write = originalWrite;
   console.log("PASS sqlite: committed password change survives EIO during crop staging");
+
+  const cropOk = new FormData();
+  cropOk.append("crops", new Blob([cropPng], { type: "image/png" }), "crop.png");
+  cropOk.append("manifest", JSON.stringify([{
+    blockId: "flow_q", blockTitle: "选择题", blockType: "objective", pageNumber: 1, segmentIndex: 0,
+    questionNumbers: [1], rect: { x: 0, y: 0, width: 10, height: 10 }, widthPx: 12, heightPx: 12, dpi: 300,
+    fileName: "crop.png",
+  }]));
+  assert.equal((await request(
+    `/api/scanner/upload/sessions/${remote.sessionId}/pages/${remote.uploadTokens[0]}/crops`,
+    { method: "POST", body: cropOk },
+  )).status, 200);
+  const committed = await db.get<{ image_path: string }>(
+    "SELECT image_path FROM answer_block_crops WHERE source_record_id=?",
+    remote.uploadTokens[0],
+  );
+  assert.ok(committed?.image_path && existsSync(committed.image_path));
+  const preservedBytes = await readFile(committed.image_path);
+
+  const { relocateUploadedCropsToStorage } = await import("../src/server/services/AnswerBlockCropService");
+  const retryStaging = path.join(root, "retry-staging.png");
+  const retryBytes = await sharp({ create: { width: 12, height: 12, channels: 3, background: { r: 200, g: 10, b: 10 } } }).png().toBuffer();
+  await writeFile(retryStaging, retryBytes);
+  const retryManifest = [{
+    blockId: "flow_q", blockTitle: "选择题", blockType: "objective", pageNumber: 1, segmentIndex: 0,
+    questionNumbers: [1], rect: { x: 0, y: 0, width: 10, height: 10 }, widthPx: 12, heightPx: 12, dpi: 300,
+    path: retryStaging,
+  }];
+  const relocated = await relocateUploadedCropsToStorage({
+    cardId: card.id, sourceType: "twain_scan_record", sourceRecordId: remote.uploadTokens[0],
+  }, retryManifest);
+  assert.notEqual(path.resolve(relocated.paths[0]!), path.resolve(committed.image_path),
+    "retry staging must not target the committed crop path before the DB transaction");
+  assert.deepEqual(await readFile(committed.image_path), preservedBytes,
+    "relocate before persist must not replace the prior review image");
+
+  await unlink(relocated.paths[0]!);
+  assert.deepEqual(await readFile(committed.image_path), preservedBytes,
+    "failed retry cleanup must retire only staged paths");
+  console.log("PASS sqlite: crop retry keeps committed review images when staging is rolled back");
 } finally {
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   resetAdapter();

@@ -175,7 +175,7 @@ export async function relocateUploadedCropsToStorage(
   for (let index = 0; index < crops.length; index += 1) {
     const crop = crops[index];
     if (!crop?.path || !crop.blockId || !Array.isArray(crop.questionNumbers) || crop.questionNumbers.length === 0) continue;
-    const targetPath = path.join(targetDir, targetFileName(crop, index));
+    const targetPath = path.join(targetDir, `${randomUUID()}_${targetFileName(crop, index)}`);
     if (!isInsideDir(targetDir, targetPath)) continue;
     await moveCropFile(path.resolve(crop.path), targetPath);
     paths.push(targetPath);
@@ -211,6 +211,16 @@ export async function persistAnswerBlockCrops(
 
   // 五轮D1：无切块产出不再静默。扫描端/批量阅卷常因识别器版本差异（不支持 --crops-dir）
   // 致 blockCrops 恒空，留一行日志便于定位「有扫描无切块」而网阅队列为空的问题。
+  let previousImagePaths: string[] = [];
+  if (params.skipFileMoves) {
+    const prior = await db.all(
+      "SELECT image_path FROM answer_block_crops WHERE source_type = ? AND source_record_id = ?",
+      params.sourceType,
+      sourceRecordId,
+    ) as Array<{ image_path: string }>;
+    previousImagePaths = prior.map((row) => row.image_path).filter(Boolean);
+  }
+
   if (crops.length === 0) {
     await db.run(
       "DELETE FROM answer_block_crops WHERE source_type = ? AND source_record_id = ?",
@@ -307,6 +317,17 @@ export async function persistAnswerBlockCrops(
   } catch (error) {
     if (!params.fileMoves) await Promise.all(movedPaths.map((targetPath) => unlink(targetPath).catch(() => {})));
     throw error;
+  }
+
+  if (params.skipFileMoves && previousImagePaths.length > 0) {
+    const kept = new Set(
+      crops.map((crop) => (crop?.path ? path.resolve(crop.path) : "")).filter(Boolean),
+    );
+    for (const oldPath of previousImagePaths) {
+      const resolved = path.resolve(oldPath);
+      if (kept.has(resolved)) continue;
+      if (existsSync(resolved)) await unlink(resolved).catch(() => {});
+    }
   }
 
   return stats;

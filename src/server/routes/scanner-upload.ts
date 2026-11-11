@@ -539,54 +539,59 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, cropUploadBu
       tempDir = path.resolve(scannerUploadDir(), "crops-temp", path.basename(sessionId), path.basename(recordId));
       if (!existsSync(tempDir)) mkdirSync(tempDir, { recursive: true });
 
-      const staged: RecognitionBlockCrop[] = [];
-      for (const [index, crop] of manifest.entries()) {
-        const file = crop.fileName
-          ? files.find((item) => item.originalname === crop.fileName)
-          : files[index];
-        if (!file) continue;
-        const targetPath = path.join(tempDir!, `${index}_${path.basename(file.originalname || "crop.png")}`);
-        if (!insideDir(tempDir!, targetPath)) continue;
-        // Async disk I/O must finish before the exam transaction: SQLite shares one connection,
-        // and awaiting here inside BEGIN..ROLLBACK would undo other requests' committed writes.
-        await scannerCropStaging.write(targetPath, file.buffer);
-        staged.push({
-          blockId: crop.blockId,
-          blockTitle: crop.blockTitle ?? "",
-          blockType: crop.blockType ?? "",
-          pageNumber: crop.pageNumber,
-          segmentIndex: crop.segmentIndex,
-          questionNumbers: crop.questionNumbers,
-          rect: crop.rect,
-          widthPx: crop.widthPx,
-          heightPx: crop.heightPx,
-          dpi: crop.dpi,
-          path: targetPath,
-        });
-      }
+      try {
+        const staged: RecognitionBlockCrop[] = [];
+        for (const [index, crop] of manifest.entries()) {
+          const file = crop.fileName
+            ? files.find((item) => item.originalname === crop.fileName)
+            : files[index];
+          if (!file) continue;
+          const targetPath = path.join(tempDir!, `${index}_${path.basename(file.originalname || "crop.png")}`);
+          if (!insideDir(tempDir!, targetPath)) continue;
+          // Async disk I/O must finish before the exam transaction: SQLite shares one connection,
+          // and awaiting here inside BEGIN..ROLLBACK would undo other requests' committed writes.
+          await scannerCropStaging.write(targetPath, file.buffer);
+          staged.push({
+            blockId: crop.blockId,
+            blockTitle: crop.blockTitle ?? "",
+            blockType: crop.blockType ?? "",
+            pageNumber: crop.pageNumber,
+            segmentIndex: crop.segmentIndex,
+            questionNumbers: crop.questionNumbers,
+            rect: crop.rect,
+            widthPx: crop.widthPx,
+            heightPx: crop.heightPx,
+            dpi: crop.dpi,
+            path: targetPath,
+          });
+        }
 
-      const { record } = gated;
-      const relocated = await relocateUploadedCropsToStorage({
-        cardId: String(record.card_id),
-        sourceType: "twain_scan_record",
-        sourceRecordId: recordId,
-      }, staged);
-      stagedCropPaths = relocated.paths;
-
-      return runScannerSessionTransaction(sessionId, async db => {
-        const again = await cropUploadOverwriteGates(db, sessionId, recordId, res);
-        if (!again) return;
-
-        const saved = await persistAnswerBlockCrops({
-          cardId: String(again.record.card_id),
-          studentNumber: again.record.student_id ?? null,
+        const { record } = gated;
+        const relocated = await relocateUploadedCropsToStorage({
+          cardId: String(record.card_id),
           sourceType: "twain_scan_record",
           sourceRecordId: recordId,
-          crops: relocated.crops,
-          skipFileMoves: true,
-        }, db);
-        return { ok: true, count: saved.persisted, skipped: saved.skipped, crops: [] };
-      });
+        }, staged);
+        stagedCropPaths = relocated.paths;
+
+        return await runScannerSessionTransaction(sessionId, async db => {
+          const again = await cropUploadOverwriteGates(db, sessionId, recordId, res);
+          if (!again) return;
+
+          const saved = await persistAnswerBlockCrops({
+            cardId: String(again.record.card_id),
+            studentNumber: again.record.student_id ?? null,
+            sourceType: "twain_scan_record",
+            sourceRecordId: recordId,
+            crops: relocated.crops,
+            skipFileMoves: true,
+          }, db);
+          return { ok: true, count: saved.persisted, skipped: saved.skipped, crops: [] };
+        });
+      } finally {
+        // 响应前清掉临时目录：客户端拿到 200 时盘上不应再留 crops-temp 副本（R07 回归）
+        await rm(tempDir, { recursive: true, force: true }).catch((err) => console.warn("[scanner-upload] 切块临时目录清理失败:", err));
+      }
     });
     if (uploaded) {
       committedCrops = true;
@@ -597,9 +602,6 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, cropUploadBu
     console.error("[scanner-upload] 请求处理失败:", err);
     res.status(500).json({ message: "请求处理失败，请查看服务器日志" });
   } finally {
-    if (tempDir) {
-      await rm(tempDir, { recursive: true, force: true }).catch((err) => console.warn("[scanner-upload] 切块临时目录清理失败:", err));
-    }
     if (!committedCrops && stagedCropPaths.length > 0) {
       await Promise.all(stagedCropPaths.map((filePath) => unlink(filePath).catch(() => {})));
     }
