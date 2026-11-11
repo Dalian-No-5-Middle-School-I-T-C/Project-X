@@ -1,6 +1,6 @@
-import { storeCorrectionPage } from "../../../../server/services/scanCorrection";
+import { correctionPageRevision, storeCorrectionPage } from "../../../../server/services/scanCorrection";
 import path from "node:path";
-import { mkdir } from "node:fs/promises";
+import { mkdir, unlink } from "node:fs/promises";
 import { dataDir } from "../storage";
 import {
   createSession, createScanRecord, getSession, getScanRecord, listScanRecords,
@@ -17,7 +17,7 @@ import { enqueueScannerSubmission, invalidateScanRecognitionInQueue } from "../.
 import { gradeCombinedRecognition } from "../../../../shared/grading";
 import type { CombinedRecognitionResult } from "../../../../shared/types";
 import { getMysqlDb } from "../../../../server/db";
-import { persistAnswerBlockCrops } from "../../../../server/services/AnswerBlockCropService";
+import { persistAnswerBlockCrops, relocateUploadedCropsToStorage } from "../../../../server/services/AnswerBlockCropService";
 import { findCardForLayout, prepareCardLayoutById } from "../card-layout";
 import { parseRecognitionDpi } from "../helpers";
 import { mapScanPageToLayout, applyScanStudentId, assignScanRecordPageNums } from "../../../../shared/scanPages";
@@ -341,6 +341,9 @@ export async function runOcrOnSession(
             applyScanStudentId(recognition, inheritedStudentId!, true);
           }
           const studentConf = recognizedStudentId ? 0.9 : inherited ? 0.9 : 0.0;
+          // Write correction geometry before OCR metadata so human edits can proceed while
+          // recognition rows are still in flight (scanner-retry-concurrency regression).
+          if (card) await storeCorrectionPage(card, "twain_scan_record", record.id, recognition);
           const ocrStatus = recognition.status === "ok" ? "done" : recognition.status === "failed" ? "failed" : "review";
 
           // 诊断检查点：每页识别结果摘要（考号是否读到/识别状态/失败原因），进 main.log 便于实机取证
@@ -372,29 +375,36 @@ export async function runOcrOnSession(
             }
           }
 
+          let stagedCropPaths: string[] = [];
           try {
+            const rawCrops = recognition.status === "failed" ? [] : recognition.blockCrops ?? [];
+            let cropsToPersist = rawCrops;
+            if (rawCrops.length > 0) {
+              const relocated = await relocateUploadedCropsToStorage({
+                cardId,
+                sourceType: "twain_scan_record",
+                sourceRecordId: record.id,
+              }, rawCrops);
+              stagedCropPaths = relocated.paths;
+              cropsToPersist = relocated.crops;
+            }
             const db = getMysqlDb();
             await db.transaction(async (tx) => {
-              let correctionRevision: number | null = null;
-              if (card) {
-                await storeCorrectionPage(card, "twain_scan_record", record.id, recognition, tx);
-                const row = await tx.get<{ revision: number }>(
-                  "SELECT revision FROM scan_correction_pages WHERE source_type=? AND source_id=?",
-                  "twain_scan_record",
-                  record.id,
-                );
-                correctionRevision = row ? Number(row.revision) : null;
-              }
+              const correctionRevision = card
+                ? await correctionPageRevision("twain_scan_record", record.id, tx)
+                : null;
               await persistAnswerBlockCrops({
                 cardId,
                 studentNumber: studentId,
                 sourceType: "twain_scan_record",
                 sourceRecordId: record.id,
                 correctionRevision,
-                crops: recognition.status === "failed" ? [] : recognition.blockCrops ?? [],
+                crops: cropsToPersist,
+                skipFileMoves: true,
               }, tx);
             });
           } catch (cropError) {
+            await Promise.all(stagedCropPaths.map((filePath) => unlink(filePath).catch(() => {})));
             console.error(`[Scanner] Block crop persistence failed for record ${record.id}:`, cropError);
           }
 

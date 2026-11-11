@@ -489,7 +489,7 @@ CREATE TABLE IF NOT EXISTS answer_block_crops (
     claimed_by       INT,
     claimed_at       DATETIME,
     claim_count          INT NOT NULL DEFAULT 0,
-    correction_revision  INT,
+    correction_revision  BIGINT,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uniq_answer_block_crop_source (source_type, source_record_id, block_id, page_number, segment_index),
     FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,

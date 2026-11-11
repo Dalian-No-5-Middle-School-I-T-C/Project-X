@@ -1260,13 +1260,18 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
   ] });
 
   mariadbMigrations.push({ version: 69, name: "answer-block-crops-correction-revision", sqls: [
-    "ALTER TABLE answer_block_crops ADD COLUMN correction_revision INT",
+    "ALTER TABLE answer_block_crops ADD COLUMN correction_revision BIGINT",
     `UPDATE answer_block_crops abc
      INNER JOIN scan_correction_pages scp
        ON scp.source_type = abc.source_type AND scp.source_id = abc.source_record_id
      SET abc.correction_revision = scp.revision
      WHERE abc.correction_revision IS NULL
        AND abc.source_type IN ('twain_scan_record', 'scan_record')`,
+  ] });
+
+  // v70: early v69 builds used INT; scan_correction_pages.revision is BIGINT (Date.now() seeds).
+  mariadbMigrations.push({ version: 70, name: "answer-block-crops-correction-revision-bigint", sqls: [
+    "ALTER TABLE answer_block_crops MODIFY COLUMN correction_revision BIGINT",
   ] });
 
   for (const m of mariadbMigrations) {
