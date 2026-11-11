@@ -200,6 +200,16 @@ export interface CropPersistenceStats {
   skipped: number;
   /** 识别结果根本没产出切块 */
   empty: boolean;
+  /** `skipFileMoves` 替换成功后、外层事务提交完成才可删除的旧切块文件 */
+  retireImagePaths?: string[];
+}
+
+/** Remove superseded crop files after the enclosing DB transaction has committed. */
+export async function retireSupersededCropImages(paths: string[]): Promise<void> {
+  for (const oldPath of paths) {
+    const resolved = path.resolve(oldPath);
+    if (existsSync(resolved)) await unlink(resolved).catch(() => {});
+  }
 }
 
 export async function persistAnswerBlockCrops(
@@ -230,7 +240,7 @@ export async function persistAnswerBlockCrops(
     console.warn(
       `[crop] 无切块产出 (cardId=${params.cardId}, source=${params.sourceType}:${sourceRecordId}); OCR 未返回 blockCrops，网阅队列将为空`
     );
-    return { persisted: 0, skipped: 0, empty: true };
+    return { persisted: 0, skipped: 0, empty: true, retireImagePaths: [] };
   }
 
   await db.run(
@@ -319,6 +329,7 @@ export async function persistAnswerBlockCrops(
     throw error;
   }
 
+  const retireImagePaths: string[] = [];
   if (params.skipFileMoves && previousImagePaths.length > 0) {
     const kept = new Set(
       crops.map((crop) => (crop?.path ? path.resolve(crop.path) : "")).filter(Boolean),
@@ -326,11 +337,11 @@ export async function persistAnswerBlockCrops(
     for (const oldPath of previousImagePaths) {
       const resolved = path.resolve(oldPath);
       if (kept.has(resolved)) continue;
-      if (existsSync(resolved)) await unlink(resolved).catch(() => {});
+      retireImagePaths.push(resolved);
     }
   }
 
-  return stats;
+  return { ...stats, retireImagePaths };
 }
 
 export async function getAnswerBlockCropFile(id: string, db: DbAdapter = getMysqlDb()): Promise<string | null> {

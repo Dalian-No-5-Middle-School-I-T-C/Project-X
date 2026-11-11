@@ -167,6 +167,48 @@ try {
   assert.deepEqual(await readFile(committed.image_path), preservedBytes,
     "failed retry cleanup must retire only staged paths");
   console.log("PASS sqlite: crop retry keeps committed review images when staging is rolled back");
+
+  const { persistAnswerBlockCrops } = await import("../src/server/services/AnswerBlockCropService");
+  const { runScannerSessionTransaction } = await import("../src/server/services/scannerSubmissions");
+  const rollbackStaging = path.join(root, "rollback-staging.png");
+  const rollbackBytes = await sharp({
+    create: { width: 12, height: 12, channels: 3, background: { r: 10, g: 200, b: 30 } },
+  }).png().toBuffer();
+  await writeFile(rollbackStaging, rollbackBytes);
+  const rollbackRelocated = await relocateUploadedCropsToStorage({
+    cardId: card.id, sourceType: "twain_scan_record", sourceRecordId: remote.uploadTokens[0],
+  }, [{
+    blockId: "flow_q", blockTitle: "选择题", blockType: "objective", pageNumber: 1, segmentIndex: 0,
+    questionNumbers: [1], rect: { x: 0, y: 0, width: 10, height: 10 }, widthPx: 12, heightPx: 12, dpi: 300,
+    path: rollbackStaging,
+  }]);
+  let rollbackThrown = false;
+  try {
+    await runScannerSessionTransaction(remote.sessionId, async (tx) => {
+      await persistAnswerBlockCrops({
+        cardId: card.id,
+        sourceType: "twain_scan_record",
+        sourceRecordId: remote.uploadTokens[0],
+        crops: rollbackRelocated.crops,
+        skipFileMoves: true,
+      }, tx);
+      throw new Error("forced rollback after crop persist");
+    });
+  } catch (error) {
+    rollbackThrown = (error as Error).message === "forced rollback after crop persist";
+  }
+  assert.equal(rollbackThrown, true, "transaction must roll back after persist");
+  const rowAfterRollback = await db.get<{ image_path: string }>(
+    "SELECT image_path FROM answer_block_crops WHERE source_record_id=?",
+    remote.uploadTokens[0],
+  );
+  assert.ok(rowAfterRollback?.image_path && existsSync(rowAfterRollback.image_path),
+    "rolled-back retry must keep the committed crop row and file");
+  assert.equal(path.resolve(rowAfterRollback!.image_path), path.resolve(committed.image_path));
+  assert.deepEqual(await readFile(rowAfterRollback!.image_path), preservedBytes,
+    "rolled-back retry must not delete the previously committed review image");
+  await Promise.all(rollbackRelocated.paths.map((filePath) => unlink(filePath).catch(() => {})));
+  console.log("PASS sqlite: rolled-back crop replace keeps prior committed images");
 } finally {
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   resetAdapter();

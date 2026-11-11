@@ -37,7 +37,7 @@ import { hasViewPermission } from "../../apps/answer-card/server/middleware";
 import { requireScannerExamScope, requireScannerRecordScope, enforceScannerCardScope } from "../middleware/scanner-scope";
 import { resolveScannerExam } from "../services/scannerExam";
 import { getMysqlDb } from "../db";
-import { persistAnswerBlockCrops, relocateUploadedCropsToStorage, isInsideDir, type CropPersistenceStats } from "../services/AnswerBlockCropService";
+import { persistAnswerBlockCrops, relocateUploadedCropsToStorage, isInsideDir, retireSupersededCropImages, type CropPersistenceStats } from "../services/AnswerBlockCropService";
 import { isValidImageBuffer, safeImageExtension } from "../../apps/answer-card/server/validate-upload";
 import type { CombinedRecognitionResult, RecognitionBlockCrop } from "../../shared/types";
 import { z } from "zod";
@@ -510,6 +510,7 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, cropUploadBu
   const recordId = String(req.params.recordId);
   let tempDir: string | undefined;
   let stagedCropPaths: string[] = [];
+  let pendingRetireCropPaths: string[] = [];
   let committedCrops = false;
   try {
     const manifestRaw = typeof req.body?.manifest === "string" ? req.body.manifest : "[]";
@@ -586,6 +587,7 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, cropUploadBu
             crops: relocated.crops,
             skipFileMoves: true,
           }, db);
+          pendingRetireCropPaths = saved.retireImagePaths ?? [];
           return { ok: true, count: saved.persisted, skipped: saved.skipped, crops: [] };
         });
       } finally {
@@ -595,6 +597,9 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, cropUploadBu
     });
     if (uploaded) {
       committedCrops = true;
+      if (pendingRetireCropPaths.length > 0) {
+        await retireSupersededCropImages(pendingRetireCropPaths);
+      }
       res.json(uploaded);
     }
   } catch (err: any) {
