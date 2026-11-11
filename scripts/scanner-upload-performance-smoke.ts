@@ -5,6 +5,11 @@ import type { Server } from "node:http";
 import { startScannerFlowFixture } from "./scanner-upload-flow-fixture";
 import { createScannerUploadManager } from "../src/apps/answer-card/client/lib/scannerUploadManager";
 import type { CombinedGradingBatchResult, CombinedRecognitionResult } from "../src/shared/types";
+import {
+  isSessionGroupedOcrBatch,
+  isSessionGroupedRecordBatch,
+  isUploadRecognizedStudentStamp,
+} from "./smoke-sql-match";
 
 // Real DB/HTTP paths with deterministic recognizer output; supports an empty
 // projectx_scanner_batch_* MariaDB database via the existing fixture variables.
@@ -37,7 +42,7 @@ try {
   let reads = 0, loadedRows = 0;
   db.all = async <T>(sql: string, ...params: any[]): Promise<T[]> => {
     reads++; const rows = await all<T>(sql, ...params);
-    if (sql.includes("SELECT r.*") || sql.includes("SELECT o.*")) loadedRows += rows.length;
+    if (isSessionGroupedRecordBatch(sql) || isSessionGroupedOcrBatch(sql)) loadedRows += rows.length;
     return rows;
   };
   db.get = async <T>(sql: string, ...params: any[]): Promise<T | null> => { reads++; return get<T>(sql, ...params); };
@@ -94,7 +99,7 @@ try {
   db.transaction = fn => transaction(async tx => {
     const run = tx.run.bind(tx);
     tx.run = async (sql, ...params) => {
-      if (sql.includes("SET student_id = ?, recognized_at")) throw new Error("injected upload rollback");
+      if (isUploadRecognizedStudentStamp(sql)) throw new Error("injected upload rollback");
       return run(sql, ...params);
     };
     try { return await fn(tx); } finally { tx.run = run; }
