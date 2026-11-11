@@ -50,6 +50,8 @@ export type PersistAnswerBlockCropsParams = {
   crops?: RecognitionBlockCrop[] | null;
   /** Outer transaction owns these file moves until commit or rollback. */
   fileMoves?: CropFileMove[];
+  /** Crop bytes already live at `crop.path`; persist only database rows. */
+  skipFileMoves?: boolean;
 };
 
 function cropImageUrl(id: string): string {
@@ -161,6 +163,27 @@ function targetFileName(crop: RecognitionBlockCrop, index: number): string {
   return `p${page}_s${segment}_${String(index + 1).padStart(2, "0")}_${block}.png`;
 }
 
+/** Move staged scanner-upload crops into block storage before the DB transaction opens. */
+export async function relocateUploadedCropsToStorage(
+  params: Pick<PersistAnswerBlockCropsParams, "cardId" | "sourceType" | "sourceRecordId">,
+  crops: RecognitionBlockCrop[],
+): Promise<{ crops: RecognitionBlockCrop[]; paths: string[] }> {
+  const sourceRecordId = String(params.sourceRecordId);
+  const targetDir = path.join(blockCropsDir, safeId(params.cardId), `${params.sourceType}_${safeId(sourceRecordId)}`);
+  const relocated: RecognitionBlockCrop[] = [];
+  const paths: string[] = [];
+  for (let index = 0; index < crops.length; index += 1) {
+    const crop = crops[index];
+    if (!crop?.path || !crop.blockId || !Array.isArray(crop.questionNumbers) || crop.questionNumbers.length === 0) continue;
+    const targetPath = path.join(targetDir, targetFileName(crop, index));
+    if (!isInsideDir(targetDir, targetPath)) continue;
+    await moveCropFile(path.resolve(crop.path), targetPath);
+    paths.push(targetPath);
+    relocated.push({ ...crop, path: targetPath });
+  }
+  return { crops: relocated, paths };
+}
+
 /** 路径必须严格落在 base 目录内（R07：拒绝 `..`、绝对路径与同前缀目录名）。 */
 export function isInsideDir(base: string, target: string): boolean {
   const resolvedBase = normalizeFsPath(base);
@@ -222,7 +245,16 @@ export async function persistAnswerBlockCrops(
       }
 
       const id = randomUUID();
-      const targetPath = path.join(targetDir, `${params.fileMoves ? `${id}_` : ""}${targetFileName(crop, index)}`);
+      let targetPath: string;
+      if (params.skipFileMoves) {
+        targetPath = path.resolve(crop.path);
+        if (!existsSync(targetPath)) {
+          stats.skipped += 1;
+          continue;
+        }
+      } else {
+        targetPath = path.join(targetDir, `${params.fileMoves ? `${id}_` : ""}${targetFileName(crop, index)}`);
+      }
       // 安全（R07）：目标路径必须仍在「该卡/该记录」的切块目录内。
       // 清单里的页码/分段号参与文件名拼装，越界就等于让上传方决定服务端写文件的位置。
       // 源文件由服务端自己产生（识别器临时目录 / 扫描上传临时目录），远端已无法指定。
@@ -232,14 +264,16 @@ export async function persistAnswerBlockCrops(
         continue;
       }
       const sourcePath = path.resolve(crop.path);
-      if (params.fileMoves) {
-        const move: CropFileMove = { sourcePath, targetPath };
-        params.fileMoves.push(move);
-        const createdDir = await mkdir(path.dirname(targetPath), { recursive: true });
-        move.createdDir = createdDir ? normalizeFsPath(createdDir) : undefined;
+      if (!params.skipFileMoves) {
+        if (params.fileMoves) {
+          const move: CropFileMove = { sourcePath, targetPath };
+          params.fileMoves.push(move);
+          const createdDir = await mkdir(path.dirname(targetPath), { recursive: true });
+          move.createdDir = createdDir ? normalizeFsPath(createdDir) : undefined;
+        }
+        await moveCropFile(sourcePath, targetPath);
+        movedPaths.push(targetPath);
       }
-      await moveCropFile(sourcePath, targetPath);
-      movedPaths.push(targetPath);
 
       await db.run(
         `INSERT INTO answer_block_crops (

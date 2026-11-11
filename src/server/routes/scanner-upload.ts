@@ -30,14 +30,14 @@ import {
 import { requestUploadBudget } from "../lib/uploadBudget";
 import path from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
-import { rm, writeFile } from "node:fs/promises";
+import { rm, unlink } from "node:fs/promises";
 import crypto from "node:crypto";
 import { dualAuth } from "../middleware/scanner-auth";
 import { hasViewPermission } from "../../apps/answer-card/server/middleware";
 import { requireScannerExamScope, requireScannerRecordScope, enforceScannerCardScope } from "../middleware/scanner-scope";
 import { resolveScannerExam } from "../services/scannerExam";
 import { getMysqlDb } from "../db";
-import { persistAnswerBlockCrops, isInsideDir, type CropPersistenceStats } from "../services/AnswerBlockCropService";
+import { persistAnswerBlockCrops, relocateUploadedCropsToStorage, isInsideDir, type CropPersistenceStats } from "../services/AnswerBlockCropService";
 import { isValidImageBuffer, safeImageExtension } from "../../apps/answer-card/server/validate-upload";
 import type { CombinedRecognitionResult, RecognitionBlockCrop } from "../../shared/types";
 import { z } from "zod";
@@ -47,6 +47,7 @@ import { ExamRepository } from "../repositories/ExamRepository";
 import { ensureExamParticipants, listMissingParticipants, searchExamParticipantRoster } from "../services/examParticipants";
 import { processScannerSession, processScannerSessionInQueue, runScannerCommittedRead, enqueueScannerSubmission, writeScannerSession, runScannerSessionTransaction, invalidateScanRecognition, invalidateScanRecognitionInTransaction, savedReceiptOwnerOfPage, discardScannerGroup } from "../services/scannerSubmissions";
 import { scannerPageImageStaging } from "../services/scannerPageImageStaging";
+import { scannerCropStaging } from "../services/scannerCropStaging";
 import type { DbAdapter } from "../db/mysql";
 import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
 import { groupSessionPages } from "../../apps/answer-card/server/scanner/session-results";
@@ -205,6 +206,47 @@ async function pageUploadOverwriteGates(
     return;
   }
   return { session, record };
+}
+
+type CropUploadGate = {
+  record: { card_id: string; student_id: string | null; identity_json: string; ocr_status: string };
+};
+
+async function cropUploadOverwriteGates(
+  db: DbAdapter,
+  sessionId: string,
+  recordId: string,
+  res: Response,
+): Promise<CropUploadGate | undefined> {
+  const record = await db.get<CropUploadGate["record"] & { id: string }>(
+    "SELECT id, card_id, student_id, identity_json, ocr_status FROM twain_scan_records WHERE id = ? AND session_id = ?",
+    recordId,
+    sessionId,
+  );
+  if (!record) {
+    res.status(404).json({ message: "扫描页不存在" });
+    return;
+  }
+  const session = await db.get<{ status: string }>(
+    "SELECT status FROM twain_scan_sessions WHERE id = ?", sessionId);
+  if (!session) { res.status(404).json({ message: "会话不存在" }); return; }
+  if (session.status === "completed") {
+    res.status(409).json({ message: "该扫描会话已完成，切块不可再改写；请新建扫描会话后重新上传" });
+    return;
+  }
+  if (record.ocr_status === "review") {
+    res.status(409).json({ code: "SCAN_PAGE_CORRECTED", message: "此页已保存填涂订正，不能由上传改写；请通过整卡订正继续修改" });
+    return;
+  }
+  if (await savedReceiptOwnerOfPage(sessionId, recordId, true, db)) {
+    res.status(409).json({ message: "该扫描页的成绩已入库，切块不可再由上传改写", code: "SCAN_PAGE_SAVED" });
+    return;
+  }
+  if (!record.identity_json || !["uploaded", "completed"].includes(record.ocr_status)) {
+    res.status(409).json({ message: "页面尚未通过身份校验，不能上传切块" });
+    return;
+  }
+  return { record };
 }
 
 function scannerUploadDir(): string {
@@ -464,109 +506,103 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
 
 // ── POST /api/scanner/sessions/:sessionId/complete ──────
 router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, cropUploadBudget, cropUpload.array("crops", MAX_CROPS_PER_REQUEST), async (req: Request, res: Response) => {
+  const sessionId = String(req.params.sessionId);
+  const recordId = String(req.params.recordId);
+  let tempDir: string | undefined;
+  let stagedCropPaths: string[] = [];
+  let committedCrops = false;
   try {
-    const sessionId = String(req.params.sessionId);
-    const recordId = String(req.params.recordId);
-    const uploaded = await writeScannerSession(sessionId, async db => {
-      const record = await db.get<any>(
-        "SELECT id, card_id, student_id, identity_json, ocr_status FROM twain_scan_records WHERE id = ? AND session_id = ?",
-        recordId,
-        sessionId
-      );
-      if (!record) {
-        res.status(404).json({ message: "扫描页不存在" });
+    const manifestRaw = typeof req.body?.manifest === "string" ? req.body.manifest : "[]";
+    let manifest: Array<z.infer<typeof cropManifestSchema>>;
+    try {
+      const parsed: unknown = JSON.parse(manifestRaw);
+      if (!Array.isArray(parsed)) throw new Error("manifest 必须是数组");
+      if (parsed.length > MAX_CROPS_PER_REQUEST) throw new Error(`单次最多 ${MAX_CROPS_PER_REQUEST} 个切块`);
+      manifest = parsed.map((item, index) => cropManifestSchema.parse(item));
+    } catch (err: any) {
+      res.status(400).json({ message: `切块清单无效: ${err?.message ?? "格式错误"}` });
+      return;
+    }
+    const files = Array.isArray(req.files) ? req.files as Express.Multer.File[] : [];
+    for (const file of files) {
+      if (!isValidImageBuffer(file.buffer)) {
+        res.status(400).json({ message: `切块文件 ${file.originalname} 不是受支持的图片格式` });
         return;
       }
+    }
 
-      // 安全（R02）：会话终态后切块同样不可重放——否则已入库成绩的阅卷图会被静默替换
-      const session = await db.get<{ status: string }>(
-        "SELECT status FROM twain_scan_sessions WHERE id = ?", sessionId);
-      if (!session) { res.status(404).json({ message: "会话不存在" }); return; }
-      if (session.status === "completed") {
-        res.status(409).json({ message: "该扫描会话已完成，切块不可再改写；请新建扫描会话后重新上传" });
-        return;
-      }
-      if (record.ocr_status === "review") {
-        res.status(409).json({ code: "SCAN_PAGE_CORRECTED", message: "此页已保存填涂订正，不能由上传改写；请通过整卡订正继续修改" });
-        return;
-      }
-      // 安全（PR #312 复核 CR2）：切块是阅卷人实际看到的图，同样不能覆盖已入库回执的页面。
-      if (await savedReceiptOwnerOfPage(sessionId, recordId, true, db)) {
-        res.status(409).json({ message: "该扫描页的成绩已入库，切块不可再由上传改写", code: "SCAN_PAGE_SAVED" });
-        return;
-      }
+    const uploaded = await enqueueScannerSubmission(async () => {
+      const gated = await runScannerSessionTransaction(sessionId, db =>
+        cropUploadOverwriteGates(db, sessionId, recordId, res));
+      if (!gated) return;
 
-      if (!record.identity_json || !["uploaded", "completed"].includes(record.ocr_status)) {
-        res.status(409).json({ message: "页面尚未通过身份校验，不能上传切块" }); return;
-      }
-      const manifestRaw = typeof req.body?.manifest === "string" ? req.body.manifest : "[]";
-      let manifest: Array<z.infer<typeof cropManifestSchema>>;
-      try {
-        const parsed: unknown = JSON.parse(manifestRaw);
-        if (!Array.isArray(parsed)) throw new Error("manifest 必须是数组");
-        if (parsed.length > MAX_CROPS_PER_REQUEST) throw new Error(`单次最多 ${MAX_CROPS_PER_REQUEST} 个切块`);
-        manifest = parsed.map((item, index) => cropManifestSchema.parse(item));
-      } catch (err: any) {
-        res.status(400).json({ message: `切块清单无效: ${err?.message ?? "格式错误"}` });
-        return;
-      }
-      const files = Array.isArray(req.files) ? req.files as Express.Multer.File[] : [];
-      for (const file of files) {
-        if (!isValidImageBuffer(file.buffer)) {
-          res.status(400).json({ message: `切块文件 ${file.originalname} 不是受支持的图片格式` });
-          return;
-        }
-      }
-      const tempDir = path.resolve(scannerUploadDir(), "crops-temp", path.basename(sessionId), path.basename(recordId));
+      tempDir = path.resolve(scannerUploadDir(), "crops-temp", path.basename(sessionId), path.basename(recordId));
       if (!existsSync(tempDir)) mkdirSync(tempDir, { recursive: true });
 
-      let saved: CropPersistenceStats;
-      try {
-        const crops: RecognitionBlockCrop[] = [];
-        for (const [index, crop] of manifest.entries()) {
-          const file = crop.fileName
-            ? files.find((item) => item.originalname === crop.fileName)
-            : files[index];
-          if (!file) continue;
-          const targetPath = path.join(tempDir, `${index}_${path.basename(file.originalname || "crop.png")}`);
-          // 安全（R07）：写入前再确认一次路径仍在本次请求的临时目录内
-          if (!insideDir(tempDir, targetPath)) continue;
-          await writeFile(targetPath, file.buffer);
-          // 只采用校验过的字段；客户端上报的 path 与其它额外字段一律丢弃
-          crops.push({
-            blockId: crop.blockId,
-            blockTitle: crop.blockTitle ?? "",
-            blockType: crop.blockType ?? "",
-            pageNumber: crop.pageNumber,
-            segmentIndex: crop.segmentIndex,
-            questionNumbers: crop.questionNumbers,
-            rect: crop.rect,
-            widthPx: crop.widthPx,
-            heightPx: crop.heightPx,
-            dpi: crop.dpi,
-            path: targetPath,
-          });
-        }
+      const staged: RecognitionBlockCrop[] = [];
+      for (const [index, crop] of manifest.entries()) {
+        const file = crop.fileName
+          ? files.find((item) => item.originalname === crop.fileName)
+          : files[index];
+        if (!file) continue;
+        const targetPath = path.join(tempDir!, `${index}_${path.basename(file.originalname || "crop.png")}`);
+        if (!insideDir(tempDir!, targetPath)) continue;
+        // Async disk I/O must finish before the exam transaction: SQLite shares one connection,
+        // and awaiting here inside BEGIN..ROLLBACK would undo other requests' committed writes.
+        await scannerCropStaging.write(targetPath, file.buffer);
+        staged.push({
+          blockId: crop.blockId,
+          blockTitle: crop.blockTitle ?? "",
+          blockType: crop.blockType ?? "",
+          pageNumber: crop.pageNumber,
+          segmentIndex: crop.segmentIndex,
+          questionNumbers: crop.questionNumbers,
+          rect: crop.rect,
+          widthPx: crop.widthPx,
+          heightPx: crop.heightPx,
+          dpi: crop.dpi,
+          path: targetPath,
+        });
+      }
 
-        saved = await persistAnswerBlockCrops({
-          cardId: String(record.card_id),
-          studentNumber: record.student_id ?? null,
+      const { record } = gated;
+      const relocated = await relocateUploadedCropsToStorage({
+        cardId: String(record.card_id),
+        sourceType: "twain_scan_record",
+        sourceRecordId: recordId,
+      }, staged);
+      stagedCropPaths = relocated.paths;
+
+      return runScannerSessionTransaction(sessionId, async db => {
+        const again = await cropUploadOverwriteGates(db, sessionId, recordId, res);
+        if (!again) return;
+
+        const saved = await persistAnswerBlockCrops({
+          cardId: String(again.record.card_id),
+          studentNumber: again.record.student_id ?? null,
           sourceType: "twain_scan_record",
           sourceRecordId: recordId,
-          crops
+          crops: relocated.crops,
+          skipFileMoves: true,
         }, db);
-      } finally {
-        // 切块要么被持久化搬走，要么本次无效；临时目录不留残余（否则每次重试都在涨盘）
-        await rm(tempDir, { recursive: true, force: true }).catch((err) => console.warn("[scanner-upload] 切块临时目录清理失败:", err));
-      }
-      // 响应排在清理之后：客户端拿到 200 时磁盘状态已确定，重试不会与残余目录相互干扰
-      return { ok: true, count: saved.persisted, skipped: saved.skipped, crops: [] };
+        return { ok: true, count: saved.persisted, skipped: saved.skipped, crops: [] };
+      });
     });
-    if (uploaded) res.json(uploaded);
+    if (uploaded) {
+      committedCrops = true;
+      res.json(uploaded);
+    }
   } catch (err: any) {
     // 安全审计（F-12-1）：不向客户端回传内部错误原文，仅写服务端日志
     console.error("[scanner-upload] 请求处理失败:", err);
     res.status(500).json({ message: "请求处理失败，请查看服务器日志" });
+  } finally {
+    if (tempDir) {
+      await rm(tempDir, { recursive: true, force: true }).catch((err) => console.warn("[scanner-upload] 切块临时目录清理失败:", err));
+    }
+    if (!committedCrops && stagedCropPaths.length > 0) {
+      await Promise.all(stagedCropPaths.map((filePath) => unlink(filePath).catch(() => {})));
+    }
   }
 });
 // The Linux service edits uploaded metadata only; it never invokes native recognition.
