@@ -341,7 +341,6 @@ export async function runOcrOnSession(
             applyScanStudentId(recognition, inheritedStudentId!, true);
           }
           const studentConf = recognizedStudentId ? 0.9 : inherited ? 0.9 : 0.0;
-          if (card) await storeCorrectionPage(card, "twain_scan_record", record.id, recognition);
           const ocrStatus = recognition.status === "ok" ? "done" : recognition.status === "failed" ? "failed" : "review";
 
           // 诊断检查点：每页识别结果摘要（考号是否读到/识别状态/失败原因），进 main.log 便于实机取证
@@ -374,13 +373,27 @@ export async function runOcrOnSession(
           }
 
           try {
-            await persistAnswerBlockCrops({
-              cardId,
-              studentNumber: studentId,
-              sourceType: "twain_scan_record",
-              sourceRecordId: record.id,
-              crops: recognition.status === "failed" ? [] : recognition.blockCrops ?? []
-            }, getMysqlDb());
+            const db = getMysqlDb();
+            await db.transaction(async (tx) => {
+              let correctionRevision: number | null = null;
+              if (card) {
+                await storeCorrectionPage(card, "twain_scan_record", record.id, recognition, tx);
+                const row = await tx.get<{ revision: number }>(
+                  "SELECT revision FROM scan_correction_pages WHERE source_type=? AND source_id=?",
+                  "twain_scan_record",
+                  record.id,
+                );
+                correctionRevision = row ? Number(row.revision) : null;
+              }
+              await persistAnswerBlockCrops({
+                cardId,
+                studentNumber: studentId,
+                sourceType: "twain_scan_record",
+                sourceRecordId: record.id,
+                correctionRevision,
+                crops: recognition.status === "failed" ? [] : recognition.blockCrops ?? [],
+              }, tx);
+            });
           } catch (cropError) {
             console.error(`[Scanner] Block crop persistence failed for record ${record.id}:`, cropError);
           }

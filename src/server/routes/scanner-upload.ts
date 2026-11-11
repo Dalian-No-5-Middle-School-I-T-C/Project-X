@@ -579,11 +579,17 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, cropUploadBu
           const again = await cropUploadOverwriteGates(db, sessionId, recordId, res);
           if (!again) return;
 
+          const correctionRevision = (await db.get<{ revision: number }>(
+            "SELECT revision FROM scan_correction_pages WHERE source_type=? AND source_id=?",
+            "twain_scan_record",
+            recordId,
+          ))?.revision ?? null;
           const saved = await persistAnswerBlockCrops({
             cardId: String(again.record.card_id),
             studentNumber: again.record.student_id ?? null,
             sourceType: "twain_scan_record",
             sourceRecordId: recordId,
+            correctionRevision: correctionRevision == null ? null : Number(correctionRevision),
             crops: relocated.crops,
             skipFileMoves: true,
           }, db);

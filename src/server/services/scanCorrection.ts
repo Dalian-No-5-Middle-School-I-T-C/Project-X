@@ -36,6 +36,20 @@ export async function storeCorrectionPage(card: AnswerCard, sourceType: Correcti
   await db.run(`${upsert}, revision = revision + 1, recovery_fingerprint = NULL`,
     sourceType, String(sourceId), cardFingerprint(card), JSON.stringify(layout), JSON.stringify(safe), Date.now());
 }
+
+export async function correctionPageRevision(
+  sourceType: CorrectionPage["sourceType"],
+  sourceId: string | number,
+  db: DbAdapter = getMysqlDb(),
+): Promise<number | null> {
+  const row = await db.get<{ revision: number }>(
+    "SELECT revision FROM scan_correction_pages WHERE source_type=? AND source_id=?",
+    sourceType,
+    String(sourceId),
+  );
+  return row ? Number(row.revision) : null;
+}
+
 export async function loadCorrectionPage(sourceType: CorrectionPage["sourceType"], sourceId: string, imageUrl: string, db = getMysqlDb()): Promise<CorrectionPage | null> {
   const row = await db.get<{ layout_json: string; recognition_json: string; revision: number; card_version: string | null }>(
     "SELECT layout_json,recognition_json,revision,card_version FROM scan_correction_pages WHERE source_type=? AND source_id=?",sourceType,sourceId);

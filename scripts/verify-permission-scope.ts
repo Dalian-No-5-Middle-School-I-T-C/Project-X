@@ -885,6 +885,9 @@ async function main(): Promise<void> {
     `INSERT OR REPLACE INTO scan_correction_pages (source_type, source_id, card_version, layout_json, recognition_json, revision)
      VALUES ('twain_scan_record', 'rec-p1', ?, ?, ?, 0)`
   ).run(scanCardFp, uploadLayoutJson, uploadRecognitionJson);
+  const uploadCorrectionRevision = Number((db.prepare(
+    "SELECT revision FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id='rec-p1'"
+  ).get() as { revision: number }).revision);
   const uploadCropDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "recognition", "crops");
   const uploadCropRectJson = JSON.stringify({ x: 0, y: 0, width: 10, height: 10 });
   mkdirSync(uploadCropDir, { recursive: true });
@@ -902,9 +905,9 @@ async function main(): Promise<void> {
     writeFileSync(cropPathB1, "crop-B1");
     db.prepare(
       `INSERT OR REPLACE INTO answer_block_crops
-       (id, card_id, source_type, source_record_id, block_id, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi)
-       VALUES ('upload-crop-B1', ?, 'twain_scan_record', 'rec-p1', 'B1', 'subjective', ?, ?, ?, ?, ?, 10, 10, 300)`
-    ).run(scanCardId, metaB1.pageNumber, metaB1.segmentIndex, metaB1.questionKey, uploadCropRectJson, cropPathB1);
+       (id, card_id, source_type, source_record_id, block_id, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi, correction_revision)
+       VALUES ('upload-crop-B1', ?, 'twain_scan_record', 'rec-p1', 'B1', 'subjective', ?, ?, ?, ?, ?, 10, 10, 300, ?)`
+    ).run(scanCardId, metaB1.pageNumber, metaB1.segmentIndex, metaB1.questionKey, uploadCropRectJson, cropPathB1, uploadCorrectionRevision);
   }
   const wholeUploadPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
   const wholeCrops = (wholeUploadPayload.body as { cropImages?: Array<{ blockId: string }> })?.cropImages ?? [];
@@ -919,9 +922,9 @@ async function main(): Promise<void> {
   writeFileSync(path.join(uploadCropDir, "rec-p1-B1.png"), "crop-B1");
   db.prepare(
     `INSERT OR REPLACE INTO answer_block_crops
-     (id, card_id, source_type, source_record_id, block_id, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi)
-     VALUES ('upload-crop-B1', ?, 'twain_scan_record', 'rec-p1', 'B1', 'subjective', ?, ?, ?, ?, ?, 10, 10, 300)`
-  ).run(scanCardId, metaB1Restore.pageNumber, metaB1Restore.segmentIndex, metaB1Restore.questionKey, uploadCropRectJson, path.join(uploadCropDir, "rec-p1-B1.png"));
+     (id, card_id, source_type, source_record_id, block_id, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi, correction_revision)
+     VALUES ('upload-crop-B1', ?, 'twain_scan_record', 'rec-p1', 'B1', 'subjective', ?, ?, ?, ?, ?, 10, 10, 300, ?)`
+  ).run(scanCardId, metaB1Restore.pageNumber, metaB1Restore.segmentIndex, metaB1Restore.questionKey, uploadCropRectJson, path.join(uploadCropDir, "rec-p1-B1.png"), uploadCorrectionRevision);
 
   {
     const dupPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
@@ -962,6 +965,35 @@ async function main(): Promise<void> {
         && (studentAlignedPayload.body as { studentId?: { value?: string } })?.studentId?.value === "9001",
       `学号与快照对齐后 upload-payload 恢复命中（实际 ${studentAlignedPayload.status}）`,
     );
+  }
+  {
+    const bumpedRecognition = JSON.parse(uploadRecognitionJson) as {
+      subjectiveQuestions: Array<{ blockId?: string; score?: number }>;
+    };
+    const b1 = bumpedRecognition.subjectiveQuestions.find(q => q.blockId === "B1");
+    if (b1) b1.score = 18;
+    db.prepare(
+      "UPDATE scan_correction_pages SET recognition_json=?, revision=revision+1 WHERE source_type='twain_scan_record' AND source_id='rec-p1'"
+    ).run(JSON.stringify(bumpedRecognition));
+    const splitSnapshotPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+    ok(
+      splitSnapshotPayload.status === 404,
+      `订正 revision 已升而切块仍绑旧 revision 时 upload-payload 不得命中（实际 ${splitSnapshotPayload.status}）`,
+    );
+    const alignedRevision = Number((db.prepare(
+      "SELECT revision FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id='rec-p1'"
+    ).get() as { revision: number }).revision);
+    db.prepare("UPDATE answer_block_crops SET correction_revision=? WHERE id='upload-crop-B1'").run(alignedRevision);
+    const repairedPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+    ok(
+      repairedPayload.status === 200
+        && (repairedPayload.body as { subjectiveQuestions?: Array<{ score?: number }> })?.subjectiveQuestions?.[0]?.score === 18,
+      `切块 revision 与快照对齐后 upload-payload 恢复命中（实际 ${repairedPayload.status}）`,
+    );
+    db.prepare(
+      "UPDATE scan_correction_pages SET recognition_json=?, revision=? WHERE source_type='twain_scan_record' AND source_id='rec-p1'"
+    ).run(uploadRecognitionJson, uploadCorrectionRevision);
+    db.prepare("UPDATE answer_block_crops SET correction_revision=? WHERE id='upload-crop-B1'").run(uploadCorrectionRevision);
   }
 
   // CR5：题块教师只能读到含本人题块的排版页，同页他人题块与整卷总分一并剔除。

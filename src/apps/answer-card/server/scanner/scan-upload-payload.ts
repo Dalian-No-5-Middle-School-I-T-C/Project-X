@@ -261,114 +261,130 @@ export async function resolveScanUploadPayload(recordId: string): Promise<ScanUp
 async function readScanUploadPayload(recordId: string): Promise<ScanUploadPayload | null> {
   const db = getMysqlDb();
   if (db.hasOpenTransaction?.()) return null;
-  const record = await getScanRecordWithResult(recordId);
-  if (!record?.recognition) return null;
-  if (record.ocr_status === "pending" || record.ocr_status === "processing" || record.ocr_status === "failed") return null;
-  const recordStudentAtRead = record.student_id ?? null;
 
-  const correction = await loadCorrectionPage("twain_scan_record", recordId, "");
-  if (!correction?.recognition?.geometry) return null;
+  const readPairedSnapshot = async (adapter: typeof db): Promise<ScanUploadPayload | null> => {
+    const record = await getScanRecordWithResult(recordId);
+    if (!record?.recognition) return null;
+    if (record.ocr_status === "pending" || record.ocr_status === "processing" || record.ocr_status === "failed") return null;
+    const recordStudentAtRead = record.student_id ?? null;
 
-  // 快照里的坐标、题号与切块都是按「当时那版答题卡」算的。版本对不上（含旧库行没有版本）
-  // 就不能当成当前卡的识别结果外发：入库口有 R35 版本门兜底，这里先把缓存关掉，
-  // 让扫描端按现行版式重新识别，避免出现「按旧版卡识别的分数进了新版卡的正式成绩」。
-  const card = await findCardForLayout(record.card_id);
-  if (!card) return null;
-  if (!correction.cardVersion || correction.cardVersion !== cardFingerprint(card)) return null;
+    const correction = await loadCorrectionPage("twain_scan_record", recordId, "", adapter);
+    if (!correction?.recognition?.geometry) return null;
 
-  const layoutPageNumber = correction.layout.pageNumber;
+    // 快照里的坐标、题号与切块都是按「当时那版答题卡」算的。版本对不上（含旧库行没有版本）
+    // 就不能当成当前卡的识别结果外发：入库口有 R35 版本门兜底，这里先把缓存关掉，
+    // 让扫描端按现行版式重新识别，避免出现「按旧版卡识别的分数进了新版卡的正式成绩」。
+    const card = await findCardForLayout(record.card_id);
+    if (!card) return null;
+    if (!correction.cardVersion || correction.cardVersion !== cardFingerprint(card)) return null;
 
-  const recognition = { ...correction.recognition } as CombinedRecognitionResult;
-  const correctionStudent = recognition.studentId?.value ? String(recognition.studentId.value) : null;
-  // 订正快照与扫描主行可能在不同时刻提交：不能用较早读到的 student_id 覆盖较新的订正学号。
-  if (recordStudentAtRead && correctionStudent && recordStudentAtRead !== correctionStudent) return null;
-  if (!correctionStudent && recordStudentAtRead) {
-    recognition.studentId = { status: "ok", value: recordStudentAtRead };
-  }
-  if (recognition.status !== "ok" && recognition.status !== "partial") {
-    recognition.status = record.ocr_status === "review" ? "partial" : "ok";
-  }
+    const layoutPageNumber = correction.layout.pageNumber;
+    const expectedCorrectionRevision = Number(correction.revision);
 
-  type CropRow = {
-    block_id: string;
-    block_title: string | null;
-    block_type: string;
-    page_number: number;
-    segment_index: number;
-    question_numbers: string | Array<number | string>;
-    rect_json: string | Rect;
-    image_path: string;
-    width_px: number;
-    height_px: number;
-    dpi: number;
-  };
-  const rowsAll = await getMysqlDb().all<CropRow>(
-    `SELECT block_id, block_title, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi
-     FROM answer_block_crops WHERE source_type = 'twain_scan_record' AND source_record_id = ?
-     ORDER BY page_number, segment_index, block_id`,
-    recordId,
-  );
-  // 订正快照只存「这一排版页」的 layout；持久化切块表可能含同一记录关联的其它排版页行。
-  // 完整性与缓存命中只校验本页期望段落 ↔ 本页行，避免跨页块凑齐 blockId 集合却漏段。
-  const rows = rowsAll.filter(r => Number(r.page_number) === layoutPageNumber);
-  const cropBase = path.resolve(blockCropsDir);
-  const cropImages: ScanUploadCropImage[] = [];
-  const loadedIdentities: CropSegmentIdentity[] = [];
-  for (const row of rows) {
-    const imagePath = path.resolve(row.image_path);
-    if (!existsSync(imagePath) || !isInsideDir(cropBase, imagePath)) continue;
-    const questionNumbers = parseQuestionNumbersFromDb(row.question_numbers);
-    if (!questionNumbers) continue;
-    const rect = parseRectFromDb(row.rect_json);
-    if (!rect) continue;
-    const identity = identityFromParsedRow(
-      row.page_number,
-      row.segment_index,
-      row.block_id,
-      questionNumbers,
+    const recognition = { ...correction.recognition } as CombinedRecognitionResult;
+    const correctionStudent = recognition.studentId?.value ? String(recognition.studentId.value) : null;
+    // 订正快照与扫描主行可能在不同时刻提交：不能用较早读到的 student_id 覆盖较新的订正学号。
+    if (recordStudentAtRead && correctionStudent && recordStudentAtRead !== correctionStudent) return null;
+    if (!correctionStudent && recordStudentAtRead) {
+      recognition.studentId = { status: "ok", value: recordStudentAtRead };
+    }
+    if (recognition.status !== "ok" && recognition.status !== "partial") {
+      recognition.status = record.ocr_status === "review" ? "partial" : "ok";
+    }
+
+    type CropRow = {
+      block_id: string;
+      block_title: string | null;
+      block_type: string;
+      page_number: number;
+      segment_index: number;
+      question_numbers: string | Array<number | string>;
+      rect_json: string | Rect;
+      image_path: string;
+      width_px: number;
+      height_px: number;
+      dpi: number;
+      correction_revision: number | null;
+    };
+    const rowsAll = await adapter.all<CropRow>(
+      `SELECT block_id, block_title, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi, correction_revision
+       FROM answer_block_crops WHERE source_type = 'twain_scan_record' AND source_record_id = ?
+       ORDER BY page_number, segment_index, block_id`,
+      recordId,
     );
-    if (identity) loadedIdentities.push(identity);
-    cropImages.push({
-      blockId: row.block_id,
-      blockTitle: row.block_title ?? "",
-      blockType: row.block_type,
-      pageNumber: row.page_number,
-      segmentIndex: row.segment_index,
-      questionNumbers,
-      rect,
-      widthPx: row.width_px,
-      heightPx: row.height_px,
-      dpi: row.dpi,
-      dataBase64: (await readFile(imagePath)).toString("base64"),
-    });
-  }
+    // 订正快照只存「这一排版页」的 layout；持久化切块表可能含同一记录关联的其它排版页行。
+    // 完整性与缓存命中只校验本页期望段落 ↔ 本页行，避免跨页块凑齐 blockId 集合却漏段。
+    const rows = rowsAll.filter(r => Number(r.page_number) === layoutPageNumber);
+    // Re-recognition can commit a new correction snapshot before replacing crop rows; segment
+    // metadata alone would still look complete. Require crops stamped with this revision.
+    if (!rows.length || rows.some(r => r.correction_revision == null
+      || Number(r.correction_revision) !== expectedCorrectionRevision)) {
+      return null;
+    }
 
-  // Incomplete or missing persisted crops → cache miss; client re-runs native recognition with includeCrops.
-  const layoutPage = correction.layout;
-  if (!cropsCompleteForLayout(layoutPage, loadedIdentities, rows.length)) return null;
-  // 组装这份 payload 期间，如果有写事务开过（订正重写快照会 bump revision），前面读到的行
-  // 与刚读出来的切块文件就可能分属两个状态；事务还正开着则更直接——读到的可能是未提交数据。
-  // 两种情况都按未命中处理，让扫描端重新识别，别把一次撕裂的中间态送进正式成绩。
-  if (db.hasOpenTransaction?.()) return null;
-  const settled = await db.get<{ revision: number; recognition_json: string }>(
-    "SELECT revision, recognition_json FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?",
-    recordId,
-  );
-  if (!settled || Number(settled.revision) !== Number(correction.revision)) return null;
-  let settledStudent: string | null = null;
-  try {
-    const parsed = JSON.parse(settled.recognition_json) as { studentId?: { value?: string | null } };
-    settledStudent = parsed.studentId?.value ? String(parsed.studentId.value) : null;
-  } catch {
-    return null;
-  }
-  if (correctionStudent && settledStudent && correctionStudent !== settledStudent) return null;
-  const recordStudentSettled = (await db.get<{ student_id: string | null }>(
-    "SELECT student_id FROM twain_scan_records WHERE id = ?", recordId,
-  ))?.student_id ?? null;
-  if (recordStudentAtRead !== recordStudentSettled) return null;
-  const payloadStudent = recognition.studentId?.value ? String(recognition.studentId.value) : null;
-  if (recordStudentSettled && payloadStudent && recordStudentSettled !== payloadStudent) return null;
-  if (settledStudent && payloadStudent && settledStudent !== payloadStudent) return null;
-  return { ...recognition, cropImages, cardVersion: correction.cardVersion, correctionRevision: correction.revision };
+    const cropBase = path.resolve(blockCropsDir);
+    const cropImages: ScanUploadCropImage[] = [];
+    const loadedIdentities: CropSegmentIdentity[] = [];
+    for (const row of rows) {
+      const imagePath = path.resolve(row.image_path);
+      if (!existsSync(imagePath) || !isInsideDir(cropBase, imagePath)) continue;
+      const questionNumbers = parseQuestionNumbersFromDb(row.question_numbers);
+      if (!questionNumbers) continue;
+      const rect = parseRectFromDb(row.rect_json);
+      if (!rect) continue;
+      const identity = identityFromParsedRow(
+        row.page_number,
+        row.segment_index,
+        row.block_id,
+        questionNumbers,
+      );
+      if (identity) loadedIdentities.push(identity);
+      cropImages.push({
+        blockId: row.block_id,
+        blockTitle: row.block_title ?? "",
+        blockType: row.block_type,
+        pageNumber: row.page_number,
+        segmentIndex: row.segment_index,
+        questionNumbers,
+        rect,
+        widthPx: row.width_px,
+        heightPx: row.height_px,
+        dpi: row.dpi,
+        dataBase64: (await readFile(imagePath)).toString("base64"),
+      });
+    }
+
+    // Incomplete or missing persisted crops → cache miss; client re-runs native recognition with includeCrops.
+    const layoutPage = correction.layout;
+    if (!cropsCompleteForLayout(layoutPage, loadedIdentities, rows.length)) return null;
+    // 组装这份 payload 期间，如果有写事务开过（订正重写快照会 bump revision），前面读到的行
+    // 与刚读出来的切块文件就可能分属两个状态；事务还正开着则更直接——读到的可能是未提交数据。
+    // 两种情况都按未命中处理，让扫描端重新识别，别把一次撕裂的中间态送进正式成绩。
+    if (adapter.hasOpenTransaction?.()) return null;
+    const settled = await adapter.get<{ revision: number; recognition_json: string }>(
+      "SELECT revision, recognition_json FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?",
+      recordId,
+    );
+    if (!settled || Number(settled.revision) !== expectedCorrectionRevision) return null;
+    let settledStudent: string | null = null;
+    try {
+      const parsed = JSON.parse(settled.recognition_json) as { studentId?: { value?: string | null } };
+      settledStudent = parsed.studentId?.value ? String(parsed.studentId.value) : null;
+    } catch {
+      return null;
+    }
+    if (correctionStudent && settledStudent && correctionStudent !== settledStudent) return null;
+    const recordStudentSettled = (await adapter.get<{ student_id: string | null }>(
+      "SELECT student_id FROM twain_scan_records WHERE id = ?", recordId,
+    ))?.student_id ?? null;
+    if (recordStudentAtRead !== recordStudentSettled) return null;
+    const payloadStudent = recognition.studentId?.value ? String(recognition.studentId.value) : null;
+    if (recordStudentSettled && payloadStudent && recordStudentSettled !== payloadStudent) return null;
+    if (settledStudent && payloadStudent && settledStudent !== payloadStudent) return null;
+    return { ...recognition, cropImages, cardVersion: correction.cardVersion, correctionRevision: correction.revision };
+  };
+
+  // Pairing is enforced via correction_revision on crop rows (not a long-lived read txn:
+  // SQLite forbids async disk I/O inside BEGIN..COMMIT).
+  return readPairedSnapshot(db);
 }

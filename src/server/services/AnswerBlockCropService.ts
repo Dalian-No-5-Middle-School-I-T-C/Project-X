@@ -47,6 +47,8 @@ export type PersistAnswerBlockCropsParams = {
   studentNumber?: string | null;
   sourceType: AnswerBlockCropSourceType;
   sourceRecordId: string | number;
+  /** Must match scan_correction_pages.revision when paired with a correction snapshot for upload-payload reuse. */
+  correctionRevision?: number | null;
   crops?: RecognitionBlockCrop[] | null;
   /** Outer transaction owns these file moves until commit or rollback. */
   fileMoves?: CropFileMove[];
@@ -299,8 +301,9 @@ export async function persistAnswerBlockCrops(
         `INSERT INTO answer_block_crops (
           id, card_id, exam_id, student_id, student_number, source_type, source_record_id,
           block_id, block_title, block_type, page_number, segment_index,
-          question_numbers, rect_json, image_path, width_px, height_px, dpi, status, review_round
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+          question_numbers, rect_json, image_path, width_px, height_px, dpi, status, review_round,
+          correction_revision
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
         id,
         params.cardId,
         params.examId ?? null,
@@ -319,7 +322,8 @@ export async function persistAnswerBlockCrops(
         crop.widthPx,
         crop.heightPx,
         crop.dpi,
-        "ready"
+        "ready",
+        params.correctionRevision ?? null,
       );
 
       stats.persisted += 1;

@@ -1259,6 +1259,16 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE exams ADD COLUMN answer_key_mode VARCHAR(16) NOT NULL DEFAULT 'text'",
   ] });
 
+  mariadbMigrations.push({ version: 69, name: "answer-block-crops-correction-revision", sqls: [
+    "ALTER TABLE answer_block_crops ADD COLUMN correction_revision INT",
+    `UPDATE answer_block_crops abc
+     INNER JOIN scan_correction_pages scp
+       ON scp.source_type = abc.source_type AND scp.source_id = abc.source_record_id
+     SET abc.correction_revision = scp.revision
+     WHERE abc.correction_revision IS NULL
+       AND abc.source_type IN ('twain_scan_record', 'scan_record')`,
+  ] });
+
   for (const m of mariadbMigrations) {
     if (applied.has(m.version)) continue;
     for (const sql of m.sqls) {

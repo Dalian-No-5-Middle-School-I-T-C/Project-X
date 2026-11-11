@@ -606,7 +606,16 @@ async function persistGradingResultsLocked(
           student_id: stu.id
         });
         const correctionCard = await new CardRepository(tx).findById(String(exam.card_id));
-        if (correctionCard) await storeCorrectionPage(correctionCard, "scan_record", recordId, row.recognition, tx);
+        let correctionRevision: number | null = null;
+        if (correctionCard) {
+          await storeCorrectionPage(correctionCard, "scan_record", recordId, row.recognition, tx);
+          const revisionRow = await tx.get<{ revision: number }>(
+            "SELECT revision FROM scan_correction_pages WHERE source_type=? AND source_id=?",
+            "scan_record",
+            String(recordId),
+          );
+          correctionRevision = revisionRow ? Number(revisionRow.revision) : null;
+        }
         await persistAnswerBlockCrops({
           cardId: row.recognition.cardId ?? String(exam.card_id ?? ""),
           examId,
@@ -614,6 +623,7 @@ async function persistGradingResultsLocked(
           studentNumber: studentId,
           sourceType: "scan_record",
           sourceRecordId: recordId,
+          correctionRevision,
           crops: row.recognition.blockCrops ?? [],
           fileMoves,
         }, tx);
