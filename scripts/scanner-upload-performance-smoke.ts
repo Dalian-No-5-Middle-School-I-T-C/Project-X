@@ -5,11 +5,7 @@ import type { Server } from "node:http";
 import { startScannerFlowFixture } from "./scanner-upload-flow-fixture";
 import { createScannerUploadManager } from "../src/apps/answer-card/client/lib/scannerUploadManager";
 import type { CombinedGradingBatchResult, CombinedRecognitionResult } from "../src/shared/types";
-import {
-  isSessionGroupedOcrBatch,
-  isSessionGroupedRecordBatch,
-  isUploadRecognizedStudentStamp,
-} from "./smoke-sql-match";
+import { isUploadRecognizedStudentStamp } from "./smoke-sql-match";
 
 // Real DB/HTTP paths with deterministic recognizer output; supports an empty
 // projectx_scanner_batch_* MariaDB database via the existing fixture variables.
@@ -40,10 +36,11 @@ try {
   }
   const all = db.all.bind(db), get = db.get.bind(db);
   let reads = 0, loadedRows = 0;
+  store.setListScanRecordsGroupedByStudentBatchReadObserver(({ recordRows, ocrRows }) => {
+    loadedRows += recordRows + ocrRows;
+  });
   db.all = async <T>(sql: string, ...params: any[]): Promise<T[]> => {
-    reads++; const rows = await all<T>(sql, ...params);
-    if (isSessionGroupedRecordBatch(sql) || isSessionGroupedOcrBatch(sql)) loadedRows += rows.length;
-    return rows;
+    reads++; return all<T>(sql, ...params);
   };
   db.get = async <T>(sql: string, ...params: any[]): Promise<T | null> => { reads++; return get<T>(sql, ...params); };
   try {
@@ -56,7 +53,11 @@ try {
     assert.deepEqual(correction.pages.map(p => p.sourceId), records.slice(-2).map(r => r.id));
     assert.equal(loadedRows, 4, "load only the selected card's two records and two OCR rows");
     assert.equal(reads, 5, "session + two batch queries + two correction snapshots");
-  } finally { db.all = all; db.get = get; }
+  } finally {
+    store.setListScanRecordsGroupedByStudentBatchReadObserver(undefined);
+    db.all = all;
+    db.get = get;
+  }
   console.log(`PASS ${db.dialect}: 400-page recognition read = 2 queries; two-sided correction = 5 queries / 2 pages`);
 
   const image = path.join(process.env.ANSWER_CARD_DATA_DIR!, "queue.png");

@@ -1261,6 +1261,8 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
 
   mariadbMigrations.push({ version: 69, name: "answer-block-crops-correction-revision", sqls: [
     "ALTER TABLE answer_block_crops ADD COLUMN correction_revision BIGINT",
+    // Mid-run retry: an earlier v69 pass may have left INT before backfill failed and v69 was not recorded.
+    "ALTER TABLE answer_block_crops MODIFY COLUMN correction_revision BIGINT",
     `UPDATE answer_block_crops abc
      INNER JOIN scan_correction_pages scp
        ON BINARY scp.source_type = BINARY abc.source_type
