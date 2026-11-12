@@ -1263,10 +1263,11 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE answer_block_crops ADD COLUMN correction_revision BIGINT",
     `UPDATE answer_block_crops abc
      INNER JOIN scan_correction_pages scp
-       ON scp.source_type = abc.source_type AND scp.source_id = abc.source_record_id
+       ON BINARY scp.source_type = BINARY abc.source_type
+       AND BINARY scp.source_id = BINARY abc.source_record_id
      SET abc.correction_revision = scp.revision
      WHERE abc.correction_revision IS NULL
-       AND abc.source_type IN ('twain_scan_record', 'scan_record')`,
+       AND BINARY abc.source_type IN ('twain_scan_record', 'scan_record')`,
   ] });
 
   // v70: early v69 builds used INT; scan_correction_pages.revision is BIGINT (Date.now() seeds).
