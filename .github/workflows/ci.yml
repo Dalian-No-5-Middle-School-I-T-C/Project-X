@@ -139,6 +139,8 @@ jobs:
 
       - name: Scanner upload manager recovery
         run: npm run verify:scanner-upload-manager
+      - name: Scanner OCR crop staging and correction reuse
+        run: npm run verify:scanner-ocr-crop-transaction
       - name: Scanner panel React and SSE session metadata
         run: npm run verify:scanner-panel-session
       - name: Scanner postprocess page pure logic, delete guard and mounted views

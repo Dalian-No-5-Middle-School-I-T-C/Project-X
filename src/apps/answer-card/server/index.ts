@@ -161,7 +161,7 @@ import { parseIdentityMode } from "../../../shared/cardIdentity";
 import { recognizeAnswerCard, recognizeObjectiveAnswers } from "./recognition";
 import { createScannerRouter } from "./scanner/index";
 import { makeScannerAuth } from "../../../server/middleware/scanner-auth";
-import { enforceScannerCardScope } from "../../../server/middleware/scanner-scope";
+import { enforceScannerCardScope, scanPageScopeOf } from "../../../server/middleware/scanner-scope";
 
 import { assertImageFile, imageContentTypeFor, isImageExtension, rejectReasonForImportedAsset, safeImageExtension } from "./validate-upload";
 import {
@@ -1886,8 +1886,15 @@ export async function createApp(): Promise<express.Express> {
             cropsDir
           })) as CombinedRecognitionResult;
           recognition.subjectiveQuestions = recognition.subjectiveQuestions ?? [];
-          const uploadPayloadUrl = boolField(req.body.prepareUpload)
-            ? await storeImportUploadPayload(cardId, cardFingerprint(card), file.path, recognition) : undefined;
+          // 缓存只为上传省一次识别。写盘失败不能把已经判出来的成绩改成失败卷。
+          let uploadPayloadUrl: string | undefined;
+          if (boolField(req.body.prepareUpload)) {
+            try {
+              uploadPayloadUrl = await storeImportUploadPayload(cardId, cardFingerprint(card), file.path, recognition);
+            } catch (cacheError) {
+              console.warn("[grading] 导入识别缓存未写入，上传时将重新识别:", cacheError);
+            }
+          }
           return {
             ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition, confidenceThreshold),
             inputIndex: files.indexOf(file),
@@ -1953,7 +1960,13 @@ export async function createApp(): Promise<express.Express> {
   app.get("/api/cards/:cardId/grading/upload-payload/:fileName", async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
-      if (!await enforceScannerCardScope(req, res, cardId, { wholePaperRead: true })) return;
+      // 身份、考试范围仍按原口径拒绝。只有「能看这张卡、但题块不够读整页缓存」按未命中，
+      // 让上传退回本机整页识别；整卷原图预览继续走下面的 403。
+      if (!await enforceScannerCardScope(req, res, cardId)) return;
+      if (scanPageScopeOf(res)?.restricted) {
+        res.status(404).json({ message: "导入识别缓存已失效" });
+        return;
+      }
       const card = await cardRepo.findById(cardId);
       const payload = card && await readImportUploadPayload(cardId, paramValue(req.params.fileName), cardFingerprint(card));
       res.setHeader("Cache-Control", "no-store");

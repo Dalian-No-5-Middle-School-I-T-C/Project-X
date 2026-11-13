@@ -59,6 +59,56 @@ try {
   assert.ok(crop?.image_path && isInsideDir(blockCropsDir, crop.image_path));
   assert.equal(Number(crop!.correction_revision), revision);
   console.log(`PASS scanner OCR crop transaction (${db.dialect}): staged files before BEGIN; revision/crop pairing intact`);
+
+  await db.run(
+    `INSERT INTO answer_block_crops (
+      id, card_id, exam_id, student_id, student_number, source_type, source_record_id,
+      block_id, block_title, block_type, page_number, segment_index,
+      question_numbers, rect_json, image_path, width_px, height_px, dpi, status, review_round,
+      correction_revision
+    )
+    SELECT 'decoy-crop', card_id, exam_id, student_id, student_number, source_type, source_record_id,
+      'decoy_block', block_title, block_type, page_number, segment_index,
+      question_numbers, rect_json, image_path, width_px, height_px, dpi, status, review_round, 1
+    FROM answer_block_crops WHERE source_record_id = ?`,
+    record.id,
+  );
+  const { sessionCorrection, saveSessionCorrection } = await import("../src/server/services/scanCorrection");
+  const document = await sessionCorrection(card, session.id, "0", false);
+  const page = document.pages.find((item) => item.sourceId === record.id);
+  assert.ok(page, "OCR page must be editable");
+  await saveSessionCorrection(card, session.id, "0", [{
+    sourceId: page.sourceId, revision: page.revision, selected: page.selected,
+  }], null);
+  const savedRevision = await correctionPageRevision("twain_scan_record", record.id, db);
+  assert.notEqual(savedRevision, revision, "saving a correction must advance the page revision");
+  const paired = await db.get<{ correction_revision: number }>(
+    "SELECT correction_revision FROM answer_block_crops WHERE source_record_id = ? AND block_id = 'flow_q'",
+    record.id,
+  );
+  const decoy = await db.get<{ correction_revision: number }>(
+    "SELECT correction_revision FROM answer_block_crops WHERE id = 'decoy-crop'",
+  );
+  assert.equal(Number(paired?.correction_revision), savedRevision,
+    "mark-only correction must keep the current crops reusable");
+  assert.equal(Number(decoy?.correction_revision), 1,
+    "crops from another recognition revision must not be stamped onto the new snapshot");
+  console.log(`PASS scanner OCR crop transaction (${db.dialect}): teacher correction keeps paired crops and leaves other revisions`);
+
+  const cropFile = crop!.image_path;
+  await assert.rejects(db.transaction(async (tx) => {
+    const { invalidateScanRecognitionInTransaction } = await import("../src/server/services/scannerSubmissions");
+    await invalidateScanRecognitionInTransaction(tx, session.id, record.id);
+    throw new Error("rollback invalidate");
+  }), /rollback invalidate/);
+  assert.equal(existsSync(cropFile), true, "rolled-back invalidate must keep the crop file");
+  assert.ok(await db.get("SELECT id FROM answer_block_crops WHERE source_record_id = ? AND block_id = 'flow_q'", record.id));
+
+  const { invalidateScanRecognitionInQueue } = await import("../src/server/services/scannerSubmissions");
+  await invalidateScanRecognitionInQueue(session.id, record.id);
+  assert.equal(existsSync(cropFile), false, "committed invalidate must remove crop files that no row references");
+  assert.equal(await db.get("SELECT id FROM answer_block_crops WHERE source_record_id = ?", record.id), null);
+  console.log(`PASS scanner OCR crop transaction (${db.dialect}): invalidate removes crop files only after commit`);
 } finally {
   await fixture.close();
 }

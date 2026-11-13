@@ -174,14 +174,24 @@ export async function relocateUploadedCropsToStorage(
   const targetDir = path.join(blockCropsDir, safeId(params.cardId), `${params.sourceType}_${safeId(sourceRecordId)}`);
   const relocated: RecognitionBlockCrop[] = [];
   const paths: string[] = [];
-  for (let index = 0; index < crops.length; index += 1) {
-    const crop = crops[index];
-    if (!crop?.path || !crop.blockId || !Array.isArray(crop.questionNumbers) || crop.questionNumbers.length === 0) continue;
-    const targetPath = path.join(targetDir, `${randomUUID()}_${targetFileName(crop, index)}`);
-    if (!isInsideDir(targetDir, targetPath)) continue;
-    await moveCropFile(path.resolve(crop.path), targetPath);
-    paths.push(targetPath);
-    relocated.push({ ...crop, path: targetPath });
+  try {
+    for (let index = 0; index < crops.length; index += 1) {
+      const crop = crops[index];
+      if (!crop?.path || !crop.blockId || !Array.isArray(crop.questionNumbers) || crop.questionNumbers.length === 0) continue;
+      const targetPath = path.join(targetDir, `${randomUUID()}_${targetFileName(crop, index)}`);
+      if (!isInsideDir(targetDir, targetPath)) continue;
+      try {
+        await moveCropFile(path.resolve(crop.path), targetPath);
+      } catch (error) {
+        await unlink(targetPath).catch(() => {});
+        throw error;
+      }
+      paths.push(targetPath);
+      relocated.push({ ...crop, path: targetPath });
+    }
+  } catch (error) {
+    await Promise.all(paths.map((filePath) => unlink(filePath).catch(() => {})));
+    throw error;
   }
   return { crops: relocated, paths };
 }
@@ -208,9 +218,11 @@ export interface CropPersistenceStats {
 
 /** Remove superseded crop files after the enclosing DB transaction has committed. */
 export async function retireSupersededCropImages(paths: string[]): Promise<void> {
+  const base = path.resolve(blockCropsDir);
   for (const oldPath of paths) {
     const resolved = path.resolve(oldPath);
-    if (existsSync(resolved)) await unlink(resolved).catch(() => {});
+    if (!isInsideDir(base, resolved) || !existsSync(resolved)) continue;
+    await unlink(resolved).catch(() => {});
   }
 }
 
@@ -242,7 +254,15 @@ export async function persistAnswerBlockCrops(
     console.warn(
       `[crop] 无切块产出 (cardId=${params.cardId}, source=${params.sourceType}:${sourceRecordId}); OCR 未返回 blockCrops，网阅队列将为空`
     );
-    return { persisted: 0, skipped: 0, empty: true, retireImagePaths: [] };
+    return {
+      persisted: 0,
+      skipped: 0,
+      empty: true,
+      // 文件要等外层事务提交后再删。这里先把旧路径交回去，回滚时调用方不会收到这份返回值。
+      retireImagePaths: params.skipFileMoves
+        ? previousImagePaths.map((filePath) => path.resolve(filePath))
+        : [],
+    };
   }
 
   await db.run(

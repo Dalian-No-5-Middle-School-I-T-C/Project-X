@@ -58,7 +58,13 @@ export interface UploadPageInput {
   layoutPage?: number;
   /** Local immutable scan record used to verify a restored page mapping. */
   recordId?: string;
+  /** 上传进行中的显式改号。有订正快照时不使用，避免用入队时的旧学号盖住新订正。 */
   studentId?: string;
+  /**
+   * 结果汇总里已经保存的学号。只在没有订正快照、缓存和本机识别都没给出学号时使用
+   * （旧卷没有坐标快照、重新识别又漏读学号）。
+   */
+  fallbackStudentId?: string;
 }
 
 export interface StartUploadInput {
@@ -546,6 +552,9 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         throw new Error("同一份答题卡正反面学号不一致，请核对后重新上传");
       }
       if (!recognition.studentId?.value && inherited) applyScanStudentId(recognition, inherited.value, true);
+    }
+    if (!recognition.studentId?.value && !savedCorrection && page.input.fallbackStudentId) {
+      applyScanStudentId(recognition, page.input.fallbackStudentId);
     }
     if (recognition.status === "failed" || !recognition.studentId?.value) {
       throw new Error("本机未识别到有效学号，请检查答题卡后重试上传");

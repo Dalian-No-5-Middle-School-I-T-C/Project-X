@@ -230,6 +230,18 @@ async function writePages(tx: DbAdapter, document: CorrectionDocument, edits: Co
     const updated = await tx.run(`UPDATE scan_correction_pages SET recognition_json=?,revision=revision+1,modified_by=?,modified_at=?
       WHERE source_type=? AND source_id=? AND revision=?`,JSON.stringify(state.recognition),userId,databaseTimestamp(),page.sourceType,page.sourceId,revision);
     if (!updated.changes) throw new Error("另一位教师已修改此卷，请重新打开");
+    // 普通订正只改答案或学号，切图文件还是这一版识别的。把仍绑定本次修订的切图一起推进，
+    // 上传才能继续复用。补识别会换掉几何和答案，旧切图不能跟过去；其它修订号同样保持原样。
+    if (!page.recovery) {
+      await tx.run(
+        `UPDATE answer_block_crops SET correction_revision = ?
+         WHERE source_type = ? AND source_record_id = ? AND correction_revision = ?`,
+        Number(revision) + 1,
+        page.sourceType,
+        page.sourceId,
+        Number(revision),
+      );
+    }
     result.push({page,edit,recognition:state.recognition});
   }
   return result;

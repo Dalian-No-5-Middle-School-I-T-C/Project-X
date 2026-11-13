@@ -208,6 +208,37 @@ process.stdout.write(JSON.stringify(result));
   assert.ok(sentCrop);
   assert.equal((await readFile(callLog, "utf8")).trim(), "run", "grading and upload share one recognition");
   console.log(`PASS ${db.dialect}: HTTP import grading and upload reuse one native result and identical crop bytes`);
+
+  const uploadDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "recognition", "uploads", card.id);
+  await writeFile(executable, `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path');
+const args = process.argv.slice(2), arg = name => args[args.indexOf(name) + 1];
+fs.chmodSync(path.dirname(arg('--image')), 0o555);
+fs.appendFileSync(${JSON.stringify(callLog)}, 'run\\n');
+const page = Number(arg('--page')), result = ${JSON.stringify(recognition(1))};
+result.pageNumber = page; result.identity.pageNumber = page;
+const crop = path.join(arg('--crops-dir'), 'crop.png');
+fs.writeFileSync(crop, Buffer.from(${JSON.stringify(info.images.original)}, 'base64'));
+result.blockCrops = [{path: crop, blockId: 'flow_q', blockTitle: 'choice', blockType: 'objective', pageNumber: page,
+segmentIndex: 1, questionNumbers: ['1'], rect: {x:0,y:0,width:1,height:1}, widthPx:24,heightPx:24,dpi:300}];
+process.stdout.write(JSON.stringify(result));
+`, "utf8");
+  try {
+    const blocked = new FormData();
+    blocked.append("files", new Blob([Buffer.from(info.images.original, "base64")], { type: "image/png" }), "cache-fail.png");
+    blocked.append("prepareUpload", "1");
+    blocked.append("pageOrder", "sequential");
+    const blockedResponse = await fetch(`${base}/api/cards/${card.id}/grading`, { method: "POST", body: blocked });
+    assert.equal(blockedResponse.status, 200, await blockedResponse.clone().text());
+    const blockedResult = await blockedResponse.json() as CombinedGradingBatchResult;
+    assert.equal(blockedResult.rows[0].recognition.status, "ok");
+    assert.equal(blockedResult.rows[0].studentId, "91001");
+    assert.equal(blockedResult.rows[0].uploadPayloadUrl, undefined,
+      "a cache write failure must omit the payload URL and keep the graded recognition");
+  } finally {
+    await chmod(uploadDir, 0o755);
+  }
+  console.log(`PASS ${db.dialect}: import cache write failure keeps the successful grading result`);
 } finally {
   if (localServer) await new Promise<void>(resolve => localServer!.close(() => resolve()));
   await fixture.close();

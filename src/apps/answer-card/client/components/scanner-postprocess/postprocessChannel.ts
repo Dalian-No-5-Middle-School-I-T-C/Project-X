@@ -137,6 +137,7 @@ export function queueGroupUpload(meta: UploadMeta, sessionId: string, result: Sc
       side: page.side,
       groupId: result.groupId,
       layoutPage: page.layoutPage,
+      fallbackStudentId: result.studentId || undefined,
       getCorrection: async () => {
         const response = await authFetch(`/api/scanner/session/${sessionId}/groups/${result.groupId}/correction`);
         if (response.status === 409) return undefined; // 旧卷没有坐标快照，只能按原识别结果上传

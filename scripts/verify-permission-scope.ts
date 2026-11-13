@@ -1054,7 +1054,9 @@ async function main(): Promise<void> {
   const scopedCardsPreview = await get(`/api/cards/${scanCardId}/grading/preview/b1-page.png`, tokenA);
   ok(scopedCardsPreview.status === 403,
     `题块级教师走 cards 路径读整卷原图同样 403（grading-image 的收口不再有绕道，实际 ${scopedCardsPreview.status}）`);
-  ok((await get(importPayloadUrl, tokenA)).status === 403, "题块教师不能读取整卷导入上传缓存");
+  const blockedImport = await get(importPayloadUrl, tokenA);
+  ok(blockedImport.status === 404 && !JSON.stringify(blockedImport.body).includes("91001"),
+    `题块教师的导入缓存按未命中返回，上传才能退回本机识别（实际 ${blockedImport.status} ${JSON.stringify(blockedImport.body).slice(0, 80)}）`);
   rmSync(`${previewFile}.upload.json`, { force: true });
   rmSync(previewFile, { force: true });
   clearMatrix(teacherA.id);

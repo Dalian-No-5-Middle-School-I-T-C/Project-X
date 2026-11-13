@@ -1,7 +1,7 @@
 /** SQLite: unrelated committed writes survive when crop staging fails outside the upload transaction. */
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { scannerCropStaging } from "../src/server/services/scannerCropStaging";
@@ -209,6 +209,37 @@ try {
     "rolled-back retry must not delete the previously committed review image");
   await Promise.all(rollbackRelocated.paths.map((filePath) => unlink(filePath).catch(() => {})));
   console.log("PASS sqlite: rolled-back crop replace keeps prior committed images");
+
+  const partialSource = path.join(root, "partial-ok.png");
+  await writeFile(partialSource, retryBytes);
+  const storageDir = path.dirname(committed.image_path);
+  const beforeNames = new Set(readdirSync(storageDir));
+  await assert.rejects(() => relocateUploadedCropsToStorage({
+    cardId: card.id, sourceType: "twain_scan_record", sourceRecordId: remote.uploadTokens[0],
+  }, [
+    { ...retryManifest[0], path: partialSource },
+    { ...retryManifest[0], path: path.join(root, "missing-crop.png"), segmentIndex: 1 },
+  ]));
+  assert.deepEqual(readdirSync(storageDir).filter((name) => !beforeNames.has(name)), [],
+    "a later crop move failure must remove files already relocated in this call");
+  assert.ok(existsSync(committed.image_path), "failed relocate must not remove the committed review image");
+  console.log("PASS sqlite: partial crop relocate cleans the files it already moved");
+
+  const { retireSupersededCropImages } = await import("../src/server/services/AnswerBlockCropService");
+  const emptied = await db.transaction(async (tx) => persistAnswerBlockCrops({
+    cardId: card.id,
+    sourceType: "twain_scan_record",
+    sourceRecordId: remote.uploadTokens[0],
+    crops: [],
+    skipFileMoves: true,
+  }, tx));
+  assert.ok(emptied.retireImagePaths?.some((filePath) => path.resolve(filePath) === path.resolve(committed.image_path)),
+    "clearing crops must hand back the previous files for post-commit cleanup");
+  assert.equal(await db.get("SELECT id FROM answer_block_crops WHERE source_record_id=?", remote.uploadTokens[0]), null);
+  assert.equal(existsSync(committed.image_path), true, "the crop file stays until the caller retires it after commit");
+  await retireSupersededCropImages(emptied.retireImagePaths ?? []);
+  assert.equal(existsSync(committed.image_path), false, "post-commit retire removes the unreferenced crop file");
+  console.log("PASS sqlite: empty crop replace retires the previous file only after commit");
 } finally {
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   resetAdapter();

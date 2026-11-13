@@ -261,6 +261,7 @@ async function main() {
           pages: [{
             pageNum: 1, side: "front", groupId: "0", recordId: "rec_stale",
             studentId: "91001",
+            fallbackStudentId: "90000",
             getCorrection: async () => {
               correctionReads++;
               return {
@@ -276,6 +277,117 @@ async function main() {
         assert((await waitTerminal(mgr, jobId)).status === "done", "带缓存且事后订正学号的上传应完成");
         assert(correctionReads >= 1, "命中 upload-payload 仍须读取已保存订正");
         assert(uploadedStudent === "91002", "保存的学号订正须压住缓存与入队快照");
+      } finally {
+        if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+        else Reflect.deleteProperty(globalThis, "localStorage");
+      }
+    }
+
+    {
+      // 旧卷没有坐标快照时，汇总里已经订正的学号仍要能上传；它不能盖住缓存或更新的订正。
+      const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+      const values = new Map<string, string>([["projectx_server_url", "https://historical-id.test"]]);
+      Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => { values.set(key, value); },
+        removeItem: (key: string) => { values.delete(key); },
+        key: (index: number) => [...values.keys()][index] ?? null,
+        get length() { return values.size; },
+      } });
+      const missedRecognition = () => jsonRes({
+        status: "failed", message: "Student ID recognition failed.",
+        quality: { matchCount: 6, missingRoles: [] },
+        geometry: { imageWidth: 100, imageHeight: 100, imageToLayout: [1, 0, 0, 0, 1, 0, 0, 0, 1], layoutToImage: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+        studentId: { status: "failed", value: null }, questions: [], subjectiveQuestions: [],
+      });
+      try {
+        let uploaded = "";
+        const historical = createScannerUploadManager(deps({
+          localFetch: async (url) => String(url).includes("/upload-payload") ? jsonRes({ message: "miss" }, 404) : missedRecognition(),
+          remoteFetch: async (url, init) => {
+            if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "hist", uploadTokens: ["h1"] });
+            if (url.endsWith(PAGES)) {
+              uploaded = JSON.parse(String((init!.body as FormData).get("recognition"))).studentId.value;
+              return jsonRes({ ok: true });
+            }
+            return jsonRes({ ok: true });
+          },
+        }));
+        const historicalId = historical.startUpload({
+          kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "历史卷",
+          localSessionId: "hist", identityMode: "strict",
+          pages: [{
+            pageNum: 1, side: "front", groupId: "0", recordId: "old-record",
+            fallbackStudentId: "91001",
+            getCorrection: async () => undefined,
+            getBlob: async () => blob(),
+          }],
+        });
+        assert((await waitTerminal(historical, historicalId)).status === "done", "没有快照时应用汇总里已保存的学号");
+        assert(uploaded === "91001", "漏读学号时回退到汇总学号");
+
+        uploaded = "";
+        const cached = createScannerUploadManager(deps({
+          localFetch: async (url) => {
+            if (String(url).includes("/upload-payload")) {
+              return jsonRes({
+                status: "ok", cardVersion: TEST_CARD_VERSION, correctionRevision: 3,
+                studentId: { status: "ok", value: "91003" }, questions: [], subjectiveQuestions: [],
+              });
+            }
+            throw new Error("缓存命中后不应再识别: " + url);
+          },
+          remoteFetch: async (url, init) => {
+            if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "cache-wins", uploadTokens: ["c1"] });
+            if (url.endsWith(PAGES)) {
+              uploaded = JSON.parse(String((init!.body as FormData).get("recognition"))).studentId.value;
+              return jsonRes({ ok: true });
+            }
+            return jsonRes({ ok: true });
+          },
+        }));
+        const cachedId = cached.startUpload({
+          kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "缓存优先",
+          localSessionId: "cache-wins", identityMode: "strict",
+          pages: [{
+            pageNum: 1, side: "front", groupId: "0", recordId: "cached-record",
+            fallbackStudentId: "91001",
+            getCorrection: async () => undefined,
+            getBlob: async () => blob(),
+          }],
+        });
+        assert((await waitTerminal(cached, cachedId)).status === "done", "缓存学号应能完成上传");
+        assert(uploaded === "91003", "有效缓存学号优先于汇总回退");
+
+        uploaded = "";
+        const corrected = createScannerUploadManager(deps({
+          localFetch: async (url) => String(url).includes("/upload-payload") ? jsonRes({ message: "miss" }, 404) : missedRecognition(),
+          remoteFetch: async (url, init) => {
+            if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "corr-wins", uploadTokens: ["k1"] });
+            if (url.endsWith(PAGES)) {
+              uploaded = JSON.parse(String((init!.body as FormData).get("recognition"))).studentId.value;
+              return jsonRes({ ok: true });
+            }
+            return jsonRes({ ok: true });
+          },
+        }));
+        const correctedId = corrected.startUpload({
+          kind: "scan", cardId: "card_1", cardVersion: TEST_CARD_VERSION, name: "订正优先",
+          localSessionId: "corr-wins", identityMode: "strict",
+          pages: [{
+            pageNum: 1, side: "front", groupId: "0", recordId: "corrected-record",
+            fallbackStudentId: "91001",
+            getCorrection: async () => ({
+              status: "ok",
+              studentId: { status: "ok", value: "91002" },
+              questions: [],
+              subjectiveQuestions: [],
+            }),
+            getBlob: async () => blob(),
+          }],
+        });
+        assert((await waitTerminal(corrected, correctedId)).status === "done", "已保存订正应能完成上传");
+        assert(uploaded === "91002", "已保存订正学号优先于汇总回退");
       } finally {
         if (previous) Object.defineProperty(globalThis, "localStorage", previous);
         else Reflect.deleteProperty(globalThis, "localStorage");
@@ -850,9 +962,9 @@ async function main() {
   {
     const input = baseInput(3);
     input.pages = [
-      { pageNum: 1, side: "front", layoutPage: 1, groupId: "card-a", studentId: "91002", getBlob: async () => blob() },
-      { pageNum: 1, side: "back", layoutPage: 2, groupId: "card-a", studentId: "91002", getBlob: async () => blob() },
-      { pageNum: 2, side: "front", layoutPage: 3, groupId: "card-a", studentId: "91002", getBlob: async () => blob() },
+      { pageNum: 1, side: "front", layoutPage: 1, groupId: "card-a", studentId: "91002", fallbackStudentId: "00000", getBlob: async () => blob() },
+      { pageNum: 1, side: "back", layoutPage: 2, groupId: "card-a", studentId: "91002", fallbackStudentId: "00000", getBlob: async () => blob() },
+      { pageNum: 2, side: "front", layoutPage: 3, groupId: "card-a", studentId: "91002", fallbackStudentId: "00000", getBlob: async () => blob() },
     ];
     const localPages: string[] = [];
     const uploadedIds: string[] = [];

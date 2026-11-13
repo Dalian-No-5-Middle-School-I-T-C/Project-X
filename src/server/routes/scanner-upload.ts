@@ -427,7 +427,8 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
       await scannerPageImageStaging.write(stagedImage, image.buffer);
 
       const { session, record } = gated;
-      return runScannerSessionTransaction(String(sessionId), async db => {
+      let retiredCropPaths: string[] = [];
+      const committed = await runScannerSessionTransaction(String(sessionId), async db => {
         const again = await pageUploadOverwriteGates(db, String(sessionId), token, res);
         if (!again) return;
 
@@ -435,7 +436,7 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
         if (req.body.recognition) {
           try { recognition = recognitionSchema.parse(JSON.parse(req.body.recognition)); }
           catch {
-            await invalidateScanRecognitionInTransaction(db, String(sessionId), token);
+            retiredCropPaths = (await invalidateScanRecognitionInTransaction(db, String(sessionId), token)).retiredCropPaths;
             await db.run("UPDATE twain_scan_records SET ocr_status = 'failed', ocr_error = ? WHERE id = ?", "识别结果格式无效，请更新扫描端后重试", token);
             res.status(400).json({ message: "识别结果格式无效，请更新扫描端后重试" }); return;
           }
@@ -448,7 +449,7 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
         const verified = identity?.status === "verified" && identity.cardId === card.id && identity.pageNumber === mapped.layoutPage;
         const legacy = session.identity_mode === "legacy" && identity?.status === "unverified" && ["QR_MISSING", "QR_UNREADABLE"].includes(identity.code);
         if (mapped.unusedSide || (!verified && !legacy)) {
-          await invalidateScanRecognitionInTransaction(db, String(sessionId), token);
+          retiredCropPaths = (await invalidateScanRecognitionInTransaction(db, String(sessionId), token)).retiredCropPaths;
           await db.run("UPDATE twain_scan_records SET ocr_status = 'failed', ocr_error = ? WHERE id = ?", "页面未通过二维码身份校验", token);
           res.status(409).json({ message: "页面未通过二维码身份校验，请在 Windows 扫描端重新识别" }); return;
         }
@@ -477,6 +478,8 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
 
         return { ok: true, pageNum, side, fileName, previousImage: record.image_path };
       });
+      if (retiredCropPaths.length > 0) await retireSupersededCropImages(retiredCropPaths);
+      return committed;
     });
     if (uploaded) {
       committedImage = true;

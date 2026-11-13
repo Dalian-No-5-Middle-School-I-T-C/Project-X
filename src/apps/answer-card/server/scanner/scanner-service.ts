@@ -17,7 +17,7 @@ import { enqueueScannerSubmission, invalidateScanRecognitionInQueue } from "../.
 import { gradeCombinedRecognition } from "../../../../shared/grading";
 import type { CombinedRecognitionResult } from "../../../../shared/types";
 import { getMysqlDb } from "../../../../server/db";
-import { persistAnswerBlockCrops, relocateUploadedCropsToStorage } from "../../../../server/services/AnswerBlockCropService";
+import { persistAnswerBlockCrops, relocateUploadedCropsToStorage, retireSupersededCropImages } from "../../../../server/services/AnswerBlockCropService";
 import { findCardForLayout, prepareCardLayoutById } from "../card-layout";
 import { parseRecognitionDpi } from "../helpers";
 import { mapScanPageToLayout, applyScanStudentId, assignScanRecordPageNums } from "../../../../shared/scanPages";
@@ -389,11 +389,11 @@ export async function runOcrOnSession(
               cropsToPersist = relocated.crops;
             }
             const db = getMysqlDb();
-            await db.transaction(async (tx) => {
+            const saved = await db.transaction(async (tx) => {
               const correctionRevision = card
                 ? await correctionPageRevision("twain_scan_record", record.id, tx)
                 : null;
-              await persistAnswerBlockCrops({
+              return persistAnswerBlockCrops({
                 cardId,
                 studentNumber: studentId,
                 sourceType: "twain_scan_record",
@@ -403,6 +403,7 @@ export async function runOcrOnSession(
                 skipFileMoves: true,
               }, tx);
             });
+            await retireSupersededCropImages(saved.retireImagePaths ?? []);
           } catch (cropError) {
             await Promise.all(stagedCropPaths.map((filePath) => unlink(filePath).catch(() => {})));
             console.error(`[Scanner] Block crop persistence failed for record ${record.id}:`, cropError);

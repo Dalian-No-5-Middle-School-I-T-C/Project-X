@@ -14,6 +14,7 @@ import { databaseTimestamp } from "../db/timestamp";
 import { markScoreMutated } from "./examPublishEvents";
 import { captureExamClasses } from "./examClassMemberships";
 import { scannerDuplicateEvidence } from "./scannerDuplicateEvidence";
+import { retireSupersededCropImages } from "./AnswerBlockCropService";
 
 /** Resolve persisted receipt ownership, including retries after exam closure. */
 export async function findSavedScannerOwners(db: DbAdapter, sessionId: string, groupId: string,
@@ -183,7 +184,7 @@ async function withdraw(db: DbAdapter, examId: number, studentNumber: string, re
   await db.run("UPDATE scanner_submissions SET state = 'conflict' WHERE exam_id = ? AND student_number = ? AND state NOT IN ('superseded', 'discarded')", examId, studentNumber);
 }
 
-export async function invalidateScanRecognitionInTransaction(tx: DbAdapter, sessionId: string, recordId: string): Promise<Set<number>> {
+export async function invalidateScanRecognitionInTransaction(tx: DbAdapter, sessionId: string, recordId: string): Promise<{ changedExams: Set<number>; retiredCropPaths: string[] }> {
   const changedExams = new Set<number>();
   const owned = await tx.all<Receipt>("SELECT * FROM scanner_submissions WHERE session_id = ? AND state NOT IN ('superseded', 'discarded')", sessionId);
   for (const receipt of owned) {
@@ -200,9 +201,17 @@ export async function invalidateScanRecognitionInTransaction(tx: DbAdapter, sess
   await tx.run("UPDATE twain_scan_records SET identity_json = NULL, student_id = NULL, student_conf = NULL, ocr_status = 'processing', ocr_error = NULL WHERE id = ? AND session_id = ?", recordId, sessionId);
   await tx.run("DELETE FROM twain_recognition_results WHERE scan_record_id = ?", recordId);
   await tx.run("DELETE FROM scan_correction_pages WHERE source_type = 'twain_scan_record' AND source_id = ?", recordId);
+  const priorCrops = await tx.all<{ image_path: string }>(
+    "SELECT image_path FROM answer_block_crops WHERE source_type = ? AND source_record_id = ?",
+    "twain_scan_record",
+    recordId,
+  );
   await tx.run("DELETE FROM answer_block_crops WHERE source_type = ? AND source_record_id = ?", "twain_scan_record", recordId);
   await tx.run("DELETE FROM twain_student_grading_results WHERE session_id = ?", sessionId);
-  return changedExams;
+  return {
+    changedExams,
+    retiredCropPaths: priorCrops.map((row) => row.image_path).filter((filePath) => Boolean(filePath)),
+  };
 }
 
 /** Invalidate a page before retry; saved grades are withdrawn only through their owning receipt. */
@@ -214,9 +223,13 @@ export async function invalidateScanRecognition(sessionId: string, recordId: str
 export async function invalidateScanRecognitionInQueue(sessionId: string, recordId: string): Promise<void> {
   const db = getMysqlDb();
   const changedExams = new Set<number>();
+  let retiredCropPaths: string[] = [];
   await db.transaction(async tx => {
-    for (const id of await invalidateScanRecognitionInTransaction(tx, sessionId, recordId)) changedExams.add(id);
+    const invalidated = await invalidateScanRecognitionInTransaction(tx, sessionId, recordId);
+    for (const id of invalidated.changedExams) changedExams.add(id);
+    retiredCropPaths = invalidated.retiredCropPaths;
   });
+  await retireSupersededCropImages(retiredCropPaths);
   for (const examId of changedExams) {
     analysisCache.invalidateExam(examId);
     await recomputeExamRankings(db, examId);
