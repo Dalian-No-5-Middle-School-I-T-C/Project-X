@@ -7,6 +7,10 @@
 # Batch files should always use CRLF line endings
 *.bat text eol=crlf
 
+# Native build records are hashed as LF files
+resources/native/*/source-sha256.txt text eol=lf
+resources/native/*/binary.sha256 text eol=lf
+
 # Binary files
 *.exe binary
 *.png binary

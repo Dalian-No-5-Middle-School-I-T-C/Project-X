@@ -18,6 +18,16 @@ for tool in cmake curl tar rg "$TOOL_PREFIX-g++" "$TOOL_PREFIX-objdump" "$TOOL_P
 done
 mkdir -p "$BUILD_ROOT/downloads" "$DEPS_DIR/include/nlohmann" "$STAGE_DIR"
 
+source "$ROOT_DIR/scripts/lib/native-build-record.sh"
+lock_native_stage "$STAGE_DIR"
+write_source_manifest() {
+  write_native_source_manifest "$ROOT_DIR" "native/cmake/mingw-$ARCH.cmake" scripts/build-native-mingw.sh \
+    native/AnswerCardRecognizer/answer-card-recognizer \
+    native/ScannerBridge/scanner-bridge native/ScannerBridge/third_party/twain-dsm-2.5.1/include
+}
+rm -f "$STAGE_DIR/binary.sha256"
+write_source_manifest > "$STAGE_DIR/source-sha256.txt"
+
 download_verified() {
   local url="$1" destination="$2" expected="$3" actual
   if [ ! -f "$destination" ]; then
@@ -81,15 +91,21 @@ cp "$ROOT_DIR/native/ScannerBridge/third_party/THIRD_PARTY_NOTICES.md" "$STAGE_D
 cp -R "$OPENCV_INSTALL/share/licenses/opencv4" "$STAGE_DIR/licenses/"
 cp "$DEPS_DIR/opencv-4.13.0/3rdparty/libwebp/COPYING" "$STAGE_DIR/licenses/libwebp-COPYING.txt"
 cp "$DEPS_DIR/opencv-4.13.0/3rdparty/quirc/LICENSE" "$STAGE_DIR/licenses/quirc-LICENSE.txt"
+recognizer="$BUILD_ROOT/app-build/answer-card-recognizer.exe"
+"$TOOL_PREFIX-objdump" -t "$recognizer" | rg "${QR_SYMBOL}\$" >/dev/null || {
+  echo "Recognizer must link the QR decoder used by card identity checks" >&2
+  exit 1
+}
+"$TOOL_PREFIX-strip" -o "$STAGE_DIR/answer-card-recognizer.exe" "$recognizer"
 for binary in "$STAGE_DIR"/*.exe "$STAGE_DIR"/*.dll; do
   "$TOOL_PREFIX-objdump" -f "$binary" | rg -q "file format $PE_FORMAT" || {
     echo "Not a Windows $ARCH binary: $binary" >&2; exit 1;
   }
 done
-"$TOOL_PREFIX-objdump" -t "$STAGE_DIR/answer-card-recognizer.exe" | rg "${QR_SYMBOL}\$" >/dev/null || {
-  echo "Recognizer must link the QR decoder used by card identity checks" >&2; exit 1;
-}
-"$TOOL_PREFIX-strip" "$STAGE_DIR/answer-card-recognizer.exe"
-(cd "$ROOT_DIR" && cmake -E sha256sum native/CMakeLists.txt "native/cmake/mingw-$ARCH.cmake" scripts/build-native-mingw.sh \
-  native/AnswerCardRecognizer/answer-card-recognizer/*.cpp native/AnswerCardRecognizer/answer-card-recognizer/*.hpp) > "$STAGE_DIR/source-sha256.txt"
+if ! cmp -s "$STAGE_DIR/source-sha256.txt" <(write_source_manifest); then
+  echo "Native build inputs changed during compilation. Rebuild from a stable checkout." >&2
+  exit 1
+fi
+(cd "$STAGE_DIR" && cmake -E sha256sum source-sha256.txt answer-card-recognizer.exe scanner-bridge.exe) > "$STAGE_DIR/binary.sha256.tmp"
+mv "$STAGE_DIR/binary.sha256.tmp" "$STAGE_DIR/binary.sha256"
 echo "Windows $ARCH native components: $STAGE_DIR"

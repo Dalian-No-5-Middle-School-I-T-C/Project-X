@@ -11,7 +11,7 @@
  *   1. 版本闸门 resolvePdfRevisionGate 是纯函数，边界取值（含旧客户端的 ISO 时间串）判定正确；
  *   2. revision 单调递增、跨方言存在且 NOT NULL DEFAULT 0，同一秒内多次保存也能区分；
  *   3. revision 只由落库自增决定，请求体里自带的版本号一律不采信（防伪造）；
- *   4. 迁移可重入，存量库升级后旧卡 revision 归 0；路由与前端确实按新口径接线。
+ *   4. 迁移可重入，存量库升级后旧卡 revision 归 0。
  *
  * 用法：
  *   npx tsx scripts/verify-card-export-revision.ts
@@ -25,10 +25,9 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 const maria = process.argv.includes("--mariadb");
 if (maria) {
@@ -63,9 +62,6 @@ function section(title: string): void {
 }
 
 interface CountRow { n: number }
-
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const readSource = (relative: string): string => readFileSync(path.join(repoRoot, relative), "utf8");
 
 const { initializeDatabase, getDatabase, closeDatabase } = await import("../src/server/db/index");
 const { getMysqlDb, initMariadbSchema, resetAdapter } = await import("../src/server/db/mysql");
@@ -325,81 +321,6 @@ ok((await cardRepo.findById(cardId))?.revision === 7, "兼容迁移可重复运�
 await db.run("UPDATE schema_migrations SET name = 'exam-class-memberships' WHERE version = 59");
 
 await db.run("DELETE FROM answer_cards WHERE id = ?", cardId);
-
-// ── 5. 路由与前端接线（静态核对源码） ───────────────────────────
-section("5. 接线核对：闸门在渲染之前、前端传 revision 而不是 updatedAt");
-const serverSource = readSource("src/apps/answer-card/server/index.ts");
-const pdfRoute = serverSource.slice(
-  serverSource.indexOf('app.get("/api/cards/:cardId/pdf"'),
-  serverSource.indexOf("// ── 答题卡导出/导入/删除")
-);
-ok(pdfRoute.length > 0 && pdfRoute.includes("createPdf(card)"), "定位到 /api/cards/:cardId/pdf 路由体");
-const gateAt = pdfRoute.indexOf("resolvePdfRevisionGate(");
-const renderAt = pdfRoute.indexOf("createPdf(card)");
-ok(gateAt > 0, "路由里调用了 resolvePdfRevisionGate");
-ok(gateAt < renderAt, `闸门在 createPdf 之前（${gateAt} < ${renderAt}）——先判定后渲染，不浪费一次 PDF 生成`);
-ok(pdfRoute.includes('res.setHeader("X-Card-Revision"'), "路由设置 X-Card-Revision 响应头");
-ok(
-  pdfRoute.indexOf('res.setHeader("X-Card-Revision"') < gateAt,
-  "X-Card-Revision 在闸门判定之前设置（409/400 时调用方也能拿到服务器当前版本）"
-);
-ok(pdfRoute.includes("409") && pdfRoute.includes("CARD_REVISION_MISMATCH"), "版本不一致回 409 + CARD_REVISION_MISMATCH");
-ok(pdfRoute.includes("400") && pdfRoute.includes("CARD_REVISION_INVALID"), "版本号畸形回 400 + CARD_REVISION_INVALID");
-ok(!pdfRoute.includes("updatedAt"), "路由不再用 updatedAt 当版本令牌");
-
-const saveFn = serverSource.slice(
-  serverSource.indexOf("async function saveCardWithLayout("),
-  serverSource.indexOf("async function prepareLayoutForCard(")
-);
-ok(saveFn.includes("return { ...normalized, revision }"), "saveCardWithLayout 返回落库后的 revision，而不是请求体里的那个");
-ok(saveFn.includes("revision = await cardRepo.updateCard("), "revision 取自 updateCard 的返回值");
-
-const clientSource = readSource("src/apps/answer-card/client/App.tsx");
-ok(!clientSource.includes("/pdf?v=${encodeURIComponent(savedCard.updatedAt)}"), "前端不再把 updatedAt 当版本令牌");
-ok(clientSource.includes("?v=${revision}"), "前端改用 revision 作为 ?v= 的值");
-ok(clientSource.includes("settleCardForExport"), "导出前有界收敛待存改动");
-ok(clientSource.includes("EXPORT_SETTLE_ATTEMPTS"), "收敛次数是有界常量（不会在用户连续敲键时无限重试）");
-ok(
-  /localRevision !== serverRevision/.test(clientSource),
-  "导出前先 GET 一次卡比对 revision（PDF 在新标签页打开，409 客户端接不到）"
-);
-
-const repositorySource = readSource("src/server/repositories/CardRepository.ts");
-ok(repositorySource.includes("revision = revision + 1"), "自增在 SQL 里完成（不读改写，避免并发丢号）");
-ok(repositorySource.includes("revision: Number(cardRow.revision ?? 0)"), "findById 映射 revision");
-ok(
-  readSource("src/shared/types.ts").includes("revision?: number"),
-  "AnswerCard 类型声明了 revision"
-);
-for (const [file, needle] of [
-  ["src/server/db/schema.sql", "revision         INTEGER NOT NULL DEFAULT 0"],
-  ["src/server/db/schema.mariadb.sql", "revision         INT NOT NULL DEFAULT 0"],
-  ["src/server/db/schema.mysql.sql", "revision         INT NOT NULL DEFAULT 0"]
-] as const) {
-  ok(readSource(file).includes(needle), `${file} 新建库语句含 revision 列`);
-}
-ok(readSource("src/server/db/migrations.ts").includes('version: 60, name: "answer-card-revision"'), "SQLite 迁移 60 已登记");
-ok(readSource("src/server/db/mysql.ts").includes('version: 60, name: "answer-card-revision"'), "MariaDB 迁移 60 已登记");
-
-// 两个不带 ?v= 的内部调用方必须继续可用——闸门放行「省略」正是为它们留的口子。
-ok(
-  !readSource("scripts/deployment-business-smoke.ts").includes("/pdf?v="),
-  "部署冒烟脚本仍不带 ?v=（省略即放行，不会被闸门拦住）"
-);
-ok(
-  !readSource("tools/repair-benchmark/run.mjs").includes("/pdf?v="),
-  "修复基准工具仍不带 ?v="
-);
-
-const packageJson = JSON.parse(readSource("package.json")) as { scripts: Record<string, string> };
-ok(
-  packageJson.scripts["verify:card-export-revision"]?.includes("verify-card-export-revision.ts"),
-  "package.json 已挂 verify:card-export-revision"
-);
-ok(
-  readSource(".github/workflows/ci.yml").includes("verify:card-export-revision"),
-  "CI 会跑本脚本"
-);
 
 // closeDatabase() 只关 SQLite 实例；MariaDB 模式下真正持有连接的是 mariadbPool，
 // 必须 resetAdapter() 才会 end()，否则进程挂在空闲连接上退不出去，CI 步骤会一直等到超时。

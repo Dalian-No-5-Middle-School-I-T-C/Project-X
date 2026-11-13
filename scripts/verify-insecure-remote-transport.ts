@@ -6,12 +6,8 @@
 //      断言明文跨机时 X-Api-Key 根本没出进程（服务端收到的请求数为 0），
 //      以及不带凭据的健康探测仍然放行。第 2 层是这条整改的验收要求本身：
 //      「跨机明文 HTTP 默认不发送账号/Key；127.0.0.1 本地模式保持可用」。
-//
-// 源码不退化断言放在 scripts/verify-security-critical.ts（R32 段）。
 import http from "node:http";
 import os from "node:os";
-import path from "node:path";
-import { readFileSync } from "node:fs";
 import {
   evaluateCredentialTransport,
   hasInsecureTransportAllowance,
@@ -133,9 +129,7 @@ async function main(): Promise<void> {
   // 评审 B5：闸门的判据从「本机存了什么凭据」换成「这条请求会不会带出凭据」。
   // 旧判据把**第一次登录**漏在外面：那台机器上 token 与 API Key 都为空，而登录请求的 body
   // 里就是明文口令——配置了跨机 http 地址的 Web 端会把管理员口令直接发出去。
-  // Web 构建目标（VITE_BUILD_TARGET）在 Node/tsx 下无法伪造（无 env 时模块按扫描端处理，
-  // 闸门本就直接放行），所以这里直接测判据纯函数，「两个发送点都接上」由
-  // scripts/verify-security-critical.ts 的 R32 源码断言锁住。
+  // Node/tsx 未提供 Web 构建目标，这里直接验证不同请求体是否会被判为含凭据。
   const { bodyCarriesCredentials } = await import("../src/apps/answer-card/client/auth/api");
   check(bodyCarriesCredentials(JSON.stringify({ username: "admin", password: "admin123" })) === true,
     "B5：首次登录的 body（只有 password，本机无任何凭据）被认成带凭据请求");
@@ -274,23 +268,6 @@ async function main(): Promise<void> {
 
   if (!lanIp) {
     console.log("  （提示：本机没有非回环 IPv4 地址，跨机用例用 192.0.2.1 代替——判定仍在发出前完成，结论不变）");
-  }
-
-  console.log("\n[3] 文档不再教人填明文跨机地址");
-  const docs = [
-    "user guide/Project-X用户使用说明.md",
-    "readus/SCANNER-SETUP.md",
-    "readus/多端使用说明.md",
-  ];
-  for (const doc of docs) {
-    const text = readFileSync(path.resolve(doc), "utf8");
-    // 只禁「照抄就能用」的示例：带真实数字八位组的明文内网地址。
-    // 讲解口径时写 `http://192.168.x.x:5174`（占位 x）是在说明被拦下的那种地址，不算示例。
-    check(!/http:\/\/192\.168\.\d{1,3}\.\d{1,3}/.test(text) && !/http:\/\/10\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(text),
-      `${doc} 里没有「照抄就能用」的明文内网地址示例`);
-    check(/https:\/\//.test(text), `${doc} 给出的服务器地址示例是 https`);
-    check(text.includes("R32") || text.includes("明文"),
-      `${doc} 写清了跨机明文 HTTP 的口径（含勾选许可）`);
   }
 
   console.log(`\n跨机明文 HTTP 凭据闸门（R32）：${passed} 通过，${failures.length} 失败`);

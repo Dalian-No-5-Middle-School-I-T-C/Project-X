@@ -6,6 +6,7 @@ import { buildLayout } from "../src/shared/layout";
 import { recognizedCells } from "../src/shared/scanCorrection";
 import { createDefaultCard } from "../src/shared/defaultCard";
 import { cardFingerprint } from "../src/shared/cardVersion";
+import { isStandbyIdleMiss } from "../src/shared/scannerStandby";
 import type { StartUploadInput } from "../src/apps/answer-card/client/lib/scannerUploadManager";
 
 const dom = new JSDOM('<div id="root"></div>', { url: "https://scanner.test" });
@@ -37,7 +38,7 @@ class FakeEventSource {
 install("EventSource", FakeEventSource);
 const realSetTimeout = globalThis.setTimeout;
 install("setTimeout", ((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) =>
-  realSetTimeout(callback, delay === 5000 ? 0 : delay, ...args)) as typeof setTimeout);
+  realSetTimeout(callback, delay === 5000 || (typeof delay === "number" && delay >= 4000) ? 0 : delay, ...args)) as typeof setTimeout);
 let releaseCard!: () => void;
 const cardReady = new Promise<void>(resolve => { releaseCard = resolve; });
 const card = createDefaultCard("panel-review");
@@ -692,7 +693,205 @@ try {
   assert.equal(streams.length, streamsBeforeLate, "离开后不能再给新会话开进度流");
   lateHost.remove();
 
-  console.log("PASS scanner panel React/SSE: session metadata; partial view/correction/save; terminal replay and reconnect hydrate persisted pages; hydration retry, zero-page and next-session recovery; continue-scan; leave-mid-scan; leave-before-start");
+  assert.equal(isStandbyIdleMiss("扫描未产生任何页面", 0), true, "空等超时可以再开一轮");
+  assert.equal(isStandbyIdleMiss("No pages captured", 0), true, "桥接的空结果同样再等");
+  assert.equal(isStandbyIdleMiss("无法打开扫描仪", 0), false, "设备打不开不能当成还在等纸");
+  assert.equal(isStandbyIdleMiss("扫描未产生任何页面", 2), false, "已经有页面的失败不能丢掉");
+  assert.equal(isStandbyIdleMiss("扫描中途失败，已扫描的页面已保留", 0), false, "中途失败不能自动重开");
+
+  // 一直待命：扫完一班后不离开面板，自动再开一轮；点「结束」才停。
+  {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const standbyRoot = createRoot(host);
+    const completed: string[] = [];
+    const ended: string[] = [];
+    const archived: string[] = [];
+    const abandoned: string[] = [];
+    await act(async () => {
+      standbyRoot.render(createElement(TooltipProvider, null, createElement(ScannerPanel, {
+        cardId: card.id,
+        onScansComplete: (sid: string) => { completed.push(sid); },
+        onStandbyEnded: () => { ended.push("ended"); },
+        onBatchArchived: (originCardId: string, sid: string, pageCount: number) => { archived.push(`${originCardId}/${sid}/${pageCount}`); },
+        onScanSessionAbandoned: (originCardId: string, sid: string) => { abandoned.push(`${originCardId}/${sid}`); },
+      })));
+    });
+    await settle();
+    const standbySwitch = host.querySelector<HTMLButtonElement>("#scanner-standby");
+    assert(standbySwitch, "扫描设置里有一直待命");
+    await act(async () => { standbySwitch.click(); });
+    const scansBefore = scans.length;
+    await act(async () => {
+      [...host.querySelectorAll("button")].find(node => node.textContent?.trim() === "开始扫描")!.click();
+    });
+    await settle();
+    assert.equal(scans.length, scansBefore + 1, "打开一直待命后仍由开始扫描启动第一轮");
+    assert(host.textContent?.includes("结束"), "待命中提供结束，而不是只剩停止扫描");
+    assert(![...host.querySelectorAll("button")].some(node => node.textContent?.trim() === "停止扫描"), "待命中的停止按钮改成结束");
+    const firstSession = `scan-${scans.length}`;
+    await act(async () => {
+      streams.at(-1)?.emit({ type: "page_done", recordId: "standby-page", pageNum: 1, side: "front" });
+      streams.at(-1)?.done();
+    });
+    await settle();
+    assert.equal(completed.length, 0, "一直待命扫完一班后不跳走");
+    assert.equal(scans.length, scansBefore + 2, "扫完一班后自动再开一轮等待");
+    assert(archived.includes(`${card.id}/${firstSession}/1`), "上一班页面交给后处理");
+    assert(host.textContent?.includes("放入答题卡就会开始"), "下一轮继续等着放卡");
+    const waitingSession = `scan-${scans.length}`;
+    const cancelsBeforeEnd = cancelRequests.length;
+    await act(async () => {
+      [...host.querySelectorAll("button")].find(node => node.textContent?.trim() === "结束")!.click();
+    });
+    await settle();
+    assert(cancelRequests.slice(cancelsBeforeEnd).some(url => url.includes(waitingSession)), "结束要停掉还在等纸的扫描仪");
+    assert.equal(ended.length, 1, "已经有扫完的批次时，结束回到后处理");
+    await act(async () => { streams.at(-1)?.done(); });
+    await settle();
+    assert.equal(scans.length, scansBefore + 2, "结束后不再自动开扫");
+    await act(async () => { standbyRoot.unmount(); });
+    host.remove();
+  }
+
+  // 进纸器空等超时再开一轮；设备故障则停住，不能对着空进纸器反复启动。
+  {
+    const savedSettings = JSON.parse(localStorage.getItem("projectx-scanner-settings-v1") || "{}") as { standby?: boolean };
+    savedSettings.standby = false;
+    localStorage.setItem("projectx-scanner-settings-v1", JSON.stringify(savedSettings));
+    const host = document.createElement("div");
+    document.body.append(host);
+    const idleRoot = createRoot(host);
+    const abandoned: string[] = [];
+    await act(async () => {
+      idleRoot.render(createElement(TooltipProvider, null, createElement(ScannerPanel, {
+        cardId: card.id,
+        onScanSessionAbandoned: (originCardId: string, sid: string) => { abandoned.push(`${originCardId}/${sid}`); },
+      })));
+    });
+    await settle();
+    await act(async () => { host.querySelector<HTMLButtonElement>("#scanner-standby")!.click(); });
+    await act(async () => {
+      [...host.querySelectorAll("button")].find(node => node.textContent?.trim() === "开始扫描")!.click();
+    });
+    await settle();
+    const idleSession = `scan-${scans.length}`;
+    const scansAfterIdleStart = scans.length;
+    await act(async () => { streams.at(-1)?.emit({ type: "error", message: "扫描未产生任何页面" }); });
+    await settle();
+    await settle();
+    assert(abandoned.includes(`${card.id}/${idleSession}`), "空等会话不留在后处理里");
+    assert.equal(scans.length, scansAfterIdleStart + 1, "空等超时后自动再等一轮");
+    assert(!host.textContent?.includes("扫描未产生任何页面"), "空等不显示成扫描失败");
+    await act(async () => { streams.at(-1)?.emit({ type: "error", message: "无法打开扫描仪" }); });
+    await settle();
+    assert.equal(scans.length, scansAfterIdleStart + 1, "设备打不开时不再自动重开");
+    assert(host.textContent?.includes("无法打开扫描仪"), "设备故障要留在界面上");
+    await act(async () => { idleRoot.unmount(); });
+    host.remove();
+  }
+
+  // 重连只补到「已完成」、本地还是 0 页时，按服务端记录归档，不能当成空等撤掉。
+  {
+    const savedSettings = JSON.parse(localStorage.getItem("projectx-scanner-settings-v1") || "{}") as { standby?: boolean };
+    savedSettings.standby = false;
+    localStorage.setItem("projectx-scanner-settings-v1", JSON.stringify(savedSettings));
+    const host = document.createElement("div");
+    document.body.append(host);
+    const replayRoot = createRoot(host);
+    const archived: string[] = [];
+    const abandoned: string[] = [];
+    const previousRetained = retainedPageCount;
+    const previousStatus = snapshotSessionStatus;
+    retainedPageCount = 2;
+    snapshotSessionStatus = "completed";
+    await act(async () => {
+      replayRoot.render(createElement(TooltipProvider, null, createElement(ScannerPanel, {
+        cardId: card.id,
+        onBatchArchived: (originCardId: string, sid: string, pageCount: number) => { archived.push(`${originCardId}/${sid}/${pageCount}`); },
+        onScanSessionAbandoned: (originCardId: string, sid: string) => { abandoned.push(`${originCardId}/${sid}`); },
+      })));
+    });
+    await settle();
+    await act(async () => { host.querySelector<HTMLButtonElement>("#scanner-standby")!.click(); });
+    await act(async () => {
+      [...host.querySelectorAll("button")].find(node => node.textContent?.trim() === "开始扫描")!.click();
+    });
+    await settle();
+    const replaySession = `scan-${scans.length}`;
+    const scansBeforeReplay = scans.length;
+    await act(async () => { streams.at(-1)?.done(); });
+    await settle();
+    await settle();
+    assert(archived.includes(`${card.id}/${replaySession}/2`), "本地 0 页时按服务端已落页归档");
+    assert(!abandoned.includes(`${card.id}/${replaySession}`), "服务端已有页面时不能撤掉这一班");
+    assert.equal(scans.length, scansBeforeReplay + 1, "核对到已有页面后继续待命");
+    retainedPageCount = previousRetained;
+    snapshotSessionStatus = previousStatus;
+    await act(async () => { replayRoot.unmount(); });
+    host.remove();
+  }
+
+  // 「结束」发生在会话号返回之前：必须作废这一轮，不能让晚到的启动请求打开进纸器。
+  {
+    const savedSettings = JSON.parse(localStorage.getItem("projectx-scanner-settings-v1") || "{}") as { standby?: boolean };
+    savedSettings.standby = true;
+    localStorage.setItem("projectx-scanner-settings-v1", JSON.stringify(savedSettings));
+    const host = document.createElement("div");
+    document.body.append(host);
+    const earlyRoot = createRoot(host);
+    await act(async () => {
+      earlyRoot.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: card.id })));
+    });
+    await settle();
+    holdNextCard = true;
+    const scansBeforeEarly = scans.length;
+    await act(async () => {
+      [...host.querySelectorAll("button")].find(node => node.textContent?.trim() === "开始扫描")!.click();
+    });
+    await settle();
+    assert(releaseHeldCard, "结束前的版本请求应还在路上");
+    await act(async () => {
+      [...host.querySelectorAll("button")].find(node => node.textContent?.trim() === "结束")!.click();
+    });
+    await act(async () => { releaseHeldCard?.(); releaseHeldCard = null; });
+    await settle();
+    assert.equal(scans.length, scansBeforeEarly, "结束之后晚到的启动不能再打开扫描仪");
+    assert(![...host.querySelectorAll("button")].some(node => node.textContent?.trim() === "结束"), "结束后不再停在扫描中");
+
+    holdNextScan = true;
+    cancelHttpStatus = 500;
+    const { notify } = await import("../src/apps/answer-card/client/components/ui/v2/toaster");
+    const stopWarnings: string[] = [];
+    const originalNotifyError = notify.error;
+    notify.error = ((message: unknown) => {
+      stopWarnings.push(String(message));
+      return "toast";
+    }) as typeof notify.error;
+    try {
+      await act(async () => {
+        [...host.querySelectorAll("button")].find(node => node.textContent?.trim() === "开始扫描")!.click();
+      });
+      await settle();
+      assert(releaseHeldScan, "结束前的扫描请求应还在路上");
+      await act(async () => {
+        [...host.querySelectorAll("button")].find(node => node.textContent?.trim() === "结束")!.click();
+      });
+      const lateSession = `scan-${scans.length}`;
+      await act(async () => { releaseHeldScan?.(); releaseHeldScan = null; });
+      await settle();
+      assert(cancelRequests.some(url => url.includes(lateSession)), "会话号晚到后仍要取消已经启动的扫描");
+      assert.equal(stopWarnings.length, 1, "取消接口失败时要提示扫描仪可能还在走纸");
+      assert.match(stopWarnings[0] ?? "", /未能确认扫描仪已停止/);
+    } finally {
+      notify.error = originalNotifyError;
+      cancelHttpStatus = 200;
+    }
+    await act(async () => { earlyRoot.unmount(); });
+    host.remove();
+  }
+
+  console.log("PASS scanner panel React/SSE: session metadata; partial view/correction/save; terminal replay and reconnect hydrate persisted pages; hydration retry, zero-page and next-session recovery; continue-scan; leave-mid-scan; leave-before-start; standby");
 } finally {
   releaseCard();
   if (panelMounted) await act(async () => { root.unmount(); });

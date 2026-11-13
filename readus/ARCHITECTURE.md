@@ -736,3 +736,89 @@ flowchart LR
 - 班级对比支持「全部班级」：`GET /api/analysis/exams/:examId/class-comparison?all=1` 自动取本场考试全部班级，手工选择上限放宽到 30 个；响应新增 `fullScore`，每班新增 `difficulty`（P）与 `discrimination`（D，与 `getExamMetrics` 口径一致，逐题 D 均值）。
 - 前端班级对比页新增**多维度雷达图**（平均分率 / 中位分率 / 及格率 / 优秀率 / 难度系数 / 区分度 / 离散度）与**选择题选项对比表**（各班每选项选择人数与比例，✓ 标标准答案）；总分统计表新增难度/区分度列。
 - 题目分析 Tab 新增「选择题选项分析」面板（`GET /api/analysis/exams/:examId/option-analysis`）：每道客观题展示各选项选择人数/比例、作答/未答人数与满分率，正确选项高亮。
+
+---
+
+## 14. 运行配额与环境变量速查
+
+各子系统的上传体积、像素尺寸、并发与调用配额均支持通过环境变量调节（非法值回退默认值，超出安全上限的值按上限截断，生效值输出于启动日志）。
+
+### 14.1 扫描与判分上传（`src/shared/scanUploadLimits.ts`）
+
+| 环境变量 | 默认值 | 上限 | 说明 |
+| --- | --- | --- | --- |
+| `PROJECTX_UPLOAD_MAX_SCAN_IMAGE_MIB` | 50 | 512 | 单张原卷体积（MiB） |
+| `PROJECTX_UPLOAD_MAX_SESSION_PAGES` | 800 | 2000 | 单个扫描会话页数 |
+| `PROJECTX_UPLOAD_MAX_CROPS_PER_REQUEST` | 50 | 500 | 单次上传题块切图张数 |
+| `PROJECTX_UPLOAD_MAX_CROP_IMAGE_MIB` | 12 | 128 | 单张题块切图体积（MiB） |
+| `PROJECTX_UPLOAD_MAX_CROPS_TOTAL_MIB` | 160 | 2048 | 单次切图上传累计体积（MiB） |
+| `PROJECTX_UPLOAD_MAX_PAGE_REQUEST_TOTAL_MIB` | 64 | 1024 | 单页上传请求累计体积（MiB） |
+| `PROJECTX_UPLOAD_MAX_BATCH_FILES` | 300 | 5000 | 批量判分与识别单次上传文件数 |
+| `PROJECTX_UPLOAD_MAX_BATCH_TOTAL_MIB` | 1024 | 8192 | 批量判分与识别单次累计体积（MiB） |
+
+### 14.2 原生识别器边界（`recognizer_limits.cpp`）
+
+| 环境变量 | 默认值（x64 / ia32） | 上限（x64 / ia32） | 说明 |
+| --- | --- | --- | --- |
+| `PROJECTX_RECOGNIZER_MAX_IMAGE_BYTES` | 67108864（64 MiB） | 536870912（512 MiB） | 图片解码前字节上限 |
+| `PROJECTX_RECOGNIZER_MAX_IMAGE_PIXELS` | 100000000 / 40000000 | 400000000 / 70000000 | 单张图片像素面积上限 |
+| `PROJECTX_RECOGNIZER_MAX_LAYOUT_BYTES` | 8388608（8 MiB） | 67108864（64 MiB） | 布局 JSON 字节上限 |
+| `PROJECTX_RECOGNIZER_MAX_LAYOUT_ITEMS` | 20000 | 200000 | 布局数组条数上限 |
+| `PROJECTX_RECOGNIZER_MAX_LAYOUT_MM` | 1200 | 5000 | 页宽高与矩形坐标毫米上限 |
+| `PROJECTX_RECOGNIZER_MIN_DPI` | 50 | 300 | `--dpi` 下限 |
+| `PROJECTX_RECOGNIZER_MAX_DPI` | 1200 | 2400 | `--dpi` 上限 |
+
+### 14.3 网上阅卷领卷配额（`src/shared/reviewPoolLimits.ts`）
+
+| 环境变量 | 默认值 | 上限 | 说明 |
+| --- | --- | --- | --- |
+| `PROJECTX_REVIEW_MAX_HELD_PER_BLOCK` | 20 | 500 | 单个教师在单题块内可同时持有的未提交卷数 |
+| `PROJECTX_REVIEW_MAX_HELD_TOTAL` | 60 | 2000 | 单个教师在整场考试内可同时持有的未提交卷数 |
+| `PROJECTX_REVIEW_CLAIM_LOCK_TIMEOUT_MS` | 3000 | 30000 | 领卷命名锁等待超时（毫秒，MariaDB 生效） |
+
+### 14.4 原卷、插图、反馈与恢复容量
+
+| 环境变量 | 默认值 | 上限 | 说明 |
+| --- | --- | --- | --- |
+| `PROJECTX_PAPER_MAX_FILE_MIB` | 50 | 512 | 单个原卷上传文件体积（MiB） |
+| `PROJECTX_PAPER_MAX_REQUEST_MIB` | 512 | 4096 | 单次原卷上传请求累计体积（MiB） |
+| `PROJECTX_PAPER_MAX_FILES_PER_REQUEST` | 40 | 200 | 单次原卷上传文件数 |
+| `PROJECTX_PAPER_MAX_PAGES_PER_CARD` | 60 | 600 | 单张答题卡原卷页数 |
+| `PROJECTX_PAPER_MAX_BYTES_PER_CARD_MIB` | 1024 | 8192 | 单张答题卡原卷累计占盘（MiB） |
+| `PROJECTX_PAPER_MAX_TOTAL_MIB` | 20480 | 204800 | `papers/` 目录全局占盘总量（MiB） |
+| `PROJECTX_FEEDBACK_ATTACHMENT_TOTAL_MIB` | 8192 | 102400 | `data/answer-card/feedback/` 附件聚合容量（MiB） |
+| `PROJECTX_CARD_ASSET_MAX_MIB` | 6 | 512 | 答题卡导入单张内联插图解码后体积（MiB） |
+| `PROJECTX_CARD_ASSET_MAX_COUNT` | 200 | 2000 | 单次答题卡导入插图条数 |
+| `PROJECTX_CARD_ASSET_TOTAL_MIB` | 8 | 4096 | 单次答题卡导入插图累计解码体积（MiB） |
+| `PROJECTX_CARD_ASSET_UPLOAD_MIB` | 12 | 512 | 单个答题卡资源上传文件体积（MiB） |
+| `PROJECTX_BACKGROUND_UPLOAD_MIB` | 5 | 32 | 个人背景图上传体积（MiB） |
+| `PROJECTX_RESTORE_ZIP_MAX_ENTRIES` | 20000 | 100000 | 备份恢复 ZIP 最大条目数 |
+| `PROJECTX_RESTORE_ZIP_MAX_ENTRY_MIB` | 1024 | 8192 | 备份恢复单条目解压后体积（MiB） |
+| `PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB` | 6144 | 32768 | 备份恢复整包解压后累计体积（MiB） |
+| `PROJECTX_RESTORE_ZIP_MAX_RATIO` | 1032 | 1032 | 声明体积为 0 时的压缩展开比估算倍率 |
+
+### 14.5 AI 分析、PDF 渲染、微信推送与媒体票据
+
+| 环境变量 | 默认值 | 范围 / 上限 | 说明 |
+| --- | --- | --- | --- |
+| `PROJECTX_AI_MAX_ACTIVE_JOBS_PER_USER` | 2 | 20 | 单用户在途 AI 任务数 |
+| `PROJECTX_AI_MAX_ACTIVE_JOBS_GLOBAL` | 8 | 100 | 全局在途 AI 任务数 |
+| `PROJECTX_AI_MAX_RUNS_PER_HOUR` | 20 | 500 | 单用户滚动 1 小时调用次数 |
+| `PROJECTX_AI_MAX_TOKENS_PER_DAY` | 1000000 | 20000000 | 单用户滚动 24 小时已结算 Token 数 |
+| `PROJECTX_AI_ACTIVE_RUN_STALE_MS` | 300000 | 3600000 | 在途运行记录超时释放窗口（毫秒） |
+| `PROJECTX_AI_ADMISSION_LOCK_TIMEOUT_MS` | 2000 | 30000 | AI 准入命名锁等待超时（毫秒） |
+| `PROJECTX_LLM_LOOPBACK_PORTS` | `11434,8000,8080,1234,5001,3000,30000` | 端口列表 | AI 边车允许访问的本机回环 HTTP 端口白名单 |
+| `PROJECTX_PDF_RENDER_TIMEOUT_SEC` | 60 | 5 – 600 | AI 边车单次 PDF 渲染超时（秒） |
+| `PROJECTX_PDF_MAX_PAGE_PIXELS` | 16000000 | 1000000 – 64000000 | AI 边车单页渲染像素上限 |
+| `PROJECTX_PDF_MAX_TOTAL_BYTES` | 32000000 | 1000000 – 256000000 | AI 边车全部页图累计字节上限 |
+| `PROJECTX_PDF_MAX_CHILD_MEMORY_MIB` | 2048 | 256 – 16384 | AI 边车渲染子进程内存上限（MiB，POSIX） |
+| `PROJECTX_WECHAT_TIMEOUT_MS` | 8000 | 500 – 60000 | 微信接口单次出站请求超时（毫秒） |
+| `PROJECTX_WECHAT_MAX_CONCURRENT` | 4 | 1 – 32 | 微信接口同时在途出站请求数 |
+| `PROJECTX_WECHAT_BIND_MAX_PER_HOUR` | 10 | 1 – 600 | 单账号每小时微信绑定尝试次数 |
+| `PROJECTX_WECHAT_BIND_MAX_GLOBAL_PER_MINUTE` | 60 | 1 – 6000 | 全校每分钟微信绑定总次数 |
+| `PROJECTX_MEDIA_TICKET_TTL_SEC` | 300 | 3600 | 单次媒体票据（`?mt=`）有效期（秒） |
+| `PROJECTX_MEDIA_TICKET_MAX_PER_USER` | 8 | 64 | 单账号同时有效媒体票据数 |
+| `PROJECTX_MEDIA_TICKET_MAX_TOTAL` | 20000 | 100000 | 全局同时有效媒体票据总数 |
+| `PROJECTX_DEMO_FIXED_CREDENTIALS` | 关 | 布尔开关 | 仅限隔离测试环境启用固定演示口令 |
+| `PROJECTX_DEMO_ALLOW_PRODUCTION_IMPORT` | 关 | 布尔开关 | 允许在已有真实数据的库中免二次确认导入演示数据 |
+

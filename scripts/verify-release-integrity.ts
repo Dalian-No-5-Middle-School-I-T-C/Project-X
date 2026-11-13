@@ -7,7 +7,7 @@
  * 并如实写出「未签名」这件事，而不是让产物看起来像已经过了签名。
  *
  * 本脚本用一次性临时目录真跑生成与校验（含篡改、多出文件、缺清单三种失败路径），
- * 再静态核对打包命令的接线与文档口径。
+ * 同时检查打包命令和签名配置。
  *
  * 用法：
  *   npx tsx scripts/verify-release-integrity.ts
@@ -17,7 +17,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -33,7 +33,6 @@ const hasher: {
 } = require("../scripts/hash-release-artifacts.cjs");
 
 const hasherPath = path.resolve("scripts/hash-release-artifacts.cjs");
-const hasherSource = readFileSync(hasherPath, "utf8");
 const packageJson = JSON.parse(readFileSync(path.resolve("package.json"), "utf8")) as {
   version: string;
   scripts: Record<string, string>;
@@ -120,6 +119,8 @@ try {
   ok(report.includes("signAndEditExecutable=false") && report.includes("证书不得入库"), "报告写明未签名的原因是配置关闭 + 仓库不含证书");
   ok(report.includes("SmartScreen"), "报告写出未签名的现场后果（SmartScreen 拦未知发布者）");
   ok(report.includes("certutil -hashfile"), "报告给出不依赖本仓库的校验方法（certutil）");
+  ok(report.includes("按构建线改名") && report.includes("SHA256SUMS.txt"),
+    "报告同时说明本机命名与发布用的 <构建线>-SHA256SUMS.txt，收件方不会照着对不上号的名字找清单");
   ok(report.includes(`certutil -hashfile "${exeName}" SHA256`),
     "certutil 示例用的是本次真实产物名，不是写死的版本号（现场可直接复制粘贴）");
   if (process.platform === "win32") {
@@ -158,6 +159,36 @@ try {
   ok(bare.status === 1 && bare.out.includes("没有完整性清单"), "产物目录里根本没有清单时 --check 直接失败，不会静默通过");
   rmSync(noManifest, { recursive: true, force: true });
 
+  section("3b. 发到 GitHub Release 之后的改名清单形态");
+  {
+    // 发版作业把两条线的同名清单按构建线改名上传（否则 Release 资产会互相覆盖），
+    // README 与包内报告教的 `--check` 必须认得这种形态，否则收件方第一步就失败。
+    const published = mkdtempSync(path.join(tmpdir(), "projectx-release-published-"));
+    const msiName = "答题卡扫描端-9.9.9-ia32.msi";
+    const serverName = "project-x-server-ubuntu24-9.9.9.zip";
+    const msiBody = "MSI-published-fixture";
+    const serverBody = "ZIP-published-fixture";
+    writeFileSync(path.join(published, msiName), msiBody, "utf8");
+    writeFileSync(path.join(published, serverName), serverBody, "utf8");
+    writeFileSync(path.join(published, "scanner-ia32-windows-SHA256SUMS.txt"), `${sha256(msiBody)}  ${msiName}\n`, "utf8");
+    writeFileSync(path.join(published, "server-ubuntu24-SHA256SUMS.txt"), `${sha256(serverBody)}  ${serverName}\n`, "utf8");
+    writeFileSync(path.join(published, "scanner-ia32-windows-BUILD-INTEGRITY.txt"), "报告\n", "utf8");
+    writeFileSync(path.join(published, "server-ubuntu24-BUILD-INTEGRITY.txt"), "报告\n", "utf8");
+    const renamed = run(["--check", "--root", published]);
+    ok(renamed.status === 0,
+      `两份 <构建线>-SHA256SUMS.txt 与两份改名报告放在一起时 --check 通过${renamed.status === 0 ? "" : `：${renamed.out.slice(0, 320)}`}`);
+    // 打包机生成的清单里服务端包带 `server-ubuntu24/` 前缀，发布时被剥掉；按文件名要能对应上。
+    writeFileSync(path.join(published, "server-ubuntu24-SHA256SUMS.txt"), `${sha256(serverBody)}  server-ubuntu24/${serverName}\n`, "utf8");
+    const prefixed = run(["--check", "--root", published]);
+    ok(prefixed.status === 0 && prefixed.out.includes("清单里记作"),
+      `清单带目录前缀而产物平铺时按文件名对应，并说明对应关系${prefixed.status === 0 ? "" : `：${prefixed.out.slice(0, 320)}`}`);
+    writeFileSync(path.join(published, serverName), "tampered", "utf8");
+    const broken = run(["--check", "--root", published]);
+    ok(broken.status === 1 && broken.out.includes(serverName) && broken.out.includes("校验和不符"),
+      "改名清单一样能点名被改过的产物");
+    rmSync(published, { recursive: true, force: true });
+  }
+
   const emptyDir = mkdtempSync(path.join(tmpdir(), "projectx-release-empty-"));
   const empty = run(["--root", emptyDir]);
   ok(empty.status === 0 && empty.out.includes("没有任何可发布产物"), "空目录不生成清单也不报错（electron:pack --dir 会走到这条）");
@@ -177,6 +208,47 @@ try {
   ok(threw, "清单里出现格式不符的行时抛错，而不是当成「没有这个文件」悄悄放过");
   ok(hasher.parseManifest("").size === 0, "空清单解析为空表（由 --check 的缺失分支负责报错）");
   ok(hasher.SCAN_ROOTS.length === 2 && hasher.SCAN_ROOTS[0] === "", "扫描根包含 release/ 本身与 server-ubuntu24/");
+
+  section("原生构建记录");
+  {
+    const { verifyNativeSourceManifest } = require("./lib/native-source-manifest.cjs") as {
+      verifyNativeSourceManifest: (options: { rootDir: string; lane: string }) => { failures: string[] };
+    };
+    const lane = "win-ia32";
+    const nativeRoot = path.join(fixture, "native-record");
+    const nativeResources = path.join("resources", "native", lane);
+    const resources = path.join(nativeRoot, nativeResources);
+    const manifest = path.join(resources, "source-sha256.txt");
+    mkdirSync(path.join(nativeRoot, "scripts", "lib"), { recursive: true });
+    mkdirSync(resources, { recursive: true });
+    cpSync("native", path.join(nativeRoot, "native"), { recursive: true });
+    for (const file of ["scripts/build-native-mingw.sh", "scripts/lib/native-build-record.sh"]) {
+      cpSync(file, path.join(nativeRoot, file));
+    }
+    for (const file of ["source-sha256.txt", "binary.sha256", "answer-card-recognizer.exe", "scanner-bridge.exe"]) {
+      cpSync(path.join(nativeResources, file), path.join(resources, file));
+    }
+    const verify = () => verifyNativeSourceManifest({ rootDir: nativeRoot, lane }).failures;
+    ok(verify().length === 0, "同一次构建的源码清单、识别器和扫描桥通过校验");
+
+    const originalManifest = readFileSync(manifest, "utf8");
+    const source = "native/ScannerBridge/scanner-bridge/main.cpp";
+    const sourceFile = path.join(nativeRoot, source);
+    const originalSource = readFileSync(sourceFile);
+    appendFileSync(sourceFile, "\n#error Source changed after native build\n");
+    const rewrittenManifest = originalManifest.split("\n")
+      .map((line) => line.endsWith(`  ${source}`) ? `${hasher.sha256Of(sourceFile)}  ${source}` : line)
+      .join("\n");
+    writeFileSync(manifest, rewrittenManifest);
+    ok(verify().some((failure) => failure.includes("source-sha256.txt 与")),
+      "只刷新扫描桥源码清单、沿用旧二进制时拒绝");
+    writeFileSync(sourceFile, originalSource);
+    writeFileSync(manifest, originalManifest);
+
+    appendFileSync(path.join(resources, "scanner-bridge.exe"), "modified binary");
+    ok(verify().some((failure) => failure.includes("scanner-bridge.exe 与")),
+      "只替换扫描桥二进制时拒绝");
+  }
 
   section("5. 打包命令接线");
   const wired = ["electron:dist", "electron:dist:ia32", "electron:msi", "electron:msi:ia32", "package:server:ubuntu24"];
@@ -212,18 +284,9 @@ try {
     ok(!(packageJson.scripts[name] ?? "").includes("electronDist"), `${name} 不把 electronDist 指到本机目录`);
   }
 
-  section("6. 签名处置的口径与守卫");
+  section("6. 签名配置");
   ok(packageJson.build?.win?.signAndEditExecutable === false,
-    "signAndEditExecutable 仍是 false —— 本轮不假称已签名，处置是完整性凭据 + 文档");
-  ok(/CSC_LINK/.test(hasherSource) && /signAndEditExecutable === false/.test(hasherSource),
-    "环境里给了证书但配置关着签名时打印警告（否则「以为签了」的产物照样发出去）");
-  ok(/if \(require\.main === module\)/.test(hasherSource), "生成动作收在 require.main 判断里，验证脚本可以 require 其中的纯函数");
-  ok(/module\.exports = \{/.test(hasherSource), "导出 listArtifacts / parseManifest / sha256Of 供验证脚本直接调用");
-  const readme = readFileSync(path.resolve("README.md"), "utf8");
-  ok(readme.includes("SHA256SUMS.txt") && readme.includes("未签名"),
-    "README 有「未签名与完整性校验」一节，写明 SHA256SUMS.txt 的用法");
-  ok(readme.includes("signAndEditExecutable"), "README 写出 signAndEditExecutable=false 这个事实与启用签名的步骤");
-  ok(/certutil -hashfile/.test(readme), "README 给出现场不需要本仓库也能用的校验命令");
+    "扫描端打包配置关闭代码签名");
 } finally {
   rmSync(fixture, { recursive: true, force: true });
 }

@@ -44,6 +44,14 @@ jobs:
       - name: Auth / RBAC test suite
         run: npm run verify:auth
 
+      # 发布链路的依据：构建信息随产物落盘、管理员接口如实返回「服务器更新时间」。
+      - name: Build info and server update time regression
+        run: npm run verify:build-info
+
+      # 上面那块的渲染结果：缺依据要显示「—」并给原因，不能漏 undefined、不能拿请求时间冒充构建时间。
+      - name: Console build-info panel mounted regression
+        run: npm run verify:console-build-info-ui
+
       - name: Core logic verify suite
         run: npm run verify:core-logic
 
@@ -185,7 +193,7 @@ jobs:
 
       # Ubuntu 服务器包的 systemd 单元与安装脚本（R37）：非 root 身份、UMask=0027、
       # 数据目录 0750、沙箱指令齐全，且刻意不启用会打死 V8 JIT 的 MemoryDenyWriteExecute。
-      # 纯静态断言 + bash -n 语法检查，直接 require 生成器，不需要 dist/。
+      # 检查生成的单元与脚本，并用临时目录运行安装路径重写和 ZIP 权限用例。
       - name: Ubuntu server package systemd hardening (R37)
         run: npm run verify:systemd-hardening
 
@@ -514,7 +522,11 @@ jobs:
 
       # 其余 CI 用 --ignore-scripts，没有 Electron 二进制，Chromium 实机检查会被跳过。
       - name: Download Electron
-        run: node node_modules/electron/install.js
+        env:
+          electron_config_cache: ${{ runner.temp }}/projectx-electron
+        run: |
+          node scripts/lib/download-electron.cjs
+          node node_modules/electron/install.js
 
       - name: Install Xvfb
         run: |

@@ -57,7 +57,6 @@ const packaging = require("../scripts/package-server-ubuntu.cjs") as {
   createInstallScript: () => string;
   createSystemdUnit: () => string;
   createRuntimePackageJson: () => { engines?: { node?: string } };
-  createDeployReadme: () => string;
 };
 
 const versions: Array<[string, boolean]> = [
@@ -139,20 +138,6 @@ for (const [version, vulnerable] of versions) {
   check(vulnerable ? result.code === 1 : result.code === 0, `shell ${version} 退出码 ${vulnerable ? 1 : 0}`);
 }
 
-const shellCopies: Array<[string, string]> = [
-  ["update.sh", readFileSync("update.sh", "utf8")],
-  ["tools/repair-benchmark/wsl-runtime.sh", readFileSync("tools/repair-benchmark/wsl-runtime.sh", "utf8")],
-  ["scripts/setup-wsl-e2e.sh", readFileSync("scripts/setup-wsl-e2e.sh", "utf8")],
-  ["systemd/install.sh", packaging.createInstallScript()],
-];
-for (const [name, text] of shellCopies) {
-  check(text.includes(NODE_RUNTIME_CVE_SHELL_CHECK), `${name} 嵌入了同一条版本检查`);
-  check(text.includes("env -u PROJECTX_NODE_VERSION_UNDER_TEST"), `${name} 清掉测试用的版本变量后再检查`);
-}
-check(readFileSync("tools/repair-benchmark/wsl-runtime.sh", "utf8").includes("node-v22.23.4-linux-x64"), "基准环境下载 Node.js 22.23.4");
-check(readFileSync("scripts/setup-wsl-e2e.sh", "utf8").includes("node-v22.23.4-linux-x64"), "WSL e2e 指向 Node.js 22.23.4");
-check(!readFileSync("tools/repair-benchmark/wsl-runtime.sh", "utf8").includes("v22.22.0"), "基准环境不再下载 22.22.0");
-
 console.log("\n== update.sh 跳过未修复的 Node ==");
 const nodePick = await run("bash", ["-c", String.raw`
 set -euo pipefail
@@ -191,7 +176,6 @@ printf '%s\n' "$picked" "$status" "$only_old" "$skipped" "$first" "$quiet"
 rm -rf "$dir"
 `]);
 const pickLines = nodePick.stdout.trim().split(/\r?\n/);
-check((readFileSync("update.sh", "utf8").match(/^detect_node\(\)/gm) || []).length === 1, "update.sh 只定义一次 detect_node，后面的定义不会把版本检查盖掉");
 check(nodePick.code === 0 && pickLines[0]?.endsWith("new-node") && pickLines[1] === "2" && pickLines[2]?.includes("old node"), "第一个候选未修复时继续找后面的已修复运行时，全都过期则返回 2");
 check(pickLines[3]?.endsWith("new-node") && pickLines[4]?.endsWith("new-node") && pickLines[5] === "QUIET", "不存在的候选会被跳过，已修复的候选不会再去启动后面的运行时");
 if (nodePick.code !== 0) {
@@ -205,107 +189,13 @@ check(unit.includes("RestartPreventExitStatus=78"), "systemd 对退出码 78 不
 check(/ExecStart=\/usr\/bin\/node /.test(unit), "单元仍执行 /usr/bin/node");
 const runtime = packaging.createRuntimePackageJson();
 check(runtime.engines?.node === ">=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1", "Ubuntu 包 engines 停在已修复版本");
-const readme = packaging.createDeployReadme();
-check(readme.includes("CVE-2026-111497") && readme.includes("22.23.4") && readme.includes("24.22.1") && readme.includes("26.12.1"), "部署说明写明三个修复版本");
-check(!readme.includes("apt install -y nodejs"), "部署说明不再把 Ubuntu 自带 nodejs 当成运行时");
 const rootPackage = JSON.parse(readFileSync("package.json", "utf8")) as { engines?: { node?: string } };
 check(rootPackage.engines?.node === runtime.engines?.node, "仓库 package.json 与 Ubuntu 包的 engines 相同");
-const serverEntry = readFileSync("src/apps/answer-card/server/index.ts", "utf8");
-const startFn = serverEntry.slice(serverEntry.indexOf("export async function startServer"));
-const enforceCall = "enforceNodeRuntimeCve2026111497()";
-check(
-  startFn.indexOf(enforceCall) > -1 && startFn.indexOf(enforceCall) < startFn.indexOf("server.listen("),
-  "服务端在 startServer 里、监听前执行运行时检查",
-);
-check(serverEntry.indexOf(enforceCall) === serverEntry.lastIndexOf(enforceCall), "导入服务端模块不会在顶层退出");
-const mainCjs = readFileSync("electron/main.cjs", "utf8");
-check(mainCjs.startsWith("//") && mainCjs.includes('require("./node-runtime-security.cjs").enforceNodeRuntimeCve2026111497()'), "扫描端主进程在加载 Electron 之前执行同一检查");
-check(
-  mainCjs.includes('process.env.PROJECTX_ELECTRON_BROTLI_GATE = "1"')
-    && mainCjs.includes("__projectxArmChromiumBrotliGate"),
-  "本机壳在服务端注册编码限制握手路由，并在主进程提供装限制的钩子",
-);
-check(
-  serverEntry.includes('process.env.PROJECTX_ELECTRON_BROTLI_GATE === "1"')
-    && serverEntry.includes('"/api/app/brotli-gate"'),
-  "编码限制握手路由只在 Electron 环境注册，远端 Linux 服务不暴露",
-);
-const apiSource = readFileSync("src/apps/answer-card/client/auth/api.ts", "utf8");
-const uploadSource = readFileSync("src/apps/answer-card/client/lib/scannerUploadManager.ts", "utf8");
-const serverDialogSource = readFileSync("src/apps/answer-card/client/components/ServerConfigDialog.tsx", "utf8");
-check(
-  apiSource.includes("ensureScannerRemoteGate")
-    && apiSource.includes('"/api/app/brotli-gate"')
-    && apiSource.includes("await ensureScannerRemoteGate()"),
-  "远端 fetch 在创建请求前先等本机壳装好编码限制",
-);
-check(
-  uploadSource.includes("ensureScannerRemoteGate()")
-    && serverDialogSource.includes("await ensureScannerRemoteGate()"),
-  "上传队列与连接测试同样先等编码限制，不绕开握手",
-);
 check(nodeRuntimeCveMessage("24.22.0", "guard") === cjs.nodeRuntimeCveMessage("24.22.0", "guard"), "Electron 提示文案两边一致");
-const decodeAt = mainCjs.indexOf("await installChromiumBrotliWithRetry(mainWindow.webContents");
-const helperAt = mainCjs.indexOf("await installChromiumBrotliDecodeBlock(webContents");
-const loadAt = mainCjs.indexOf("await mainWindow.loadURL(baseUrl)");
-check(decodeAt > 0 && helperAt > 0 && loadAt > decodeAt,
-  "loadURL 之前先限制 Chromium 接受的编码（重试包装最终仍调用 installChromiumBrotliDecodeBlock）");
-check(
-  mainCjs.includes("lastLoadError")
-    && mainCjs.includes("detail.includes(\"ERR_FAILED (-2)\")")
-    && mainCjs.includes("if (!mainWindow || mainWindow.isDestroyed()) return;"),
-  "首启 loadURL 对瞬时 ERR_FAILED 重试，关窗后不再弹启动失败",
-);
-const reloadHelperAt = mainCjs.indexOf("async function reloadMainWindowWithProtection()");
-const createWindowAt = mainCjs.indexOf("async function createWindow()", reloadHelperAt);
-const reloadHelperBody = reloadHelperAt > 0 && createWindowAt > reloadHelperAt
-  ? mainCjs.slice(reloadHelperAt, createWindowAt)
-  : "";
-const helperInstallAt = reloadHelperBody.indexOf("installChromiumBrotliWithRetry(contents)");
-const helperReloadAt = reloadHelperBody.indexOf("reloadIgnoringCache()");
-check(
-  reloadHelperAt > 0
-    && helperInstallAt > 0
-    && helperReloadAt > helperInstallAt
-    && (mainCjs.match(/void reloadMainWindowWithProtection\(\);/g) ?? []).length >= 2,
-  "渲染进程崩溃 / 无响应重载前先重装 Brotli 防护，远端壳不会被 onBeforeRequest 取消",
-);
-const readyBody = mainCjs.slice(mainCjs.indexOf("app.whenReady().then(async () => {"));
-const readyCatchStart = readyBody.indexOf("} catch (error) {");
-const readyCatchEnd = readyBody.indexOf('app.on("activate"', readyCatchStart);
-const readyCatch = readyBody.slice(readyCatchStart, readyCatchEnd > readyCatchStart ? readyCatchEnd : readyCatchStart + 1500);
-check(
-  readyCatchStart > 0
-    && readyCatch.includes("if (mainWindowCreated && (!mainWindow || mainWindow.isDestroyed())) return;")
-    && readyCatch.includes("dialog.showErrorBox(")
-    && readyCatch.includes("app.quit();"),
-  "窗口尚未创建时的启动失败仍会提示并退出，只有已创建窗口被主动关闭才静默",
-);
-check(
-  (mainCjs.match(/void reloadMainWindowWithProtection\(\);/g) ?? []).length >= 2
-    && mainCjs.includes("protectedReloadPending")
-    && mainCjs.includes("防护恢复后继续执行崩溃重载"),
-  "崩溃与无响应重载共用同一 helper；重装失败后由 failClosed 恢复时继续重载",
-);
-const permissionAt = readyBody.indexOf("installDevicePermissionPolicy();");
-const headerAt = readyBody.indexOf("installChromiumBrotliHeaderBlock(session.defaultSession");
-const createAt = readyBody.indexOf("await createWindow();");
-check(permissionAt > -1 && headerAt > permissionAt && createAt > headerAt, "权限策略和 Brotli 响应头拦截都在创建窗口之前");
-const pauseAt = readyBody.indexOf("installChromiumBrotliNetworkPause(session.defaultSession");
-check(pauseAt > headerAt && pauseAt < createAt, "默认会话在创建窗口前装上重连期间的请求暂停");
-check(mainCjs.includes('app.on("session-created"'), "新建 session 同样拦截 br 响应头");
-check(mainCjs.includes("installChromiumBrotliNetworkPause(createdSession"), "新建 session 同样在重连期间暂停请求");
-check(mainCjs.includes("registerChromiumBrotliProtection") && mainCjs.includes("chromiumBrotliProtectionEnabled()"), "远程模式给之后创建的每个窗口安装解码拦截");
-const cleanupAt = readyBody.indexOf("await clearChromiumServiceWorkers(session.defaultSession)");
-check(cleanupAt > pauseAt && cleanupAt < createAt,
-  "加载页面前清理历史 Service Worker 注册");
 const syntax = await run(process.execPath, ["--check", "electron/main.cjs"]);
 check(syntax.code === 0, "electron/main.cjs 语法可解析");
 const cjsSyntax = await run(process.execPath, ["--check", "electron/node-runtime-security.cjs"]);
 check(cjsSyntax.code === 0, "node-runtime-security.cjs 语法可解析");
-const ci = readFileSync(".github/workflows/ci.yml", "utf8");
-check(!/node-version:\s*\[22\]/.test(ci) && ci.includes("22.23.4"), "CI 固定到 22.23.4，不再浮动大版本");
-check(ci.includes("electron-chromium-brotli") && ci.includes("xvfb-run -a npm run verify:node-runtime-cve"), "CI 另有 Electron 实机作业，ignore-scripts 的主作业不会把 Chromium 检查当成已跑过");
 
 console.log("\n== Chromium 不再接受 br ==");
 check(

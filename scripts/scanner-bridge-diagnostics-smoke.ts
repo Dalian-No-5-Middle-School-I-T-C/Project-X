@@ -87,7 +87,14 @@ setTimeout(() => process.exit(2), 3000).unref();`);
     });
     try {
       onLine = () => { if (watchdogMs <= 1_000_000) timeoutNow(); };
-      await fixture("process.stderr.write('slow batch ready\\n'); process.stdout.write(JSON.stringify({status:'success',page_count:100,pages:[]}));");
+      await fixture(`const args = process.argv.slice(2);
+const timeoutFlag = args.indexOf('--page-timeout-ms');
+if (timeoutFlag < 0 || args[timeoutFlag + 1] !== '120000') {
+  process.stderr.write('Expected --page-timeout-ms 120000');
+  process.exit(2);
+}
+process.stderr.write('slow batch ready\\n');
+process.stdout.write(JSON.stringify({status:'success',page_count:100,pages:[]}));`);
       assert.equal((await scan({ ...config, maxPages: 100, pageTimeoutMs: 120_000 })).page_count, 100);
       assert.equal(watchdogMs, scanTimeoutMs(100, 120_000));
       onLine = () => {};

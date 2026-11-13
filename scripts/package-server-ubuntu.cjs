@@ -11,6 +11,7 @@ const {
   writeFileSync
 } = require("node:fs");
 const path = require("node:path");
+const { z } = require("zod");
 
 const rootDir = path.resolve(__dirname, "..");
 const packageJson = require(path.join(rootDir, "package.json"));
@@ -43,6 +44,28 @@ const packageName = `project-x-server-ubuntu24-${packageJson.version}`;
 const packageDir = path.join(outputRoot, packageName);
 const zipPath = path.join(outputRoot, `${packageName}.zip`);
 const deployReadmeName = "Ubuntu24\u6d4f\u89c8\u5668\u7248\u90e8\u7f72\u8bf4\u660e.md";
+
+const beianConfigSchema = z.strictObject({
+  icp: z.string().trim().min(1).optional(),
+  publicSecurity: z.string().trim().regex(/\d+/).optional()
+});
+
+function readBeianConfig() {
+  const configPath = path.join(rootDir, "beian.local.json");
+  let content;
+  try {
+    content = readFileSync(configPath, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return {};
+    throw error;
+  }
+
+  try {
+    return beianConfigSchema.parse(JSON.parse(content));
+  } catch {
+    throw new Error(`Invalid ${configPath}: expected a JSON object with optional icp and publicSecurity strings. publicSecurity must contain the record number.`);
+  }
+}
 
 function assertInsideRoot(targetPath) {
   const relative = path.relative(rootDir, path.resolve(targetPath));
@@ -145,6 +168,9 @@ This is the browser-accessible web server package. It includes dist/web for the 
 - dist/server/index.mjs: Node API + static server.
 - dist/server/schema.sql: SQLite initialization schema.
 - dist/server/schema.mariadb.sql: MariaDB 10.11 schema.
+- dist/server/build-info.json: version, commit and build time recorded when this package was built.
+  The admin console shows it as「服务器版本与更新时间」, so an operator can tell whether the running
+  service is the new package (compare 构建时间 with 本次启动) without opening a shell.
 - llmclient/: Python AI sidecar source and requirements (no local credentials).
 - resources/background.jpg: runtime resource used by the background API.
 - resources/native/correction-linux-x64/: Linux x86_64 recognizer for explicit recovery of uploaded abnormal cards missing alignment. Ordinary scanning still runs on Windows.
@@ -225,6 +251,13 @@ export PROJECTX_DB_PATH=/var/lib/project-x/projectx.db
 export ANSWER_CARD_DATA_DIR=/var/lib/project-x/answer-card
 ./start.sh
 \`\`\`
+
+## Website Registration
+
+The browser reads \`dist/web/beian.json\` for the login and status footers. Set
+\`icp\` and/or \`publicSecurity\` to the full registration labels. The digits in
+\`publicSecurity\` are used for the police lookup link. Use \`{}\` to hide the footer.
+Refresh the page after editing the file.
 
 ## PDF Chinese Font
 
@@ -340,11 +373,19 @@ sudo -u projectx test -r /var/lib/project-x && echo "service account can read da
 ## Package Integrity
 
 The build machine writes \`release/SHA256SUMS.txt\` and \`release/BUILD-INTEGRITY.txt\`
-after packaging (security R42). Distribute them together with this zip. To verify a
-copy you received:
+after packaging (security R42). Distribute them together with this zip. Names differ by
+where the copy came from: on the build machine the manifest is \`SHA256SUMS.txt\` (paths
+relative to \`release/\`), while a GitHub Release publishes one manifest per build line
+(\`server-ubuntu24-SHA256SUMS.txt\`, flat file names) because same-named assets would
+overwrite each other. To verify a copy you received:
 
 \`\`\`bash
-sha256sum -c SHA256SUMS.txt          # in the directory holding the artifacts
+# 本机构建目录（release/）里：
+sha256sum -c SHA256SUMS.txt
+# 从 Release 下载、清单与包在同一目录时（按构建线改名，文件名是平铺的）：
+sha256sum -c server-ubuntu24-SHA256SUMS.txt
+# 只想核一个文件：算出它的 SHA256，与清单里同名那行比对
+sha256sum project-x-server-ubuntu24-<版本>.zip
 \`\`\`
 
 Nothing here is code-signed; the checksum manifest is the only tamper evidence
@@ -603,6 +644,28 @@ function createZip(sourceDir, targetZipPath) {
   zip.writeZip(targetZipPath);
 }
 
+function verifyCorrectionRecognizer(directory) {
+  const { verifyNativeSourceManifest } = require("./lib/native-source-manifest.cjs");
+  const sourceCheck = verifyNativeSourceManifest({
+    rootDir,
+    lane: "correction-linux-x64",
+    manifestPath: path.join(directory, "source-sha256.txt"),
+  });
+  if (sourceCheck.crlfCheckout.length > 0) {
+    throw new Error(`${sourceCheck.crlfCheckout.join("、")} 是 CRLF 检出的工作副本，无法核对随包 Linux 识别器源码摘要。`
+      + "请在 LF 检出（Linux 构建机或 CI）上打包，不要用 autocrlf=true 的 Windows 副本。");
+  }
+  if (sourceCheck.failures.length > 0) {
+    throw new Error(`随包 Linux 补识别器的构建记录未通过：\n  - ${sourceCheck.failures.join("\n  - ")}`
+      + "\n请重新运行 npm run native:build:correction:linux-x64，并一并导入生成的构建记录。");
+  }
+  const binary = readFileSync(path.join(directory, "answer-card-recognizer"));
+  if (binary.length < 64 || binary.subarray(0, 4).toString("hex") !== "7f454c46"
+    || binary[4] !== 2 || binary[5] !== 1 || binary.readUInt16LE(18) !== 62) {
+    throw new Error("Expected Linux x86_64 ELF correction recognizer");
+  }
+}
+
 function buildPackage() {
   assertInsideRoot(outputRoot);
   assertInsideRoot(packageDir);
@@ -620,21 +683,24 @@ function buildPackage() {
   if (!existsSync(path.join(rootDir, "dist", "server", "schema.mariadb.sql"))) {
     throw new Error("Missing dist/server/schema.mariadb.sql. Run npm run build:server before packaging.");
   }
-
-  const correctionDir = path.join(rootDir,"resources","native","correction-linux-x64");
-  const correction = readFileSync(path.join(correctionDir,"answer-card-recognizer"));
-  for (const line of readFileSync(path.join(correctionDir,"source-sha256.txt"),"utf8").trim().split("\n")) {
-    const match = line.match(/^([a-f0-9]{64})  (native\/[A-Za-z0-9_./-]+)$/);
-    if (!match || createHash("sha256").update(readFileSync(path.join(rootDir,match[2]))).digest("hex")!==match[1]) throw new Error("Correction recognizer source has changed; rebuild Linux binary before packaging");
+  if (!existsSync(path.join(rootDir, "dist", "server", "build-info.json"))) {
+    throw new Error("Missing dist/server/build-info.json. Run npm run build:server before packaging.");
   }
-  if (correction.length<64 || correction.subarray(0,4).toString("hex")!=="7f454c46" || correction[4]!==2 || correction[5]!==1 || correction.readUInt16LE(18)!==62) throw new Error("Expected Linux x86_64 ELF correction recognizer");
 
+  const correctionPath = path.join("resources", "native", "correction-linux-x64");
+  const correctionDir = path.join(rootDir, correctionPath);
+  verifyCorrectionRecognizer(correctionDir);
+
+  const beianConfig = readBeianConfig();
   rmSync(outputRoot, { recursive: true, force: true });
   mkdirSync(packageDir, { recursive: true });
 
   copyDirectoryIfExists(path.join(rootDir, "dist", "web"), path.join(packageDir, "dist", "web"));
+  writeTextFile(path.join(packageDir, "dist", "web", "beian.json"), `${JSON.stringify(beianConfig, null, 2)}\n`);
   copyDirectoryIfExists(path.join(rootDir, "dist", "server"), path.join(packageDir, "dist", "server"));
-  copyDirectoryIfExists(correctionDir,path.join(packageDir,"resources","native","correction-linux-x64"));
+  const packagedCorrectionDir = path.join(packageDir, correctionPath);
+  copyDirectoryIfExists(correctionDir, packagedCorrectionDir);
+  verifyCorrectionRecognizer(packagedCorrectionDir);
   cpSync(path.join(rootDir, "llmclient"), path.join(packageDir, "llmclient"), {
     recursive: true,
     filter: (source) => {

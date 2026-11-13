@@ -1,6 +1,7 @@
 # AGENTS.md
 
 *最近一次核对：2026-10-18；依据当前实现、构建配置与近期变更记录。*
+*最近一次更新：2026-11-07，仅添加约束，未改动项目说明。*
 
 ## 项目与部署边界
 
@@ -16,6 +17,8 @@
 ## 工作流
 
 ### 开始工作前
+
+0. **非常重要**：如果你的模型名中包含 `flash`、`lite`、`mini` 等表示轻量、快速的意思的词语（大基础模型的 `fast`、`ultrafast` 等仅加速的模型名除外），你 **必须** 在任何操作开始之前 **全量、完整** 地阅读 `AGENTS-FLASH.md` 不得延缓、假装、模拟、跳过阅读。如果你不知道你的模型名，那么你可以认为自己是 `flash` 模型的水平。如果你的 `read` `read_file` 或任何类似名字的、用于阅读文件的工具被任何原因截断了，或者没有完整阅读，必须立刻阅读完整剩余部分，不得跳过、假装、模拟、猜测、补全剩余内容，不得使用命令、脚本、代码代替读取文件工具。`AGENTS-FLASH.md` 中的所有文本、要求、约束视同本文件，即 `AGENTS.md`，是项目级约束。不得假装你知道内容，不得假装你理解约束，不得假装你在未完整读取前就了解完整 `AGENTS-FLASH.md` 内容。由于不像 `AGENTS.md` 会被预注入系统提示，你 **必须在开始执行任务前完整阅读，在给子代理的提示词中严格要求子代理自己完整读取，压缩上下文时要求自己后续必须先完整读取**，这是因为你自己无法准确复述和总结 `AGENTS-FLASH.md`，只有每个新的上下文窗口都读取过才能认为你理解了 `AGENTS-FLASH.md` 中的内容。
 
 1. 查看 `git status` 和本次任务范围，保留用户已有修改，不覆盖、不回退无关工作。
 2. 按下方目录定位调用入口，先查现有接口、类型、组件和测试，再修改。修复问题需追踪「界面 / API 写入 → 持久化 → 实际消费者 → 可观察行为」。
@@ -44,6 +47,7 @@
 | 扫描端与多端使用 | `readus/SCANNER-SETUP.md`、`readus/多端使用说明.md` |
 | 整卡订正与旧卷补识别 | `readus/整卡改分说明.md`，并核对 `scanCorrection.ts` 与 `scanCorrectionRecovery.ts` |
 | TWAIN 与 Windows 打包 | `readus/Windows32位扫描端交叉打包.md`、`readus/虚拟扫描仪验证.md`，并核对原生构建脚本与工作流 |
+| 发布构建、版本号与服务器更新时间 | `readus/发布构建与服务器更新时间.md`，并核对 `.github/workflows/release-build.yml` 与 `release-publish.yml` |
 | 主观题红笔识别 | `readus/主观题红笔划线识别修复记录-20261017.md`，并核对原生识别与共享判分 |
 | 历史变更 | `readus/CHANGELOG.md` |
 
@@ -119,6 +123,28 @@
 
 README 开发环境建议 Node.js 24+；当前 CI 使用 Node.js 22。命令以 `package.json` 为准，PowerShell 下 `npm` 失败时使用 `npm.cmd`。
 
+### **重要测试文件、脚本规范**
+
+#### 严禁从刚写完的实现倒推测试，把实现留下的痕迹当成需求已经满足的证据
+
+严禁使用:
+* 读取源文件并检查函数名是否存在
+* 函数源码文本字面写法是否符合期望
+* 中间件在源码中的行号的前后顺序
+* 文档里是否包含免责声明或特定词语、函数名、变量名、接口名等
+* 源码中某两个单词之间的距离是否少于某个特定字符数
+* 测试 SQL 语句行数、代码行数
+
+等无效测试。
+
+这是因为这种测试并未真正测试业务逻辑，函数调用用被删掉、名字留在注释里，测试可能绿；权限行为完全一样、函数改个名，测试反而红。必须构造真正对业务逻辑的测试，错误的旧逻辑/异常模式无法通过，正确的当前实现能够通过。断言太薄弱，功能不满足。
+
+> [!NOTE]
+> 编写测试之前多问自己一下，**“我把业务故意改坏，这条测试会红吗？我只做等价重构，它还会绿吗？”**
+
+> [!WARNING]
+> **如果任何 PR 中包含这种假测试，直接报告 P0 级漏洞，维护者会 Request Change。你在写一个真实生产项目，不是在过家家。**
+
 | 目的 | 命令 / 说明 |
 | --- | --- |
 | 启动开发 | `npm run dev`，API 默认 `5174`，Vite `5173`，代理 `/api` 与 `/assets` |
@@ -136,10 +162,11 @@ README 开发环境建议 Node.js 24+；当前 CI 使用 Node.js 22。命令以 
 | MariaDB 适配与迁移 | `npm run verify:mariadb`、`npm run verify:mariadb-migration`；各专项的 MariaDB 配置见对应脚本与 CI |
 | Web + 服务端构建 | `npm run build`，含类型检查，产物 `dist/web/` + `dist/server/` |
 | 扫描端 + 服务端构建 | `npm run build:scanner:full`，含类型检查 |
-| Ubuntu 服务端打包 | `npm run package:server:ubuntu24`；该脚本不包含类型检查，需先单独验证 |
+| Ubuntu 服务端打包 | `npm run package:server:ubuntu24`；该脚本不包含类型检查，需先单独验证；只能在 LF 检出上跑（`core.autocrlf=true` 的 Windows 副本会撞随包识别器的源码摘要门禁） |
 | 原生组件交叉构建 | `npm run native:build:mingw:ia32`、`npm run native:build:mingw:x64`、`npm run native:build:correction:linux-x64`；MSVC 路线见 `native:build:ia32` / `native:build:x64` |
 | Windows ia32 交叉打包 | `npm run package:scanner:win32:cross`；MSI 编译及虚拟机路线见交叉打包文档 |
 | 产物完整性 | `npm run verify:release-integrity`、`npm run release:hash:check`；后者针对已生成的发布产物 |
+| 构建信息与服务器更新时间 | `npm run verify:build-info`；安装包由 `release-build.yml` 在 CI 与手动运行时构建，发版在 Actions 里跑 `release-publish.yml` |
 | 健康检查 | `GET /api/app/health`；业务验收继续走实际操作、持久化及结果读取 |
 
 - 代码改动运行类型检查、相关专项测试和受影响目标的构建；共享代码影响两端时检查两端。纯文档改动检查路径、命令与 diff 即可。

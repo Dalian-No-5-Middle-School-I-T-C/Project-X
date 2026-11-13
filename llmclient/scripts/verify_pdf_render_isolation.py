@@ -70,11 +70,6 @@ class ParentIsolationTest(unittest.TestCase):
         )
         self.assertIn("CLEAN", completed.stdout, completed.stderr)
 
-    def test_no_shell_and_no_host_paths_in_messages(self):
-        source = (ROOT / "llmclient" / "pdf_to_images.py").read_text(encoding="utf-8")
-        self.assertIn("shell=False", source)
-        self.assertNotIn("shell=True", source)
-
 
 class ParentGuardsTest(unittest.TestCase):
     """越预算的输入必须在 spawn 之前就被拒掉。"""
@@ -137,8 +132,10 @@ class SubprocessProtocolTest(unittest.TestCase):
             {"ok": True, "images": [{"mimeType": "image/jpeg", "base64": "AAA="}, {"nope": 1}]}
         ).encode()
         done = subprocess.CompletedProcess(args=[sys.executable], returncode=0, stdout=body, stderr=b"")
-        with mock.patch.object(pdfmod.subprocess, "run", return_value=done):
+        with mock.patch.object(pdfmod.subprocess, "run", return_value=done) as run:
             out = pdfmod.pdf_bytes_to_images(b"%PDF-1.4xx")
+        self.assertIsInstance(run.call_args.args[0], list)
+        self.assertFalse(run.call_args.kwargs.get("shell", False))
         self.assertEqual(out, [{"mimeType": "image/jpeg", "base64": "AAA="}])
 
 
@@ -162,7 +159,13 @@ class WorkerProtocolTest(unittest.TestCase):
         self.assertFalse(result["ok"])
 
     def test_apply_limits_never_raises(self):
-        self.assertIsInstance(worker.apply_limits(1024, 30), list)
+        # The limits apply to the whole process, so set them in a child.
+        completed = subprocess.run(
+            [sys.executable, "-c", "from llmclient.pdf_render_worker import apply_limits; "
+             "assert isinstance(apply_limits(1024, 30), list)"],
+            cwd=ROOT, capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_page_limit_class_is_value_error(self):
         self.assertTrue(issubclass(worker.PageLimit, ValueError))

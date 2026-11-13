@@ -13,6 +13,7 @@ import {
   FolderOpen,
   Globe,
   ImagePlus,
+  Play,
   Upload as UploadIcon,
 } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
@@ -84,6 +85,9 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
   const [cfgOpen, setCfgOpen] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [status, setStatus] = useState("");
+  /** 工作台自己的「继续扫描」：打开面板并立刻开下一批，不经过扫描后处理。 */
+  const [continueRequested, setContinueRequested] = useState(false);
+  const shouldAutoStart = Boolean(autoStartScan) || continueRequested;
 
   // ── File import states ──
   const [gradingFiles, setGradingFiles] = useState<File[]>([]);
@@ -116,11 +120,11 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
   // 从后处理页点「继续扫描」回工作台时，直接把扫描面板挂出来并自动开扫；
   // 否则工作台仍停在落地页，autoStartScan 根本传不到未挂载的 ScannerPanel。
   useEffect(() => {
-    if (!autoStartScan) return;
+    if (!shouldAutoStart) return;
     setScanning(true);
     setGradingResult(null);
     setStatus("");
-  }, [autoStartScan]);
+  }, [shouldAutoStart]);
 
   // 右上角上传进度卡避开 340px 侧栏，别盖住「图片去向 / 开始扫描 / 导入阅卷」。
   useEffect(() => {
@@ -251,8 +255,12 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
             {scanning ? (
               <ScannerPanel
                 cardId={cardId}
-                autoStartScan={autoStartScan}
-                onAutoStartConsumed={onAutoStartConsumed}
+                autoStartScan={shouldAutoStart}
+                onAutoStartConsumed={() => {
+                  setContinueRequested(false);
+                  onAutoStartConsumed?.();
+                }}
+                onStandbyEnded={onOpenPostprocess}
                 onBatchArchived={onBatchArchived}
                 onScanSessionStarted={onScanSessionStarted}
                 onScanSessionAbandoned={onScanSessionAbandoned}
@@ -354,6 +362,23 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
               >
                 开始扫描
               </Button>
+              {postprocessBatchCount > 0 && !scanning && (
+                <Button
+                  variant="outline"
+                  block
+                  className="mt-2"
+                  icon={<Play size={16} />}
+                  disabled={isBusy}
+                  onClick={() => {
+                    setContinueRequested(true);
+                    setScanning(true);
+                    setGradingResult(null);
+                    setStatus("");
+                  }}
+                >
+                  继续扫描
+                </Button>
+              )}
               {postprocessBatchCount > 0 && onOpenPostprocess && (
                 <Button variant="outline" block className="mt-2" onClick={onOpenPostprocess}>
                   查看扫描后处理（{postprocessBatchCount} 批）

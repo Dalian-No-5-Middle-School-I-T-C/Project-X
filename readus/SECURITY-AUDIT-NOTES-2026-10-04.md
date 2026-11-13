@@ -286,6 +286,7 @@ DSM 必须在安装目录或 Windows 目录内；安装包因此**必须带上 `
   比直接报错难查得多（与 R35「不许悄悄给旧数据」同一口径）。
 - **无凭据探测仍然放行**：`/api/app/health` 不带 Key，所以「测试连接」能区分
   「服务器根本连不上」与「连得上但明文被拦」，界面上是两句话而不是一句含糊的失败。
+- **判据按本次请求是否携带凭据（PR #312 评审 B5）**：由 `requestSendsCredentials` 与 `bodyCarriesCredentials` 共同判定——除了已存储的 token / API Key，首次登录或改密请求体中的口令字段（JSON、`URLSearchParams`、`FormData`）同样受跨机明文闸门保护。
 - **带 token 的 URL 一并不给**：明文传输下 `?mt=`、`?token=` 会落进浏览器历史与代理日志，
   宁可直接 401，也不把令牌写进 URL。
 

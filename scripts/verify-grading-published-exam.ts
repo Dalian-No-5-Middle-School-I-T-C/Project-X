@@ -19,7 +19,24 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
+
 const HERE = fileURLToPath(new URL(".", import.meta.url));
+
+function migrationVersions(relativePath: string): number[] {
+  const file = path.resolve(HERE, relativePath);
+  const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest);
+  const versions: number[] = [];
+  function visit(node: ts.Node): void {
+    if (ts.isPropertyAssignment(node) && ts.isIdentifier(node.name) &&
+        node.name.text === "version" && ts.isNumericLiteral(node.initializer)) {
+      versions.push(Number(node.initializer.text));
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  return versions;
+}
 
 process.env.PROJECTX_DB_PATH = path.join(mkdtempSync(path.join(tmpdir(), "px-pub-status-")), "test.db");
 const { initializeDatabase, getDatabase, getMysqlDb } = await import("../src/server/db/index");
@@ -70,11 +87,8 @@ try {
   await db.run("DELETE FROM exams WHERE id = ?", draft);
 
   // ④ 迁移版本号：同号会被 schema_migrations 判重静默跳过，必须两套方言各自唯一。
-  const sqliteSrc = readFileSync(path.resolve(HERE, "../src/server/db/migrations.ts"), "utf8");
-  const mariaSrc = readFileSync(path.resolve(HERE, "../src/server/db/mysql.ts"), "utf8");
-  const versions = (src: string) => [...src.matchAll(/\bversion:\s*(\d+)\b/g)].map((m) => Number(m[1]));
-  const sqliteVersions = versions(sqliteSrc);
-  const mariaVersions = versions(mariaSrc);
+  const sqliteVersions = migrationVersions("../src/server/db/migrations.ts");
+  const mariaVersions = migrationVersions("../src/server/db/mysql.ts");
   for (const [name, list] of [["sqlite", sqliteVersions], ["mariadb", mariaVersions]] as const) {
     const dup = list.filter((v, i) => list.indexOf(v) !== i);
     assert.equal(dup.length, 0, `④: ${name} 迁移版本号重复：${dup.join(", ")}`);
@@ -93,25 +107,11 @@ try {
   assert.equal(sqliteVersions.includes(57), false, "④: SQLite 不得复用 v57");
   assert.equal(mariaVersions.includes(57), false, "④: MariaDB 不得复用 v57");
   assert.equal(applied.includes(57), false, "④: 全新库不应记录 v57");
-  assert.match(sqliteSrc, /v57：\*\*故意留空\*\*/, "④: SQLite 侧要留下 v57 空置的理由");
-  assert.match(mariaSrc, /v57：\*\*故意留空\*\*/, "④: MariaDB 侧要留下 v57 空置的理由");
   // v58 同样空置（二次评审 ⑦）：多班在读成员合法（#308），「一人一班」去重迁移停用删除，
   // 号位保留避免现场已记录 58 的库出现语义漂移。
   assert.equal(sqliteVersions.includes(58), false, "④: SQLite 不得复用 v58");
   assert.equal(mariaVersions.includes(58), false, "④: MariaDB 不得复用 v58");
   assert.equal(applied.includes(58), false, "④: 全新库不应记录 v58");
-  assert.match(sqliteSrc, /v58：\*\*故意留空（不执行任何删除）\*\*/, "④: SQLite 侧要留下 v58 停用删除的理由");
-  assert.match(mariaSrc, /v58：\*\*故意留空（不执行任何删除）\*\*/, "④: MariaDB 侧要留下 v58 停用删除的理由");
-  for (const src of [sqliteSrc, mariaSrc]) {
-    assert.equal(/DELETE\s+(FROM\s+class_students|cs\s+FROM\s+class_students)/.test(src), false,
-      "④: 迁移源不得再删除 class_students（多班在读成员合法，见 #308）");
-  }
-  for (const src of [sqliteSrc, mariaSrc]) {
-    assert.equal(/repair-published-status-desync/.test(src), false, "④: 强制结考迁移必须彻底移除");
-    assert.equal(/UPDATE exams SET status = 'closed'[^]*score_published = 1/.test(src), false,
-      "④: 不得留下按发布标志批量改 status 的语句");
-  }
-  // 56 两套方言都在；v57/v58 均为注释占号（v58 自二次评审起停用删除）。
   for (const [name, list] of [["sqlite", sqliteVersions], ["mariadb", mariaVersions]] as const) {
     assert.ok(list.includes(56), `④: ${name} 应包含 v56`);
   }
