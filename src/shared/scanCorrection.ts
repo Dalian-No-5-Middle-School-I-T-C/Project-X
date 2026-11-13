@@ -7,6 +7,11 @@ export type CorrectionPage = {
   sourceType: "scan_record" | "twain_scan_record";
   sourceId: string;
   revision: number;
+  /**
+   * 这份快照落库时的答题卡指纹（`cardFingerprint`）。旧库行可能为 null，
+   * 需要按版本判定能否复用的读取方要把它当「版本未知」拒绝，不能当成匹配。
+   */
+  cardVersion?: string | null;
   layout: PageLayout;
   recognition: CombinedRecognitionResult;
   selected: string[];

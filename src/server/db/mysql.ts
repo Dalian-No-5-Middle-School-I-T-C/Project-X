@@ -4,7 +4,7 @@ import type { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from "mysql
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getDatabase } from "./index";
+import { getDatabase, sqliteTransactionOpen } from "./index";
 import { readDbConfig } from "./config";
 import { scannerSubmissionSchema } from "./scannerSubmissionSchema";
 
@@ -71,6 +71,15 @@ export interface DbAdapter {
   run(sql: string, ...params: any[]): Promise<{ lastInsertRowid: number; changes: number }>;
   /** 执行原始 SQL */
   exec(sql: string): Promise<void>;
+  /**
+   * 当前这条连接上是否有未提交的事务（true 时同连接的其它读会看到未提交数据）。
+   *
+   * 只给「读到的内容会喂给判分、入库或终态判断」的只读入口自查用：SQLite 是单连接，
+   * `transaction()` 在 BEGIN/COMMIT 之间让出事件循环，链外的读能撞见随后回滚的行；
+   * MariaDB 用连接池，其它连接只看得到已提交快照，恒为 false。可选实现——缺省时按
+   * 「不需要这道闸」处理，避免为了这一项去改所有仓储里的适配器替身。
+   */
+  hasOpenTransaction?(): boolean;
   /** 事务 */
   transaction<T>(fn: (db: DbAdapter) => Promise<T>): Promise<T>;
   /**
@@ -210,6 +219,10 @@ class SqliteAdapter implements DbAdapter {
     this.db.exec(sql);
     this.logTiming(sql, Date.now() - start);
   }
+  /** SQLite 单连接：直接问 better-sqlite3 现在是否在事务里。见 `sqliteTransactionOpen`。 */
+  hasOpenTransaction(): boolean {
+    return sqliteTransactionOpen();
+  }
   /**
    * 事务约束（建议 12）：
    * 禁止在 `fn` 内做任何真正的异步 I/O（如 await fetch / 外部服务）。
@@ -343,6 +356,13 @@ class MariadbAdapter implements DbAdapter {
   }
   async exec(sql: string): Promise<void> {
     await this.executor.execute(sql);
+  }
+  /**
+   * MariaDB 的读走连接池：池里的另一条连接只看得到已提交快照（默认 REPEATABLE READ），
+   * 撞不见别人 BEGIN..COMMIT 之间的中间态，所以这道闸恒关。
+   */
+  hasOpenTransaction(): boolean {
+    return false;
   }
   async transaction<T>(fn: (db: DbAdapter) => Promise<T>): Promise<T> {
     const conn = await (this.executor as Pool).getConnection();
@@ -1237,6 +1257,24 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
   // 默认 'text'：已有库升级后行为不变，由教师在答案配置面板显式切换。
   mariadbMigrations.push({ version: 68, name: "exam-answer-key-mode", sqls: [
     "ALTER TABLE exams ADD COLUMN answer_key_mode VARCHAR(16) NOT NULL DEFAULT 'text'",
+  ] });
+
+  mariadbMigrations.push({ version: 69, name: "answer-block-crops-correction-revision", sqls: [
+    "ALTER TABLE answer_block_crops ADD COLUMN correction_revision BIGINT",
+    // Mid-run retry: an earlier v69 pass may have left INT before backfill failed and v69 was not recorded.
+    "ALTER TABLE answer_block_crops MODIFY COLUMN correction_revision BIGINT",
+    `UPDATE answer_block_crops abc
+     INNER JOIN scan_correction_pages scp
+       ON BINARY scp.source_type = BINARY abc.source_type
+       AND BINARY scp.source_id = BINARY abc.source_record_id
+     SET abc.correction_revision = scp.revision
+     WHERE abc.correction_revision IS NULL
+       AND BINARY abc.source_type IN ('twain_scan_record', 'scan_record')`,
+  ] });
+
+  // v70: early v69 builds used INT; scan_correction_pages.revision is BIGINT (Date.now() seeds).
+  mariadbMigrations.push({ version: 70, name: "answer-block-crops-correction-revision-bigint", sqls: [
+    "ALTER TABLE answer_block_crops MODIFY COLUMN correction_revision BIGINT",
   ] });
 
   for (const m of mariadbMigrations) {

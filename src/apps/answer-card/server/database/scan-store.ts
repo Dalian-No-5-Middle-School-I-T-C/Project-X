@@ -345,26 +345,44 @@ export async function listStudentGradingResults(sessionId: string): Promise<Stud
   ) as StudentGradingResultRow[];
 }
 
+/** Smoke / perf tests observe batch reads without matching SQL text or aliases. */
+export type ListScanRecordsGroupedByStudentBatchReads = {
+  recordRows: number;
+  ocrRows: number;
+};
+
+let listScanRecordsGroupedByStudentBatchReadObserver:
+  | ((reads: ListScanRecordsGroupedByStudentBatchReads) => void)
+  | undefined;
+
+export function setListScanRecordsGroupedByStudentBatchReadObserver(
+  observer: typeof listScanRecordsGroupedByStudentBatchReadObserver,
+): void {
+  listScanRecordsGroupedByStudentBatchReadObserver = observer;
+}
+
 /** Get scan records for a session grouped by student_id (for combined grading) */
-export async function listScanRecordsGroupedByStudent(sessionId: string): Promise<Array<{
+export async function listScanRecordsGroupedByStudent(sessionId: string, sheetRange?: { first: number; last: number }): Promise<Array<{
   studentId: string;
   records: ScanRecordWithResult[];
 }>> {
   const d = db();
-  const records = await d.all(
-    "SELECT r.*, s.identity_mode FROM twain_scan_records r JOIN twain_scan_sessions s ON s.id = r.session_id WHERE r.session_id = ? ORDER BY r.student_id, r.page_num, r.side",
-    sessionId
-  ) as ScanRecord[];
-
+  const rangeSql = sheetRange ? " AND r.page_num BETWEEN ? AND ?" : "";
+  const params = sheetRange ? [sessionId, sheetRange.first, sheetRange.last] : [sessionId];
+  const records = await d.all<ScanRecord>(
+    "SELECT r.*, s.identity_mode FROM twain_scan_records r JOIN twain_scan_sessions s ON s.id = r.session_id WHERE r.session_id = ?"
+      + rangeSql + " ORDER BY r.student_id, r.page_num, r.side", ...params);
+  // One joined read per batch, including pages without recognition. Avoid one round trip per page.
+  const results = await d.all<RecognitionResultRow>(
+    "SELECT o.* FROM twain_recognition_results o JOIN twain_scan_records r ON r.id = o.scan_record_id WHERE r.session_id = ?"
+      + rangeSql, ...params);
+  listScanRecordsGroupedByStudentBatchReadObserver?.({ recordRows: records.length, ocrRows: results.length });
+  const byRecord = new Map(results.map(result => [result.scan_record_id, result]));
   const grouped = new Map<string, ScanRecordWithResult[]>();
   for (const record of records) {
     const key = record.student_id ?? "__unrecognized__";
     if (!grouped.has(key)) grouped.set(key, []);
-    const recognition = await d.get(
-      "SELECT * FROM twain_recognition_results WHERE scan_record_id = ?",
-      record.id
-    ) as RecognitionResultRow | undefined;
-    grouped.get(key)!.push({ ...record, recognition: recognition ?? null });
+    grouped.get(key)!.push({ ...record, recognition: byRecord.get(record.id) ?? null });
   }
 
   return Array.from(grouped.entries()).map(([studentId, recs]) => ({ studentId, records: recs }));

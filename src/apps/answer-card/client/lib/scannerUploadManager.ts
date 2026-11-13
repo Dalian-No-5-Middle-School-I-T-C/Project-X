@@ -10,7 +10,7 @@ import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
 import { applyScanStudentId, uniqueScanConflictCards } from "../../../../shared/scanPages";
 import { damagedScanUploadRecoverySessionId, forgetScanUploadRecovery, scanUploadRecoveryState, readScanUploadRecovery, rememberQueuedGroup, writeScanUploadRecovery } from "./scannerUploadLedger";
 import type { ScanBatchFailure, ScanConflictCard, ScanBatchResponse } from "../../../../shared/scanPages";
-import type { CombinedGradingRow } from "../../../../shared/types";
+import type { CombinedGradingRow, CombinedRecognitionResult } from "../../../../shared/types";
 
 export type UploadJobKind = "scan" | "import";
 export type UploadJobStatus =
@@ -41,17 +41,30 @@ export function isUploadLocking(status: UploadJobStatus, remoteSessionId?: strin
 /** 改分锁的来源，决定界面文案与能不能「放弃续传」。 */
 export type GroupUploadBlock = "in-flight" | "partial-pages" | "completion-pending" | "recovery-damaged" | null;
 
+type UploadRecognition = CombinedRecognitionResult & {
+  cropImages?: Array<Record<string, unknown> & { dataBase64: string }>;
+  cardVersion?: string;
+  correctionRevision?: number;
+};
+
 export interface UploadPageInput {
   pageNum: number;
   side: "front" | "back";
   getBlob: () => Promise<Blob>;
+  uploadPayloadUrl?: string;
   getCorrection?: () => Promise<import("../../../../shared/types").CombinedRecognitionResult | undefined>;
   /** Stable card group and layout page from the local session summary. */
   groupId?: string;
   layoutPage?: number;
   /** Local immutable scan record used to verify a restored page mapping. */
   recordId?: string;
+  /** 上传进行中的显式改号。有订正快照时不使用，避免用入队时的旧学号盖住新订正。 */
   studentId?: string;
+  /**
+   * 结果汇总里已经保存的学号。只在没有订正快照、缓存和本机识别都没给出学号时使用
+   * （旧卷没有坐标快照、重新识别又漏读学号）。
+   */
+  fallbackStudentId?: string;
 }
 
 export interface StartUploadInput {
@@ -117,6 +130,8 @@ interface PageRecord {
   studentId?: { status: string; value: string };
   anchor?: PageRecord;
   pairingError?: string;
+  prepared?: { image: Blob; recognition: UploadRecognition; cropForm?: FormData; cropCount: number };
+  imageUploaded?: boolean;
 }
 
 interface JobRecord {
@@ -236,6 +251,8 @@ async function httpError(res: Response): Promise<Error & { status?: number }> {
 
 /** 页面数据用后即弃：ia32 目标内存有限，Blob/File 闭包不能整场滞留 */
 function releasePage(page: PageRecord): void {
+  page.prepared = undefined;
+  page.input.getCorrection = undefined;
   page.input.getBlob = () => Promise.reject(new Error("页面数据已释放"));
 }
 
@@ -450,17 +467,56 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     return { sessionId: data.sessionId, tokens: data.uploadTokens };
   }
 
-  async function uploadPageOnce(j: JobRecord, page: PageRecord): Promise<void> {
-    const blobData = await page.input.getBlob();
-    // Linux receives recognition data; the Windows client owns the native recognizer.
+  /**
+   * 扫描端复用缓存：404 / 超时 / 5xx / 畸形 JSON 都当未命中，退回本机 includeCrops 识别。
+   * 401/403 与版本冲突仍向上抛出，不能静默吞掉。
+   */
+  async function tryReuseScanUploadPayload(
+    payloadUrl: string,
+    cardVersion: string,
+  ): Promise<UploadRecognition | null> {
+    try {
+      const cached = await (deps.localFetch ?? authFetch)(payloadUrl, { signal: timeoutSignal(pageTimeoutMs) });
+      if (cached.ok) {
+        let result: UploadRecognition;
+        try {
+          result = await cached.json() as UploadRecognition;
+        } catch {
+          return null;
+        }
+        if (result.cardVersion && result.cardVersion !== cardVersion) {
+          throw Object.assign(new Error("答题卡版本已变化，请重新识别后上传"), { noRetry: true });
+        }
+        return result;
+      }
+      if (cached.status === 404) return null;
+      if (cached.status === 401 || cached.status === 403) throw await httpError(cached);
+      return null;
+    } catch (error) {
+      if (error && typeof error === "object" && "noRetry" in error) throw error;
+      const status = (error as { status?: number }).status;
+      if (status === 401 || status === 403) throw error;
+      return null;
+    }
+  }
+
+  async function recognizePageForUpload(j: JobRecord, page: PageRecord, blobData: Blob): Promise<UploadRecognition> {
+    const recordId = page.input.recordId;
+    const payloadUrl = j.kind === "scan" && recordId
+      ? `/api/scanner/record/${encodeURIComponent(recordId)}/upload-payload` : page.input.uploadPayloadUrl;
+    if (payloadUrl) {
+      const cachedRecognition = await tryReuseScanUploadPayload(payloadUrl, j.cardVersion);
+      if (cachedRecognition) return cachedRecognition;
+    }
     const localForm = new FormData();
     localForm.append("file", blobData, `page_${page.input.pageNum}.jpg`);
     localForm.append("page", String(page.input.layoutPage ?? (page.input.side === "back" ? 2 : 1)));
     localForm.append("dpi", String(j.dpi));
     localForm.append("includeCrops", "1");
     localForm.append("identityMode", j.identityMode);
+    localForm.append("cardVersion", j.cardVersion);
     const recognized = await (deps.localFetch ?? authFetch)(`/api/cards/${encodeURIComponent(j.cardId)}/recognition`, {
-      method: "POST", body: localForm,
+      method: "POST", body: localForm, signal: timeoutSignal(pageTimeoutMs),
     });
     if (!recognized.ok) {
       const error = await httpError(recognized);
@@ -468,21 +524,27 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         ? `单张图片 ${(blobData.size / 1024 / 1024).toFixed(1)} MiB 超过接收限制，请降低扫描分辨率或转换为 PNG/JPEG 后重试`
         : error.message;
       error.message = `本机识别失败（HTTP ${recognized.status}）：${detail}`;
-      // Preserve the status so deterministic 4xx failures are not uploaded repeatedly.
       throw error;
     }
-    const recognition = await recognized.json();
-    // Recognition still produces fresh crops; explicit local edits remain authoritative.
-    const corrected = await page.input.getCorrection?.();
-    if (corrected) {
-      recognition.questions = corrected.questions;
-      recognition.subjectiveQuestions = corrected.subjectiveQuestions;
-      recognition.studentId = corrected.studentId;
-      if (recognition.geometry && recognition.identity?.status !== "rejected") recognition.status = "ok";
+    return await recognized.json() as UploadRecognition;
+  }
+
+  async function prepareUploadPage(j: JobRecord, page: PageRecord): Promise<void> {
+    const blobData = await page.input.getBlob();
+    // Linux receives recognition data; the Windows client owns the native recognizer.
+    const recognition = await recognizePageForUpload(j, page, blobData);
+    // Versioned upload-payload may embed a correction snapshot, but teachers can still save
+    // newer edits after the job was queued — always re-read the persisted correction document.
+    const savedCorrection = await page.input.getCorrection?.();
+    if (savedCorrection) {
+      recognition.questions = savedCorrection.questions;
+      recognition.subjectiveQuestions = savedCorrection.subjectiveQuestions;
+      recognition.studentId = savedCorrection.studentId;
+      if (recognition.geometry && (recognition.identity as { status?: string } | undefined)?.status !== "rejected") recognition.status = "ok";
     }
-    // Dependencies are fixed when the job is created, independent of array adjacency,
-    // retry counts or network latency. Never borrow an ID across physical cards.
-    if (!corrected && page.input.studentId) {
+    // page.input.studentId is only for explicit in-flight overrides (e.g. correctStudentId);
+    // scan enqueue no longer copies the summary snapshot here.
+    if (page.input.studentId && !savedCorrection) {
       applyScanStudentId(recognition, page.input.studentId);
     } else if (page.anchor) {
       const inherited = page.anchor.studentId;
@@ -491,10 +553,31 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       }
       if (!recognition.studentId?.value && inherited) applyScanStudentId(recognition, inherited.value, true);
     }
+    if (!recognition.studentId?.value && !savedCorrection && page.input.fallbackStudentId) {
+      applyScanStudentId(recognition, page.input.fallbackStudentId);
+    }
     if (recognition.status === "failed" || !recognition.studentId?.value) {
       throw new Error("本机未识别到有效学号，请检查答题卡后重试上传");
     }
-    page.studentId = recognition.studentId;
+    page.studentId = { status: recognition.studentId.status, value: recognition.studentId.value };
+    let cropForm: FormData | undefined;
+    if (recognition.cropImages?.length) {
+      cropForm = new FormData();
+      const manifest = recognition.cropImages.map(({ dataBase64, ...crop }, index) => {
+        const fileName = `crop_${index}.png`;
+        const bytes = Uint8Array.from(atob(dataBase64), c => c.charCodeAt(0));
+        cropForm!.append("crops", new Blob([bytes], { type: "image/png" }), fileName);
+        return { ...crop, fileName };
+      });
+      cropForm.append("manifest", JSON.stringify(manifest));
+    }
+    const cropCount = recognition.cropImages?.length ?? 0;
+    delete recognition.cropImages;
+    page.prepared = { image: blobData, recognition, cropForm, cropCount };
+  }
+
+  async function uploadPageImage(j: JobRecord, page: PageRecord): Promise<void> {
+    const { image: blobData, recognition } = page.prepared!;
     const form = new FormData();
     form.append("image", blobData, `page_${page.input.pageNum}.jpg`);
     form.append("token", page.token);
@@ -512,22 +595,19 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       signal: timeoutSignal(pageTimeoutMs),
     });
     if (!res.ok) throw await httpError(res);
-    const cropImages = recognition.cropImages ?? [];
-    if (cropImages.length > 0) {
-      const cropForm = new FormData();
-      const manifest = cropImages.map(({ dataBase64, ...crop }: any, index: number) => {
-        const fileName = `crop_${index}.png`;
-        const bytes = Uint8Array.from(atob(dataBase64), c => c.charCodeAt(0));
-        cropForm.append("crops", new Blob([bytes], { type: "image/png" }), fileName);
-        return { ...crop, fileName };
-      });
-      cropForm.append("manifest", JSON.stringify(manifest));
+    page.imageUploaded = true;
+  }
+
+  async function uploadPageCrops(j: JobRecord, page: PageRecord): Promise<void> {
+    const { cropForm, cropCount } = page.prepared!;
+    if (cropForm) {
+      const fetcher = jobFetch(j);
       const cropResponse = await fetcher(`/api/scanner/upload/sessions/${j.remoteSessionId}/pages/${page.token}/crops`, {
         method: "POST", body: cropForm, signal: timeoutSignal(pageTimeoutMs),
       });
       if (!cropResponse.ok) throw await httpError(cropResponse);
       const saved = await cropResponse.json();
-      if (saved.skipped || saved.count !== cropImages.length) throw new Error("部分阅卷图块保存失败，请重试上传");
+      if (saved.skipped || saved.count !== cropCount) throw new Error("部分阅卷图块保存失败，请重试上传");
     }
   }
 
@@ -697,7 +777,9 @@ if (j.cancelled) throw cancelledError(j);
       try {
         if (page.pairingError) throw new Error(page.pairingError);
         if (page.anchor && !page.anchor.done) throw new Error("同份答题卡的首页尚未成功，请重试失败页；背面不会借用其他学生的学号");
-        await runWithRetry(j, "上传", () => uploadPageOnce(j, page));
+        if (!page.prepared) await runWithRetry(j, "准备识别结果", () => prepareUploadPage(j, page));
+        if (!page.imageUploaded) await runWithRetry(j, "上传原图", () => uploadPageImage(j, page));
+        await runWithRetry(j, "上传切图", () => uploadPageCrops(j, page));
         page.done = true;
         persistRecovery(j);
         releasePage(page);
@@ -965,7 +1047,10 @@ if (j.cancelled) throw cancelledError(j);
     }
     try { persistRecovery(j); }
     catch (error) { setStatus(j, "error", friendlyErr(error)); return; }
-    for (const p of j.pages) p.failed = false;
+    for (const p of j.pages) {
+      if (p.failed && !p.imageUploaded) p.prepared = undefined;
+      p.failed = false;
+    }
     j.message = "";
     j.status = "queued";
     notify();
@@ -1093,7 +1178,10 @@ if (j.cancelled) throw cancelledError(j);
       if (!job || job.status !== "error" || !job.pages.some(p => p.failed)) throw new Error("此任务没有可订正的失败页");
       if (!/^[0-9A-Za-z_-]{1,64}$/.test(studentId)) throw new Error("请输入有效学号");
       if (new Set(job.pages.map(p => p.input.groupId ?? `sheet:${p.input.pageNum}`)).size !== 1) throw new Error("请逐份答题卡订正学号");
-      for (const page of job.pages) page.input.studentId = studentId;
+      for (const page of job.pages) {
+        page.input.studentId = studentId;
+        if (!page.done) { page.prepared = undefined; page.imageUploaded = false; }
+      }
       if (job.pages.some(page => page.done)) job.pendingStudentId = studentId;
       retryFailed(id);
     },

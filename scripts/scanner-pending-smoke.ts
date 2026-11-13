@@ -3,6 +3,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { startScannerFlowFixture } from "./scanner-upload-flow-fixture";
+import { isSavedReceiptOwnershipLookup } from "./smoke-sql-match";
 import { cardFingerprint } from "../src/shared/cardVersion";
 import type { CombinedGradingRow } from "../src/shared/types";
 const fixture = await startScannerFlowFixture();
@@ -275,7 +276,7 @@ try {
     const all = tx.all.bind(tx);
     tx.all = async (sql,...params) => {
       const result = await all(sql,...params);
-      if (pauseUpload && sql.includes("state = 'saved' OR") && params[0] === rosterSource.session_id) {
+      if (pauseUpload && isSavedReceiptOwnershipLookup(sql) && params[0] === rosterSource.session_id) {
         pauseUpload = false; ownershipRead(); await uploadGate;
       }
       return result;

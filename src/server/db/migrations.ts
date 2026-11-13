@@ -1406,6 +1406,21 @@ MIGRATIONS.push({ version: 68, name: "exam-answer-key-mode", up(db) {
   addColumnIfMissing(db, "exams", "answer_key_mode", "TEXT NOT NULL DEFAULT 'text'");
 } });
 
+// v69 (PR #373 P1): 切块行绑定订正快照 revision，upload-payload 不得混搭新快照与旧切块。
+MIGRATIONS.push({ version: 69, name: "answer-block-crops-correction-revision", up(db) {
+  addColumnIfMissing(db, "answer_block_crops", "correction_revision", "INTEGER");
+  db.exec(`
+    UPDATE answer_block_crops
+    SET correction_revision = (
+      SELECT revision FROM scan_correction_pages
+      WHERE scan_correction_pages.source_type = answer_block_crops.source_type
+        AND scan_correction_pages.source_id = answer_block_crops.source_record_id
+    )
+    WHERE correction_revision IS NULL
+      AND source_type IN ('twain_scan_record', 'scan_record')
+  `);
+} });
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

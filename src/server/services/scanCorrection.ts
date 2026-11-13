@@ -36,12 +36,26 @@ export async function storeCorrectionPage(card: AnswerCard, sourceType: Correcti
   await db.run(`${upsert}, revision = revision + 1, recovery_fingerprint = NULL`,
     sourceType, String(sourceId), cardFingerprint(card), JSON.stringify(layout), JSON.stringify(safe), Date.now());
 }
+
+export async function correctionPageRevision(
+  sourceType: CorrectionPage["sourceType"],
+  sourceId: string | number,
+  db: DbAdapter = getMysqlDb(),
+): Promise<number | null> {
+  const row = await db.get<{ revision: number }>(
+    "SELECT revision FROM scan_correction_pages WHERE source_type=? AND source_id=?",
+    sourceType,
+    String(sourceId),
+  );
+  return row ? Number(row.revision) : null;
+}
+
 export async function loadCorrectionPage(sourceType: CorrectionPage["sourceType"], sourceId: string, imageUrl: string, db = getMysqlDb()): Promise<CorrectionPage | null> {
-  const row = await db.get<{ layout_json: string; recognition_json: string; revision: number }>(
-    "SELECT layout_json,recognition_json,revision FROM scan_correction_pages WHERE source_type=? AND source_id=?",sourceType,sourceId);
+  const row = await db.get<{ layout_json: string; recognition_json: string; revision: number; card_version: string | null }>(
+    "SELECT layout_json,recognition_json,revision,card_version FROM scan_correction_pages WHERE source_type=? AND source_id=?",sourceType,sourceId);
   if (!row) return null;
   const layout = JSON.parse(row.layout_json), recognition = JSON.parse(row.recognition_json);
-  return { sourceType, sourceId, revision: Number(row.revision), layout, recognition, ...recognizedCells(layout, recognition), imageUrl };
+  return { sourceType, sourceId, revision: Number(row.revision), cardVersion: row.card_version ?? null, layout, recognition, ...recognizedCells(layout, recognition), imageUrl };
 }
 export async function sessionCorrection(card: AnswerCard, sessionId: string, groupId: string, remote: boolean, allowRecovery = remote): Promise<CorrectionDocument> {
   return loadSessionCorrection(card, sessionId, groupId, remote, allowRecovery);
@@ -54,7 +68,12 @@ async function loadSessionCorrection(card: AnswerCard, sessionId: string, groupI
   const session = await getMysqlDb().get<{card_version:string|null;version_source:string}>("SELECT card_version,version_source FROM twain_scan_sessions WHERE id=?",sessionId);
   if (!session) throw new Error("扫描会话不存在");
   if (session.card_version && session.card_version !== cardFingerprint(card)) throw new Error("答题卡版本已变化，请核对原卷版本后重新扫描");
-  const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
+  const groupIndex = Number(groupId);
+  if (!Number.isSafeInteger(groupIndex) || groupIndex < 0 || String(groupIndex) !== groupId) throw new Error("答题卡分组不存在");
+  const sheetsPerGroup = Math.ceil(buildLayout(card).pages.length / (card.sided === "double" ? 2 : 1));
+  const records = (await listScanRecordsGroupedByStudent(sessionId, {
+    first: groupIndex * sheetsPerGroup + 1, last: (groupIndex + 1) * sheetsPerGroup,
+  })).flatMap(g => g.records);
   const group = groupSessionPages(card, records).groups.get(groupId);
   if (!group) throw new Error("答题卡分组不存在");
   if (receipt) {
@@ -211,6 +230,18 @@ async function writePages(tx: DbAdapter, document: CorrectionDocument, edits: Co
     const updated = await tx.run(`UPDATE scan_correction_pages SET recognition_json=?,revision=revision+1,modified_by=?,modified_at=?
       WHERE source_type=? AND source_id=? AND revision=?`,JSON.stringify(state.recognition),userId,databaseTimestamp(),page.sourceType,page.sourceId,revision);
     if (!updated.changes) throw new Error("另一位教师已修改此卷，请重新打开");
+    // 普通订正只改答案或学号，切图文件还是这一版识别的。把仍绑定本次修订的切图一起推进，
+    // 上传才能继续复用。补识别会换掉几何和答案，旧切图不能跟过去；其它修订号同样保持原样。
+    if (!page.recovery) {
+      await tx.run(
+        `UPDATE answer_block_crops SET correction_revision = ?
+         WHERE source_type = ? AND source_record_id = ? AND correction_revision = ?`,
+        Number(revision) + 1,
+        page.sourceType,
+        page.sourceId,
+        Number(revision),
+      );
+    }
     result.push({page,edit,recognition:state.recognition});
   }
   return result;
