@@ -81,7 +81,7 @@ export interface DbAdapter {
    */
   hasOpenTransaction?(): boolean;
   /** 事务 */
-  transaction<T>(fn: (db: DbAdapter) => Promise<T>): Promise<T>;
+  transaction<T>(fn: (db: DbAdapter) => Promise<T>, mode?: "readSnapshot"): Promise<T>;
   /**
    * 持锁事务（PR #312 评审 B2）：在数据库命名锁的持有期内跑完整个事务，
    * 并且**一定在 COMMIT/ROLLBACK 之后**才释放锁。
@@ -364,11 +364,16 @@ class MariadbAdapter implements DbAdapter {
   hasOpenTransaction(): boolean {
     return false;
   }
-  async transaction<T>(fn: (db: DbAdapter) => Promise<T>): Promise<T> {
+  async transaction<T>(fn: (db: DbAdapter) => Promise<T>, mode?: "readSnapshot"): Promise<T> {
     const conn = await (this.executor as Pool).getConnection();
     const txAdapter = new MariadbAdapter(conn);
     try {
-      await conn.beginTransaction();
+      if (mode === "readSnapshot") {
+        await conn.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+        await conn.query("START TRANSACTION READ ONLY");
+      } else {
+        await conn.beginTransaction();
+      }
       const result = await fn(txAdapter);
       await conn.commit();
       return result;
@@ -1275,6 +1280,11 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
   // v70: early v69 builds used INT; scan_correction_pages.revision is BIGINT (Date.now() seeds).
   mariadbMigrations.push({ version: 70, name: "answer-block-crops-correction-revision-bigint", sqls: [
     "ALTER TABLE answer_block_crops MODIFY COLUMN correction_revision BIGINT",
+  ] });
+
+  // Pre-release v69 also stamped legacy crops whose producing image was unknown.
+  mariadbMigrations.push({ version: 71, name: "invalidate-unverified-crop-revisions", sqls: [
+    "UPDATE answer_block_crops SET correction_revision = NULL WHERE correction_revision IS NOT NULL",
   ] });
 
   for (const m of mariadbMigrations) {

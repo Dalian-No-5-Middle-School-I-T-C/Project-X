@@ -60,10 +60,7 @@ export interface UploadPageInput {
   recordId?: string;
   /** 上传进行中的显式改号。有订正快照时不使用，避免用入队时的旧学号盖住新订正。 */
   studentId?: string;
-  /**
-   * 结果汇总里已经保存的学号。只在没有订正快照、缓存和本机识别都没给出学号时使用
-   * （旧卷没有坐标快照、重新识别又漏读学号）。
-   */
+  /** 已保存的分组学号，供没有坐标快照的旧卷回退。 */
   fallbackStudentId?: string;
 }
 
@@ -236,17 +233,17 @@ function isConfigError(err: unknown): boolean {
   return typeof status === "number" && status >= 400 && status < 500;
 }
 
-async function httpError(res: Response): Promise<Error & { status?: number }> {
+async function httpError(res: Response): Promise<Error & { status: number; code?: string }> {
+  let code: string | undefined;
   let message = `HTTP ${res.status}`;
   try {
-    const body = (await res.json()) as { message?: string };
+    const body = (await res.json()) as { message?: string; code?: string };
+    if (typeof body.code === "string") code = body.code;
     if (typeof body.message === "string" && body.message) message = body.message;
   } catch {
     /* ignore */
   }
-  const err = new Error(message) as Error & { status?: number };
-  err.status = res.status;
-  return err;
+  return Object.assign(new Error(message), { status: res.status, code });
 }
 
 /** 页面数据用后即弃：ia32 目标内存有限，Blob/File 闭包不能整场滞留 */
@@ -500,14 +497,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     }
   }
 
-  async function recognizePageForUpload(j: JobRecord, page: PageRecord, blobData: Blob): Promise<UploadRecognition> {
-    const recordId = page.input.recordId;
-    const payloadUrl = j.kind === "scan" && recordId
-      ? `/api/scanner/record/${encodeURIComponent(recordId)}/upload-payload` : page.input.uploadPayloadUrl;
-    if (payloadUrl) {
-      const cachedRecognition = await tryReuseScanUploadPayload(payloadUrl, j.cardVersion);
-      if (cachedRecognition) return cachedRecognition;
-    }
+  async function recognizeFreshPage(j: JobRecord, page: PageRecord, blobData: Blob): Promise<UploadRecognition> {
     const localForm = new FormData();
     localForm.append("file", blobData, `page_${page.input.pageNum}.jpg`);
     localForm.append("page", String(page.input.layoutPage ?? (page.input.side === "back" ? 2 : 1)));
@@ -532,7 +522,11 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
   async function prepareUploadPage(j: JobRecord, page: PageRecord): Promise<void> {
     const blobData = await page.input.getBlob();
     // Linux receives recognition data; the Windows client owns the native recognizer.
-    const recognition = await recognizePageForUpload(j, page, blobData);
+    const recordId = page.input.recordId;
+    const payloadUrl = j.kind === "scan" && recordId
+      ? `/api/scanner/record/${encodeURIComponent(recordId)}/upload-payload` : page.input.uploadPayloadUrl;
+    const cached = payloadUrl ? await tryReuseScanUploadPayload(payloadUrl, j.cardVersion) : null;
+    const recognition = cached ?? await recognizeFreshPage(j, page, blobData);
     // Versioned upload-payload may embed a correction snapshot, but teachers can still save
     // newer edits after the job was queued — always re-read the persisted correction document.
     const savedCorrection = await page.input.getCorrection?.();
@@ -542,19 +536,24 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       recognition.studentId = savedCorrection.studentId;
       if (recognition.geometry && (recognition.identity as { status?: string } | undefined)?.status !== "rejected") recognition.status = "ok";
     }
-    // page.input.studentId is only for explicit in-flight overrides (e.g. correctStudentId);
-    // scan enqueue no longer copies the summary snapshot here.
-    if (page.input.studentId && !savedCorrection) {
-      applyScanStudentId(recognition, page.input.studentId);
-    } else if (page.anchor) {
+    let historicalId: string | undefined;
+    if (!cached && !savedCorrection && !page.input.studentId && page.input.fallbackStudentId && recordId) {
+      const response = await (deps.localFetch ?? authFetch)(`/api/scanner/record/${encodeURIComponent(recordId)}`, {
+        signal: timeoutSignal(pageTimeoutMs),
+      });
+      if (!response.ok) throw await httpError(response);
+      const record = await response.json() as { student_id?: string | null };
+      // A later side with no stored ID must be checked against its anchor using its own OCR.
+      historicalId = record.student_id || (page.anchor ? undefined : page.input.fallbackStudentId);
+    }
+    const override = page.input.studentId || historicalId;
+    if (!savedCorrection && override) applyScanStudentId(recognition, override);
+    if (page.anchor) {
       const inherited = page.anchor.studentId;
       if (recognition.studentId?.value && recognition.studentId.value !== inherited?.value) {
         throw new Error("同一份答题卡正反面学号不一致，请核对后重新上传");
       }
       if (!recognition.studentId?.value && inherited) applyScanStudentId(recognition, inherited.value, true);
-    }
-    if (!recognition.studentId?.value && !savedCorrection && page.input.fallbackStudentId) {
-      applyScanStudentId(recognition, page.input.fallbackStudentId);
     }
     if (recognition.status === "failed" || !recognition.studentId?.value) {
       throw new Error("本机未识别到有效学号，请检查答题卡后重试上传");
@@ -595,6 +594,10 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       signal: timeoutSignal(pageTimeoutMs),
     });
     if (!res.ok) throw await httpError(res);
+    if (page.prepared!.cropForm) {
+      const { fileName } = await res.json() as { fileName?: string };
+      if (fileName) page.prepared!.cropForm.set("imageReceipt", fileName);
+    }
     page.imageUploaded = true;
   }
 
@@ -605,7 +608,14 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       const cropResponse = await fetcher(`/api/scanner/upload/sessions/${j.remoteSessionId}/pages/${page.token}/crops`, {
         method: "POST", body: cropForm, signal: timeoutSignal(pageTimeoutMs),
       });
-      if (!cropResponse.ok) throw await httpError(cropResponse);
+      if (!cropResponse.ok) {
+        const error = await httpError(cropResponse);
+        if (error.status === 409 && error.code === "SCAN_IMAGE_REPLACED") {
+          page.imageUploaded = false;
+          page.prepared = undefined;
+        }
+        throw error;
+      }
       const saved = await cropResponse.json();
       if (saved.skipped || saved.count !== cropCount) throw new Error("部分阅卷图块保存失败，请重试上传");
     }

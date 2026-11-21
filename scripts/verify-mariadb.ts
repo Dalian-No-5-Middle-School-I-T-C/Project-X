@@ -97,28 +97,20 @@ async function main(): Promise<void> {
         recordId,
       );
       await db.run("UPDATE answer_block_crops SET correction_revision = NULL WHERE id = 'v69-mixed-collation-crop'");
-      const brokenBackfill = `UPDATE answer_block_crops abc
-       INNER JOIN scan_correction_pages scp
-         ON scp.source_type = abc.source_type AND scp.source_id = abc.source_record_id
-       SET abc.correction_revision = scp.revision
-       WHERE abc.correction_revision IS NULL
-         AND abc.source_type IN ('twain_scan_record', 'scan_record')`;
-      await assert.rejects(db.exec(brokenBackfill), /collation/i, "Mixed-collations must fail without a binary identifier compare");
-      await db.run("DELETE FROM schema_migrations WHERE version IN (69, 70)");
+      await db.run("DELETE FROM schema_migrations WHERE version IN (69, 70, 71)");
       const migrationConnection = await (await import("mysql2/promise")).createConnection(getMariadbConfig());
       try { await runMariadbMigrations(migrationConnection); } finally { await migrationConnection.end(); }
       const backfilled = await db.get<{ correction_revision: number }>(
         "SELECT correction_revision FROM answer_block_crops WHERE id = 'v69-mixed-collation-crop'",
       );
-      assert.equal(Number(backfilled!.correction_revision), expectedRevision,
-        "v69 retry must backfill correction_revision when the column already exists");
+      assert.equal(backfilled!.correction_revision, null, "matching record IDs alone cannot establish which original produced a crop");
       assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version = 69"));
       await db.run("DELETE FROM answer_block_crops WHERE id = 'v69-mixed-collation-crop'");
       await db.run("DELETE FROM scan_correction_pages WHERE source_id = ?", recordId);
-      console.log("PASS: v69 correction-revision backfill survives mixed collations and mid-run retry");
+      console.log("PASS: historical crops remain available without inferred revisions after upgrade across mixed collations");
     }
 
-  // v69 retry after backfill failed on an INT column (early builds); millisecond revisions must fit BIGINT.
+    // Recover an interrupted v69, then clear unverifiable stamps once during v71.
     {
       const recordId = "v69-midfail-int-record";
       const expectedRevision = 1_730_000_000_999;
@@ -135,7 +127,7 @@ async function main(): Promise<void> {
          ON DUPLICATE KEY UPDATE correction_revision = NULL`,
         recordId,
       );
-      await db.run("DELETE FROM schema_migrations WHERE version IN (69, 70)");
+      await db.run("DELETE FROM schema_migrations WHERE version IN (69, 70, 71)");
       const migrationConnection = await (await import("mysql2/promise")).createConnection(getMariadbConfig());
       try { await runMariadbMigrations(migrationConnection); } finally { await migrationConnection.end(); }
       const column = await db.get<{ Type: string }>(
@@ -145,8 +137,11 @@ async function main(): Promise<void> {
       const backfilled = await db.get<{ correction_revision: number }>(
         "SELECT correction_revision FROM answer_block_crops WHERE id = 'v69-midfail-int-crop'",
       );
-      assert.equal(Number(backfilled!.correction_revision), expectedRevision,
-        "v69 retry must backfill millisecond correction_revision after INT mid-fail");
+      assert.equal(backfilled!.correction_revision, null);
+      await db.run("UPDATE answer_block_crops SET correction_revision=? WHERE id='v69-midfail-int-crop'", expectedRevision);
+      await initMariadbSchema();
+      assert.equal(Number((await db.get("SELECT correction_revision FROM answer_block_crops WHERE id='v69-midfail-int-crop'"))!.correction_revision),
+        expectedRevision, "new paired crops retain the full revision after restart");
       assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version = 69"));
       assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version = 70"));
       await db.run("DELETE FROM answer_block_crops WHERE id = 'v69-midfail-int-crop'");

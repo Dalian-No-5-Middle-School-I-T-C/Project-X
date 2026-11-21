@@ -5,7 +5,6 @@ import type { Server } from "node:http";
 import { startScannerFlowFixture } from "./scanner-upload-flow-fixture";
 import { createScannerUploadManager } from "../src/apps/answer-card/client/lib/scannerUploadManager";
 import type { CombinedGradingBatchResult, CombinedRecognitionResult } from "../src/shared/types";
-import { isUploadRecognizedStudentStamp } from "./smoke-sql-match";
 
 // Real DB/HTTP paths with deterministic recognizer output; supports an empty
 // projectx_scanner_batch_* MariaDB database via the existing fixture variables.
@@ -36,29 +35,34 @@ try {
   }
   const all = db.all.bind(db), get = db.get.bind(db);
   let reads = 0, loadedRows = 0;
-  store.setListScanRecordsGroupedByStudentBatchReadObserver(({ recordRows, ocrRows }) => {
-    loadedRows += recordRows + ocrRows;
-  });
   db.all = async <T>(sql: string, ...params: any[]): Promise<T[]> => {
-    reads++; return all<T>(sql, ...params);
+    const rows = await all<T>(sql, ...params);
+    reads++;
+    loadedRows += rows.length;
+    return rows;
   };
-  db.get = async <T>(sql: string, ...params: any[]): Promise<T | null> => { reads++; return get<T>(sql, ...params); };
+  db.get = async <T>(sql: string, ...params: any[]): Promise<T | null> => {
+    const row = await get<T>(sql, ...params);
+    reads++;
+    if (row) loadedRows++;
+    return row;
+  };
   try {
     const grouped = await store.listScanRecordsGroupedByStudent(session.id);
     assert.equal(grouped.flatMap(g => g.records).length, 400);
     assert.equal(grouped[0].records.find(r => r.id === records[0].id)?.recognition, null);
-    assert.equal(reads, 2, "400 pages must use two reads including missing OCR rows");
+    assert.equal(grouped[0].records.filter(r => r.recognition).length, 399);
+    assert.ok(reads <= 2, `400 pages exceeded the two-read budget: ${reads}`);
     reads = loadedRows = 0;
     const correction = await sessionCorrection(card, session.id, "199", false);
     assert.deepEqual(correction.pages.map(p => p.sourceId), records.slice(-2).map(r => r.id));
-    assert.equal(loadedRows, 4, "load only the selected card's two records and two OCR rows");
-    assert.equal(reads, 5, "session + two batch queries + two correction snapshots");
+    assert.ok(loadedRows <= 7, `two pages loaded ${loadedRows} rows including session and snapshots`);
+    assert.ok(reads <= 5, `two pages exceeded the five-read budget: ${reads}`);
   } finally {
-    store.setListScanRecordsGroupedByStudentBatchReadObserver(undefined);
     db.all = all;
     db.get = get;
   }
-  console.log(`PASS ${db.dialect}: 400-page recognition read = 2 queries; two-sided correction = 5 queries / 2 pages`);
+  console.log(`PASS ${db.dialect}: 400-page recognition and two-page correction stayed within read budgets`);
 
   const image = path.join(process.env.ANSWER_CARD_DATA_DIR!, "queue.png");
   await writeFile(image, Buffer.from(info.images.original, "base64"));
@@ -97,16 +101,20 @@ try {
   assert.notEqual(path.extname(original.image_path), ".html", "file extension stays in the image allowlist");
   const filesBefore = (await readdir(path.dirname(original.image_path))).sort();
   const transaction = db.transaction.bind(db);
-  db.transaction = fn => transaction(async tx => {
-    const run = tx.run.bind(tx);
-    tx.run = async (sql, ...params) => {
-      if (isUploadRecognizedStudentStamp(sql)) throw new Error("injected upload rollback");
-      return run(sql, ...params);
-    };
-    try { return await fn(tx); } finally { tx.run = run; }
+  let stagedReplacement = "";
+  db.transaction = work => transaction(async tx => {
+    const result = await work(tx);
+    const row = await tx.get<{ image_path: string }>("SELECT image_path FROM twain_scan_records WHERE id=?", original.id);
+    if (row && row.image_path !== original.image_path) {
+      stagedReplacement = row.image_path;
+      assert.deepEqual(await readFile(stagedReplacement), Buffer.from(info.images.different, "base64"));
+      throw new Error("injected upload rollback");
+    }
+    return result;
   });
   try { assert.equal((await uploadImage(info.images.different)).status, 500); }
   finally { db.transaction = transaction; }
+  assert.ok(stagedReplacement, "the replacement reached the database before rollback");
   assert.equal((await store.getScanRecord(original.id))!.image_path, original.image_path);
   assert.deepEqual(await readFile(original.image_path), Buffer.from(info.images.original, "base64"));
   for (let i = 0; i < 100; i++) {
@@ -125,6 +133,8 @@ try {
   let competing: Promise<unknown> | undefined;
   db.transaction = async fn => {
     const result = await transaction(fn);
+    const published = await store.getScanRecord(original.id);
+    if (published?.image_path === original.image_path) return result;
     competing = enqueueScannerSubmission(() => transaction(async tx => {
       await tx.run("UPDATE twain_scan_records SET image_path = ? WHERE id = ?", "uncommitted-candidate.png", remote.uploadTokens[1]);
       enteredRollback();
@@ -137,7 +147,8 @@ try {
   let settled = false;
   void replacement.then(() => { settled = true; });
   try {
-    await rollbackEntered;
+    await Promise.race([rollbackEntered, replacement.then(() => { throw new Error("upload finished before rollback fixture"); }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("queued rollback did not start")), 5000).unref())]);
     await new Promise(resolve => setTimeout(resolve, 50));
     assert.equal(settled, false, "image cleanup waits for the queued transaction to settle");
   } finally {
@@ -150,6 +161,20 @@ try {
   assert.deepEqual(await readFile(original.image_path), Buffer.from(info.images.original, "base64"));
   console.log(`PASS ${db.dialect}: shared original survives another upload's uncommitted reference change and rollback`);
 
+  // A second server can commit another immutable original between our two ownership checks.
+  const { scannerPageImageStaging } = await import("../src/server/services/scannerPageImageStaging");
+  const competingImage = path.join(path.dirname(original.image_path), "competing-upload.png");
+  const writeImage = scannerPageImageStaging.write;
+  scannerPageImageStaging.write = async (target, data) => {
+    await writeImage(target, data);
+    await writeFile(competingImage, Buffer.from(info.images.original, "base64"));
+    await db.run("UPDATE twain_scan_records SET image_path=? WHERE id=?", competingImage, original.id);
+  };
+  try { assert.equal((await uploadImage(info.images.different)).status, 200); }
+  finally { scannerPageImageStaging.write = writeImage; }
+  const winner = (await store.getScanRecord(original.id))!;
+  assert.deepEqual(await readFile(winner.image_path), Buffer.from(info.images.different, "base64"));
+  await assert.rejects(readFile(competingImage), { code: "ENOENT" });
   // Exercise /grading -> on-disk payload -> upload manager with one native launch.
   const root = process.env.ANSWER_CARD_DATA_DIR!;
   const executable = path.join(root, "recognizer-fixture.cjs"), callLog = path.join(root, "recognizer-calls.txt");
@@ -209,11 +234,10 @@ process.stdout.write(JSON.stringify(result));
   assert.equal((await readFile(callLog, "utf8")).trim(), "run", "grading and upload share one recognition");
   console.log(`PASS ${db.dialect}: HTTP import grading and upload reuse one native result and identical crop bytes`);
 
-  const uploadDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "recognition", "uploads", card.id);
   await writeFile(executable, `#!${process.execPath}
 const fs = require('node:fs'), path = require('node:path');
 const args = process.argv.slice(2), arg = name => args[args.indexOf(name) + 1];
-fs.chmodSync(path.dirname(arg('--image')), 0o555);
+fs.mkdirSync(arg('--image') + '.upload.json');
 fs.appendFileSync(${JSON.stringify(callLog)}, 'run\\n');
 const page = Number(arg('--page')), result = ${JSON.stringify(recognition(1))};
 result.pageNumber = page; result.identity.pageNumber = page;
@@ -223,21 +247,18 @@ result.blockCrops = [{path: crop, blockId: 'flow_q', blockTitle: 'choice', block
 segmentIndex: 1, questionNumbers: ['1'], rect: {x:0,y:0,width:1,height:1}, widthPx:24,heightPx:24,dpi:300}];
 process.stdout.write(JSON.stringify(result));
 `, "utf8");
-  try {
-    const blocked = new FormData();
-    blocked.append("files", new Blob([Buffer.from(info.images.original, "base64")], { type: "image/png" }), "cache-fail.png");
-    blocked.append("prepareUpload", "1");
-    blocked.append("pageOrder", "sequential");
-    const blockedResponse = await fetch(`${base}/api/cards/${card.id}/grading`, { method: "POST", body: blocked });
-    assert.equal(blockedResponse.status, 200, await blockedResponse.clone().text());
-    const blockedResult = await blockedResponse.json() as CombinedGradingBatchResult;
-    assert.equal(blockedResult.rows[0].recognition.status, "ok");
-    assert.equal(blockedResult.rows[0].studentId, "91001");
-    assert.equal(blockedResult.rows[0].uploadPayloadUrl, undefined,
-      "a cache write failure must omit the payload URL and keep the graded recognition");
-  } finally {
-    await chmod(uploadDir, 0o755);
-  }
+  const blocked = new FormData();
+  blocked.append("files", new Blob([Buffer.from(info.images.original, "base64")], { type: "image/png" }), "cache-fail.png");
+  blocked.append("prepareUpload", "1");
+  blocked.append("pageOrder", "sequential");
+  const blockedResponse = await fetch(`${base}/api/cards/${card.id}/grading`, { method: "POST", body: blocked });
+  assert.equal(blockedResponse.status, 200, await blockedResponse.clone().text());
+  const blockedResult = await blockedResponse.json() as CombinedGradingBatchResult;
+  assert.equal(blockedResult.rows[0].recognition.status, "ok");
+  assert.equal(blockedResult.rows[0].studentId, "91001");
+  assert.equal(blockedResult.rows[0].uploadPayloadUrl, undefined,
+    "a cache write failure must omit the payload URL and keep the graded recognition");
+
   console.log(`PASS ${db.dialect}: import cache write failure keeps the successful grading result`);
 } finally {
   if (localServer) await new Promise<void>(resolve => localServer!.close(() => resolve()));

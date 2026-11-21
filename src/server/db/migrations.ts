@@ -1421,6 +1421,11 @@ MIGRATIONS.push({ version: 69, name: "answer-block-crops-correction-revision", u
   `);
 } });
 
+// Pre-release v69 also stamped legacy crops whose producing image was unknown.
+MIGRATIONS.push({ version: 71, name: "invalidate-unverified-crop-revisions", up(db) {
+  db.exec("UPDATE answer_block_crops SET correction_revision = NULL WHERE correction_revision IS NOT NULL");
+} });
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

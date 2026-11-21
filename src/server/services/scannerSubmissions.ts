@@ -96,24 +96,10 @@ export function enqueueScannerSubmission<T>(work: () => Promise<T>): Promise<T> 
   return next;
 }
 
-/**
- * 「只读、但读到的内容会喂给入库、判分或终态判断」的读，必须读到已提交的数据。
- *
- * SQLite 只有一条连接，`transaction()` 在 BEGIN 与 COMMIT 之间会 `await` 回调并让出
- * 事件循环（`db/mysql.ts` 的 SQLite 适配器注释：进程内互斥本来就由调用方的串行链
- * 保证）。链外的读因此能撞见别人尚未提交、随后可能 ROLLBACK 的行——上传队列会把这种
- * 中间态当成「这一批已保存」，顺手解开「上传中不许改分」的闸。本地模式把这类读排进
- * 提交链，等上一个写落定再读。
- *
- * MariaDB 用连接池，池里的其它连接只看得到已提交快照，没有这种中间态；继续留在链外
- * 并发读，正是本次改动要保住的收益（轮询不再排在整条写入队列后面）。
- *
- * 只给「读了要当结论用」的入口用（目前是上传界面的批内预览轮询）。一次性的短读别往这儿加：
- * 链上可能压着整场 OCR，会把上传拖成串行；那种路径按连接语义自查 `hasOpenTransaction()`
- * 更合适（见 `apps/answer-card/server/scanner/scan-upload-payload.ts`）。
- */
-export function runScannerCommittedRead<T>(work: () => Promise<T>): Promise<T> {
-  return getMysqlDb().dialect === "sqlite" ? enqueueScannerSubmission(work) : work();
+/** SQLite readers share the scanner write queue. MariaDB readers share one MVCC snapshot. */
+export function runScannerCommittedRead<T>(work: (db: DbAdapter) => Promise<T>): Promise<T> {
+  const db = getMysqlDb();
+  return db.dialect === "sqlite" ? enqueueScannerSubmission(() => work(db)) : db.transaction(work, "readSnapshot");
 }
 
 async function lockExam(db: DbAdapter, examId: number) {
@@ -341,27 +327,14 @@ export async function recoverScannerSubmissionSnapshot(examId: number, sessionId
 export async function processScannerSession(card: AnswerCard, sessionId: string,
   mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string, saveGroupIds?: ReadonlySet<string>,
   blockUnreviewed = false): Promise<ScanBatchResponse> {
-  return enqueueScannerSubmission(() => processScannerSessionInQueue(card, sessionId, mode, saveGroupId, saveGroupIds, blockUnreviewed));
-}
-
-/**
- * 上传界面轮询用的只读批内视图。
- *
- * MariaDB（生产）下它不走提交链，轮询因此不再排在整条写入队列后面；
- * SQLite（本地/单机）下仍排在链里——同一连接在 BEGIN..COMMIT 之间会被链外的读
- * 撞见未提交行，这里宁可等，也不能把「还没提交」看成「这一批已保存」。
- * 见 `runScannerCommittedRead`。
- */
-export async function previewScannerUploadSession(card: AnswerCard, sessionId: string): Promise<ScanBatchResponse> {
-  return runScannerCommittedRead(() => processScannerSessionInQueue(card, sessionId, "preview"));
+  return enqueueScannerSubmission(() => processScannerSessionInQueue(getMysqlDb(), card, sessionId, mode, saveGroupId, saveGroupIds, blockUnreviewed));
 }
 
 /** Caller retains scanner queue ownership through correction and admission. */
-export async function processScannerSessionInQueue(card: AnswerCard, sessionId: string,
+export async function processScannerSessionInQueue(db: DbAdapter, card: AnswerCard, sessionId: string,
   mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string, saveGroupIds?: ReadonlySet<string>,
   blockUnreviewed = false): Promise<ScanBatchResponse> {
-    const db = getMysqlDb();
-    const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
+    const records = (await listScanRecordsGroupedByStudent(sessionId, undefined, db)).flatMap(g => g.records);
     const { groups, pageCount } = groupSessionPages(card, records);
     const invalidGroups = new Set<string>();
     const repeatedGroups = new Set<string>();
@@ -399,7 +372,7 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
       const ids = [...new Set(rows.map(r => r.record.student_id).filter((id): id is string => Boolean(id)))];
       return ids.length === 1 ? [{ groupId, studentNumber: ids[0], pages: rows.map(r => r.page) }] : [];
     });
-    const { exams, exam } = await resolveScannerExam(card.id, sessionId);
+    const { exams, exam } = await resolveScannerExam(card.id, sessionId, db);
     if (!exam) {
       return visible(await collectSessionResults(card, records, [], mode === "save" ? async () => {
         throw new Error(exams.length === 0 ? "答题卡未关联可阅卷的考试，成绩未入库" : "答题卡关联多个考试，无法确定成绩归属");

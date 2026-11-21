@@ -79,7 +79,8 @@ try {
   pageForm.append("side", "front");
   pageForm.append("recognition", JSON.stringify(recognition));
   const pageUploaded = await request(`/api/scanner/upload/sessions/${remote.sessionId}/pages`, { method: "POST", body: pageForm });
-  assert.equal(pageUploaded.status, 200, await pageUploaded.text());
+  assert.equal(pageUploaded.status, 200, await pageUploaded.clone().text());
+  const firstReceipt = (await pageUploaded.json()).fileName;
 
   let releaseStaging!: () => void;
   let signalStagingEntered!: () => void;
@@ -139,6 +140,32 @@ try {
     `/api/scanner/upload/sessions/${remote.sessionId}/pages/${remote.uploadTokens[0]}/crops`,
     { method: "POST", body: cropOk },
   )).status, 200);
+  const revision = () => db.get<{ correction_revision: number | null }>(
+    "SELECT correction_revision FROM answer_block_crops WHERE source_record_id=?", remote.uploadTokens[0]);
+  assert.equal((await revision())!.correction_revision, null, "legacy clients cannot certify a crop for cache reuse");
+  const secondPage = await request(`/api/scanner/upload/sessions/${remote.sessionId}/pages`, { method: "POST", body: pageForm });
+  assert.equal(secondPage.status, 200);
+  const secondReceipt = (await secondPage.json()).fileName;
+  assert.notEqual(secondReceipt, firstReceipt);
+  const submitCrops = (receipt: string) => {
+    cropOk.set("imageReceipt", receipt);
+    return request(`/api/scanner/upload/sessions/${remote.sessionId}/pages/${remote.uploadTokens[0]}/crops`,
+      { method: "POST", body: cropOk });
+  };
+  assert.equal((await submitCrops(secondReceipt)).status, 200);
+  const paired = await revision();
+  assert.ok(Number(paired?.correction_revision) > 0);
+  const rejected = await submitCrops(firstReceipt);
+  assert.equal(rejected.status, 409);
+  assert.equal((await rejected.json()).code, "SCAN_IMAGE_REPLACED");
+  assert.deepEqual(await revision(), paired);
+  // Restore the state of a v69 installation that inferred a stamp from the record ID.
+  await db.run("DELETE FROM schema_migrations WHERE version=71");
+  initializeDatabase();
+  assert.equal((await revision())!.correction_revision, null);
+  assert.equal((await submitCrops(secondReceipt)).status, 200);
+  initializeDatabase();
+  assert.deepEqual(await revision(), paired, "restarting preserves crops paired after upgrade");
   const committed = await db.get<{ image_path: string }>(
     "SELECT image_path FROM answer_block_crops WHERE source_record_id=?",
     remote.uploadTokens[0],

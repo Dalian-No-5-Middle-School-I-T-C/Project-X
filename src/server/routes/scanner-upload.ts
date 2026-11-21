@@ -1,5 +1,5 @@
 import { scanCorrectionRouter } from "./scan-correction";
-import { storeCorrectionPage } from "../services/scanCorrection";
+import { correctionPageRevision, storeCorrectionPage } from "../services/scanCorrection";
 import { gradeCombinedRecognition, gradeSessionStudentResults } from "../../shared/grading";
 /**
  * v1.6.0 — 扫描上传端点
@@ -209,7 +209,7 @@ async function pageUploadOverwriteGates(
 }
 
 type CropUploadGate = {
-  record: { card_id: string; student_id: string | null; identity_json: string; ocr_status: string };
+  record: { card_id: string; student_id: string | null; identity_json: string; ocr_status: string; image_path: string };
 };
 
 async function cropUploadOverwriteGates(
@@ -217,9 +217,10 @@ async function cropUploadOverwriteGates(
   sessionId: string,
   recordId: string,
   res: Response,
+  imageReceipt: unknown,
 ): Promise<CropUploadGate | undefined> {
   const record = await db.get<CropUploadGate["record"] & { id: string }>(
-    "SELECT id, card_id, student_id, identity_json, ocr_status FROM twain_scan_records WHERE id = ? AND session_id = ?",
+    "SELECT id, card_id, student_id, identity_json, ocr_status, image_path FROM twain_scan_records WHERE id = ? AND session_id = ?",
     recordId,
     sessionId,
   );
@@ -244,6 +245,10 @@ async function cropUploadOverwriteGates(
   }
   if (!record.identity_json || !["uploaded", "completed"].includes(record.ocr_status)) {
     res.status(409).json({ message: "页面尚未通过身份校验，不能上传切块" });
+    return;
+  }
+  if (imageReceipt !== undefined && imageReceipt !== path.basename(record.image_path)) {
+    res.status(409).json({ code: "SCAN_IMAGE_REPLACED", message: "原图已被替换，请核对后重新上传该页" });
     return;
   }
   return { record };
@@ -426,7 +431,7 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
       // and awaiting here inside BEGIN..ROLLBACK would undo other requests' committed writes.
       await scannerPageImageStaging.write(stagedImage, image.buffer);
 
-      const { session, record } = gated;
+      const { session } = gated;
       let retiredCropPaths: string[] = [];
       const committed = await runScannerSessionTransaction(String(sessionId), async db => {
         const again = await pageUploadOverwriteGates(db, String(sessionId), token, res);
@@ -476,7 +481,7 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
             recognition.studentId.value, token, sessionId);
         }
 
-        return { ok: true, pageNum, side, fileName, previousImage: record.image_path };
+        return { ok: true, pageNum, side, fileName, previousImage: again.record.image_path };
       });
       if (retiredCropPaths.length > 0) await retireSupersededCropImages(retiredCropPaths);
       return committed;
@@ -537,10 +542,10 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, cropUploadBu
 
     const uploaded = await enqueueScannerSubmission(async () => {
       const gated = await runScannerSessionTransaction(sessionId, db =>
-        cropUploadOverwriteGates(db, sessionId, recordId, res));
+        cropUploadOverwriteGates(db, sessionId, recordId, res, req.body?.imageReceipt));
       if (!gated) return;
 
-      tempDir = path.resolve(scannerUploadDir(), "crops-temp", path.basename(sessionId), path.basename(recordId));
+      tempDir = path.join(scannerUploadDir(), "crops-temp", crypto.randomUUID());
       if (!existsSync(tempDir)) mkdirSync(tempDir, { recursive: true });
 
       try {
@@ -579,20 +584,18 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, cropUploadBu
         stagedCropPaths = relocated.paths;
 
         return await runScannerSessionTransaction(sessionId, async db => {
-          const again = await cropUploadOverwriteGates(db, sessionId, recordId, res);
+          const again = await cropUploadOverwriteGates(db, sessionId, recordId, res, req.body?.imageReceipt);
           if (!again) return;
 
-          const correctionRevision = (await db.get<{ revision: number }>(
-            "SELECT revision FROM scan_correction_pages WHERE source_type=? AND source_id=?",
-            "twain_scan_record",
-            recordId,
-          ))?.revision ?? null;
+          // Older clients can submit review images, but only paired images qualify for OCR reuse.
+          const correctionRevision = req.body?.imageReceipt
+            ? await correctionPageRevision("twain_scan_record", recordId, db) : null;
           const saved = await persistAnswerBlockCrops({
             cardId: String(again.record.card_id),
             studentNumber: again.record.student_id ?? null,
             sourceType: "twain_scan_record",
             sourceRecordId: recordId,
-            correctionRevision: correctionRevision == null ? null : Number(correctionRevision),
+            correctionRevision,
             crops: relocated.crops,
             skipFileMoves: true,
           }, db);
@@ -677,18 +680,19 @@ router.get("/sessions/:sessionId/participant-search", dualAuth, async (req, res,
 
 router.get("/sessions/:sessionId/results", dualAuth, async (req, res, next) => {
   try {
-    const session = await getMysqlDb().get<{ card_id: string }>("SELECT card_id FROM twain_scan_sessions WHERE id = ?", req.params.sessionId);
-    const card = session && await new CardRepository().findById(session.card_id);
-    if (!card) { res.status(404).json({ message: "扫描会话或答题卡不存在" }); return; }
-    const batch = await runScannerCommittedRead(async () => {
-      const batch = await processScannerSessionInQueue(card, String(req.params.sessionId), "preview");
+    const sessionId = String(req.params.sessionId);
+    const batch = await runScannerCommittedRead(async db => {
+      const session = await db.get<{ card_id: string }>("SELECT card_id FROM twain_scan_sessions WHERE id = ?", sessionId);
+      const card = session && await new CardRepository(db).findById(session.card_id);
+      if (!card) return null;
+      const batch = await processScannerSessionInQueue(db, card, sessionId, "preview");
       const recordIds = [...new Set(batch.results.flatMap(result => result.pages.map(page => page.recordId)))];
       const current = new Map<string, string>();
       // Bind identifiers instead of joining text columns: existing MariaDB
       // installations can have different collations in these two tables.
       for (let start = 0; start < recordIds.length; start += 100) {
         const chunk = recordIds.slice(start, start + 100);
-        const snapshots = await getMysqlDb().all<{ source_id: string; recognition_json: string }>(
+        const snapshots = await db.all<{ source_id: string; recognition_json: string }>(
           `SELECT source_id, recognition_json FROM scan_correction_pages
            WHERE source_type = 'twain_scan_record' AND source_id IN (${chunk.map(() => "?").join(",")})`, ...chunk);
         for (const row of snapshots) current.set(row.source_id, row.recognition_json);
@@ -716,6 +720,7 @@ router.get("/sessions/:sessionId/results", dualAuth, async (req, res, next) => {
       }
       return batch;
     });
+    if (!batch) { res.status(404).json({ message: "扫描会话或答题卡不存在" }); return; }
     res.json(batch);
   } catch (error) { next(error); }
 });

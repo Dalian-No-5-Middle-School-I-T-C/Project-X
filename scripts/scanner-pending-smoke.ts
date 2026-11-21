@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { startScannerFlowFixture } from "./scanner-upload-flow-fixture";
-import { isSavedReceiptOwnershipLookup } from "./smoke-sql-match";
+import { scannerPageImageStaging } from "../src/server/services/scannerPageImageStaging";
 import { cardFingerprint } from "../src/shared/cardVersion";
 import type { CombinedGradingRow } from "../src/shared/types";
 const fixture = await startScannerFlowFixture();
@@ -267,25 +267,18 @@ try {
       studentId:{status:"ok",value:"91999"}, questions:[{questionNumber:1,selectedOptions:["B"],confidence:1}],subjectiveQuestions:[]}));
     return fetch(`${fixture.baseUrl}/api/scanner/upload/sessions/${rosterSource.session_id}/pages`, {method:"POST",headers:{"X-Api-Key":info.key},body});
   };
-  let releaseUpload!:()=>void, ownershipRead!:()=>void;
-  const uploadGate = new Promise<void>(resolve=>{releaseUpload=resolve;});
-  const ownershipGate = new Promise<void>(resolve=>{ownershipRead=resolve;});
-  const originalTransaction = db.transaction.bind(db);
-  let pauseUpload = true;
-  db.transaction = fn => originalTransaction(async tx => {
-    const all = tx.all.bind(tx);
-    tx.all = async (sql,...params) => {
-      const result = await all(sql,...params);
-      if (pauseUpload && isSavedReceiptOwnershipLookup(sql) && params[0] === rosterSource.session_id) {
-        pauseUpload = false; ownershipRead(); await uploadGate;
-      }
-      return result;
-    };
-    try { return await fn(tx); } finally { tx.all = all; }
-  });
+  const { promise: uploadGate, resolve: releaseUpload } = Promise.withResolvers<void>();
+  const { promise: stagingEntered, resolve: signalStaging } = Promise.withResolvers<void>();
+  const originalWrite = scannerPageImageStaging.write;
+  scannerPageImageStaging.write = async (target, data) => {
+    signalStaging();
+    await uploadGate;
+    await originalWrite(target, data);
+  };
   try {
     const upload = uploadPage();
-    await ownershipGate;
+    await Promise.race([stagingEntered, upload.then(() => { throw new Error("upload skipped image staging"); }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("upload did not reach staging")), 5000).unref())]);
     // Enqueues synchronously while upload is paused. It must see the committed new evidence.
     const staleConfirmation = assert.rejects(confirmPendingScan(exam.id,item.sessionId,item.groupId,"accept",item.token,teacher.id,null), /原卷或正式成绩已更新/);
     releaseUpload();
@@ -293,7 +286,7 @@ try {
     assert.equal(response.status,200,await response.clone().text());
     await staleConfirmation;
     assert.equal(await score("91999"),null,"confirmation never saves scores from the evidence preceding an in-flight upload");
-  } finally { releaseUpload(); db.transaction = originalTransaction; }
+  } finally { releaseUpload(); scannerPageImageStaging.write = originalWrite; }
   item = (await call("GET")).body.items.find((i:{sessionId:string})=>i.sessionId===rosterSource.session_id);
   // Assignment failures still roll back teacher admission before any grades become visible.
   await db.run("UPDATE exams SET assigned_formula=? WHERE id=?",JSON.stringify({enabled:true,type:"linear"}),exam.id);
@@ -329,34 +322,39 @@ try {
     // A second process has its own queue. Model its uncommitted confirmation on
     // an independent connection; the real upload must wait for the exam row lock.
     await db.run("UPDATE scanner_submissions SET state='roster' WHERE session_id=? AND group_id='0'",rosterSource.session_id);
-    let locked!:()=>void, commit!:()=>void, attemptingLock!:()=>void;
-    const lockedGate = new Promise<void>(resolve=>{locked=resolve;});
-    const commitGate = new Promise<void>(resolve=>{commit=resolve;});
-    const attemptGate = new Promise<void>(resolve=>{attemptingLock=resolve;});
-    const confirmation = originalTransaction(async tx=>{
-      await tx.run("UPDATE exams SET id=id WHERE id=?",exam.id);
-      await tx.run("UPDATE scanner_submissions SET state='saved' WHERE session_id=? AND group_id='0'",rosterSource.session_id);
-      locked(); await commitGate;
+    const { promise: locked, resolve: signalLocked } = Promise.withResolvers<void>();
+    const { promise: commitGate, resolve: commit } = Promise.withResolvers<void>();
+    const originalTransaction = db.transaction.bind(db);
+    const confirmation = originalTransaction(async tx => {
+      await tx.run("UPDATE exams SET id=id WHERE id=?", exam.id);
+      await tx.run("UPDATE scanner_submissions SET state='saved' WHERE session_id=? AND group_id='0'", rosterSource.session_id);
+      signalLocked();
+      await commitGate;
     });
-    await lockedGate;
-    db.transaction = fn=>originalTransaction(async tx=>{
-      const run=tx.run.bind(tx);
-      tx.run=async (sql,...params)=>{
-        if (/UPDATE exams SET id = id/.test(sql)) attemptingLock();
-        return run(sql,...params);
-      };
-      try { return await fn(tx); } finally { tx.run=run; }
-    });
-    let timeout:ReturnType<typeof setTimeout>|undefined;
+    await Promise.race([locked, confirmation]);
+    let lockTimedOut = false;
+    db.transaction = (work, mode) => originalTransaction(async tx => {
+      const previous = await tx.get<{ seconds: number }>("SELECT @@session.innodb_lock_wait_timeout AS seconds");
+      await tx.exec("SET SESSION innodb_lock_wait_timeout = 1");
+      try { return await work(tx); }
+      catch (error) {
+        lockTimedOut = (error as { code?: string }).code === "ER_LOCK_WAIT_TIMEOUT";
+        throw error;
+      } finally { await tx.exec(`SET SESSION innodb_lock_wait_timeout = ${Number(previous!.seconds)}`); }
+    }, mode);
     try {
-      const retry=uploadPage();
-      await Promise.race([attemptGate,new Promise<void>((_,reject)=>{timeout=setTimeout(()=>reject(new Error("upload did not acquire the common exam lock")),5000);})]);
-      assert.deepEqual(await readFile(acceptedImagePath),acceptedBytes,"upload cannot write while another connection confirms its source");
-      commit(); await confirmation;
-      const response=await retry;
-      assert.equal(response.status,409,await response.clone().text());
-      assert.equal(await acceptedSource(),acceptedBefore,"post-lock reads observe the saved receipt after commit");
-    } finally { if(timeout) clearTimeout(timeout); commit(); await confirmation; db.transaction=originalTransaction; }
+      const blocked = await uploadPage();
+      assert.equal(blocked.status, 500);
+      assert.ok(lockTimedOut, "concurrent upload must wait for the confirming transaction");
+      assert.deepEqual(await readFile(acceptedImagePath), acceptedBytes);
+    } finally {
+      db.transaction = originalTransaction;
+      commit();
+      await confirmation;
+    }
+    assert.equal((await uploadPage()).status, 409);
+    assert.equal(await acceptedSource(), acceptedBefore, "retry observes the committed receipt");
+
   }
 
   await scan("99999");

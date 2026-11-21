@@ -56,5 +56,59 @@ try {
     assert.equal((await request(`/sessions/${wrongCase}/complete`, json({ cardVersion: info.version }))).status, 409,
       "SQLite's case-sensitive student-number matching must be preserved");
   }
+  const { CardRepository } = await import("../src/server/repositories/CardRepository");
+  const { enqueueScannerSubmission } = await import("../src/server/services/scannerSubmissions");
+  const recordId = batch.results[0].pages[0].recordId;
+  const oldStudent = batch.results[0].studentId;
+  const preview = async () => {
+    const response = await request(`/sessions/${sessionId}/results`, { signal: AbortSignal.timeout(5000) });
+    assert.equal(response.status, 200, await response.clone().text());
+    const { results } = await response.json();
+    assert.equal(results.length, 1);
+    return [results[0].studentId, results[0].totalScore, results[0].saved];
+  };
+  const correct = async (tx: typeof db) => {
+    const answers = [{ questionNumber: 1, selectedOptions: ["B"], confidence: 1 }];
+    const row = await tx.get<{ recognition_json: string }>(
+      "SELECT recognition_json FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id=?", recordId);
+    const recognition = { ...JSON.parse(row!.recognition_json), questions: answers, studentId: { status: "ok", value: "91002" } };
+    await tx.run("UPDATE twain_scan_records SET student_id='91002' WHERE id=?", recordId);
+    await tx.run("UPDATE twain_recognition_results SET objective_json=? WHERE scan_record_id=?", JSON.stringify(answers), recordId);
+    await tx.run("UPDATE scan_correction_pages SET recognition_json=?, revision=revision+1 WHERE source_type='twain_scan_record' AND source_id=?",
+      JSON.stringify(recognition), recordId);
+    await tx.run("UPDATE scanner_submissions SET student_number='91002', state='pending', result_json=NULL WHERE session_id=?", sessionId);
+  };
+  if (db.dialect === "mariadb") {
+    // Commit on another connection after the route has read the card for grading.
+    const findCard = CardRepository.prototype.findById;
+    CardRepository.prototype.findById = async function (id) {
+      const card = await findCard.call(this, id);
+      CardRepository.prototype.findById = findCard;
+      await db.transaction(correct);
+      return card;
+    };
+    try {
+      assert.deepEqual(await preview(), [oldStudent, 5, true]);
+      assert.deepEqual(await preview(), ["91002", 0, false]);
+    } finally { CardRepository.prototype.findById = findCard; }
+  } else {
+    const dirty = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const writer = assert.rejects(enqueueScannerSubmission(() => db.transaction(async tx => {
+      await correct(tx);
+      dirty.resolve();
+      await release.promise;
+      throw new Error("roll back fixture correction");
+    })), /roll back fixture correction/);
+    try {
+      await Promise.race([dirty.promise, writer]);
+      const arrival = new Promise<void>(resolve => fixture.server.once("request", () => resolve()));
+      const poll = preview();
+      await Promise.race([arrival, poll]);
+      await Promise.race([poll, new Promise(resolve => setTimeout(resolve, 60))]);
+      release.resolve();
+      assert.deepEqual(await poll, [oldStudent, 5, true]);
+    } finally { release.resolve(); await writer; }
+  }
   console.log(`PASS saved receipt (${db.dialect}): database collation, saved preview and idempotent completion preserve teacher scores`);
 } finally { await fixture.close(); }

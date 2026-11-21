@@ -303,7 +303,11 @@ async function main() {
       try {
         let uploaded = "";
         const historical = createScannerUploadManager(deps({
-          localFetch: async (url) => String(url).includes("/upload-payload") ? jsonRes({ message: "miss" }, 404) : missedRecognition(),
+          localFetch: async (url) => {
+            if (String(url).endsWith("/upload-payload")) return jsonRes({ message: "miss" }, 404);
+            if (String(url).endsWith("/old-record")) return jsonRes({ student_id: "91004" });
+            return jsonRes({ status: "ok", studentId: { status: "ok", value: "91009" }, questions: [], subjectiveQuestions: [] });
+          },
           remoteFetch: async (url, init) => {
             if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "hist", uploadTokens: ["h1"] });
             if (url.endsWith(PAGES)) {
@@ -324,7 +328,7 @@ async function main() {
           }],
         });
         assert((await waitTerminal(historical, historicalId)).status === "done", "没有快照时应用汇总里已保存的学号");
-        assert(uploaded === "91001", "漏读学号时回退到汇总学号");
+        assert(uploaded === "91004", "旧卷应采用当前已保存学号，即使重新识别得到了另一个有效学号");
 
         uploaded = "";
         const cached = createScannerUploadManager(deps({
@@ -1329,10 +1333,34 @@ async function main() {
       else Reflect.deleteProperty(globalThis, "localStorage");
     }
   }
+  {
+    const uploadedIds: string[] = [];
+    const manager = createScannerUploadManager(deps({
+      localFetch: async (url, init) => {
+        if (url.endsWith("/upload-payload")) return jsonRes({}, 404);
+        if (url.includes("/record/")) return jsonRes({ student_id: url.endsWith("/front") ? "91001" : null });
+        const first = (init!.body as FormData).get("page") === "1";
+        return jsonRes({ status: "ok", studentId: { status: "ok", value: first ? "91001" : "91005" },
+          questions: [], subjectiveQuestions: [] });
+      },
+      remoteFetch: async (url, init) => {
+        if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "historical-duplex", uploadTokens: ["a", "b"] });
+        if (url.endsWith(PAGES)) uploadedIds.push(JSON.parse(String((init!.body as FormData).get("recognition"))).studentId.value);
+        return jsonRes({ ok: true });
+      },
+    }));
+    const id = manager.startUpload({ ...baseInput(2), kind: "scan", pages: (["front", "back"] as const).map((side, index) => ({
+      pageNum: 1, side, recordId: side, groupId: "0", layoutPage: index + 1, fallbackStudentId: "91001",
+      getCorrection: async () => undefined, getBlob: async () => blob(),
+    })) });
+    const result = await waitTerminal(manager, id);
+    assert(result.status === "error" && result.message.includes("正反面学号不一致"), "a conflicting back-side ID must stop the upload");
+    assert(uploadedIds.join(",") === "91001", "only the verified front may be uploaded");
+  }
   // Recognition/image/crop retries have independent checkpoints. Manual retry of
   // an acknowledged image must also reuse its exact payload and resend only crops.
   for (const kind of ["scan", "import"] as const) {
-    let reads = 0, recognitions = 0, corrections = 0, images = 0, crops = 0, failCrops = true;
+    let reads = 0, recognitions = 0, corrections = 0, images = 0, crops = 0, staleReceipt = false, failCrops = true;
     const mgr = createScannerUploadManager(deps({
       localFetch: async url => {
         recognitions++;
@@ -1344,9 +1372,11 @@ async function main() {
       },
       remoteFetch: async (url, init) => {
         if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "staged", uploadTokens: ["t"] });
-        if (url.endsWith(PAGES)) { images++; return jsonRes({ ok: true }); }
+        if (url.endsWith(PAGES)) { images++; return jsonRes({ ok: true, fileName: `page-${images}.png` }); }
         if (url.endsWith("/crops")) {
           crops++;
+          assert((init!.body as FormData).get("imageReceipt") === `page-${images}.png`, "crops identify their acknowledged original");
+          if (staleReceipt) return jsonRes({ code: "SCAN_IMAGE_REPLACED" }, 409);
           assert(await ((init!.body as FormData).get("crops") as Blob).text() === "crop", "retries keep crop bytes");
           return failCrops ? jsonRes({ message: "temporary failure" }, 503) : jsonRes({ count: 1 });
         }
@@ -1362,9 +1392,15 @@ async function main() {
     const expectedCorrections = kind === "scan" ? 1 : 0;
     assert(reads === 1 && recognitions === 1 && corrections === expectedCorrections && images === 1 && crops === 3,
       "failed crops must not repeat image reads, recognition, correction or original upload");
-    failCrops = false; mgr.retryFailed(id);
+    failCrops = false;
+    staleReceipt = true;
+    mgr.retryFailed(id);
+    assert((await waitTerminal(mgr, id)).status === "error", "replaced original requires explicit retry");
+    assert(reads === 1 && images === 1 && Number(crops) === 4, "a network retry resends only crops");
+    staleReceipt = false;
+    mgr.retryFailed(id);
     assert((await waitTerminal(mgr, id)).status === "done", "manual retry completes remaining crops");
-    assert(reads === 1 && recognitions === 1 && images === 1 && Number(crops) === 4, "manual crop retry resumes its stage");
+    assert(Number(reads) === 2 && Number(recognitions) === 2 && Number(images) === 2 && Number(crops) === 5, "stale image retry prepares and binds a new original");
   }
   console.log("scanner-upload-manager-smoke: 全部通过");
 }

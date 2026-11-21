@@ -328,7 +328,7 @@ export async function saveSessionCorrection(card: AnswerCard, sessionId: string,
     // retry previews must not observe corrected marks with a still-pending receipt.
     const admission = await resolveScannerExam(card.id,sessionId);
     if (!admission.exam) return {saved:false,message:"填涂订正已保存，等待上传到关联考试"};
-    const batch = await processScannerSessionInQueue(card,sessionId,"save",groupId);
+    const batch = await processScannerSessionInQueue(db,card,sessionId,"save",groupId);
     const row = batch.results.find(r => r.groupId === groupId);
     const saved = Boolean(row?.saved);
     // 存疑题不再拦入库（issue #352 口径）：改一部分就入一部分，复核标记随成绩一起留着，
