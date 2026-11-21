@@ -12,11 +12,6 @@ New-Item -ItemType Directory -Force $work, (Join-Path $shared 'evidence') | Out-
 foreach ($script in @('production-flow-browser.cjs','production-flow-target.cjs','production-flow-electron.cjs','production-flow-draft-fixture.cjs','production-flow-postprocess-fixture.cjs','production-flow-viewports.cjs')) {
     Copy-Item -LiteralPath (Join-Path (Join-Path $source 'scripts') $script) -Destination $work -Force
 }
-$inputs = if ($stage -eq 'admin-bootstrap') { 'config.json' } else { 'state.json' }
-Copy-Item -LiteralPath (Join-Path $shared $inputs) -Destination (Join-Path $work 'state.json') -Force
-if (Test-Path -LiteralPath (Join-Path $shared 'manifest.json')) {
-    Copy-Item -LiteralPath (Join-Path $shared 'manifest.json') -Destination $work -Force
-}
 $exe = if ($env:PROJECTX_FLOW_NODE) { Get-Item -LiteralPath $env:PROJECTX_FLOW_NODE } elseif (Get-Command node.exe -ErrorAction SilentlyContinue) { Get-Item (Get-Command node.exe).Source } else {
     $env:ELECTRON_RUN_AS_NODE='1'
     Get-ChildItem -LiteralPath (Join-Path $work 'runtime') -Filter *.exe | Select-Object -First 1
@@ -31,8 +26,5 @@ if ($stage.StartsWith('electron:')) { $driver='production-flow-electron.cjs'; $a
 & $exe.FullName (Join-Path $work $driver) $action 2>&1 | Tee-Object -FilePath (Join-Path $work $log)
 $result=$LASTEXITCODE
 $ErrorActionPreference='Stop'
-if (Test-Path (Join-Path $work 'evidence')) {
-    Copy-Item -Path (Join-Path $work 'evidence\*') -Destination (Join-Path $shared 'evidence') -Force
-}
 Copy-Item -LiteralPath (Join-Path $work $log) -Destination (Join-Path $shared 'evidence') -Force
 exit $result

@@ -4,13 +4,30 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const { chromium, request } = require('./tools/node_modules/playwright-core');
 const work = __dirname;
-const state = JSON.parse(fs.readFileSync(path.join(work, 'state.json'), 'utf8'));
 const step = process.argv[2] || 'scanner-prepare';
-const evidence = path.join(work, 'evidence');
 const shared = process.env.PROJECTX_FLOW_SHARED_ROOT;
 assert(shared, 'Run this file through production-flow-windows.ps1');
+const state = JSON.parse(fs.readFileSync(path.join(shared, step === 'admin-bootstrap' ? 'config.json' : 'state.json'), 'utf8'));
+const evidence = path.join(shared, 'evidence');
 const { validateTargets } = require("./production-flow-target.cjs");
 validateTargets(state);
+const stages = new Set([
+  'scanner-prepare', 'scanner-live', 'scanner-scan', 'teacher-login-retest', 'admin-bootstrap',
+  'teacher-roster-extra', 'teacher-grading-draft', 'teacher-essay-pages', 'teacher-text-annotation', 'teacher-touch-annotation',
+  'teacher-legacy-ui', 'admin-retention-setup', 'admin-retention-restore', 'admin-backup-export',
+  'admin-backup-restore', 'admin-provider-ui', 'admin-tools-ui', 'admin-student-background',
+  'admin-feedback-paging', 'admin-designer-lifecycle', 'admin-card-previews', 'admin-mobile-drawer',
+  'admin-review-viewport', 'admin-account-appearance', 'admin-analysis-bands', 'admin-feedback-ui',
+  'teacher-feedback-ui', 'teacher-print', 'teacher-analysis-dialogs', 'teacher-preview-rotation',
+  'teacher-card-rotation', 'admin-responsive', 'student10008:account-controls', 'student10008:file-formats',
+  'student10008:rotation', 'student10008:responsive',
+]);
+assert.match(step, /^[a-zA-Z0-9]+(?:[:-][a-zA-Z0-9]+)*$/, 'Invalid browser stage');
+const actionsFile = path.join(shared, `actions-${step.replaceAll(':', '-')}.json`);
+const actions = fs.existsSync(actionsFile) ? JSON.parse(fs.readFileSync(actionsFile, 'utf8')) : [];
+assert.ok(Array.isArray(actions), 'Browser stage actions must be an array');
+const watch = /^student[0-9]+:watch$/.test(step);
+assert.ok(stages.has(step) || watch || actions.length > 0, 'Unknown browser stage or missing actions: ' + step);
 fs.mkdirSync(evidence, { recursive: true });
 const profile = step.startsWith('scanner') ? 'scanner' : step.startsWith('teacher') ? 'teacher' : step.startsWith('student') ? step.split(':')[0] : 'admin';
 const errors = [], requests = [];
@@ -76,7 +93,6 @@ async function performActions(page, actions) {
 async function controlScanner(page) {
   let last = '';
   fs.writeFileSync(path.join(evidence, '扫描会话就绪.json'), JSON.stringify({ ready: true, at: new Date().toISOString() }));
-  fs.cpSync(evidence, path.join(shared, 'evidence'), { recursive: true });
   for (;;) {
     await new Promise(resolve => setTimeout(resolve, 1000));
     const file = path.join(shared, 'ui-command.json');
@@ -92,7 +108,6 @@ async function controlScanner(page) {
     await snapshot(page, command.id);
     const result = { id: command.id, error, text: await page.locator('body').innerText(), inputs: await page.locator('input').evaluateAll(nodes => nodes.map(n => ({ label: n.getAttribute('aria-label'), placeholder: n.placeholder }))), buttons: await page.getByRole('button').allTextContents() };
     fs.writeFileSync(path.join(evidence, '扫描操作结果.json'), JSON.stringify(result, null, 2));
-    fs.cpSync(evidence, path.join(shared, 'evidence'), { recursive: true });
   }
 }
 async function onboard(page) {
@@ -659,6 +674,12 @@ async function accountBackup(page){
   }else{
     const bytes=fs.readFileSync(backup);
     assert.equal(bytes.readUInt32LE(0),0x04034b50);
+    const destination=await page.request.get(state.server+'/api/exams/'+state.examId);
+    assert.equal(destination.status(),200);
+    const exam=await destination.json();
+    assert.equal(exam.card_id,state.cardId,'Restore only to the service containing this run’s seeded card');
+    assert.equal(exam.name,state.cardTitle);
+    assert.equal(exam.class_id,state.cls.id);
     const snapshot=JSON.parse(fs.readFileSync(path.join(shared,'备份恢复前快照.json')));
     assert.ok(snapshot.id&&snapshot.sha256===require('node:crypto').createHash('sha256').update(bytes).digest('hex'),'Use the exported archive verified against the pre-restore snapshot');
     const [picker]=await Promise.all([page.waitForEvent('filechooser'),page.getByRole('menuitem',{name:'导入数据',exact:true}).click()]);
@@ -726,7 +747,7 @@ async function main() {
     args.push(`--ignore-certificate-errors-spki-list=${process.env.PROJECTX_FLOW_CERT_SPKI}`);
   }
   const annotationStage=step==='teacher-text-annotation'||step==='teacher-touch-annotation';
-  const reviewerStage=annotationStage||step==='teacher-grading-draft';
+  const reviewerStage=annotationStage||step==='teacher-grading-draft'||step==='teacher-essay-pages';
   context = await chromium.launchPersistentContext(path.join(work, reviewerStage?'edge-annotation-reviewer':step==='teacher-roster-extra' ? 'edge-review-lead' : `edge-${profile}`), {
     ...(process.env.PROJECTX_FLOW_BROWSER ? { executablePath: process.env.PROJECTX_FLOW_BROWSER } : { channel: 'msedge' }),
     headless: true, hasTouch: step==='teacher-touch-annotation', viewport: { width: 1600, height: 1100 }, args, timeout: 60000,
@@ -780,7 +801,7 @@ async function main() {
     if (step === 'scanner-scan' || step === 'scanner-live') {
       await page.getByText('本地判分+上传服务器', { exact: true }).click();
       await page.waitForFunction(() => localStorage.getItem('projectx_scanner_mode') === 'remote');
-      const files = JSON.parse(fs.readFileSync(path.join(work, 'manifest.json'), 'utf8')).map(row => path.join(process.env.PROJECTX_FLOW_SHARED_ROOT || work, 'images', row.image));
+      const files = JSON.parse(fs.readFileSync(path.join(shared, 'manifest.json'), 'utf8')).map(row => path.join(shared, 'images', row.image));
       await page.locator('input[type=file]:not([webkitdirectory])').setInputFiles(files);
       await snapshot(page, '扫描端五十张卡导入');
       await page.getByRole('button', { name: /开始阅卷|开始识别/ }).click();
@@ -831,6 +852,66 @@ async function main() {
       console.log('Student read the answer PNG inline and downloaded byte-identical PDF and DOCX');
     }
     if (step === 'teacher-roster-extra') await decideExtraPapers(page);
+    if (step === 'teacher-essay-pages') {
+      const { B: spec } = JSON.parse(fs.readFileSync(path.join(shared, 'matrix-exams.json')));
+      assert.equal(spec.title, '跨页作文评分补测');
+      assert.ok(spec.parts.length >= 2);
+      const who = await (await page.request.get(state.server + '/api/auth/me')).json();
+      const reviewer = who.user || who;
+      assert.equal(reviewer.username, 'flow_review_1');
+      await page.goto(state.server + '/exam-manage', { waitUntil: 'networkidle' });
+      const row = page.getByRole('row').filter({ has: page.getByText(spec.title, { exact: true }) });
+      await row.getByRole('button', { name: '网阅', exact: true }).click();
+      await page.getByRole('button', { name: /作文/ }).first().click();
+      const poolPath = '/api/review-pool/exams/' + spec.exam + '/blocks/' + spec.block;
+      const own = await (await page.request.get(state.server + poolPath + '?mine=1')).json();
+      let paper = own.data.entries.find(item => item.studentNumber === '10001' && item.claimedBy === reviewer.id);
+      if (!paper) {
+        const [claimed] = await Promise.all([
+          page.waitForResponse(r => new URL(r.url()).pathname === poolPath + '/claim' && r.request().method() === 'POST'),
+          page.getByRole('button', { name: '从试卷池领取试卷', exact: true }).click(),
+        ]);
+        assert.equal(claimed.status(), 200);
+        paper = (await claimed.json()).data;
+        fs.writeFileSync(path.join(evidence, '跨页作文教师领卷.json'), JSON.stringify({ reviewer: reviewer.id, exam: spec.exam, cropId: paper.id }, null, 2));
+      }
+      assert.equal(paper.studentNumber, '10001');
+      assert.deepEqual(paper.reviewImages.map(img => img.pageNumber), spec.parts.map(part => part.page));
+      const seen = [];
+      for (const [i, image] of paper.reviewImages.entries()) {
+        const label = `作文第 ${i + 1} 段（第 ${image.pageNumber} 页）`;
+        await page.getByRole('button', { name: label, exact: true }).click();
+        const img = page.getByRole('img', { name: label, exact: true });
+        await img.waitFor();
+        const dimensions = await img.evaluate(async node => {
+          await node.decode();
+          return [new URL(node.currentSrc).pathname, node.naturalWidth, node.naturalHeight];
+        });
+        assert.deepEqual(dimensions, [new URL(image.imageUrl, state.server).pathname, image.widthPx, image.heightPx]);
+        const fetched = await page.request.get(await img.evaluate(node => node.currentSrc));
+        assert.equal(fetched.status(), 200);
+        const mime = fetched.headers()['content-type'].split(';')[0];
+        assert.ok(['image/png', 'image/jpeg', 'image/webp'].includes(mime));
+        const bytes = await fetched.body();
+        const sha256 = require('node:crypto').createHash('sha256').update(bytes).digest('hex');
+        fs.writeFileSync(path.join(evidence, `作文切图第${image.pageNumber}页.${mime.split('/')[1]}`), bytes);
+        seen.push({ page: image.pageNumber, cropId: image.id, width: image.widthPx, height: image.heightPx, sha256 });
+        await snapshot(page, '跨页作文第' + image.pageNumber + '页');
+      }
+      assert.equal(new Set(seen.map(item => item.cropId)).size, spec.parts.length);
+      assert.equal(new Set(seen.map(item => item.sha256)).size, spec.parts.length);
+      const savePath = '/api/review/exams/' + spec.exam + '/block-crops/' + paper.id + '/submit';
+      await page.getByRole('button', { name: '30', exact: true }).click();
+      const [saved] = await Promise.all([
+        page.waitForResponse(r => new URL(r.url()).pathname === savePath && r.request().method() === 'POST'),
+        page.getByRole('button', { name: '保存并下一份', exact: true }).click(),
+      ]);
+      assert.equal(saved.status(), 200);
+      const submission = await saved.json();
+      assert.equal(submission.finalScore ?? submission.data?.finalScore, 30);
+      assert.equal(requests.filter(r => r.method === 'POST' && new URL(r.url).pathname === savePath).length, 1);
+      fs.writeFileSync(path.join(evidence, '跨页作文教师评分.json'), JSON.stringify({ exam: spec.exam, block: spec.block, reviewer: reviewer.id, seen, score: 30, submission }, null, 2));
+    }
     if (step === 'teacher-grading-draft') {
       const enter=async()=>{
         await page.goto(state.server+'/exam-manage',{waitUntil:'networkidle'});
@@ -919,7 +1000,7 @@ async function main() {
       console.log('Saved and read back',read.type,'on the uploaded crop; peer deletion denied; author deleted');
     }
     if (step === 'teacher-legacy-ui') await legacyTeacherUi(page);
-    if (step.startsWith('admin-retention-')) await retentionUi(page);
+    if (['admin-retention-setup', 'admin-retention-restore'].includes(step)) await retentionUi(page);
     if (['admin-backup-export','admin-backup-restore'].includes(step)) await accountBackup(page);
     if (step === 'admin-provider-ui') await providerUi(page);
     if (step === 'admin-tools-ui') await verifyAdminTools(page);
@@ -1007,7 +1088,7 @@ async function main() {
     }
     if (step === 'admin-account-appearance') await accountAppearance(page);
     if (step === 'admin-analysis-bands') await verifyAnalysisBands(page);
-    if (step.endsWith('-feedback-ui')) await feedbackUi(page);
+    if (['admin-feedback-ui', 'teacher-feedback-ui'].includes(step)) await feedbackUi(page);
     if (step === 'teacher-print') await printStudentReport(page);
     if (step === 'teacher-analysis-dialogs') await checkAnalysisDialogs(page);
     if (['teacher-preview-rotation','teacher-card-rotation','student10008:rotation'].includes(step)) await checkReadOnlyRotation(page);
@@ -1022,14 +1103,12 @@ async function main() {
         assert.ok((await page.request.patch(url,{data:{showTabBar:Boolean(previous.showTabBar)}})).ok());
       }
     }
-    const actionsFile = path.join(shared, `actions-${step.replaceAll(':', '-')}.json`);
-    if (fs.existsSync(actionsFile)) await performActions(page, JSON.parse(fs.readFileSync(actionsFile, 'utf8')));
-    if (step.endsWith(':watch')) {
-      await snapshot(page, '补录前学生界面');
-      fs.cpSync(evidence, path.join(shared, 'evidence'), { recursive: true });
-      await page.getByText(state.cardTitle, { exact: true }).waitFor({ timeout: 180000 });
-      await snapshot(page, '补录后学生自动更新');
-    }
+  }
+  if (actions.length) await performActions(page, actions);
+  if (watch) {
+    await snapshot(page, '补录前学生界面');
+    await page.getByText(state.cardTitle, { exact: true }).waitFor({ timeout: 180000 });
+    await snapshot(page, '补录后学生自动更新');
   }
   console.log(JSON.stringify({ step, url: page.url(), text: (await page.locator('body').innerText()).slice(0, 8000), buttons: (await page.getByRole('button').allTextContents()).slice(0, 60), errors }, null, 2));
   await snapshot(page, `${step.replaceAll(':', '-')}-界面`);

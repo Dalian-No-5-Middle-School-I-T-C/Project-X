@@ -7,6 +7,17 @@ const root = process.env.PROJECTX_FLOW_SHARED_ROOT;
 const state = JSON.parse(fs.readFileSync(path.join(root, "state.json")));
 validateTargets(state);
 const stage = process.argv[2] || "inspect";
+const stages = new Set([
+  "inspect", "prepare", "login", "scan", "early", "last-pair", "replay", "retry",
+  "device-open", "device-scan", "device-cycle", "device-cancel-after-frame", "continuation",
+  "cache-conflict", "cache-resume", "matrix-A", "matrix-B", "matrix-C", "roster-upload",
+  "policy-upload", "standby", "standby-empty", "offline", "notice-before", "notice-recovery",
+  "notice-workspace", "queued-student-correction", "postprocess-issues", "active-upload-lock",
+  "ledger-recovery", "pause-badge", "legacy-import", "brotli-control", "outage-A",
+  "canvas-rotation", "prepare-draft", "crash-draft", "session-crash", "draft-boundaries",
+  "postprocess-viewport",
+]);
+assert.ok(stages.has(stage), "Unknown Electron stage: " + stage);
 const debugPort = Number(process.env.PROJECTX_FLOW_CDP_PORT || 19324);
 assert.ok(Number.isInteger(debugPort) && debugPort > 0 && debugPort < 65536);
 (async () => {

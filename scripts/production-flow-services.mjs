@@ -505,6 +505,83 @@ async function ai() {
   }
 }
 
+async function checkClassSummaries(run) {
+  const listed = await call("/api/exams");
+  const examples = (listed.exams || listed).filter(e => e.name === "分科人数复核数学");
+  assert.equal(examples.length, 1, "Prepare the synthetic four-student mathematics exam");
+  const examId = examples[0].id;
+  const analysis = "/api/analysis/exams/" + examId;
+  const scoreRows = async (query = "") => (await call(analysis + "/students" + query))
+    .map(r => [String(r.studentNumber), r.studentName, r.totalScore]).sort();
+  const sample = [
+    ["20016", "合成学生16", 70], ["20017", "合成学生17", 70],
+    ["20018", "合成学生18", 80], ["20019", "合成学生19", 85],
+  ];
+  assert.deepEqual(await scoreRows(), sample);
+  const grades = await call("/api/classes/grades");
+  const grade = grades.find(g => g.name === "高一双机验收");
+  assert.ok(grade, "Prepare the synthetic class rosters");
+  const classes = await call("/api/classes?gradeId=" + grade.id);
+  for (const [name, rows] of [["1班", [sample[0], sample[3]]], ["2班", [sample[1]]]]) {
+    const selected = classes.find(row => row.name === name);
+    assert.ok(selected);
+    assert.deepEqual(await scoreRows("?classId=" + selected.id), rows);
+    const { jobId, result } = await run(examId, selected.id);
+    assert.deepEqual(result.toolCalls, [{
+      name: "get_class_summaries", arguments: { examId }, summary: "1 classes",
+    }]);
+    const observed = JSON.parse(result.report.distributionInsight);
+    const avg = rows.reduce((sum, row) => sum + row[2], 0) / rows.length;
+    assert.deepEqual(observed, {
+      scopedClassId: selected.id, classes: [{ id: selected.id, count: rows.length, avg }],
+    });
+    evidence.push({ jobId, examId, classId: selected.id, calls: result.toolCalls, observed });
+  }
+}
+
+async function aiScope() {
+  const model = "e2e-scope-check";
+  const provider = await call("/api/ai/providers", {
+    method: "POST",
+    body: { name: model, providerType: "openai", baseUrl: "http://127.0.0.1:1234/v1", apiKey: "local-fixture", models: [model] },
+    statuses: [201],
+  });
+  const run = async (examId, classId) => {
+    const { jobId } = await call("/api/analysis/exams/" + examId + "/ai-analysis", {
+      method: "POST", body: { classId, model, providerId: provider.id }, statuses: [202],
+    });
+    const deadline = Date.now() + 120000;
+    let job;
+    do {
+      job = await call("/api/analysis/ai-analysis/jobs/" + jobId);
+      if (["done", "error"].includes(job.status)) break;
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    } while (Date.now() < deadline);
+    assert.equal(job.status, "done", job.error || "Analysis job did not finish");
+    assert.equal(job.examId, examId);
+    assert.equal(job.classId, classId);
+    assert.equal(job.result.report.overallJudgement, "Scope check completed.");
+    return { ...job, jobId };
+  };
+  try {
+    if (stage === "ai-class-summaries") {
+      await checkClassSummaries(run);
+      return;
+    }
+    const job = await run(state.examId, state.cls.id);
+    const calls = job.result.toolCalls;
+    assert.equal(calls.length, 3);
+    assert.ok(calls.every(item => item.name === "get_exam_overview"));
+    assert.deepEqual(calls.slice(0, 2).map(item => item.summary), [
+      "tool examId must match the selected exam", "tool classId must match the selected class",
+    ]);
+    assert.match(calls[2].summary, /^summary count=[1-9]\d*$/);
+    evidence.push({ jobId: job.jobId, examId: job.examId, classId: job.classId, status: job.status, calls });
+  } finally {
+    await call("/api/ai/providers/" + provider.id, { method: "DELETE" });
+  }
+}
+
 async function seedRank() {
   const exams = [];
   for (const subject of ["化学", "数学"]) {
@@ -839,7 +916,6 @@ async function cardMatrix() {
         for (const q of block.questions) q.id = seed.id + "-" + q.id;
     }
     seed.bodyBlocks = blocks;
-    seed.layoutVersion = 2;
     seed.paper = {
       size: key === "C" ? "A3" : "A4",
       orientation: key === "C" ? "landscape" : "portrait",
@@ -1175,6 +1251,7 @@ async function backupFormats() {
       (s) => s.exam_id === state.examId,
     )?.total_score;
   const baseline = await score();
+  assert.ok(Number.isFinite(baseline), "Prepare the published test score before verifying backup rejection");
   for (const [name, data] of [
     ["SQLite ZIP", await fs.readFile(path.join(root, "SQLite测试备份.zip"))],
     ["损坏 ZIP", Buffer.from("not a zip")],
@@ -1858,10 +1935,8 @@ async function pdfKnowledge() {
         .filter((r) => r.status !== 200)
         .map((r) => r.body.error || r.body.code),
     });
-    assert.ok(
-      success.length && denied.length,
-      JSON.stringify(jobs.map((r) => [r.status, r.body.message, r.body.error])),
-    );
+    assert.deepEqual(jobs.map((r) => r.status).sort(), [200, 200, 429]);
+    assert.equal(denied[0].body.error || denied[0].body.code, "AI_QUOTA_EXCEEDED");
     for (const r of success) {
       assert.equal(r.body.mode, "direct");
       assert.equal(r.body.knowledgePoints[0].points[0], "一二三四五六七八九十");
@@ -3406,7 +3481,7 @@ async function subjectTracks() {
   for (const item of setup) {
     const list = await call("/api/users?keyword=" + item.number);
     const user = list.users.find((row) => row.student_number === item.number);
-    assert.ok(user);
+    assert.equal(user?.name, "合成学生" + (Number(item.number) - 20000));
     await call("/api/users/" + user.id, {
       method: "PUT",
       body: { track: item.track },
@@ -3566,6 +3641,8 @@ const stages = {
   rank: rank,
   demo: demo,
   ai: ai,
+  "ai-scope": aiScope,
+  "ai-class-summaries": aiScope,
   console: consoleBuild,
   organization: organization,
   feedback: feedback,
@@ -3577,6 +3654,10 @@ assert.ok(
   "Choose a service stage: " + Object.keys(stages).join(", "),
 );
 try {
+  const seededExam = await call("/api/exams/" + state.examId);
+  assert.equal(seededExam.card_id, state.cardId, "The service must contain this run's seeded card");
+  assert.equal(seededExam.name, state.cardTitle);
+  assert.equal(seededExam.class_id, state.cls.id);
   await stages[stage]();
   console.log("PASS", stage, evidence.length, "observations");
 } finally {
