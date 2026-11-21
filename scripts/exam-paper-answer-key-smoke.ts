@@ -115,7 +115,7 @@ async function jsonFetch(base: string, url: string, init: RequestInit = {}, toke
   return { status: r.status, body };
 }
 
-async function textPdf(pages: string[]): Promise<Buffer> {
+async function paperPdfFixture(pages: (string | Buffer)[]): Promise<Buffer> {
   const doc = new PDFDocument({ autoFirstPage: false });
   const chunks: Buffer[] = [];
   const result = new Promise<Buffer>((resolve, reject) => {
@@ -123,8 +123,10 @@ async function textPdf(pages: string[]): Promise<Buffer> {
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
   });
-  for (const text of pages) {
-    doc.addPage().fontSize(8).text(text.match(/.{1,90}/g)?.join("\n") ?? "");
+  for (const page of pages) {
+    doc.addPage();
+    if (typeof page === "string") doc.fontSize(8).text(page.match(/.{1,90}/g)?.join("\n") ?? "");
+    else doc.image(page, { fit: [450, 600] });
   }
   doc.end();
   return result;
@@ -170,8 +172,8 @@ async function verifyPaperAnalysis(base: string, cardId: string, token: string, 
     if (result.status !== 200) throw new Error("原卷上传失败：" + JSON.stringify(result));
   };
   try {
-    const sixPages = await textPdf(["P1", "P2", "P3", "P4", "P5", "P6"]);
-    const shortPage = await textPdf(["X"]);
+    const sixPages = await paperPdfFixture(["P1", "P2", "P3", "P4", "P5", "P6"]);
+    const shortPage = await paperPdfFixture(["X"]);
     const { default: tesseract } = await import("tesseract.js");
     const started = Promise.withResolvers<void>();
     const resume = Promise.withResolvers<void>();
@@ -213,12 +215,23 @@ async function verifyPaperAnalysis(base: string, cardId: string, token: string, 
     await upload([shortPage], "pdf");
     const single = await analyze();
     ok(single.status === 200 && received.at(-1)?.paperText === "X", "整卷只有一个字符时完整交给文本模型");
+    const beforeIncomplete = received.length;
+    const scannedQuestion = await sharp(Buffer.from(
+      '<svg width="1000" height="220" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="white"/><text x="30" y="125" font-size="62">Question 2: calculate 3 + 4.</text></svg>'
+    )).png().toBuffer();
+    for (const [label, second] of [["扫描题页", scannedQuestion], ["空白页", ""]] as const) {
+      await upload([await paperPdfFixture(["Question 1", second])], "pdf");
+      const incomplete = await analyze();
+      ok(incomplete.status === 422 && incomplete.body.error === "PDF_PAGE_NO_TEXT" &&
+        incomplete.body.message.includes("第 2 页") && received.length === beforeIncomplete,
+        `同一 PDF 中第二页是${label}时，告知页码并终止文字分析`);
+    }
     const beforeLimits = received.length;
-    const longPdf = await textPdf(["A".repeat(16500)]);
+    const longPdf = await paperPdfFixture(["A".repeat(16500)]);
     await upload([longPdf, longPdf], "pdf");
     const characters = await analyze();
     ok(characters.status === 413 && characters.body.error === "PAPER_TOO_LARGE", "两份普通 PDF 累计超过 32000 字符时返回 413");
-    const twentyOne = await textPdf(Array.from({ length: 21 }, (_, i) => `Page ${i + 1}`));
+    const twentyOne = await paperPdfFixture(Array.from({ length: 21 }, (_, i) => `Page ${i + 1}`));
     await upload([twentyOne, twentyOne], "pdf");
     const pages = await analyze();
     ok(pages.status === 413 && pages.body.error === "PAPER_TOO_LARGE" && received.length === beforeLimits,

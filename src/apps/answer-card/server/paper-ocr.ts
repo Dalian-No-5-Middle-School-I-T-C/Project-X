@@ -56,11 +56,13 @@ class PaperText {
   private pages = 0;
   private characters = 0;
 
-  addPages(count: number): void {
+  addPages(count: number): number {
+    const firstPage = this.pages + 1;
     this.pages += count;
     if (this.pages > MAX_ANALYSIS_PAGES) {
       throw new PaperInputError("PAPER_TOO_LARGE", `原卷分析最多支持 ${MAX_ANALYSIS_PAGES} 页，请拆分后分析。`, 413);
     }
+    return firstPage;
   }
 
   append(text: string, separator: string): void {
@@ -81,9 +83,10 @@ async function appendPdfText(bytes: Buffer, output: PaperText): Promise<boolean>
   const loading = pdfjs.getDocument({ data: new Uint8Array(bytes) });
   try {
     const doc = await loading.promise;
-    output.addPages(doc.numPages);
+    const firstPage = output.addPages(doc.numPages);
     const start = output.value.length;
     for (let i = 1; i <= doc.numPages; i++) {
+      const beforePage = output.value.length;
       const page = await doc.getPage(i);
       const reader = page.streamTextContent().getReader();
       let separator = "\n\n";
@@ -102,6 +105,10 @@ async function appendPdfText(bytes: Buffer, output: PaperText): Promise<boolean>
       } finally {
         reader.releaseLock();
         page.cleanup();
+      }
+      if (output.value.length === beforePage) {
+        throw new PaperInputError("PDF_PAGE_NO_TEXT",
+          `原卷第 ${firstPage + i - 1} 页（此 PDF 第 ${i} 页）没有可提取的文字。请移除空白页，或用视觉模型分析扫描页和图形页。`, 422);
       }
     }
     return output.value.length > start;

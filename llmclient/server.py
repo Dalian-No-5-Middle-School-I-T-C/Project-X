@@ -225,6 +225,7 @@ def knowledge_points(
     # For now, use env defaults based on mode
     if mode == "direct":
         from llmclient.pdf_to_images import (  # 延迟导入：与其它 llmclient 依赖同一风格
+            PaperImageByteLimitError,
             PdfPageLimitError,
             PdfRenderError,
             PdfRenderTimeoutError,
@@ -246,7 +247,7 @@ def knowledge_points(
             # 给 504 + 可重试语义，前端才不会把它当成服务商不可用去换 key 重打。
             logger.warning("knowledge-points PDF render timed out: %s", exc)
             raise HTTPException(status_code=504, detail=str(exc)) from exc
-        except PdfPageLimitError as exc:
+        except (PdfPageLimitError, PaperImageByteLimitError) as exc:
             raise HTTPException(status_code=413, detail=str(exc)) from exc
         except PdfRenderError as exc:
             logger.warning("knowledge-points PDF rejected: %s", exc)

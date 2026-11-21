@@ -10,7 +10,7 @@
 协议（全部走 stdin/stdout，避免临时文件与路径泄漏）：
   输入：`{"pdf_b64": str, "params": {...}}`
   输出：`{"ok": true, "images": [{"mimeType","base64"}...]}`
-        `{"ok": false, "kind": "page-limit"|"render-error", "message": str}`
+        `{"ok": false, "kind": "page-limit"|"byte-limit"|"render-error", "message": str}`
 
 错误消息只含数字与中文说明，**绝不含主机路径**；traceback 打到 stderr，
 由 sidecar 日志吸收，不进响应体。
@@ -114,7 +114,7 @@ def render(pdf_bytes: bytes, params: dict) -> list[dict[str, str]]:
             data = pix.tobytes("jpeg", jpg_quality=quality)
             total_bytes += len(data)
             if total_bytes > max_total_bytes:
-                raise ValueError(f"页图累计 {total_bytes} 字节，超过预算 {max_total_bytes}")
+                raise ImageByteLimit(f"该 PDF 页图需要 {total_bytes} 字节，超过原卷剩余额度 {max_total_bytes} 字节")
             images.append({"mimeType": "image/jpeg", "base64": base64.b64encode(data).decode()})
         return images
     finally:
@@ -123,6 +123,10 @@ def render(pdf_bytes: bytes, params: dict) -> list[dict[str, str]]:
 
 class PageLimit(ValueError):
     """页数超限（与父模块同名语义，独立定义以避免反向依赖）。"""
+
+
+class ImageByteLimit(ValueError):
+    """当前 PDF 渲染的 JPEG 大小超过父进程分配的剩余额度。"""
 
 
 def main() -> int:
@@ -149,6 +153,9 @@ def main() -> int:
         return 0
     except PageLimit as exc:
         print(json.dumps({"ok": False, "kind": "page-limit", "message": str(exc)}))
+        return 0
+    except ImageByteLimit as exc:
+        print(json.dumps({"ok": False, "kind": "byte-limit", "message": str(exc)}))
         return 0
     except ValueError as exc:
         print(json.dumps({"ok": False, "kind": "render-error", "message": str(exc)}))

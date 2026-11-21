@@ -204,6 +204,35 @@ class RealRenderTest(unittest.TestCase):
                 with self.assertRaises(pdfmod.PdfPageLimitError):
                     pdfmod.normalize_direct_files(files, max_pages=2)
 
+    def test_decoded_image_bytes_shared_across_originals(self):
+        with pymupdf.open() as doc:
+            for index in range(2):
+                page = doc.new_page(width=595, height=842)
+                page.insert_text((32, 37), f"Mathematics practice, page {index + 1}", fontsize=15)
+                for row in range(58):
+                    questions = [f"{(row * 7 + col) * 11} + {7 + col * 3} = ______" for col in range(6)]
+                    page.insert_text((24, 60 + 13 * row), "     ".join(questions), fontsize=9)
+            pdf = {"mimeType": "application/pdf", "base64": base64.b64encode(doc.tobytes(deflate=True)).decode()}
+
+        with mock.patch.object(pdfmod, "PDF_MAX_TOTAL_IMAGE_BYTES", 1_000_000):
+            rendered = pdfmod.normalize_direct_files([pdf])
+            sizes = [len(base64.b64decode(page["base64"])) for page in rendered]
+            self.assertEqual(len(sizes), 2)
+            self.assertLessEqual(sum(sizes), 1_000_000)
+            self.assertGreater(sum(sizes) + sizes[0], 1_000_000)
+            image = rendered[0]
+            for files in ([pdf, pdf], [image, pdf], [pdf, image], [image, image, image]):
+                with self.subTest(types=[item["mimeType"] for item in files]):
+                    with self.assertRaises(pdfmod.PaperImageByteLimitError):
+                        pdfmod.normalize_direct_files(files)
+
+        exact = sum(sizes) + sizes[0]
+        with mock.patch.object(pdfmod, "PDF_MAX_TOTAL_IMAGE_BYTES", exact):
+            self.assertEqual(pdfmod.normalize_direct_files([pdf, image]), [*rendered, image])
+        with mock.patch.object(pdfmod, "PDF_MAX_TOTAL_IMAGE_BYTES", exact - 1):
+            with self.assertRaises(pdfmod.PaperImageByteLimitError):
+                pdfmod.normalize_direct_files([pdf, image])
+
     def test_giant_page_rejected_by_pixel_budget(self):
         # 一张 60000x60000 pt 的「伪装的巨页」：即使降到最低 DPI 也仍有上亿像素，
         # 以前会把渲染所在进程的内存打爆
