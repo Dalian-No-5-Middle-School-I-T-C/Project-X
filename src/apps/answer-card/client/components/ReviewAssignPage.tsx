@@ -56,12 +56,10 @@ export function ReviewAssignPage({ examId }: Props) {
 
   // 加载题块列表
   useEffect(() => {
-    fetchJson<{ ok: boolean; data: ReviewBlockSummary[] }>(`/api/review/exams/${examId}/blocks`)
-      .then((res) => {
-        if (res.ok && res.data.length > 0) {
-          setBlocks(res.data);
-          setSelectedBlockId(res.data[0].blockId);
-        }
+    fetchJson<{ blocks: ReviewBlockSummary[] }>(`/api/review/exams/${examId}/blocks`)
+      .then(({ blocks }) => {
+        setBlocks(blocks);
+        setSelectedBlockId(blocks[0]?.blockId ?? "");
       })
       .catch(() => {})
       .finally(() => setLoading(false));

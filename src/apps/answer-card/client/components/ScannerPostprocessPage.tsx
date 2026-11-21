@@ -498,7 +498,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
 
   return (
     <main className="flex h-[100dvh] min-w-0 flex-col overflow-hidden bg-background">
-      <header className="flex h-page-header shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-5">
+      <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border-subtle bg-card px-3 py-2 sm:h-page-header sm:flex-nowrap sm:gap-3 sm:px-5 sm:py-0">
         <Button variant="ghost" size="icon-sm" onClick={() => void leavePage()} aria-label="返回扫描"><ArrowLeft size={18} /></Button>
         <div className="flex min-w-0 flex-1 flex-col">
           <strong className="truncate text-base font-semibold">{cardTitle} · 扫描后处理</strong>
@@ -507,6 +507,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           </span>
         </div>
         <SegmentedControl
+          className="order-last w-full justify-center sm:order-none sm:w-auto"
           aria-label="后处理视图"
           value={view}
           onValueChange={handleViewChange}
