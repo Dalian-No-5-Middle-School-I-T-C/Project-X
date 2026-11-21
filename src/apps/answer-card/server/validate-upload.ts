@@ -107,7 +107,7 @@ export function rejectReasonForImportedAsset(filename: string, buffer: Buffer): 
 }
 
 /** Reads the first N bytes of a file and checks magic signatures. */
-export async function isValidImageFile(filePath: string, { allowBigTiff = false } = {}): Promise<boolean> {
+export async function isValidImageFile(filePath: string, { allowBigTiff = false, propagateReadErrors = false } = {}): Promise<boolean> {
   let fd;
   try {
     fd = await open(filePath, "r");
@@ -117,7 +117,8 @@ export async function isValidImageFile(filePath: string, { allowBigTiff = false 
     return isValidImageBuffer(header) || (allowBigTiff && BIG_TIFF_HEADERS.some(
       signature => header.subarray(0, signature.length).equals(signature)
     ));
-  } catch {
+  } catch (error) {
+    if (propagateReadErrors) throw error;
     return false;
   } finally {
     if (fd) await fd.close();
