@@ -3,8 +3,8 @@ import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, Clip
 import { fetchJson, mediaUrl } from "../auth/api";
 import { ScorePad } from "./ScorePad";
 import { AnnotationOverlay } from "./AnnotationOverlay";
-import type { ReviewBlockCropItem, ReviewAnnotation, ReviewSubmitResult } from "../../../../shared/types";
-import { Button, EmptyState, Kbd } from "./ui/v2";
+import type { ReviewBlockCropItem, ReviewAnnotation, ReviewSession, ReviewSubmitResult } from "../../../../shared/types";
+import { Button, EmptyState, Kbd, Spinner } from "./ui/v2";
 import { cn } from "../lib/utils";
 import { retryMediaTicketImage } from "../lib/mediaTicketRetry";
 
@@ -39,17 +39,13 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
   // 是否已为本卷显式选过分数（防止未选分时误提交 0 分）
   const hasEnteredScore = current ? draftScores[current.id] !== undefined : false;
 
-  // 加载阅卷队列
-  const loadQueue = useCallback(async () => {
-    try {
-      const res = await fetchJson<{ ok: boolean; data: { summary: unknown; entries: ReviewBlockCropItem[] } }>(
-        `/api/review-pool/exams/${examId}/blocks/${encodeURIComponent(blockId)}?mine=1`
-      );
-      if (res.ok) {
-        setQueue(res.data.entries);
-        setCurrentIndex(0);
-      }
-    } catch (err: any) { setError(err.message); setErrorTone("error"); }
+  const pendingSession = useRef(Promise.resolve());
+  const sessionUrl = `/api/review-session/exams/${examId}/blocks/${encodeURIComponent(blockId)}`;
+  const fetchQueue = useCallback(async () => {
+    const res = await fetchJson<{ data: { entries: ReviewBlockCropItem[] } }>(
+      `/api/review-pool/exams/${examId}/blocks/${encodeURIComponent(blockId)}?mine=1`
+    );
+    return res.data.entries;
   }, [examId, blockId]);
 
   // Issue #174: 从试卷池领取下一份（题块总分模式同样走池，避免重复批阅）
@@ -74,33 +70,13 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
     }
   }, [examId, blockId, claiming]);
 
-  // 加载会话
-  const loadSession = useCallback(async () => {
-    try {
-      const res = await fetchJson<{ ok: boolean; data: any }>(
-        `/api/review-session/exams/${examId}/blocks/${encodeURIComponent(blockId)}`
-      );
-      if (res.ok && res.data) {
-        setCurrentIndex(res.data.currentIndex ?? 0);
-        if (res.data.draftScores) setDraftScores(res.data.draftScores);
-        setSessionLoaded(true);
-      }
-    } catch { /* no session yet */ }
-  }, [examId, blockId]);
-
-  // 保存会话
-  const saveSession = useCallback(async (idx: number, scores: Record<string, number>) => {
-    try {
-      await fetchJson(`/api/review-session/exams/${examId}/blocks/${encodeURIComponent(blockId)}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          currentIndex: idx,
-          positionJson: { zoom, rotation },
-          draftScores: scores,
-        }),
-      });
-    } catch { /* silent */ }
-  }, [examId, blockId, zoom, rotation]);
+  // 选分、翻页和提交都写同一个会话，按操作顺序落库。
+  const saveSession = useCallback((idx: number, scores: Record<string, number>, cropId?: string) => {
+    const body = JSON.stringify({ currentIndex: idx, positionJson: { zoom, rotation, cropId }, draftScores: scores });
+    pendingSession.current = pendingSession.current
+      .then(() => fetchJson<void>(sessionUrl, { method: "PUT", body }))
+      .catch(() => { setError("阅卷进度未保存，请检查连接后重试。"); setErrorTone("error"); });
+  }, [sessionUrl, zoom, rotation]);
 
   // 加载题块评分配置
   const loadConfig = useCallback(async () => {
@@ -123,10 +99,26 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
   }, []);
 
   useEffect(() => {
-    loadQueue();
-    loadSession();
-    loadConfig();
-  }, [loadQueue, loadSession, loadConfig]);
+    let active = true;
+    setSessionLoaded(false);
+    setQueue([]);
+    setDraftScores({});
+    void Promise.all([
+      fetchQueue(),
+      fetchJson<{ data: ReviewSession | null }>(sessionUrl),
+    ]).then(([entries, { data }]) => {
+      if (!active) return;
+      const savedIndex = entries.findIndex(entry => entry.id === data?.positionJson?.cropId);
+      setQueue(entries);
+      setCurrentIndex(savedIndex >= 0 ? savedIndex : Math.max(0, Math.min(data?.currentIndex ?? 0, entries.length - 1)));
+      setDraftScores(data?.draftScores ?? {});
+    }).catch((err: Error) => {
+      if (active) { setError(err.message); setErrorTone("error"); }
+    }).finally(() => { if (active) setSessionLoaded(true); });
+    return () => { active = false; };
+  }, [fetchQueue, sessionUrl]);
+
+  useEffect(() => { void loadConfig(); }, [loadConfig]);
 
   // 当前切块变化时加载批注
   useEffect(() => {
@@ -140,15 +132,16 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
     setZoom(1);
     setRotation(0);
     setAnnotateMode(false);
-    saveSession(clamped, draftScores);
-  }, [queue.length, draftScores, saveSession]);
+    saveSession(clamped, draftScores, queue[clamped]?.id);
+  }, [queue, draftScores, saveSession]);
 
   // 分数变化
   const handleScoreChange = useCallback((score: number) => {
     if (!current) return;
     const newScores = { ...draftScores, [current.id]: score };
     setDraftScores(newScores);
-  }, [current, draftScores]);
+    saveSession(currentIndex, newScores, current.id);
+  }, [current, currentIndex, draftScores, saveSession]);
 
   // 保存并下一份
   const handleSubmit = useCallback(async (scoreOverride?: number) => {
@@ -204,13 +197,13 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
         setQueue((prev) => prev.filter((item) => item.id !== current.id));
         setCurrentIndex(0);
         saveSession(0, newScores);
-        void loadQueue();
+        void fetchQueue().then(setQueue).catch((err: Error) => setError(err.message));
       }
     } catch (err: any) {
       setError(err.message);
     }
     setSaving(false);
-  }, [current, saving, draftScores, examId, currentIndex, queue.length, maxScore, goTo, saveSession, scoringMode]);
+  }, [current, saving, draftScores, examId, currentIndex, queue.length, maxScore, goTo, saveSession, scoringMode, fetchQueue]);
 
   // 缩放
   const zoomIn = () => setZoom((z) => Math.min(4, z + 0.25));
@@ -252,6 +245,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
   // 快捷键
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLElement && (e.target.isContentEditable || e.target.closest("input, textarea, select"))) return;
       if (e.key === "Enter" && !saving && current) {
         e.preventDefault();
         handleSubmit();
@@ -267,7 +261,9 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
     return () => window.removeEventListener("keydown", handler);
   }, [currentIndex, queue.length, saving, current, handleSubmit, goTo]);
 
-  if (queue.length === 0 && sessionLoaded) {
+  if (!sessionLoaded) return <div role="status" className="flex justify-center p-6"><Spinner size={20} /></div>;
+
+  if (queue.length === 0) {
     return (
       <div className="p-6">
         <Button variant="outline" icon={<ArrowLeft />} onClick={onBack}>返回</Button>
