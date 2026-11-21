@@ -4,6 +4,7 @@ import os from "node:os";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import sharp from "sharp";
 import { qrDarkRects } from "../src/shared/cardIdentity";
+import { cardFingerprint } from "../src/shared/cardVersion";
 import { createDefaultCard } from "../src/shared/defaultCard";
 import { buildLayout } from "../src/shared/layout";
 import type { AnswerCard, ObjectiveBlock, Rect, SubjectiveBlock } from "../src/shared/types";
@@ -140,12 +141,47 @@ async function verifyPersistence(): Promise<void> {
     await repository.updateCard(card);
     const savedA3 = await repository.findById(card.id);
     assert.deepEqual(savedA3?.paper, { size: "A3", orientation: "landscape" });
-    assert.equal(savedA3?.layoutVersion, 2);
+    assert.equal(savedA3?.layoutVersion, 3);
 
     card.paper = { size: "A4", orientation: "portrait" };
     await repository.updateCard(card);
     const savedA4 = await repository.findById(card.id);
     assert.deepEqual(savedA4?.paper, { size: "A4", orientation: "portrait" });
+
+    const printed = makeCard("A3", 40);
+    const choices = printed.bodyBlocks[0] as ObjectiveBlock;
+    choices.questions = undefined;
+    choices.optionLayout = "vertical-options";
+    const fingerprints = new Set<string>();
+    const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    for (const version of [1, 2, 3] as const) {
+      printed.layoutVersion = version;
+      await repository.updateCard(printed);
+      const saved = await repository.findById(printed.id);
+      assert.ok(saved);
+      assert.equal(saved.layoutVersion, version);
+      fingerprints.add(cardFingerprint(saved));
+      // Coordinates of Q25 on the historical print and on a newly paginated card, in mm.
+      const expected = version < 3 ? { x: 31.8, y: 265.6 } : { x: 163.133, y: 44.5 };
+      const cell = buildLayout(saved).pages[0].elements.find(element =>
+        element.type === "objective_option" && element.questionNumber === 25 && element.option === "A");
+      assert.deepEqual(cell?.rect, { ...expected, width: 4.4, height: 2.5 }, `V${version} 扫描坐标`);
+
+      const pdf = await getDocument({ data: new Uint8Array(await pdfBuffer(saved)) }).promise;
+      try {
+        const page = await pdf.getPage(1);
+        const { items } = await page.getTextContent();
+        const label = items.find(item => "str" in item && item.str === "25");
+        assert.ok(label && "transform" in label);
+        const x = label.transform[4] * 25.4 / 72;
+        const y = (page.view[3] - label.transform[5]) * 25.4 / 72;
+        assert.ok(x < expected.x && expected.x - x < 9 && Math.abs(y - expected.y) < 4,
+          `V${version} 重印 PDF 的题号 25 应紧邻对应填涂格，实际坐标 (${x}, ${y})`);
+      } finally {
+        await pdf.destroy();
+      }
+    }
+    assert.equal(fingerprints.size, 3, "上传指纹须区分不同印刷版式");
   } finally {
     closeDatabase();
     if (previousDbPath === undefined) delete process.env.PROJECTX_DB_PATH;
@@ -276,10 +312,14 @@ async function main(): Promise<void> {
     await document.destroy();
   }
 
+  await verifyPersistence();
+  if (process.argv.includes("--layout-only")) {
+    console.log("A3 layout, PDF and SQLite persistence verification passed.");
+    return;
+  }
   const nativeCard = makeCard("A3", 1);
   nativeCard.bodyBlocks.push(subjectiveBlock(4));
   await verifyNativeRotations(nativeCard, buildLayout(nativeCard));
-  await verifyPersistence();
 
   console.log(`A3 verification passed: ${a3Layout.pages.length} pages, 3 panels/page, native A3 PDF and 4-way recognition.`);
 }

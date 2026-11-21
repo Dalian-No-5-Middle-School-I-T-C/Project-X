@@ -370,7 +370,7 @@ function drawEssayGrid(
 }
 
 function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, question: SubjectiveRenderItem, frameRect?: Rect) {
-  const isV2 = card.layoutVersion === 2;
+  const isV2 = card.layoutVersion >= 2;
   if (question.kind !== "blank") {
     drawRect(doc, question.rect, { stroke: "#222", lineWidth: 0.25 });
     drawText(doc, `${question.questionNumber}.（${question.score}分）`, question.rect.x + 2, isV2 ? question.rect.y + 1.2 : question.contentRect.y + 2, 8);

@@ -16,6 +16,7 @@ import { databaseTimestamp } from "../db/timestamp";
  */
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
+import { getBlockConfig } from "./BlockGradingConfigService";
 import { listReviewBlockCrops } from "./AnswerBlockCropService";
 import { examClassPredicate } from "./examClassMemberships";
 import { getAssignmentsByBlock } from "./ReviewAssignmentService";
@@ -230,11 +231,8 @@ async function mayClaimAgain(row: PoolReviewHistory, examId: number, blockId: st
   const votes = parseBreakdownHistory(row.score_breakdown);
   if (!votes.some(vote => vote.reviewerId === teacherId)) return true;
   if (row.status !== "disputed" || votes[0]?.reviewerId !== teacherId) return false;
-  const config = await db.get<{ review_mode: number; arbitrator_id: number | null; auto_reassign_no_arb: number }>(
-    "SELECT review_mode, arbitrator_id, auto_reassign_no_arb FROM block_grading_config WHERE exam_id=? AND block_id=?",
-    examId, blockId
-  );
-  if (!config?.auto_reassign_no_arb || config.arbitrator_id != null || votes.length >= config.review_mode + 2) return false;
+  const config = await getBlockConfig(examId, blockId, "answer", 0, db);
+  if (!config.autoReassignNoArb || config.arbitratorId != null || votes.length >= config.reviewMode + 2) return false;
   const assigned = await db.all<{ teacher_id: number }>(
     "SELECT teacher_id FROM review_assignments WHERE exam_id=? AND block_id=?", examId, blockId
   );

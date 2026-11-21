@@ -277,14 +277,14 @@ router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (r
     `, groupId) as Array<{ exam_id: number; subject: string | null; assigned_formula: string | null; sort_order: number; track_type: string | null }>;
 
     if (members.length === 0) {
-      res.json({ groupId, groupName: group.name, totalStudents: 0, displayColumns: [], rows: [] });
+      res.json({ groupId, groupName: group.name, totalScoreMode: group.total_score_mode, totalStudents: 0, displayColumns: [], rows: [] });
       return;
     }
     const trackMembers = track === "all"
       ? members
       : members.filter((m) => memberMatchesTrack(m.track_type, track));
     if (trackMembers.length === 0) {
-      res.json({ groupId, groupName: group.name, totalStudents: 0, displayColumns: [], rows: [] });
+      res.json({ groupId, groupName: group.name, totalScoreMode: group.total_score_mode, totalStudents: 0, displayColumns: [], rows: [] });
       return;
     }
 
@@ -486,6 +486,7 @@ router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (r
 
     res.json({
       groupId, groupName: group.name,
+      totalScoreMode: useAssigned ? "assigned" : "raw",
       totalStudents: filtered.length,
       displayColumns,
       rows: filtered

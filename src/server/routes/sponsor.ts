@@ -1,24 +1,40 @@
 import express from "express";
 import { existsSync } from "node:fs";
-import config from "../../apps/answer-card/server/data/sponsor.json";
+import { readFile } from "node:fs/promises";
+import { dataDir } from "../../apps/answer-card/server/storage";
+import bundledConfig from "../../apps/answer-card/server/data/sponsor.json";
 import path from "node:path";
 import type { Request, Response } from "express";
 
 const router = express.Router();
 
-const rootDir = process.cwd();
-const sponsorQrDir = path.join(rootDir, "data", "sponsor", "qr");
+const sponsorDir = path.join(path.dirname(dataDir), "sponsor");
+const sourceConfig = path.resolve("src/apps/answer-card/server/data/sponsor.json");
+
+async function loadSponsorConfig(): Promise<typeof bundledConfig> {
+  for (const file of [path.join(sponsorDir, "sponsor.json"), sourceConfig]) {
+    try {
+      return JSON.parse(await readFile(file, "utf8"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  return bundledConfig;
+}
 
 function resolveQrPath(qrFile: string): string | null {
-  const fileName = path.basename(qrFile);
-  const fullPath = path.join(sponsorQrDir, fileName);
-  if (!fullPath.startsWith(sponsorQrDir)) return null;
-  return existsSync(fullPath) ? fullPath : null;
+  const name = path.basename(qrFile);
+  if (!name || name === "." || name === "..") return null;
+  const persistentFile = path.join(sponsorDir, "qr", name);
+  if (existsSync(persistentFile)) return persistentFile;
+  const bundledFile = path.resolve("data", "sponsor", "qr", name);
+  return existsSync(bundledFile) ? bundledFile : null;
 }
 
 /** GET /api/sponsor — 赞助页配置（收款码 URL 由服务端解析） */
 router.get("/", async (_req: Request, res: Response) => {
   try {
+    const config = await loadSponsorConfig();
     const channels = config.channels
       .filter((channel) => channel.enabled)
       .map((channel) => {
@@ -45,6 +61,7 @@ router.get("/", async (_req: Request, res: Response) => {
 /** GET /api/sponsor/qr/:channelId — 按渠道返回收款码图片 */
 router.get("/qr/:channelId", async (req: Request, res: Response) => {
   try {
+    const config = await loadSponsorConfig();
     const channelId = req.params.channelId;
     const channel = config.channels.find((item) => item.id === channelId && item.enabled);
     if (!channel?.qrFile) {

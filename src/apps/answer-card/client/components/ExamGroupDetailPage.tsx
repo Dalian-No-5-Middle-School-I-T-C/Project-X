@@ -522,7 +522,7 @@ function ScoresTab({
               <TableHead>班排</TableHead>
               <TableHead>班级</TableHead>
               <TableHead>姓名</TableHead>
-              <TableHead numeric className="bg-accent">总分</TableHead>
+              <TableHead numeric className="bg-accent">{rankings.totalScoreMode === "assigned" ? "赋分总分" : "原始总分"}</TableHead>
               {cols.map((col) => (
                 <FragmentCols
                   key={col}
@@ -541,7 +541,7 @@ function ScoresTab({
                 <TableCell>{row.className}</TableCell>
                 <TableCell className="font-medium">{row.studentName}</TableCell>
                 <TableCell numeric className="bg-accent font-semibold text-primary">
-                  {row.totalRawScore}
+                  {rankings.totalScoreMode === "assigned" ? row.totalAssignedScore : row.totalRawScore}
                 </TableCell>
                 {cols.map((col) => {
                   const sub = row.subjects.find((s) => s.subject === col);

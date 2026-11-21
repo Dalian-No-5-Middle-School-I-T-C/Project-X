@@ -138,7 +138,7 @@ import { optionalAuth, authMiddleware, refreshAuthenticatedUser, recheckWritePer
 import { requirePasswordChangeCompleted } from "../../../server/middleware/auth";
 import { authService } from "../../../server/services/AuthService";
 import { initPermissionCache, roleHasPermission, PERMISSIONS, ROLE_IDS } from "../../../server/auth/permissions";
-import { createDefaultCard, DEFAULT_STUDENT_INFO, generateCardId } from "../../../shared/defaultCard";
+import { createDefaultCard, DEFAULT_STUDENT_INFO, generateCardId, normalizeLayoutVersion } from "../../../shared/defaultCard";
 import { applySubjectTemplate } from "../../../shared/cardTemplates";
 import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey, normalizeObjectiveQuestions } from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
@@ -306,7 +306,7 @@ function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
     }),
     paper: { size: paperSize, orientation: paperSize === "A3" ? "landscape" : "portrait" },
     studentInfo: normalizeStudentInfo(card.studentInfo, paperSize),
-    layoutVersion: card.layoutVersion === 2 ? 2 : 1,
+    layoutVersion: normalizeLayoutVersion(card.layoutVersion),
     updatedAt: new Date().toISOString()
   };
 }
