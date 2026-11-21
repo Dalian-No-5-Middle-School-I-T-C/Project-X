@@ -50,7 +50,7 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
   const [serverUrl, setServerUrl] = useState(loadUrl);
   const [apiKey, setApiKey] = useState(() => getStoredApiKey() ?? "");
   const [showKey, setShowKey] = useState(false);
-  const [testStatus, setTestStatus] = useState<"" | "testing" | "ok" | "fail">("");
+  const [testStatus, setTestStatus] = useState<"" | "testing" | "reachable" | "ok" | "fail">("");
   const [testMessage, setTestMessage] = useState("");
   // 安全（R32）：跨机明文 HTTP 的显式同意。初值取「已保存地址是否曾被勾选过」，
   // 之后一旦目标 host 变化就清零——同意是给某一个 host:port 的，不随地址搬家。
@@ -125,7 +125,7 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
       if (res.ok && body.ok === true && body.capabilities?.scannerClientApi === true) {
         if (!key) throw new Error("服务器可达，请填写 API Key 后验证上传权限");
         if (!sendKey) {
-          setTestStatus("ok");
+          setTestStatus("reachable");
           setTestMessage(`服务器可达。该地址使用明文 HTTP，已暂停发送 API Key；勾选下方确认后才能验证上传并保存`);
           return;
         }
@@ -241,7 +241,10 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
           <label className="mt-1.5 flex cursor-pointer items-start gap-2">
             <Checkbox
               checked={allowInsecure}
-              onCheckedChange={(checked) => setAllowInsecure(checked === true)}
+              onCheckedChange={(checked) => {
+                setAllowInsecure(checked === true);
+                setTestStatus("");
+              }}
               disabled={testStatus === "testing"}
               className="mt-0.5"
             />
@@ -298,6 +301,7 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
             服务器可达，上传权限有效
           </Badge>
         )}
+        {testStatus === "reachable" && <span role="status" className="text-xs text-warning-foreground">{testMessage}</span>}
         {testStatus === "fail" && <Badge tone="danger" dot>{testMessage || "连接失败"}</Badge>}
         <Button
           variant="primary"

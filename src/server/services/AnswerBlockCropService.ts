@@ -72,6 +72,10 @@ function parseJson<T extends object>(value: string | T | null | undefined, fallb
   }
 }
 
+export function cropQuestionNumbers(value: string | Array<number | string> | null): number[] {
+  return parseJson<Array<number | string>>(value, []).map(Number).filter(Number.isFinite);
+}
+
 function toAnswerBlockCrop(row: CropRow): AnswerBlockCrop {
   return {
     id: row.id,

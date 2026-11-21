@@ -1862,6 +1862,7 @@ export interface GroupClassComparisonResponse {
 
 /** 争议卷条目 */
 export interface DisputeItem {
+  questionNumbers: number[];
   cropId: string;
   studentId: number;
   studentName: string;

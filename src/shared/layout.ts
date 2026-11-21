@@ -394,15 +394,8 @@ function objectiveRowsForQuestions(questions: ObjectiveQuestionDefinition[], mod
   return rows;
 }
 
-function objectivePhysicalRowsForRows(rows: ObjectiveRow[]): number {
-  return rows.reduce((sum, row) => sum + objectiveRowHeight(row), 0);
-}
-
-function objectivePhysicalRowsForQuestions(questions: ObjectiveQuestionDefinition[], mode: ObjectiveArrangementMode): number {
-  return objectivePhysicalRowsForRows(objectiveRowsForQuestions(questions, mode));
-}
-
 function objectiveRowHeight(row: ObjectiveRow): number {
+  if (row.type === "wide") return objectiveQuestionRowSpan(row.question);
   if (row.type === "grid") {
     return Math.max(...row.cells.map((cell) => cell.reduce((sum, slot) => sum + slot.span, 0)));
   }
@@ -427,17 +420,16 @@ function objectivePhysicalRowOffsets(rows: ObjectiveRow[], mode: ObjectiveArrang
   return offsets;
 }
 
-function objectiveSegmentQuestionsForMaxRows(
+function objectiveSegmentForAvailableHeight(
   questions: ObjectiveQuestionDefinition[],
   mode: ObjectiveArrangementMode,
-  maxRows: number
+  availableHeightMm: number
 ): ObjectiveQuestionDefinition[] {
   let segment: ObjectiveQuestionDefinition[] = [];
 
   for (const question of questions) {
     const candidate = [...segment, question];
-    const candidateRows = objectivePhysicalRowsForQuestions(candidate, mode);
-    if (candidateRows > maxRows && segment.length > 0) {
+    if (segment.length > 0 && objectiveHeightForQuestions(candidate, mode) > availableHeightMm) {
       return segment;
     }
     segment = candidate;
@@ -479,12 +471,6 @@ function objectiveHeightForQuestions(questions: ObjectiveQuestionDefinition[], m
     }
   }
   return OBJECTIVE_FRAME_TOP + OBJECTIVE_INNER_TOP + contentBottom + OBJECTIVE_INNER_BOTTOM;
-}
-
-function objectiveMaxRowsForAvailableHeight(height: number): number {
-  const firstRowHeight = OBJECTIVE_FRAME_TOP + OBJECTIVE_INNER_TOP + OBJECTIVE_SETTINGS.optionHeight + OBJECTIVE_INNER_BOTTOM;
-  if (height <= firstRowHeight) return 1;
-  return Math.max(1, Math.floor((height - firstRowHeight) / OBJECTIVE_SETTINGS.rowHeight) + 1);
 }
 
 function addObjectiveSegment(
@@ -1314,15 +1300,8 @@ export function buildLayout(card: AnswerCard): LayoutDocument {
       let firstSegment = true;
 
       while (remaining.length > 0) {
-        let maxRows = objectiveMaxRowsForAvailableHeight(availableHeight(y));
-        const nextObjectiveRow = objectiveRowsForQuestions(remaining, arrangementMode)[0];
-        const nextRowHeight = nextObjectiveRow ? objectivePhysicalRowsForRows([nextObjectiveRow]) : 1;
-        if (page.blocks.length > 0 && nextRowHeight > maxRows) {
-          nextPanel();
-          maxRows = objectiveMaxRowsForAvailableHeight(availableHeight(y));
-        }
-
-        const segmentQuestions = objectiveSegmentQuestionsForMaxRows(remaining, arrangementMode, maxRows);
+        ensureSpace(objectiveHeightForQuestions([remaining[0]], arrangementMode));
+        const segmentQuestions = objectiveSegmentForAvailableHeight(remaining, arrangementMode, availableHeight(y));
         const height = objectiveHeightForQuestions(segmentQuestions, arrangementMode);
 
         ensureSpace(height);
@@ -1428,7 +1407,20 @@ function layoutEssayBlock(
       rect: blockRect,
       frameRect: showFrame ? blockRect : undefined,
       essayStartCell: produced,
-      questions: [],
+      questions: [{
+        blockId: block.id,
+        questionId: question.id,
+        questionNumber: question.number,
+        score: question.score,
+        style: question.style,
+        kind: question.kind,
+        rect: blockRect,
+        contentRect: rect(MARGIN_X + panelInsetX, startY + gridTopBase, usableW, blockHeight - gridTopBase - bottomPad),
+        scoreCells: [],
+        lineYs: [],
+        blanks: [],
+        images: [],
+      }],
     });
 
     produced += rowsToDraw * columns;

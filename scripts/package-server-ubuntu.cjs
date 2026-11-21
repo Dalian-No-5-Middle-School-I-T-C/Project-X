@@ -282,20 +282,15 @@ MariaDB 10.11 LTS supports both 32-bit and 64-bit Ubuntu 24.
 \`\`\`bash
 sudo apt install -y mariadb-server
 sudo mysql_secure_installation
-sudo mysql -e "CREATE DATABASE projectx DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-sudo mysql -e "CREATE USER 'projectx_app'@'127.0.0.1' IDENTIFIED BY 'your_password'"
-sudo mysql -e "GRANT SELECT, INSERT, UPDATE, DELETE ON projectx.* TO 'projectx_app'@'127.0.0.1'"
-sudo mysql -e "FLUSH PRIVILEGES"
+sudo bash scripts/setup-mariadb.sh
 \`\`\`
 
-Then start with MariaDB env vars:
-
-\`\`\`bash
-export PROJECTX_MARIADB_HOST=127.0.0.1
-export PROJECTX_MARIADB_USER=projectx_app
-export PROJECTX_MARIADB_PASSWORD=your_password
-./start.sh
-\`\`\`
+For systemd, store the application connection in a root-owned mode 0600 file
+at /etc/project-x-server.env. Set PROJECTX_MARIADB_HOST=127.0.0.1,
+PROJECTX_MARIADB_PORT=3306, PROJECTX_MARIADB_DATABASE, PROJECTX_MARIADB_USER and
+PROJECTX_MARIADB_PASSWORD there. The service reads the file on restart. Configure
+other local unit overrides with \`systemctl edit project-x-server\` in
+/etc/systemd/system/project-x-server.service.d/override.conf.
 
 ## Systemd Service (production install)
 
@@ -430,6 +425,7 @@ Environment=PROJECTX_MARIADB_PORT=3306
 Environment=PROJECTX_MARIADB_USER=
 Environment=PROJECTX_MARIADB_PASSWORD=
 Environment=PROJECTX_MARIADB_DATABASE=projectx
+EnvironmentFile=-/etc/project-x-server.env
 Environment=PROJECTX_DB_PATH=/var/lib/project-x/projectx.db
 Environment=ANSWER_CARD_DATA_DIR=/var/lib/project-x/answer-card
 Environment=ANSWER_CARD_CLIENT_DIST=/opt/project-x-server/dist/web
@@ -543,6 +539,28 @@ chmod 0750 "$DATA_DIR" "$DATA_DIR/answer-card" "$DATA_DIR/backups"
 
 UNIT_SRC="$APP_DIR/systemd/$UNIT_NAME"
 UNIT_DST="/etc/systemd/system/$UNIT_NAME"
+
+# Older releases documented setting the connection in the primary unit. Migrate
+# those assignments to a drop-in before the installer regenerates that unit.
+if [ -f "$UNIT_DST" ]; then
+  legacy_dir=$(mktemp -d)
+  legacy="$legacy_dir/database"
+  trap 'rm -f "$legacy" "$legacy.conf"; rmdir "$legacy_dir"' EXIT
+  awk 'NR == FNR { defaults[$0] = 1; next }
+       /^[[:space:]]*Environment[[:space:]]*=.*PROJECTX_(MARIADB|MYSQL)_/ && !($0 in defaults) { print }' "$UNIT_SRC" "$UNIT_DST" > "$legacy"
+  if [ -s "$legacy" ]; then
+    mkdir -p "$UNIT_DST.d"
+    dest="$UNIT_DST.d/00-projectx-legacy-database.conf"
+    { printf '[Service]\\n'; cat "$legacy"; } > "$legacy.conf"
+    if [ -e "$dest" ] && ! cmp -s "$dest" "$legacy.conf"; then
+      rm -f "$legacy.conf"
+      echo "[install] Reconcile the database settings in $dest before upgrading." >&2
+      exit 1
+    fi
+    install -m 0600 "$legacy.conf" "$dest"
+    rm -f "$legacy.conf"
+  fi
+fi
 
 # 单元里的账号**和路径**都按本次实际使用的目录重写（CR #313 P2-9）。
 # INSTALL-REWRITE-BEGIN —— 验证脚本按这对标记切出「重写 + 自检」，在临时目录里带自定义目录真跑一遍
@@ -719,6 +737,8 @@ function buildPackage() {
     `${JSON.stringify(createRuntimePackageJson(), null, 2)}\n`,
     "utf8"
   );
+  mkdirSync(path.join(packageDir, "scripts"), { recursive: true });
+  copyFileSync(path.join(rootDir, "scripts", "setup-mariadb.sh"), path.join(packageDir, "scripts", "setup-mariadb.sh"));
   writeTextFile(path.join(packageDir, "start.sh"), createStartScript());
   writeTextFile(path.join(packageDir, "systemd", "project-x-server.service"), createSystemdUnit());
   writeTextFile(path.join(packageDir, "systemd", "install.sh"), createInstallScript());

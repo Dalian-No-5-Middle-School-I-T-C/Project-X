@@ -1,3 +1,4 @@
+import { cropQuestionNumbers } from "./AnswerBlockCropService";
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { getBlockConfig } from "./BlockGradingConfigService";
@@ -188,7 +189,7 @@ export async function getDisputes(
 ): Promise<DisputeItem[]> {
   let query = `
     SELECT abc.id AS crop_id, abc.student_id, u.name AS student_name, u.student_number,
-           abc.block_id, abc.block_title, abc.status, abc.score_breakdown,
+           abc.block_id, abc.block_title, abc.status, abc.score_breakdown, abc.question_numbers,
            bgc.dispute_threshold, bgc.arbitrator_id,
            arb.name AS arbitrator_name
     FROM answer_block_crops abc
@@ -207,6 +208,7 @@ export async function getDisputes(
   query += " ORDER BY abc.student_number";
   const rows = await db.all(query, ...params) as Array<{
     crop_id: string;
+    question_numbers: string | Array<number | string>;
     student_id: number;
     student_name: string;
     student_number: string | null;
@@ -230,6 +232,7 @@ export async function getDisputes(
 
     return {
       cropId: row.crop_id,
+      questionNumbers: cropQuestionNumbers(row.question_numbers),
       studentId: row.student_id,
       studentName: row.student_name,
       studentNumber: row.student_number ?? "",

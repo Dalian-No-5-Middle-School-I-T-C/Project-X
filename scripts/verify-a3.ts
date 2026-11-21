@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import sharp from "sharp";
+import { qrDarkRects } from "../src/shared/cardIdentity";
 import { createDefaultCard } from "../src/shared/defaultCard";
 import { buildLayout } from "../src/shared/layout";
 import type { AnswerCard, ObjectiveBlock, Rect, SubjectiveBlock } from "../src/shared/types";
@@ -84,6 +85,7 @@ function syntheticSvg(layout: LayoutDocument, studentNumber: string): string {
   const rectSvg = (value: Rect, fill: string, stroke = "#111", strokeWidth = 0.18) =>
     `<rect x="${value.x}" y="${value.y}" width="${value.width}" height="${value.height}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}"/>`;
   const markers = page.markers.map((marker) => rectSvg(marker.rect, "#000", "#000", 0)).join("");
+  const qr = qrDarkRects(page.header.qrCode).map((value) => rectSvg(value, "#000", "#000", 0)).join("");
   const digits = (page.studentArea?.digitCells ?? []).map((cell) =>
     rectSvg(cell.rect, Number(studentNumber[cell.digitIndex]) === cell.digit ? "#000" : "#fff")
   ).join("");
@@ -95,7 +97,7 @@ function syntheticSvg(layout: LayoutDocument, studentNumber: string): string {
     .filter((cell) => cell.score === 4)
     .map((cell) => `<line x1="${cell.rect.x + 0.35}" y1="${cell.rect.y + 0.35}" x2="${cell.rect.x + cell.rect.width - 0.35}" y2="${cell.rect.y + cell.rect.height - 0.35}" stroke="#e00000" stroke-width="0.5" stroke-linecap="round"/>`)
     .join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${page.width} ${page.height}" width="${page.width}mm" height="${page.height}mm"><rect width="100%" height="100%" fill="#fff"/>${markers}${digits}${options}${scoreMarks}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${page.width} ${page.height}" width="${page.width}mm" height="${page.height}mm"><rect width="100%" height="100%" fill="#fff"/>${markers}${qr}${digits}${options}${scoreMarks}</svg>`;
 }
 
 async function verifyNativeRotations(card: AnswerCard, layout: LayoutDocument): Promise<void> {
@@ -251,6 +253,28 @@ async function main(): Promise<void> {
   assert.deepEqual(mapScanPageToLayout(2, "front", 3, "double"), { groupIndex: 0, layoutPage: 3, unusedSide: false });
   assert.deepEqual(mapScanPageToLayout(2, "back", 3, "double"), { groupIndex: 0, layoutPage: 4, unusedSide: true });
   assert.deepEqual(mapScanPageToLayout(3, "front", 3, "double"), { groupIndex: 1, layoutPage: 1, unusedSide: false });
+
+  const vertical = makeCard("A3", 54);
+  const choiceBlock = vertical.bodyBlocks[0] as ObjectiveBlock;
+  choiceBlock.optionCount = 6;
+  choiceBlock.optionLayout = "vertical-options";
+  choiceBlock.questions = undefined;
+  const verticalLayout = buildLayout(vertical);
+  let options = 0;
+  for (const page of verticalLayout.pages) {
+    for (const cell of page.elements.filter((element) => element.type === "objective_option")) {
+      assert.ok(panelIndexForRect(page, cell.rect) >= 0, "每个竖排选项都须在可打印面板内");
+      options++;
+    }
+  }
+  assert.equal(options, 54 * 6);
+  const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const document = await getDocument({ data: new Uint8Array(await pdfBuffer(vertical)) }).promise;
+  try {
+    assert.equal(document.numPages, verticalLayout.pages.length, "PDF 页数应与可识别页序一致");
+  } finally {
+    await document.destroy();
+  }
 
   const nativeCard = makeCard("A3", 1);
   nativeCard.bodyBlocks.push(subjectiveBlock(4));

@@ -1,10 +1,3 @@
-// DisputeManagePage —— 争议管理（T5 v2 迁移）
-// 视觉层整体切换到 v2：Card / Badge / Dialog / Field / Input / Button / EmptyState。
-// 功能守恒：
-//  · GET  /api/review-arbitration/exams/:examId/disputes
-//  · GET  /api/review-arbitration/exams/:examId/blocks/:blockId/arbitrators
-//  · POST /api/review-arbitration/crops/:cropId/resolve  { score }
-// 请求/响应形状与权限判断零改动，仅替换视觉层。
 import React, { useState, useEffect, useCallback } from "react";
 import { AlertTriangle, CheckCircle2, ShieldCheck } from "lucide-react";
 import { fetchJson } from "../auth/api";
@@ -34,7 +27,8 @@ export function DisputeManagePage({ examId }: Props) {
   const [loading, setLoading] = useState(true);
   const [selectedDispute, setSelectedDispute] = useState<DisputeItem | null>(null);
   const [arbitrators, setArbitrators] = useState<ArbitratorCandidate[]>([]);
-  const [resolutionScore, setResolutionScore] = useState("");
+  const [resolutionScores, setResolutionScores] = useState<Record<string, string>>({});
+  const scoresReady = Boolean(selectedDispute?.questionNumbers.length && selectedDispute.questionNumbers.every(q => resolutionScores[q]?.trim()));
   // UI-1/UI-2：提交节流 + loading 态，避免重复仲裁
   const [resolving, setResolving] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
@@ -60,16 +54,16 @@ export function DisputeManagePage({ examId }: Props) {
   };
 
   const handleResolve = async (cropId: string) => {
-    if (!resolutionScore || resolving) return;
+    if (!scoresReady || resolving) return;
     setResolving(true);
     setErrorMsg("");
     try {
       await fetchJson(`/api/review-arbitration/crops/${encodeURIComponent(cropId)}/resolve`, {
         method: "POST",
-        body: JSON.stringify({ score: Number(resolutionScore) }),
+        body: JSON.stringify({ questionScores: Object.fromEntries(Object.entries(resolutionScores).map(([q, value]) => [q, Number(value)])) }),
       });
       setSelectedDispute(null);
-      setResolutionScore("");
+      setResolutionScores({});
       load();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : "仲裁提交失败，请重试");
@@ -81,7 +75,7 @@ export function DisputeManagePage({ examId }: Props) {
   const closeDialog = (open: boolean) => {
     if (open || resolving) return;
     setSelectedDispute(null);
-    setResolutionScore("");
+    setResolutionScores({});
   };
 
   if (loading) {
@@ -167,7 +161,7 @@ export function DisputeManagePage({ examId }: Props) {
                       variant="outline"
                       onClick={() => {
                         setSelectedDispute(d);
-                        setResolutionScore("");
+                        setResolutionScores({});
                         loadArbitrators(d.blockId);
                       }}
                     >
@@ -211,16 +205,14 @@ export function DisputeManagePage({ examId }: Props) {
                 </div>
               )}
 
-              <Field label="最终分" htmlFor="dispute-final-score">
-                <Input
-                  id="dispute-final-score"
-                  type="number"
-                  step={0.5}
-                  value={resolutionScore}
-                  onChange={(e) => setResolutionScore(e.target.value)}
-                  className="tabular-nums"
-                />
-              </Field>
+              {selectedDispute.questionNumbers.map(q => (
+                <Field key={q} label={`第 ${q} 题最终分`} htmlFor={`dispute-final-${q}`}>
+                  <Input id={`dispute-final-${q}`} type="number" min={0} step={0.5}
+                    value={resolutionScores[q] ?? ""}
+                    onChange={e => setResolutionScores({ ...resolutionScores, [q]: e.target.value })}
+                    className="tabular-nums" />
+                </Field>
+              ))}
             </DialogBody>
             <DialogFooter>
               <Button
@@ -233,7 +225,7 @@ export function DisputeManagePage({ examId }: Props) {
               <Button
                 variant="primary"
                 loading={resolving}
-                disabled={!resolutionScore}
+                disabled={!scoresReady}
                 onClick={() => handleResolve(selectedDispute.cropId)}
               >
                 提交仲裁

@@ -1,40 +1,13 @@
 import express from "express";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import config from "../../apps/answer-card/server/data/sponsor.json";
 import path from "node:path";
 import type { Request, Response } from "express";
 
 const router = express.Router();
 
-interface SponsorChannelConfig {
-  id: string;
-  name: string;
-  qrFile: string | null;
-  enabled: boolean;
-}
-
-interface SponsorConfigFile {
-  title: string;
-  description: string;
-  channels: SponsorChannelConfig[];
-}
-
 const rootDir = process.cwd();
-const sponsorConfigPath = path.join(
-  rootDir,
-  "src",
-  "apps",
-  "answer-card",
-  "server",
-  "data",
-  "sponsor.json"
-);
 const sponsorQrDir = path.join(rootDir, "data", "sponsor", "qr");
-
-async function loadSponsorConfig(): Promise<SponsorConfigFile> {
-  const raw = await readFile(sponsorConfigPath, "utf8");
-  return JSON.parse(raw) as SponsorConfigFile;
-}
 
 function resolveQrPath(qrFile: string): string | null {
   const fileName = path.basename(qrFile);
@@ -46,7 +19,6 @@ function resolveQrPath(qrFile: string): string | null {
 /** GET /api/sponsor — 赞助页配置（收款码 URL 由服务端解析） */
 router.get("/", async (_req: Request, res: Response) => {
   try {
-    const config = await loadSponsorConfig();
     const channels = config.channels
       .filter((channel) => channel.enabled)
       .map((channel) => {
@@ -74,7 +46,6 @@ router.get("/", async (_req: Request, res: Response) => {
 router.get("/qr/:channelId", async (req: Request, res: Response) => {
   try {
     const channelId = req.params.channelId;
-    const config = await loadSponsorConfig();
     const channel = config.channels.find((item) => item.id === channelId && item.enabled);
     if (!channel?.qrFile) {
       res.status(404).json({ message: "收款码未配置" });

@@ -407,23 +407,23 @@ export async function submitReviewCropScores(params: {
   const blockTotalScoreNum = params.blockTotalScore == null ? Number.NaN : Number(params.blockTotalScore);
   const hasBlockTotalScore = Number.isFinite(blockTotalScoreNum);
   const consistency = validateScoringModeConsistency(scoringMode, hasBlockTotalScore);
-  if (!consistency.ok) throw new Error(consistency.error);
+  if (!consistency.ok) throw new ReviewValidationError(consistency.error);
   const submittedScores: Array<{ questionNumber: number; scoreType: string; score: number; maxScore: number }> =
     params.blockTotalScore != null
       ? (() => {
           const total = Number(params.blockTotalScore);
-          if (!Number.isFinite(total) || total < -1e-9) throw new Error("题块总分无效");
+          if (!Number.isFinite(total) || total < -1e-9) throw new ReviewValidationError("题块总分无效");
           if (total > maxBlockScore + 1e-6) {
-            throw new Error(`题块总分不能超过本题块满分 ${maxBlockScore}`);
+            throw new ReviewValidationError(`题块总分不能超过本题块满分 ${maxBlockScore}`);
           }
           if (Math.abs(total - Math.round(total / step) * step) > 1e-9) {
-            throw new Error(`题块总分必须是 ${step} 分的整数倍`);
+            throw new ReviewValidationError(`题块总分必须是 ${step} 分的整数倍`);
           }
           // 题号集合校验：题块总分代表整个题块，提交项必须恰好覆盖本题块的权威小题，
           // 且每题只允许出现一次（否则 totalScore 虚高且 scoreBreakdown 内部不一致）。
           const authoritativeNums = Array.from(maxScoreByQuestion.keys());
           const coverage = validateBlockTotalCoverage(authoritativeNums, scores);
-          if (!coverage.ok) throw new Error(coverage.error);
+          if (!coverage.ok) throw new ReviewValidationError(coverage.error);
           const split = splitBlockTotal(
             Math.round(total * 100) / 100,
             scores,
@@ -443,7 +443,7 @@ export async function submitReviewCropScores(params: {
           const authoritative = maxScoreByQuestion.get(item.questionNumber);
           // #186 严格校验：逐题模式若显式携带 maxScore，必须与权威逐题满分一致
           if (item.maxScore != null && authoritative != null && Math.abs(item.maxScore - authoritative) > 1e-6) {
-            throw new Error(`第${item.questionNumber}题满分应为 ${authoritative}，提交值为 ${item.maxScore}`);
+            throw new ReviewValidationError(`第${item.questionNumber}题满分应为 ${authoritative}，提交值为 ${item.maxScore}`);
           }
           const maxScore = item.maxScore ?? authoritative ?? item.score;
           return {
@@ -479,7 +479,7 @@ export async function submitReviewCropScores(params: {
     if (reviewerIds.has(params.userId) && freshCrop.status !== "disputed") {
       throw new Error("您已对该题块评分，请勿重复提交");
     }
-    if (config.arbitratorId != null && config.arbitratorId === params.userId) throw new Error("您是该题块的仲裁人，不能参与初评");
+    if (config.arbitratorId != null && config.arbitratorId === params.userId) throw new ReviewValidationError("您是该题块的仲裁人，不能参与初评");
     if (config.arbitratorId != null && reviewerIds.has(config.arbitratorId)) throw new Error("该题块的仲裁人已参与评分，需要更换仲裁人");
 
     // 争议卷（含自动改派/回退给原老师）允许追加复评以打破僵局；

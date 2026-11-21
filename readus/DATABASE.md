@@ -636,7 +636,7 @@ exam_archives 表：记录归档信息（路径、大小、归档时间）
 sudo bash scripts/setup-mariadb.sh
 ```
 
-自动完成：安装 MariaDB 服务端 → 创建 projectx 数据库 → 运行建表 SQL → 创建应用账户并授权 → 输出环境变量配置。
+在已启动的 MariaDB 上创建应用库和本机账户，授予该库的权限并导入表结构。可通过 `MARIADB_APP_DB`、`MARIADB_APP_USER` 和 `MARIADB_APP_PASSWORD` 指定配置。新账户未指定密码时脚本会生成并显示密码，重复运行时请传入原密码。
 
 ### 迁移现有数据
 

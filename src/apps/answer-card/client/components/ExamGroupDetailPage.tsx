@@ -113,7 +113,11 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
 
   // ESC to go back
   useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onBack(); }
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      e.preventDefault();
+      onBack();
+    }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onBack]);

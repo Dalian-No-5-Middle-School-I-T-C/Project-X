@@ -7,7 +7,7 @@ export async function persistScannerResultToMainDb(
     cardId: string,
     result: CombinedStudentResult,
     requireExam = false,
-    context?: { db: DbAdapter; examId: number }
+    context?: { db: DbAdapter; examId: number; rosterApproval?: boolean }
   ): Promise<number> {
     if (!result.studentId || result.studentId === "未识别") { if (requireExam) throw new Error("学号未识别，成绩未入库"); return 0; }
 
@@ -38,7 +38,14 @@ export async function persistScannerResultToMainDb(
     if (!user) { if (requireExam) throw new Error(`学号 ${result.studentId} 不在学生名单中，成绩未入库`); return 0; }
 
     // Find exams linked to this card
-    const exams = await db.all("SELECT e.id FROM exams e WHERE e.card_id = ? AND (e.status != 'closed' OR e.score_published=1 OR EXISTS (SELECT 1 FROM exam_publish_events p WHERE p.exam_id=e.id)) AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)" + (context ? " AND e.id = ?" : ""), ...[cardId, ...(context ? [context.examId] : [])]) as Array<{ id: number }>;
+    // An explicit teacher admission may finish after the last expected score closed the exam.
+    const writableStatus = context?.rosterApproval ? "" :
+      " AND (e.status != 'closed' OR e.score_published=1 OR EXISTS (SELECT 1 FROM exam_publish_events p WHERE p.exam_id=e.id))";
+    const exams = await db.all<{ id: number }>(
+      "SELECT e.id FROM exams e WHERE e.card_id = ? AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)" +
+        writableStatus + (context ? " AND e.id = ?" : ""),
+      cardId, ...(context ? [context.examId] : [])
+    );
     if (exams.length === 0) { if (requireExam) throw new Error("答题卡未关联可阅卷的考试，成绩未入库"); return 0; }
 
     // P1-1: 扫描入库拒绝非应考学生（名单可知时）

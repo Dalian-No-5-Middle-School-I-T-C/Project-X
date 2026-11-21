@@ -98,6 +98,8 @@ const RECONNECT_DELAY = 5000;
 /** 扫描设置跨批次记忆：继续扫描会重挂载面板，DPI/色彩/纸型不该回到默认值。 */
 const SCAN_SETTINGS_KEY = "projectx-scanner-settings-v1";
 type StoredScanSettings = {
+  cardId?: string;
+  duplex?: boolean;
   dpi: number;
   colorMode: "gray" | "color" | "bw";
   paperSize: "A4" | "Letter" | "A3";
@@ -198,7 +200,8 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
   // v2.5.6：诊断复制反馈（老师现场无法翻日志，一键复制即可反馈）
   const [diagCopied, setDiagCopied] = useState(false);
   /** 继续扫描自动开扫前，先等答题卡默认纸型/单双面读回来，避免用默认 A4/单面开第一批。 */
-  const [cardSettingsReady, setCardSettingsReady] = useState(false);
+  const [settingsCardId, setSettingsCardId] = useState("");
+  const cardSettingsReady = settingsCardId === cardId;
   /** 自动续扫还要等数据源枚举结束：否则枚举晚到会把正在扫描的界面切回 ready，或覆盖上次选定的设备。 */
   const [sourcesReady, setSourcesReady] = useState(false);
   const detectAttemptRef = useRef(0);
@@ -225,12 +228,14 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
         if (!response.ok) return;
         const card = (await response.json()) as AnswerCard;
         if (active) {
-          setPaperSize(card.paper?.size === "A3" ? "A3" : "A4");
-          setDuplex(card.sided === "double");
+          const saved = readStoredScanSettings();
+          const sameCard = saved.cardId === cardId;
+          setPaperSize(sameCard && saved.paperSize ? saved.paperSize : card.paper?.size === "A3" ? "A3" : "A4");
+          setDuplex(sameCard && saved.duplex !== undefined ? saved.duplex : card.sided === "double");
         }
       })
       .catch(() => undefined)
-      .finally(() => { if (active) setCardSettingsReady(true); });
+      .finally(() => { if (active) setSettingsCardId(cardId); });
     return () => {
       active = false;
     };
@@ -239,10 +244,11 @@ export function ScannerPanel({ cardId, onScansComplete, onBatchArchived, onScanS
   // 扫描设置跨批次记忆：继续扫描重挂载后仍用上一次的 DPI/色彩/纸型/数据源。
   useEffect(() => {
     try {
-      const settings: StoredScanSettings = { dpi, colorMode, paperSize, maxSheets, pageTimeoutSec, showUi, selectedSource, standby };
+      if (!cardSettingsReady) return;
+      const settings: StoredScanSettings = { cardId, duplex, dpi, colorMode, paperSize, maxSheets, pageTimeoutSec, showUi, selectedSource, standby };
       localStorage.setItem(SCAN_SETTINGS_KEY, JSON.stringify(settings));
     } catch { /* 存储不可用不影响本次扫描 */ }
-  }, [dpi, colorMode, paperSize, maxSheets, pageTimeoutSec, showUi, selectedSource, standby]);
+  }, [cardId, cardSettingsReady, duplex, dpi, colorMode, paperSize, maxSheets, pageTimeoutSec, showUi, selectedSource, standby]);
 
   // 从后处理页点「继续扫描」：面板挂载并读到答题卡设置后自动开下一批。
   useEffect(() => {

@@ -223,6 +223,25 @@ function statusClause(column = "status"): string {
   return `${column} IN ('${CLAIMABLE_STATUSES.join("','")}')`;
 }
 
+type PoolReviewHistory = { status: string | null; score_breakdown: string | null };
+
+/** Only the first reviewer can replace a vote after all assigned reviewers have voted. */
+async function mayClaimAgain(row: PoolReviewHistory, examId: number, blockId: string, teacherId: number, db: DbAdapter): Promise<boolean> {
+  const votes = parseBreakdownHistory(row.score_breakdown);
+  if (!votes.some(vote => vote.reviewerId === teacherId)) return true;
+  if (row.status !== "disputed" || votes[0]?.reviewerId !== teacherId) return false;
+  const config = await db.get<{ review_mode: number; arbitrator_id: number | null; auto_reassign_no_arb: number }>(
+    "SELECT review_mode, arbitrator_id, auto_reassign_no_arb FROM block_grading_config WHERE exam_id=? AND block_id=?",
+    examId, blockId
+  );
+  if (!config?.auto_reassign_no_arb || config.arbitrator_id != null || votes.length >= config.review_mode + 2) return false;
+  const assigned = await db.all<{ teacher_id: number }>(
+    "SELECT teacher_id FROM review_assignments WHERE exam_id=? AND block_id=?", examId, blockId
+  );
+  const reviewers = new Set(votes.map(vote => vote.reviewerId));
+  return assigned.some(row => row.teacher_id === teacherId) && assigned.every(row => reviewers.has(row.teacher_id));
+}
+
 /**
  * 领取临界区（PR #312 CR9）：把「读持有量 → 选卷子 → 占卷」串到同一位教师的一把锁里。
  *
@@ -417,7 +436,7 @@ export async function claimNextPaper(
     // 把本人尚未开评的首评工作量挤到队尾（切片分工的本意）。
     const orderAffinity = inSliceSql ? `(${inSliceSql}) DESC, ` : "";
     const candidates = await tx.all(
-      `SELECT id, score_breakdown FROM answer_block_crops
+      `SELECT id, status, score_breakdown FROM answer_block_crops
        WHERE exam_id = ? AND block_id = ? AND ${statusClause()} AND claimed_by IS NULL ${classFilter} ${assignedFilter}
        ORDER BY ${orderAffinity}student_number, page_number, segment_index`,
       examId,
@@ -425,11 +444,11 @@ export async function claimNextPaper(
       ...classParams,
       ...assignedParams,
       ...(assignedIds && assignedIds.size > 0 ? [...assignedIds] : [])
-    ) as Array<{ id: string; score_breakdown: string | null }>;
-    // 同一份卷不让同一人评两次（复核轮次由题块内的其他教师承接）
-    const candidate = candidates.find((item) =>
-      !parseBreakdownHistory(item.score_breakdown).some((review) => review.reviewerId === teacherId)
-    );
+    ) as Array<PoolReviewHistory & { id: string }>;
+    let candidate;
+    for (const item of candidates) {
+      if (await mayClaimAgain(item, examId, blockId, teacherId, tx)) { candidate = item; break; }
+    }
     if (!candidate) throw new ReviewPoolError("试卷池暂无可用试卷");
 
     const now = databaseTimestamp();
@@ -478,7 +497,7 @@ export async function claimSpecificPaper(
       review_round: number | null;
     } | undefined;
     // 已评过的人不能再领（含自己首评后的复核轮次），复核由题块内的其他人承接
-    if (parseBreakdownHistory(existing?.score_breakdown).some((review) => review.reviewerId === teacherId)) {
+    if (existing && !await mayClaimAgain(existing, examId, blockId, teacherId, tx)) {
       throw new ReviewPoolError("您已批阅过该试卷，不能重复领取");
     }
     // PR #312 CR1：待复核卷子跨切片可领，范围判定与自动领取共用同一谓词，两条路径不会走出两套规则

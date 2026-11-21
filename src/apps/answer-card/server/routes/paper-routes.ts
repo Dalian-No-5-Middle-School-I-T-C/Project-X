@@ -242,6 +242,11 @@ export function paperRoutes(): Router {
         let firstRelPath = "";
 
         await db.transaction(async (tx) => {
+          // Concurrent appends must observe the previous batch before choosing a format and page number.
+          if (tx.dialect === "mariadb") {
+            await tx.get("SELECT id FROM answer_cards WHERE id = ? FOR UPDATE", cardId);
+          }
+          await getPaperInputKind(cardId, validFiles.map(file => file.originalname));
           const maxRow = await tx.get(
             "SELECT COALESCE(MAX(page_index), 0) AS mx FROM original_paper_pages WHERE card_id = ?",
             cardId
@@ -314,6 +319,10 @@ export function paperRoutes(): Router {
         // 里的那一次全局实测会把「即将被删掉的文件」算进缓存（评审 A2 的反面情形——
         // 不删就会让后续请求凭空多算一整批原卷，直到 60 秒 TTL 到期）。
         if (writtenBytes > 0) invalidatePaperUsageCache();
+        if (err instanceof PaperInputError) {
+          res.status(err.status).json({ code: err.code, error: err.message });
+          return;
+        }
         if (err instanceof PaperQuotaRollbackError) {
           // 落盘后复测越界（CR14）：页行已随事务回滚、文件已删，这里给出与 admission 同一形状的 413
           res.status(413).json({

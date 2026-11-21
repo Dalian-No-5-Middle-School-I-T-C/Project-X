@@ -263,9 +263,9 @@ router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (r
     const track = normalizeTrackFilter(req.query.track);
 
     const group = await db.get(`
-      SELECT name, total_score_mode, only_full_participants
+      SELECT name, total_score_mode
       FROM exam_groups WHERE id = ?
-    `, groupId) as { name: string; total_score_mode: string; only_full_participants: number } | undefined;
+    `, groupId) as { name: string; total_score_mode: string } | undefined;
     if (!group) { res.status(404).json({ message: "大考不存在" }); return; }
 
     const members = await db.all(`
@@ -288,7 +288,7 @@ router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (r
       return;
     }
 
-    const useAssigned = fullOnly ? group.only_full_participants : false;
+    const useAssigned = group.total_score_mode === "assigned";
     const memberIds = trackMembers.map((m) => m.exam_id);
 
     // Get all scores for all member exams（按文理过滤学生）
@@ -413,7 +413,7 @@ router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (r
           examId: m.exam_id,
           subject: m.subject || "",
           totalScore: s?.totalScore ?? 0,
-          assignedScore: s?.assignedScore ?? null,
+          assignedScore: m.assigned_formula ? s?.assignedScore ?? null : null,
           gradeRank: ranks?.gradeRank ?? 0,
           classRank: ranks?.classRank ?? 0,
           objectiveScore: s?.objectiveScore ?? 0,

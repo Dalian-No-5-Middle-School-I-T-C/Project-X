@@ -13,12 +13,13 @@ export async function extractDocxText(filePath: string): Promise<string | null> 
 }
 
 /** Refuse a partial analysis, including when a vision model would skip DOCX. */
-export async function getPaperInputKind(cardId: string): Promise<"docx" | "other"> {
+export async function getPaperInputKind(cardId: string, incoming: readonly string[] = []): Promise<"docx" | "other"> {
   const entries = (await readdir(paperDir(cardId)).catch(() => []))
     .filter(name => /^original(-\d+)?\.[^.]+$/i.test(name));
-  const hasDocx = entries.some(name => /\.docx$/i.test(name));
-  if (hasDocx && entries.some(name => !/\.docx$/i.test(name))) {
-    throw new PaperInputError("MIXED_PAPER_FORMATS", "DOCX 与 PDF/图片混合原卷暂不支持完整分析。请将整份原卷统一为 DOCX，或统一转为 PDF/图片后重新上传。");
+  const formats = [...entries, ...incoming];
+  const hasDocx = formats.some(name => /\.docx$/i.test(name));
+  if (hasDocx && formats.some(name => !/\.docx$/i.test(name))) {
+    throw new PaperInputError("MIXED_PAPER_FORMATS", "同一份原卷不能混用 DOCX 与 PDF/图片。请将整份原卷统一为 DOCX，或统一转为 PDF/图片后重新上传。");
   }
   return hasDocx ? "docx" : "other";
 }
