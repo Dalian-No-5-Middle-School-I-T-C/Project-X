@@ -1,3 +1,4 @@
+import { essayReviewIssue, loadEssayReviews, reviewUnitPredicate } from "./essayReview";
 import { databaseTimestamp } from "../db/timestamp";
 import { getMysqlDb, buildUpsertSQL } from "../db";
 import type { DbAdapter } from "../db";
@@ -97,7 +98,7 @@ export async function listReviewBlocks(
        COALESCE(MAX(bgc.has_half_point), 0) AS hasHalfPoint
      FROM answer_block_crops abc
      LEFT JOIN block_grading_config bgc ON bgc.exam_id = abc.exam_id AND bgc.block_id = abc.block_id
-     WHERE abc.exam_id = ?${blockFilter}
+     WHERE abc.exam_id = ? AND ${reviewUnitPredicate("abc")}${blockFilter}
      GROUP BY abc.block_id
      ORDER BY abc.block_id`,
     examId, ...(permittedBlockIds ?? [])
@@ -295,7 +296,7 @@ export async function submitReviewCropScores(params: {
   const exam = await db.get("SELECT card_id FROM exams WHERE id = ?", params.examId) as { card_id: string | null } | undefined;
   if (!exam?.card_id) throw new Error("考试未关联答题卡");
 
-  const cardRepo = new CardRepository();
+  const cardRepo = new CardRepository(db);
   const card = await cardRepo.findById(exam.card_id);
   if (!card) throw new Error("答题卡不存在");
 
@@ -356,6 +357,11 @@ export async function submitReviewCropScores(params: {
     maxBlockScore = Array.from(maxScoreByQuestion.values()).reduce((a, b) => a + b, 0);
   }
 
+  if (targetBlock?.type === "subjective" && targetBlock.blockKind === "essay"
+    && (scores.length !== 1 || Number(scores[0].questionNumber) !== Number(targetBlock.questions[0]?.number)
+      || scores[0].scoreType !== "subjective")) {
+    throw new ReviewValidationError("请为作文题提交一个主观题分数");
+  }
   const config = await getBlockConfig(params.examId, crop.block_id ?? "", blockType, maxBlockScore, db);
   const reviewMode = config.reviewMode;
   const scoringMode: ScoringMode = config.scoringMode === "per_question" ? "per_question" : "block_total";
@@ -462,6 +468,13 @@ export async function submitReviewCropScores(params: {
 
   // P0-2: 争议检测 + 状态更新全部在事务内执行
   await db.transaction(async (tx) => {
+    if (targetBlock?.type === "subjective" && targetBlock.blockKind === "essay") {
+      await tx.run("UPDATE exams SET id=id WHERE id=?", params.examId);
+      const essays = await loadEssayReviews(tx, params.examId, targetBlockId, crop.student_id!);
+      const unit = essays.get(params.cropId);
+      const issue = unit ? essayReviewIssue(unit, params.cropId) : "作文切图归属已变更，请重新领取";
+      if (issue) throw new ReviewValidationError(issue);
+    }
     // 评分历史必须在事务内读取和追加；事务外快照会在并发提交时覆盖另一位教师的记录。
     const freshCrop = await tx.get(
       "SELECT review_round, score_breakdown, status, claimed_by FROM answer_block_crops WHERE id = ?",
@@ -729,7 +742,7 @@ export async function getReviewTrace(
     FROM answer_block_crops abc
     JOIN users u ON u.id = abc.student_id
     LEFT JOIN users arb ON arb.id = abc.final_score_by
-    WHERE abc.exam_id = ?
+    WHERE abc.exam_id = ? AND (${reviewUnitPredicate("abc")} OR abc.review_round > 0)
   `;
   const params: unknown[] = [examId];
 

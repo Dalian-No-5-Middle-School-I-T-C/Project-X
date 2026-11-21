@@ -45,6 +45,15 @@ export function ExamDetailPage({
 
   const isGradeLeader = teacherRole === "grade_leader" || userRole === "admin";
   const isAdmin = userRole === "admin";
+  const [arbitrationExam, setArbitrationExam] = useState<number | null>(null);
+  useEffect(() => {
+    if (isGradeLeader) return;
+    let active = true;
+    fetchJson<{ data: unknown[] }>(`/api/review-arbitration/exams/${examId}/disputes`)
+      .then(({ data }) => { if (active) setArbitrationExam(data.length ? examId : null); })
+      .catch(() => { if (active) setArbitrationExam(null); });
+    return () => { active = false; };
+  }, [examId, teacherId, isGradeLeader]);
 
   useEffect(() => {
     let active = true;
@@ -78,7 +87,7 @@ export function ExamDetailPage({
     return false;
   };
 
-  const visibleTabs = tabs.filter((t) => canSeeTab(t.requiresRole));
+  const visibleTabs = tabs.filter((t) => canSeeTab(t.requiresRole) || (t.key === "disputes" && arbitrationExam === examId));
   const canSee = (key: ExamDetailTab) => visibleTabs.some((t) => t.key === key);
 
   return (

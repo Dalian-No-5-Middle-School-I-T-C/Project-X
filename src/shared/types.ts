@@ -418,7 +418,11 @@ export type RecognitionBlockCrop = {
 
 export type AnswerBlockCropSourceType = "scan_record" | "twain_scan_record";
 
+export type ReviewImage = { id: string; imageUrl: string; pageNumber: number; segmentIndex: number; widthPx: number; heightPx: number };
+
 export type AnswerBlockCrop = {
+  reviewImages?: ReviewImage[];
+  reviewIssue?: string;
   id: string;
   cardId: string;
   examId?: number | null;
@@ -1864,6 +1868,8 @@ export interface GroupClassComparisonResponse {
 
 /** 争议卷条目 */
 export interface DisputeItem {
+  reviewImages?: ReviewImage[];
+  reviewIssue?: string;
   questionNumbers: number[];
   cropId: string;
   studentId: number;

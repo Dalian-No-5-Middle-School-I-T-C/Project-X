@@ -34,6 +34,11 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
   const imageRef = useRef<HTMLDivElement>(null);
 
   const current = queue[currentIndex];
+  const [selectedPartId, setSelectedPartId] = useState<string | null>(null);
+  const parts = current?.reviewImages;
+  const part = parts?.find(image => image.id === selectedPartId) ?? parts?.[0] ?? current;
+  const partLabel = (index: number, page: number) => `作文第 ${index + 1} 段（第 ${page} 页）`;
+  const supportsPerQuestion = Boolean(parts?.length && current.questionNumbers.length === 1);
   const currentScore = current ? (draftScores[current.id] ?? current.score ?? 0) : 0;
   const maxScore = current?.maxScore ?? 0;
   // 是否已为本卷显式选过分数（防止未选分时误提交 0 分）
@@ -89,13 +94,14 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
   }, [examId, blockId]);
 
   // 加载批注
+  const activePartId = useRef<string | undefined>(undefined);
   const loadAnnotations = useCallback(async (cropId: string) => {
     try {
       const res = await fetchJson<{ ok: boolean; data: ReviewAnnotation[] }>(
         `/api/review-annotations?cropId=${encodeURIComponent(cropId)}`
       );
-      if (res.ok) setAnnotations(res.data);
-    } catch { setAnnotations([]); }
+      if (activePartId.current === cropId && res.ok) setAnnotations(res.data);
+    } catch { if (activePartId.current === cropId) setAnnotations([]); }
   }, []);
 
   useEffect(() => {
@@ -122,8 +128,11 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
 
   // 当前切块变化时加载批注
   useEffect(() => {
-    if (current) loadAnnotations(current.id);
-  }, [current?.id, loadAnnotations]);
+    activePartId.current = part?.id;
+    setAnnotations([]);
+    if (part) loadAnnotations(part.id);
+    return () => { activePartId.current = undefined; };
+  }, [part?.id, loadAnnotations]);
 
   // 导航
   const goTo = useCallback((index: number) => {
@@ -145,13 +154,13 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
 
   // 保存并下一份
   const handleSubmit = useCallback(async (scoreOverride?: number) => {
-    if (!current || saving) return;
+    if (!current || saving || current.reviewIssue) return;
     if (scoreOverride === undefined && draftScores[current.id] === undefined) {
       setError("请先选择分数再提交，避免误提交 0 分");
       setErrorTone("error");
       return;
     }
-    if (scoringMode === "per_question") {
+    if (scoringMode === "per_question" && !supportsPerQuestion) {
       setError("本题块采用逐题评分，不能在这里提交题块总分。");
       return;
     }
@@ -168,8 +177,9 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
             scores: current.questionNumbers.map((q: any) => ({
               questionNumber: Number(q),
               scoreType: current.blockType || "subjective",
+              ...(scoringMode === "per_question" ? { score } : {}),
             })),
-            blockTotalScore: score,
+            ...(scoringMode === "per_question" ? {} : { blockTotalScore: score }),
             status: "reviewed",
           }),
         }
@@ -203,7 +213,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
       setError(err.message);
     }
     setSaving(false);
-  }, [current, saving, draftScores, examId, currentIndex, queue.length, maxScore, goTo, saveSession, scoringMode, fetchQueue]);
+  }, [current, saving, draftScores, examId, currentIndex, queue.length, maxScore, goTo, saveSession, scoringMode, supportsPerQuestion, fetchQueue]);
 
   // 缩放
   const zoomIn = () => setZoom((z) => Math.min(4, z + 0.25));
@@ -224,12 +234,12 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
 
   // 保存批注
   const handleSaveAnnotation = useCallback(async (ann: any) => {
-    if (!current) return;
+    if (!part) return;
     try {
       await fetchJson(`/api/review-annotations`, {
         method: "POST",
         body: JSON.stringify({
-          cropId: current.id,
+          cropId: part.id,
           type: ann.type,
           dataJson: ann.dataJson,
           positionX: ann.x,
@@ -238,9 +248,9 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
           height: ann.h,
         }),
       });
-      loadAnnotations(current.id);
+      loadAnnotations(part.id);
     } catch { /* silent */ }
-  }, [current, loadAnnotations]);
+  }, [part, loadAnnotations]);
 
   // 快捷键
   useEffect(() => {
@@ -314,30 +324,39 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
             </div>
           )}
 
+          {parts && parts.length > 1 && <div className="flex flex-wrap gap-2 px-4 pb-2">
+            {parts.map((image, index) => <Button key={image.id} size="sm"
+              variant={image.id === part?.id ? "primary" : "outline"}
+              aria-pressed={image.id === part?.id} onClick={() => setSelectedPartId(image.id)}>
+              {partLabel(index, image.pageNumber)}
+            </Button>)}
+          </div>}
+          {current?.reviewIssue && <p role="alert">{current.reviewIssue}</p>}
           {/* 图片区域 */}
           <div
             ref={imageRef}
             className="relative flex flex-1 items-start justify-center overflow-auto p-4"
             onWheel={handleWheel}
           >
-            {current && (
+            {current && part && !current.reviewIssue && (
               <div
                 className="relative origin-center transition-transform duration-(--px-dur-2) ease-standard"
                 // 动态缩放/旋转（EXECUTION-PLAN §1.3 允许的动态值内联）
                 style={{ transform: `scale(${zoom}) rotate(${rotation}deg)` }}
               >
                 <img
-                  src={mediaUrl(current.imageUrl)}
-                  alt={current.blockTitle || "作答切块"}
+                  src={mediaUrl(part.imageUrl)}
+                  alt={parts?.length ? partLabel(parts.findIndex(p => p.id === part.id), part.pageNumber) : current.blockTitle || "作答切块"}
                   className="block max-h-[65vh] max-w-full"
                   draggable={false}
                   // 跨源模式回看早期切块时，缓存的票据可能已被服务端淘汰 → 重签一次再试
                   onError={(event) => { retryMediaTicketImage(event.currentTarget); }}
                 />
                 <AnnotationOverlay
-                  cropId={current.id}
-                  imageWidth={current.widthPx || 800}
-                  imageHeight={current.heightPx || 600}
+                  key={part.id}
+                  cropId={part.id}
+                  imageWidth={part.widthPx || 800}
+                  imageHeight={part.heightPx || 600}
                   mode={annotateMode}
                   existingAnnotations={annotations}
                   onSaveAnnotation={handleSaveAnnotation}
@@ -379,7 +398,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
 
         {/* 右侧: 打分面板 */}
         <div className="flex flex-col overflow-auto border-l border-border-subtle p-4">
-          {scoringMode === "per_question" ? (
+          {scoringMode === "per_question" && !supportsPerQuestion ? (
             <div className="rounded-lg bg-destructive-soft px-3.5 py-3 text-base text-destructive-fg">
               本题块采用「逐题评分」。此面板只支持题块总分，请返回阅卷列表选择逐题评分入口；如需在此打分，请管理员把评分模式改为「题块总分」。
             </div>
@@ -421,7 +440,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
             className="mb-2 min-h-14 text-lg [touch-action:manipulation]"
             icon={<Save className="size-5" />}
             loading={saving}
-            disabled={!current || scoringMode === "per_question" || !hasEnteredScore}
+            disabled={!current || Boolean(current.reviewIssue) || (scoringMode === "per_question" && !supportsPerQuestion) || !hasEnteredScore}
             onClick={() => handleSubmit()}
           >
             {saving ? "保存中..." : "保存并下一份"}

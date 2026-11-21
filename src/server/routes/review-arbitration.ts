@@ -1,3 +1,4 @@
+import { essayReviewIssue, loadEssayReviews } from "../services/essayReview";
 import { databaseTimestamp } from "../db/timestamp";
 /**
  * 争议仲裁 API
@@ -6,7 +7,7 @@ import { databaseTimestamp } from "../db/timestamp";
 import { Router } from "express";
 import { requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
-import { requireExamAccess, getVisibleExamIds } from "../../apps/answer-card/server/middleware";
+import { requireExamAccess, getVisibleExamIds, isPrivilegedGrader } from "../../apps/answer-card/server/middleware";
 import { getDisputes, getEligibleArbitrators } from "../services/ArbitrationService";
 import { getMysqlDb, buildUpsertSQL } from "../db";
 import { recomputeExamRankings, roundScore } from "../services/rankingUpdate";
@@ -31,7 +32,7 @@ router.get(
     try {
       const examId = Number(req.params.examId);
       const blockId = typeof req.query.blockId === "string" ? req.query.blockId : undefined;
-      const disputes = await getDisputes(examId, blockId);
+      const disputes = await getDisputes(examId, blockId, getMysqlDb(), isPrivilegedGrader(req.user) ? undefined : req.user!.id);
       res.json({ ok: true, data: disputes });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err.message });
@@ -78,6 +79,11 @@ router.post(
 
       // P0-3: 全部操作在事务内执行，含 CAS 并发保护
       const outcome = await db.transaction(async (tx) => {
+        // Acquire the same exam lock as scanner/correction before the first snapshot read.
+        await tx.run(`UPDATE exams SET id=id WHERE id=(
+          SELECT a.exam_id FROM answer_block_crops a JOIN subjective_blocks b
+          ON b.card_id=a.card_id AND b.id=a.block_id AND b.block_kind='essay' WHERE a.id=?
+        )`, cropId);
         const crop = await tx.get(
           "SELECT * FROM answer_block_crops WHERE id = ?",
           cropId
@@ -106,6 +112,12 @@ router.post(
         }
         const card = await new CardRepository(tx).findById(crop.card_id);
         const block = card?.bodyBlocks.find(item => item.id === crop.block_id);
+        if (block?.type === "subjective" && block.blockKind === "essay") {
+          const essays = await loadEssayReviews(tx, crop.exam_id, crop.block_id, crop.student_id);
+          const unit = essays.get(cropId);
+          const issue = unit ? essayReviewIssue(unit, cropId) : "作文切图归属已变更";
+          if (issue) throw new ArbitrationError(409, issue);
+        }
         const definitions = new Map<number, number>();
         if (block?.type === "objective") {
           for (const q of objectiveQuestionDefinitions(block)) definitions.set(q.questionNumber, q.score);

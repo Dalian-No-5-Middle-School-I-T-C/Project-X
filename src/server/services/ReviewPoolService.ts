@@ -1,3 +1,4 @@
+import { essayReviewIssue, loadEssayReviews, lockEssayReview, reviewUnitPredicate } from "./essayReview";
 import { databaseTimestamp } from "../db/timestamp";
 /**
  * Issue #174: 网阅试卷池
@@ -186,11 +187,11 @@ export async function countHeldPapers(
   db: DbAdapter = getMysqlDb()
 ): Promise<{ inBlock: number; total: number }> {
   const totalRow = await db.get<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM answer_block_crops WHERE claimed_by = ?",
+    `SELECT COUNT(*) AS n FROM answer_block_crops a WHERE claimed_by = ? AND ${reviewUnitPredicate("a")}`,
     teacherId
   ) as { n: number } | undefined;
   const blockRow = await db.get<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM answer_block_crops WHERE claimed_by = ? AND exam_id = ? AND block_id = ?",
+    `SELECT COUNT(*) AS n FROM answer_block_crops a WHERE claimed_by = ? AND exam_id = ? AND block_id = ? AND ${reviewUnitPredicate("a")}`,
     teacherId, scope.examId, scope.blockId
   ) as { n: number } | undefined;
   return { inBlock: Number(blockRow?.n ?? 0), total: Number(totalRow?.n ?? 0) };
@@ -285,12 +286,13 @@ export async function getPoolSummary(
   db: DbAdapter = getMysqlDb()
 ): Promise<ReviewPoolSummary> {
   const rows = await db.all(
-    `SELECT status, claimed_by, score_breakdown
-     FROM answer_block_crops
-     WHERE exam_id = ? AND block_id = ?`,
+    `SELECT id, status, claimed_by, score_breakdown
+     FROM answer_block_crops a
+     WHERE exam_id = ? AND block_id = ? AND ${reviewUnitPredicate("a")}`,
     examId,
     blockId
-  ) as Array<{ status: string | null; claimed_by: number | null; score_breakdown: string | null }>;
+  ) as Array<{ id: string; status: string | null; claimed_by: number | null; score_breakdown: string | null }>;
+  const essays = await loadEssayReviews(db, examId, blockId);
 
   let totalCount = 0;
   let inPoolCount = 0;
@@ -303,17 +305,18 @@ export async function getPoolSummary(
   for (const row of rows) {
     const count = 1;
     const status = row.status ?? "ready";
+    const available = row.claimed_by == null && !essayReviewIssue(essays.get(row.id), row.id);
     totalCount += count;
     if (status === "reviewed") {
       reviewedCount += count;
     } else if (status === "disputed") {
       disputedCount += count;
-      if (row.claimed_by == null) inPoolCount += count;
+      if (available) inPoolCount += count;
     } else if (status === "pending") {
       pendingCount += count;
-      if (row.claimed_by == null) inPoolCount += count;
+      if (available) inPoolCount += count;
     } else if (status === "ready") {
-      if (row.claimed_by == null) inPoolCount += count;
+      if (available) inPoolCount += count;
     }
     if (row.claimed_by != null) {
       claimedCount += count;
@@ -414,6 +417,7 @@ export async function claimNextPaper(
   const assignedIds = await getAssignedStudentIdSet(examId, blockId, teacherId, db);
   const cropId = await db.transaction(async (tx) => withClaimReservation(tx, teacherId, privileged, async () => {
     // 安全 R15 + PR #312 CR9：持有量在领取临界区内结算，「先查后写」分离时并发能突破配额
+    await lockEssayReview(tx, examId, blockId);
     await assertHeldQuota(examId, blockId, teacherId, tx, privileged);
     const classFilter = options.classId
       ? `AND ${examClassPredicate("answer_block_crops.student_id", "answer_block_crops.exam_id")}`
@@ -435,7 +439,7 @@ export async function claimNextPaper(
     const orderAffinity = inSliceSql ? `(${inSliceSql}) DESC, ` : "";
     const candidates = await tx.all(
       `SELECT id, status, score_breakdown FROM answer_block_crops
-       WHERE exam_id = ? AND block_id = ? AND ${statusClause()} AND claimed_by IS NULL ${classFilter} ${assignedFilter}
+       WHERE exam_id = ? AND block_id = ? AND ${reviewUnitPredicate("answer_block_crops")} AND ${statusClause()} AND claimed_by IS NULL ${classFilter} ${assignedFilter}
        ORDER BY ${orderAffinity}student_number, page_number, segment_index`,
       examId,
       blockId,
@@ -444,10 +448,16 @@ export async function claimNextPaper(
       ...(assignedIds && assignedIds.size > 0 ? [...assignedIds] : [])
     ) as Array<PoolReviewHistory & { id: string }>;
     let candidate;
+    let unavailable: string | undefined;
+    const essays = await loadEssayReviews(tx, examId, blockId);
     for (const item of candidates) {
+      const essay = essays.get(item.id);
+      if (essay && essay.unit.id !== item.id) continue;
+      const issue = essayReviewIssue(essay, item.id);
+      if (issue) { unavailable = issue; continue; }
       if (await mayClaimAgain(item, examId, blockId, teacherId, tx)) { candidate = item; break; }
     }
-    if (!candidate) throw new ReviewPoolError("试卷池暂无可用试卷");
+    if (!candidate) throw new ReviewPoolError(unavailable ?? "试卷池暂无可用试卷");
 
     const now = databaseTimestamp();
     const result = await tx.run(
@@ -478,6 +488,7 @@ export async function claimSpecificPaper(
   const privileged = options.privileged === true;
   await db.transaction(async (tx) => withClaimReservation(tx, teacherId, privileged, async () => {
     // 安全 R15：持有量上限 + 逐生分配范围（指定 crop 时越权要显式拒绝，而非静默领到别人的卷子）
+    await lockEssayReview(tx, examId, blockId);
     await assertHeldQuota(examId, blockId, teacherId, tx, privileged);
     const assignedIds = await getAssignedStudentIdSet(examId, blockId, teacherId, tx);
     const existing = await tx.get<{
@@ -485,15 +496,24 @@ export async function claimSpecificPaper(
       student_id: number | null;
       status: string | null;
       review_round: number | null;
+      is_unit: number;
     }>(
-      "SELECT score_breakdown, student_id, status, review_round FROM answer_block_crops WHERE id = ? AND exam_id = ? AND block_id = ?",
+      `SELECT score_breakdown, student_id, status, review_round, ${reviewUnitPredicate("a")} AS is_unit
+       FROM answer_block_crops a WHERE id = ? AND exam_id = ? AND block_id = ?`,
       cropId, examId, blockId
     ) as {
       score_breakdown: string | null;
       student_id: number | null;
       status: string | null;
       review_round: number | null;
+      is_unit: number;
     } | undefined;
+    if (existing && !Number(existing.is_unit)) throw new ReviewPoolError("该切图不能领取，请从试卷池领取整篇作文");
+    if (existing) {
+      const essays = await loadEssayReviews(tx, examId, blockId, existing.student_id ?? undefined);
+      const issue = essayReviewIssue(essays.get(cropId), cropId);
+      if (issue) throw new ReviewPoolError(issue);
+    }
     // 已评过的人不能再领（含自己首评后的复核轮次），复核由题块内的其他人承接
     if (existing && !await mayClaimAgain(existing, examId, blockId, teacherId, tx)) {
       throw new ReviewPoolError("您已批阅过该试卷，不能重复领取");

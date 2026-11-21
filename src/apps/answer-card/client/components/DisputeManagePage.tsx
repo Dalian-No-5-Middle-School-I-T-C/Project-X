@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { AlertTriangle, CheckCircle2, ShieldCheck } from "lucide-react";
-import { fetchJson } from "../auth/api";
+import { retryMediaTicketImage } from "../lib/mediaTicketRetry";
+import { fetchJson, mediaUrl } from "../auth/api";
 import type { DisputeItem, ArbitratorCandidate } from "../../../../shared/types";
 import {
   Badge,
@@ -28,7 +29,7 @@ export function DisputeManagePage({ examId }: Props) {
   const [selectedDispute, setSelectedDispute] = useState<DisputeItem | null>(null);
   const [arbitrators, setArbitrators] = useState<ArbitratorCandidate[]>([]);
   const [resolutionScores, setResolutionScores] = useState<Record<string, string>>({});
-  const scoresReady = Boolean(selectedDispute?.questionNumbers.length && selectedDispute.questionNumbers.every(q => resolutionScores[q]?.trim()));
+  const scoresReady = !selectedDispute?.reviewIssue && Boolean(selectedDispute?.questionNumbers.length && selectedDispute.questionNumbers.every(q => resolutionScores[q]?.trim()));
   // UI-1/UI-2：提交节流 + loading 态，避免重复仲裁
   const [resolving, setResolving] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
@@ -178,7 +179,7 @@ export function DisputeManagePage({ examId }: Props) {
       {/* 仲裁处理对话框 */}
       <Dialog open={selectedDispute != null} onOpenChange={closeDialog}>
         {selectedDispute && (
-          <DialogContent size="sm">
+          <DialogContent size={selectedDispute.reviewImages?.length ? "lg" : "sm"}>
             <DialogHeader>
               <DialogTitle>
                 仲裁 — {selectedDispute.studentName} · {selectedDispute.blockTitle}
@@ -193,6 +194,14 @@ export function DisputeManagePage({ examId }: Props) {
                 ))}
               </div>
 
+              {selectedDispute.reviewIssue && <p role="alert">{selectedDispute.reviewIssue}</p>}
+              {selectedDispute.reviewImages?.map((image, index) => (
+                <figure key={image.id}>
+                  <figcaption>作文第 {index + 1} 段（第 {image.pageNumber} 页）</figcaption>
+                  <img src={mediaUrl(image.imageUrl)} alt={`作文第 ${index + 1} 段（第 ${image.pageNumber} 页）`}
+                    className="max-w-full" onError={event => retryMediaTicketImage(event.currentTarget)} />
+                </figure>
+              ))}
               {arbitrators.length > 0 && (
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   <CheckCircle2 className="size-3.5" aria-hidden="true" />

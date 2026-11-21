@@ -1,3 +1,4 @@
+import { essayReviewIssue, loadEssayReviews, reviewUnitPredicate } from "./essayReview";
 import { cropQuestionNumbers } from "./AnswerBlockCropService";
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
@@ -185,7 +186,8 @@ export async function checkDisputeOnSubmit(
 export async function getDisputes(
   examId: number,
   blockId: string | undefined,
-  db: DbAdapter = getMysqlDb()
+  db: DbAdapter = getMysqlDb(),
+  arbitratorId?: number
 ): Promise<DisputeItem[]> {
   let query = `
     SELECT abc.id AS crop_id, abc.student_id, u.name AS student_name, u.student_number,
@@ -196,7 +198,7 @@ export async function getDisputes(
     JOIN users u ON u.id = abc.student_id
     LEFT JOIN block_grading_config bgc ON bgc.exam_id = abc.exam_id AND bgc.block_id = abc.block_id
     LEFT JOIN users arb ON arb.id = bgc.arbitrator_id
-    WHERE abc.exam_id = ? AND abc.status = 'disputed'
+    WHERE abc.exam_id = ? AND abc.status = 'disputed' AND ${reviewUnitPredicate("abc")}
   `;
   const params: unknown[] = [examId];
 
@@ -205,6 +207,10 @@ export async function getDisputes(
     params.push(blockId);
   }
 
+  if (arbitratorId != null) {
+    query += " AND bgc.arbitrator_id = ?";
+    params.push(arbitratorId);
+  }
   query += " ORDER BY abc.student_number";
   const rows = await db.all(query, ...params) as Array<{
     crop_id: string;
@@ -221,7 +227,11 @@ export async function getDisputes(
     arbitrator_name: string | null;
   }>;
 
+  if (!rows.length) return [];
+  const essays = await loadEssayReviews(db, examId, blockId);
   return rows.map((row) => {
+    const essay = essays.get(row.crop_id);
+    const issue = essayReviewIssue(essay, row.crop_id);
     const breakdown: Array<{ reviewerId?: number; reviewerName?: string; score: number }> = [];
     if (row.score_breakdown) {
       try { breakdown.push(...JSON.parse(row.score_breakdown)); } catch { /* ignore */ }
@@ -232,6 +242,8 @@ export async function getDisputes(
 
     return {
       cropId: row.crop_id,
+      reviewImages: issue ? [] : essay?.images,
+      reviewIssue: issue,
       questionNumbers: cropQuestionNumbers(row.question_numbers),
       studentId: row.student_id,
       studentName: row.student_name,

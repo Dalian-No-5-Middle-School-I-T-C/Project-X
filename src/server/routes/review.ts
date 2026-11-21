@@ -1,3 +1,4 @@
+import { reviewUnitPredicate } from "../services/essayReview";
 /**
  * 网上阅卷 API
  * 挂载点: /api/review
@@ -56,7 +57,7 @@ router.get("/my-exams", async (req, res) => {
                   WHERE abc2.exam_id = ra.exam_id
                     AND abc2.block_id = ra.block_id
                     AND abc2.status = 'reviewed'
-                    AND abc2.reviewer_id = ?
+                    AND abc2.reviewer_id = ? AND ${reviewUnitPredicate("abc2")}
                 ), 0)) AS rawPending
          FROM review_assignments ra
          WHERE ra.teacher_id = ?

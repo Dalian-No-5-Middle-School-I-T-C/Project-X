@@ -1,3 +1,4 @@
+import { essayReviewIssue, loadEssayReviews, reviewUnitPredicate } from "./essayReview";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, rename, rmdir, unlink } from "node:fs/promises";
 import path from "node:path";
@@ -400,7 +401,7 @@ export async function listReviewBlockCrops(
   },
   db: DbAdapter = getMysqlDb()
 ): Promise<AnswerBlockCrop[]> {
-  const filters = ["abc.exam_id = ?"];
+  const filters = ["abc.exam_id = ?", reviewUnitPredicate("abc")];
   const values: unknown[] = [params.examId];
   if (params.blockId) {
     filters.push("abc.block_id = ?");
@@ -437,7 +438,15 @@ export async function listReviewBlockCrops(
      ORDER BY abc.block_id, abc.student_number, abc.page_number, abc.segment_index`,
     ...values
   ) as CropRow[];
-  return withQuestionScores(rows, params.examId, db);
+  const crops = await withQuestionScores(rows, params.examId, db);
+  if (!crops.length) return crops;
+  const essays = await loadEssayReviews(db, params.examId, params.blockId);
+  return crops.map(crop => {
+    const essay = essays.get(crop.id);
+    if (!essay) return crop;
+    const issue = essayReviewIssue(essay, crop.id);
+    return { ...crop, reviewImages: issue ? [] : essay.images, reviewIssue: issue };
+  });
 }
 
 /** 读取某考试各题块的 has_half_point，供打分面板判断 0.5 行 */
