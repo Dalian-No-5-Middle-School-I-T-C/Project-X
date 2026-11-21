@@ -389,7 +389,7 @@ export function AdminConsolePage({ onBack }: Props) {
                         <tr key={f.feature} className="border-b border-border-subtle/60 text-foreground">
                           <td className="py-1.5 pr-3">{f.feature}</td>
                           <td className="py-1.5 pr-3 tabular-nums">{fmtNum(f.count)}</td>
-                          <td className="py-1.5 pr-3 tabular-nums">{fmtPct(f.successRate)}</td>
+                          <td className="py-1.5 pr-3 tabular-nums">{rateOf(f.success, f.failed)}</td>
                           <td className="py-1.5 pr-3 tabular-nums">{f.avgLatencyMs > 0 ? `${fmtNum(f.avgLatencyMs)} ms` : "—"}</td>
                           <td className="py-1.5 tabular-nums">{fmtNum(f.totalTokens)}</td>
                         </tr>
