@@ -467,9 +467,32 @@ async function main() {
     await jsonFetch(base, paperPath, { method: "DELETE" }, adminToken);
   }
 
-  const scanImage = (line: string) => sharp(Buffer.from(
-    `<svg width="1000" height="220" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="white"/><text x="60" y="145" font-family="sans-serif" font-size="85">${line}</text></svg>`
-  ));
+  // 使用无系统字体依赖的矢量路径绘制标准印刷字符，避免不同 CI/OS 的默认 sans-serif 字体差异导致 OCR 漂移。
+  const OCR_GLYPHS: Record<string, { w: number; d: string }> = {
+    "0": { w: 47.3, d: "M23 -59.4Q34.5 -59.4 39.7 -49.9Q43.7 -42.6 43.7 -29.8Q43.7 -17.7 40.1 -9.8Q34.8 1.6 23 1.6Q12.2 1.6 7 -7.7Q2.7 -15.4 2.7 -28.5Q2.7 -38.6 5.3 -45.9Q10.2 -59.4 23 -59.4ZM22.9 -5.2Q28.7 -5.2 32.2 -10.3Q35.6 -15.5 35.6 -29.5Q35.6 -39.6 33.1 -46.2Q30.6 -52.7 23.4 -52.7Q16.9 -52.7 13.8 -46.5Q10.7 -40.3 10.7 -28.2Q10.7 -19.1 12.7 -13.6Q15.7 -5.2 22.9 -5.2Z" },
+    "1": { w: 47.3, d: "M8.1 -42.1L8.1 -47.8Q16.2 -48.6 19.4 -50.4Q22.6 -52.3 24.2 -59.2L30.1 -59.2L30.1 0L22.1 0L22.1 -42.1Z" },
+    "5": { w: 47.3, d: "M10.5 -15.1Q11.2 -8.8 16.4 -6.3Q19.1 -5.1 22.6 -5.1Q29.2 -5.1 32.4 -9.3Q35.6 -13.5 35.6 -18.7Q35.6 -24.9 31.8 -28.3Q28 -31.7 22.7 -31.7Q18.8 -31.7 16.1 -30.2Q13.3 -28.7 11.4 -26.1L4.9 -26.4L9.4 -58.4L40.3 -58.4L40.3 -51.2L15 -51.2L12.5 -34.7Q14.6 -36.3 16.4 -37.1Q19.8 -38.4 24.1 -38.4Q32.3 -38.4 38 -33.2Q43.7 -27.9 43.7 -19.8Q43.7 -11.4 38.5 -4.9Q33.2 1.5 21.8 1.5Q14.6 1.5 9 -2.6Q3.4 -6.7 2.7 -15.1Z" },
+    "6": { w: 47.3, d: "M24.9 -59.7Q34.8 -59.7 38.7 -54.5Q42.7 -49.3 42.7 -43.9L35.3 -43.9Q34.6 -47.4 33.2 -49.4Q30.5 -53.1 25 -53.1Q18.7 -53.1 15 -47.3Q11.3 -41.5 10.9 -30.8Q13.5 -34.5 17.4 -36.4Q21 -38.1 25.4 -38.1Q32.8 -38.1 38.4 -33.3Q44 -28.5 44 -19.1Q44 -11 38.7 -4.7Q33.4 1.5 23.7 1.5Q15.3 1.5 9.3 -4.8Q3.2 -11.1 3.2 -26.1Q3.2 -37.2 5.9 -44.9Q11.1 -59.7 24.9 -59.7ZM24.3 -5.1Q30.2 -5.1 33.1 -9.1Q36.1 -13 36.1 -18.4Q36.1 -23 33.5 -27.1Q30.8 -31.3 23.9 -31.3Q19.1 -31.3 15.5 -28.1Q11.9 -24.9 11.9 -18.4Q11.9 -12.8 15.2 -8.9Q18.5 -5.1 24.3 -5.1Z" },
+    "-": { w: 28.3, d: "M3.5 -27.5L24.4 -27.5L24.4 -19.8L3.5 -19.8Z" },
+    "A": { w: 56.7, d: "M37.8 -25L28.5 -51.9L18.7 -25ZM24.2 -61L33.5 -61L55.7 0L46.6 0L40.4 -18.3L16.3 -18.3L9.7 0L1.2 0Z" },
+    "B": { w: 56.7, d: "M29.4 -35.2Q34.6 -35.2 37.5 -36.6Q42.1 -38.9 42.1 -44.9Q42.1 -50.8 37.2 -52.9Q34.5 -54.1 29.1 -54.1L14.4 -54.1L14.4 -35.2ZM32.2 -7.1Q39.8 -7.1 43 -11.5Q45 -14.2 45 -18.2Q45 -24.8 39.1 -27.2Q35.9 -28.5 30.8 -28.5L14.4 -28.5L14.4 -7.1ZM6.3 -61L32.5 -61Q43.2 -61 47.7 -54.6Q50.3 -50.8 50.3 -45.9Q50.3 -40.1 47.1 -36.4Q45.4 -34.4 42.2 -32.8Q46.9 -31 49.2 -28.8Q53.3 -24.8 53.3 -17.8Q53.3 -11.9 49.6 -7.1Q44.1 0 32 0L6.3 0Z" },
+    "C": { w: 61.4, d: "M32.2 -62.6Q43.7 -62.6 50.1 -56.5Q56.5 -50.4 57.2 -42.7L49.2 -42.7Q47.8 -48.6 43.7 -52Q39.6 -55.4 32.2 -55.4Q23.2 -55.4 17.7 -49.1Q12.2 -42.8 12.2 -29.7Q12.2 -19 17.2 -12.3Q22.2 -5.7 32.1 -5.7Q41.2 -5.7 46 -12.7Q48.5 -16.4 49.8 -22.4L57.8 -22.4Q56.7 -12.8 50.7 -6.3Q43.4 1.6 31.1 1.6Q20.5 1.6 13.2 -4.9Q3.7 -13.4 3.7 -31.1Q3.7 -44.6 10.9 -53.2Q18.6 -62.6 32.2 -62.6ZM30.5 -62.6Z" },
+    "D": { w: 61.4, d: "M29.9 -7.1Q34.1 -7.1 36.8 -7.9Q41.6 -9.5 44.7 -14.2Q47.1 -17.8 48.2 -23.6Q48.8 -27.1 48.8 -30Q48.8 -41.3 44.3 -47.6Q39.8 -53.9 29.8 -53.9L15.1 -53.9L15.1 -7.1ZM6.8 -61L31.5 -61Q44.1 -61 51 -52Q57.2 -44 57.2 -31.4Q57.2 -21.7 53.6 -13.9Q47.1 0 31.5 0L6.8 0Z" },
+    " ": { w: 23.6, d: "" },
+  };
+  const scanImage = (line: string) => {
+    let x = 60;
+    const paths: string[] = [];
+    for (const ch of line) {
+      const glyph = OCR_GLYPHS[ch];
+      if (!glyph) throw new Error(`Missing vector glyph for OCR fixture char: ${ch}`);
+      if (glyph.d) paths.push(`<path d="${glyph.d}" transform="translate(${x.toFixed(1)},145)" fill="#000"/>`);
+      x += glyph.w;
+    }
+    return sharp(Buffer.from(
+      `<svg width="1000" height="220" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#fff"/>${paths.join("")}</svg>`
+    ));
+  };
   const bigTiff = await scanImage("1-5 BACDB").tiff({ bigtiff: true, compression: "lzw" }).toBuffer();
   const secondPage = await scanImage("6-10 ACCAB").png().toBuffer();
   // A database failure after conversion must roll back just this upload.
@@ -760,9 +783,7 @@ async function main() {
   // ── D. OCR 文本解析（纯函数）──────────────────────────
   section("D. OCR 文本解析");
   const ocrExamId = insertExam("图片答案草稿", 1);
-  const answerPng = await sharp(Buffer.from(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="220"><rect width="100%" height="100%" fill="white"/><text x="60" y="145" font-family="sans-serif" font-size="85">1-5 BACDB</text></svg>'
-  )).png().toBuffer();
+  const answerPng = await scanImage("1-5 BACDB").png().toBuffer();
   const answerImage = new FormData();
   answerImage.append("files", new Blob([answerPng], { type: "image/png" }), "答案.png");
   const recognized = await jsonFetch(base, `/api/exams/${ocrExamId}/answer-key/pages`, {
@@ -770,7 +791,7 @@ async function main() {
   }, adminToken);
   const draft = recognized.body?.ocr?.[0]?.drafts ?? [];
   ok(recognized.status === 200 && draft.map((entry: { answerText: string }) => entry.answerText).join("") === "BACDB",
-    "上传一张清晰答案图后得到五题 OCR 草稿");
+    `上传一张清晰答案图后得到五题 OCR 草稿（实际 status=${recognized.status}, ocr=${JSON.stringify(recognized.body?.ocr)}）`);
 
   const answerPagesPath = `/api/exams/${ocrExamId}/answer-key/pages`;
   const busyImage = new FormData();
@@ -825,7 +846,7 @@ async function main() {
   }
   const retry = await jsonFetch(base, answerPagesPath + "/1/ocr", { method: "POST" }, adminToken);
   ok(retry.status === 200 && retry.body.drafts?.map((entry: { answerText: string }) => entry.answerText).join("") === "BACDB",
-    "并发替换结束后可重新识别，识别名额正常释放");
+    `并发替换结束后可重新识别，识别名额正常释放（实际 status=${retry.status}, body=${JSON.stringify(retry.body)}）`);
   const range = parseAnswerKeyText("1-5 BACDB\n6~10: CCBDA");
   ok(range.length === 10 && range[0].answerText === "B" && range[3].answerText === "D" && range[4].answerText === "B" && range[9].answerText === "A", "区间式「1-5 BACDB」「6~10: CCBDA」逐题展开");
   const single = parseAnswerKeyText("21. 叶绿体\n22、温度过高导致酶失活");
