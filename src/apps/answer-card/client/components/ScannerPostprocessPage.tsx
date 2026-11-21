@@ -23,6 +23,7 @@ import { clearPostprocessView, readPostprocessView, writePostprocessView } from 
 type View = "results" | "correction" | "queue";
 
 export interface ScannerPostprocessPageProps {
+  onUploadRegion?: (node: HTMLDivElement | null) => void;
   cardId: string;
   cardTitle: string;
   sessions: Array<{ sessionId: string; pageCount: number }>;
@@ -33,7 +34,7 @@ export interface ScannerPostprocessPageProps {
   userId?: number | null;
 }
 
-export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, onContinueScan, userId }: ScannerPostprocessPageProps) {
+export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, onContinueScan, userId, onUploadRegion }: ScannerPostprocessPageProps) {
   const [view, setView] = useState<View>("results");
   const [localCard, setLocalCard] = useState<AnswerCard | null>(null);
   const [remoteCard, setRemoteCard] = useState<AnswerCard | null>(null);
@@ -527,6 +528,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           </Button>
         )}
       </header>
+      <div ref={onUploadRegion} className="shrink-0" />
       {resumedFromCrash && (
         <div role="status" className="flex items-center gap-2 border-b border-info-border bg-info-soft px-5 py-2 text-sm text-info-fg">
           已恢复上次停留的卷；本机草稿可用时会恢复未保存的订正，请核对后保存。
