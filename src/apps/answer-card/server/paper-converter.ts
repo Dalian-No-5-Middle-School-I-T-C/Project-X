@@ -7,6 +7,8 @@ import { createWriteStream } from "node:fs";
 import { dataDir } from "./storage";
 import { MAX_PAPER_FILE_BYTES } from "../../../shared/paperStorageLimits";
 import { answerKeyPreviewFilename } from "../../../shared/answerKeyFiles";
+import { PaperInputError } from "./paper-docx";
+import { isValidImageFile } from "./validate-upload";
 
 export const ALLOWED_EXTENSIONS = new Set([
   ".docx", ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"
@@ -56,6 +58,9 @@ export function isDocx(filename: string): boolean {
  * 返回压缩后的 Buffer，控制在 ~500KB-1MB
  */
 export async function compressImage(inputPath: string): Promise<Buffer> {
+  if (!await isValidImageFile(inputPath)) {
+    throw new PaperInputError("INVALID_PAPER_IMAGE", "文件内容与支持的原卷图片格式不符");
+  }
   let image = sharp(inputPath);
   const metadata = await image.metadata();
 

@@ -443,7 +443,7 @@ async function main() {
   const mixedUpload = await fetch(`${base}/api/exams/${orphanExamId}/answer-key/pages?ocr=0`, {
     method: "POST", headers: { Authorization: `Bearer ${adminToken}` }, body: mixedForm,
   });
-  ok(mixedUpload.status >= 400, `含损坏图片的上传整体失败（返回 ${mixedUpload.status}）`);
+  ok(mixedUpload.status === 400, `含非图片文件的上传整体返回 400（实际 ${mixedUpload.status}）`);
   ok(answerKeyPageRows(orphanExamId) === 0, "失败上传不写入任何答案页记录");
   ok(
     residueFiles(orphanDir).length === 0,

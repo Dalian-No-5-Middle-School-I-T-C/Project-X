@@ -31,6 +31,7 @@ import {
 } from "../../../../server/services/ExamPaperViewService";
 import { answerKeyDir, answerKeysDir, ensureAnswerKeyDir } from "../storage";
 import { MAX_FILE_SIZE, storeAnswerKeyPageFile, validatePaperFile } from "../paper-converter";
+import { PaperInputError } from "../paper-docx";
 // 安全（R14）：滞留临时件的兜底清理
 import { purgeStaleTmpUploads } from "../paperQuota";
 import { extractDocxText, extractPdfText, extractImageText } from "../paper-ocr";
@@ -374,6 +375,10 @@ export function examAnswerKeyRoutes(): Router {
         ...(failed.length > 0 ? { failed } : {}),
       });
     } catch (err: any) {
+      if (err instanceof PaperInputError) {
+        res.status(err.status).json({ code: err.code, message: err.message });
+        return;
+      }
       console.error("[answer-key] upload failed:", err);
       res.status(500).json({ message: err.message || "答案上传失败" });
     } finally {
