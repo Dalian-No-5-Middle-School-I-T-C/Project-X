@@ -265,6 +265,10 @@ function latestVotesByReviewer(breakdown: ReviewBreakdownEntry[]): ReviewBreakdo
     .sort((a, b) => (firstSeen.get(a.reviewerId) ?? 0) - (firstSeen.get(b.reviewerId) ?? 0));
 }
 
+function isOnScoreStep(score: number, step: number): boolean {
+  return Math.abs(score - Math.round(score / step) * step) <= 1e-9;
+}
+
 export async function submitReviewCropScores(params: {
   examId: number;
   cropId: string;
@@ -362,6 +366,7 @@ export async function submitReviewCropScores(params: {
   }
   const config = await getBlockConfig(params.examId, crop.block_id ?? "", blockType, maxBlockScore, db);
   const reviewMode = config.reviewMode;
+  const step = config.hasHalfPoint ? 0.5 : 1;
   const scoringMode: ScoringMode = config.scoringMode === "per_question" ? "per_question" : "block_total";
 
   // 入参校验：逐条检查 scores 的结构和数值合法性
@@ -388,6 +393,10 @@ export async function submitReviewCropScores(params: {
       if (score < 0 || score > max) {
         throw new ReviewValidationError(`题号 ${qNum} 的分数 ${score} 超出有效范围 [0, ${max}]`);
       }
+      // A question with a fractional maximum can always receive its full mark.
+      if (score !== max && !isOnScoreStep(score, step)) {
+        throw new ReviewValidationError(`第 ${qNum} 题得分须为 ${step} 分的整数倍或该题满分 ${max}`);
+      }
     }
   }
 
@@ -403,7 +412,6 @@ export async function submitReviewCropScores(params: {
   // ── 题块总分模式（#187）与逐题模式（#186）兼容 ──
   // 优先采用题块总分：前端只提交一个合计分，后端按比例拆分到各小题并写入正确的逐题满分。
   // 未提交题块总分时（如 OnlineReviewPanel 逐题输入），按逐题校验的严格模式处理。
-  const step = config.hasHalfPoint ? 0.5 : 1;
   const distribution = config.scoreDistribution === "equal" ? "equal" : "proportional";
   // 评分模式双向校验（PR #189 修复：原实现只校验 per_question 单方向，
   // 导致 block_total + 仅逐题分数也能通过，scoringMode 形同虚设）
@@ -420,7 +428,7 @@ export async function submitReviewCropScores(params: {
           if (total > maxBlockScore + 1e-6) {
             throw new ReviewValidationError(`题块总分不能超过本题块满分 ${maxBlockScore}`);
           }
-          if (Math.abs(total - Math.round(total / step) * step) > 1e-9) {
+          if (!isOnScoreStep(total, step)) {
             throw new ReviewValidationError(`题块总分必须是 ${step} 分的整数倍`);
           }
           // 题号集合校验：题块总分代表整个题块，提交项必须恰好覆盖本题块的权威小题，
@@ -523,7 +531,9 @@ export async function submitReviewCropScores(params: {
       disputed = disputeResult.disputed;
       disputeReason = disputeResult.reason;
       if (!disputed) {
-        finalScore = disputeResult.finalScore;
+        // Rounding an average upwards must not award more than the questions are worth.
+        const submittedMax = submittedScores.reduce((sum, item) => sum + Number(item.maxScore), 0);
+        finalScore = disputeResult.finalScore == null ? null : Math.min(disputeResult.finalScore, submittedMax);
         const resolvedQuestionScores: Array<{ item: typeof submittedScores[number]; score: number }> = [];
         for (const item of submittedScores) {
           const values = effectiveVotes.map((round) => round.questionScores?.[String(item.questionNumber)]).filter((v): v is number => typeof v === "number");
@@ -535,7 +545,7 @@ export async function submitReviewCropScores(params: {
             finalScore = null;
             break;
           }
-          resolvedQuestionScores.push({ item, score: resolved.finalScore });
+          resolvedQuestionScores.push({ item, score: Math.min(resolved.finalScore, item.maxScore) });
         }
         // Do not persist a partial set if a later question is disputed.
         if (!disputed) {

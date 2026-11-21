@@ -46,7 +46,7 @@ try {
         showTitle: true, lineColor: "#a00000", lineWidthMm: 0.15, showFrame: true, showWordScale: true },
     }] },
     { id: normalId, type: "subjective", title: "简答", blockKind: "answer", questions: [{
-      id: "short-q", number: 2, score: 5, style: "plain_subjective", kind: "plain_box", minHeightMm: 30,
+      id: "short-q", number: 2, score: 5.5, style: "plain_subjective", kind: "plain_box", minHeightMm: 30,
     }] },
   ];
   const cards = new CardRepository(db);
@@ -156,6 +156,17 @@ try {
   await rename(file(first.id), file(first.id) + ".pending");
   await assert.rejects(submit(last.id, a, 20), /文件缺失/);
   await rename(file(first.id) + ".pending", file(first.id));
+  const submitUrl = `/api/review/exams/${exam}/block-crops/${last.id}/submit`;
+  async function rejectDraft(reviewer: string, score: number) {
+    const before = await db.get("SELECT claimed_by,review_round,score_breakdown,status FROM answer_block_crops WHERE id=?", last.id);
+    const response = await request(reviewer, submitUrl, { scores: [{ questionNumber: 1, scoreType: "subjective", score }] });
+    assert.equal(response.status, 422, await response.clone().text());
+    const after = await db.get("SELECT claimed_by,review_round,score_breakdown,status FROM answer_block_crops WHERE id=?", last.id);
+    assert.deepEqual(after, before);
+    assert.equal(await db.get("SELECT score FROM question_scores WHERE exam_id=? AND student_id=? AND question_number=1", exam, student), null);
+    assert.equal((await db.get("SELECT total_score FROM student_scores WHERE exam_id=? AND student_id=?", exam, student)).total_score, 0);
+  }
+  await rejectDraft("first", 20.25);
   assert.equal((await submit(last.id, a, 20.5)).status, "pending");
   const vote = await db.get("SELECT score_breakdown FROM answer_block_crops WHERE id=?", last.id);
   assert.equal(JSON.parse(vote.score_breakdown)[0].questionScores["1"], 20.5);
@@ -165,6 +176,7 @@ try {
   const secondReview = await claimNextPaper(exam, essayId, b, db);
   assert.equal(secondReview.id, last.id);
   assert.equal(secondReview.hasHalfPoint, 0, "题块显式关闭半分覆盖考试默认设置");
+  await rejectDraft("second", 42.5);
   assert.equal((await submit(last.id, b, 40)).status, "disputed");
   const disputesRoute = `/api/review-arbitration/exams/${exam}/disputes`;
   const disputes = (await (await request("arbitrator", disputesRoute)).json()).data;
@@ -183,7 +195,21 @@ try {
   await insert("short-first", 1, 8, normalId);
   await insert("short-second", 2, 8, normalId);
   assert.equal((await getPoolSummary(exam, normalId, a, db)).totalCount, 2);
-  assert.notEqual((await claimNextPaper(exam, normalId, a, db)).id, (await claimNextPaper(exam, normalId, b, db)).id);
+  await upsertBlockConfig(exam, normalId, { reviewMode: 2, rounding: "ceil", scoringMode: "per_question", hasHalfPoint: 0 }, db);
+  const short = await claimNextPaper(exam, normalId, a, db);
+  assert.notEqual(short.id, (await claimNextPaper(exam, normalId, b, db)).id);
+  const submitFull = (teacher: string) => request(teacher, `/api/review/exams/${exam}/block-crops/${short.id}/submit`, {
+    scores: [{ questionNumber: 2, scoreType: "subjective", score: 5.5 }],
+  });
+  const firstFull = await submitFull("first");
+  assert.equal(firstFull.status, 200, await firstFull.clone().text());
+  assert.equal((await firstFull.json()).status, "pending");
+  await claimSpecificPaper(exam, normalId, short.id, b, db);
+  const secondFull = await submitFull("second");
+  assert.equal(secondFull.status, 200, await secondFull.clone().text());
+  assert.equal((await secondFull.json()).finalScore, 5.5);
+  assert.deepEqual(await db.get("SELECT score,max_score FROM question_scores WHERE exam_id=? AND student_id=? AND question_number=2", exam, student),
+    { score: 5.5, max_score: 5.5 });
   // An import regrade keeps its earlier database rows. A missing page in the new
   // batch must not be replaced with a matching page from the student's older copy.
   async function importedBatch() {
@@ -209,7 +235,7 @@ try {
     scores: [{ questionNumber: 1, score: 0, scoreType: "subjective" }] }, db);
   assert.equal(finished.finalScore, 45);
   assert.equal((await pool()).reviewedCount, 2);
-  console.log(`${db.dialect}: ${parts.length} ordered panels, incomplete receipt and files, late first page, legacy claim, student renumbering and reuse, ambiguous replay, inherited half-point vote 20.5, integer block override, separate short answers, arbitration 32, latest import 45`);
+  console.log(`${db.dialect}: ${parts.length} ordered panels, incomplete receipt and files, late first page, legacy claim, student renumbering and reuse, ambiguous replay, inherited half-point vote 20.5, invalid draft rejected with claim and votes retained, fractional full mark 5.5, arbitration 32, latest import 45`);
 } finally {
   server.close();
   await once(server, "close");
