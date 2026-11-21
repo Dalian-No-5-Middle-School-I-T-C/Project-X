@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-const out = path.resolve('ignored/production-flow');
+const out = path.resolve(process.env.PROJECTX_FLOW_ROOT || 'ignored/production-flow');
 const config = JSON.parse(await readFile(path.join(out, 'config.json'), 'utf8'));
-assert.equal(config.server, 'http://10.211.55.4:5196');
+import targets from "./production-flow-target.cjs";
+targets.validateTargets(config);
 for (const key of ['password', 'adminPassword', 'changedPassword']) {
   assert(typeof config[key] === 'string' && config[key].length >= 12 && !config[key].startsWith('__SET_'), `Set private config.${key}`);
 }
@@ -22,19 +23,22 @@ async function api(route, method = 'GET', body) {
   return text ? JSON.parse(text) : null;
 }
 const reuse = process.argv.includes('--reuse-accounts') ? JSON.parse(await readFile(path.join(out, 'state.json'), 'utf8')) : null;
-let login = await api('/api/auth/login', 'POST', { identifier: 'admin', password: reuse?.adminPassword ?? config.password });
+const initial = process.argv.includes('--admin-ready') ? config.adminPassword : config.bootstrapPassword ?? config.password;
+let login = await api('/api/auth/login', 'POST', { identifier: 'admin', password: reuse?.adminPassword ?? initial });
 token = login.token;
 assert(token);
 const adminPassword = reuse?.adminPassword ?? config.adminPassword;
 if (login.passwordChangeRequired) {
-  await api('/api/auth/change-password', 'POST', { oldPassword: config.password, newPassword: adminPassword });
+  await api('/api/auth/change-password', 'POST', { oldPassword: initial, newPassword: adminPassword });
   login = await api('/api/auth/login', 'POST', { identifier: 'admin', password: adminPassword });
   token = login.token;
 }
 const health = await api('/api/app/health');
 await writeFile(path.join(out, 'evidence/服务端健康状态.json'), JSON.stringify(health, null, 2));
 const scannerKey = reuse ? { api_key: reuse.scannerKey } : await api('/api/admin/api-keys', 'POST', { name: '五十张卡隔离测试', scope: 'scanner' });
-const grade = reuse?.grade ?? await api('/api/classes/grades', 'POST', { name: '全链路测试年级20261015' });
+const examDate = config.examDate || new Date().toISOString().slice(0, 10);
+const runDate = examDate.replaceAll('-', '');
+const grade = reuse?.grade ?? await api('/api/classes/grades', 'POST', { name: `全链路测试年级${runDate}` });
 const cls = reuse?.cls ?? await api('/api/classes', 'POST', { gradeId: grade.id, name: '五十人测试班' });
 const teacher = reuse?.teacher ?? await api('/api/users', 'POST', {
   username: 'flow_teacher', name: '全链路任课老师', password: config.password,
@@ -52,7 +56,7 @@ for (let n = 10001; !reuse && n <= 10050; n++) {
 await api(`/api/classes/${cls.id}/students`, 'POST', { studentIds: students.map(s => s.id) });
 console.log(reuse ? 'Reused existing teacher, class and 50 students' : 'Created teacher, class and 50 students through product APIs');
 let card = await api('/api/cards', 'POST', {
-  subject: 'math', subjectLabel: '数学', title: '五十张答题卡全链路测试20261015', examDate: '2026-10-15',
+  subject: 'math', subjectLabel: '数学', title: `五十张答题卡全链路测试${runDate}`, examDate,
 });
 card.sided = 'single';
 card.studentInfo.studentNumberDigits = 5;
@@ -73,8 +77,9 @@ const groupName = `全链路测试大考组 ${exam.id}`;
 const group = await api('/api/exam-groups', 'POST', { name: groupName, grade_id: grade.id, examIds: [exam.id] });
 const layout = await api(`/api/cards/${card.id}/layout`);
 assert.equal(layout.pages.length, 1, 'All 50 cards must be single-page cards');
-const pdf = await fetch(`${config.server}/api/cards/${card.id}/pdf`, { headers: { Authorization: `Bearer ${token}` } });
-assert(pdf.ok, `PDF: ${pdf.status} ${await pdf.clone().text()}`);
+const pdf = await fetch(`${config.server}/api/cards/${card.id}/pdf?v=${card.revision}`, { headers: { Authorization: `Bearer ${token}` } });
+assert.equal(pdf.status, 200);
+assert.equal(pdf.headers.get("x-card-revision"), String(card.revision));
 await writeFile(path.join(out, '答题卡原版.pdf'), Buffer.from(await pdf.arrayBuffer()));
 await writeFile(path.join(out, 'layout.json'), JSON.stringify(layout, null, 2));
 await writeFile(path.join(out, 'card.json'), JSON.stringify(card, null, 2));

@@ -1,0 +1,11 @@
+START TRANSACTION;
+SET @name='双机跨年级调班统计复测';
+SET @fresh=NOT EXISTS(SELECT 1 FROM exams WHERE name=@name);
+SET @grade=(SELECT id FROM grades WHERE name='高一双机验收');
+SET @class=(SELECT id FROM classes WHERE grade_id=@grade AND name='1班');
+INSERT INTO exams(name,subject,start_time,status,grade_id) SELECT @name,'数学','2026-09-01','closed',@grade WHERE @fresh;
+SET @exam=(SELECT id FROM exams WHERE name=@name);
+INSERT INTO student_scores(exam_id,student_id,total_score,objective_score) SELECT @exam,id,IF(student_number='20031',60,80),IF(student_number='20031',60,80) FROM users WHERE student_number IN ('20031','20034') AND @fresh;
+INSERT INTO exam_class_memberships(exam_id,student_id,class_id) SELECT @exam,id,@class FROM users WHERE student_number IN ('20031','20034') AND @fresh;
+COMMIT;
+SELECT u.student_number,m.class_id,s.total_score FROM exam_class_memberships m JOIN student_scores s ON s.exam_id=m.exam_id AND s.student_id=m.student_id JOIN users u ON u.id=m.student_id WHERE m.exam_id=@exam;

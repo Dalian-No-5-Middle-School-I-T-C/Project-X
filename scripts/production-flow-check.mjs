@@ -1,10 +1,11 @@
 /** Read-only assertions against the disposable VM's persisted score consumers. */
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
-const root = 'ignored/production-flow';
+const root = process.env.PROJECTX_FLOW_ROOT || 'ignored/production-flow';
 const state = JSON.parse(await readFile(`${root}/state.json`, 'utf8'));
 const manifest = JSON.parse(await readFile(`${root}/manifest.json`, 'utf8'));
-assert.equal(state.server, 'http://10.211.55.4:5196');
+import targets from "./production-flow-target.cjs";
+targets.validateTargets(state);
 const stage = process.argv[2];
 assert(['initial', 'early', 'corrected', 'published', 'final'].includes(stage));
 async function get(route) {
@@ -34,5 +35,5 @@ assert.equal(pending.items.length, stage === 'initial' ? 6 : stage === 'final' ?
 assert.equal(exam.score_published, ['published','final'].includes(stage) ? 1 : 0, `${stage}: publication state`);
 const expectedAverage = expected.reduce((sum, row) => sum + (manual && row.physicalStudent === '10008' ? 45 : row.totalScore), 0) / expected.length;
 assert.equal(overview.avgScore, Math.round(expectedAverage * 10) / 10, `${stage}: average score rounded to one decimal`);
-await writeFile(`${root}/evidence/${stage}-成绩与排名核验.json`, JSON.stringify({ stage, exam, overview, students, pending, missing, expectedAverage, passed: true }, null, 2));
+await writeFile(`${root}/evidence/${stage}-成绩与排名核验.json`, JSON.stringify({ stage, exam, overview, students, pending, missing, expectedAverage, passed: true }, (key, value) => key === 'token' ? undefined : value, 2));
 console.log(`PASS ${stage}: ${expected.length} scores, exact totals and ranks, ${pending.items.length} pending duplicates, published=${exam.score_published}`);

@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-const root = path.resolve('ignored/production-flow');
+const root = path.resolve(process.env.PROJECTX_FLOW_ROOT || 'ignored/production-flow');
 const command = process.argv[2] || 'prepare';
 assert(['prepare', 'early', 'sync', 'final', 'close'].includes(command), 'Usage: node scripts/production-flow-actions.mjs prepare|early|sync|final|close');
 const state = JSON.parse(await readFile(path.join(root, 'state.json'), 'utf8'));
-assert.equal(state.server, 'http://10.211.55.4:5196');
-assert.equal(state.scanner, 'http://127.0.0.1:5186');
+import targets from "./production-flow-target.cjs";
+targets.validateTargets(state);
 const values = { server: state.server, cardTitle: state.cardTitle, examId: String(state.examId),
-  groupName: state.groupName || '五十人复测大考组20261015' };
+  groupName: state.groupName };
 assert(values.cardTitle && Number.isSafeInteger(state.examId), 'Seed an isolated exam first');
 const render = value => {
   if (typeof value === 'string') return value.replace(/\{\{(\w+)\}\}/g, (_, key) => {
@@ -41,8 +41,8 @@ if (command === 'prepare') {
       assert(labels.has(old) && labels.has(next), 'Wait for the current scanner-live session evidence');
       return [{ role: 'textbox', name: labels.get(next), fill: studentId },
         { scopeInput: labels.get(next), name: '订正此卷' },
-        { scopeInput: labels.get(old), name: '重新保存此会话' },
-        { scopeInput: labels.get(next), name: '重新保存此会话' },
+        { scopeInput: labels.get(old), name: '保存此卷' },
+        { scopeInput: labels.get(next), name: '保存此卷' },
         { assertRow: `答题卡-${studentId}.png`, includes: [studentId, 'ok'] },
         { assertRow: `答题卡-${Number(studentId) - 1}.png`, includes: ['ok'] }];
     };
