@@ -22,9 +22,11 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer, type Server } from "node:http";
+import { mock } from "node:test";
 import bcrypt from "bcryptjs";
 import AdmZip from "adm-zip";
 import sharp from "sharp";
+import { ZipFile } from "yauzl";
 
 // 先在一个带 remote config.yml 的目录里确认配置能被读到，再切到干净临时目录。
 // detectDialect 在导入数据库模块时就会看 cwd；漏掉这次 chdir 会连上业务库并可能轮换 admin 口令。
@@ -297,8 +299,33 @@ async function main() {
   try {
     Object.assign(DOCX_LIMITS, { expandedBytes: Object.values(parts).reduce((n, xml) => n + Buffer.byteLength(xml), 0) });
     ok((await sendDocument()).status === 200, "普通 DOCX 恰好达到解压限额时上传成功");
-    const next = await sendDocument();
+    // Hold one archive read while a second teacher request saves another card.
+    const notesCard = "PAPERNOTES02";
+    sqlite.prepare("INSERT INTO answer_cards (id, title) VALUES (?, ?)").run(notesCard, "并发备注测试");
+    const reading = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const openReadStream = ZipFile.prototype.openReadStream;
+    const pause = mock.method(ZipFile.prototype, "openReadStream", function (this: ZipFile, ...args: unknown[]) {
+      reading.resolve();
+      void resume.promise.then(() => Reflect.apply(openReadStream, this, args));
+    }, { times: 1 });
+    const upload = sendDocument();
+    const notesPath = `/api/cards/${notesCard}/paper/info`;
+    const notes = "另一张卡已经确认的备注";
+    try {
+      await Promise.race([reading.promise, upload.then(() => { throw new Error("未读到已存的 DOCX"); })]);
+      const saved = await jsonFetch(base, notesPath, {
+        method: "PUT", body: JSON.stringify({ questionRange: "全部", extraNotes: notes }), signal: AbortSignal.timeout(10000),
+      }, adminToken);
+      ok(saved.status === 200 && saved.body.success === true, "读取原卷期间，另一张卡可成功保存备注");
+    } finally {
+      resume.resolve();
+      pause.mock.restore();
+    }
+    const next = await upload;
     ok(next.status === 413 && next.body.code === "PAPER_TOO_LARGE", "追加普通 DOCX 超过整卷解压限额时返回 413");
+    const savedNotes = await jsonFetch(base, notesPath, {}, adminToken);
+    ok(savedNotes.status === 200 && savedNotes.body.extra_notes === notes, "超额 DOCX 被拒后，并发保存的备注可读");
     const info = await jsonFetch(base, paperPath + "/info", {}, adminToken);
     ok(info.body.pages?.length === 1 && readdirSync(paperDir(cardId)).length === 1 &&
       readFileSync(path.join(paperDir(cardId), "original.docx")).equals(docx) && readdirSync(paperTmpDir).length === 0,
@@ -307,6 +334,17 @@ async function main() {
     Object.assign(DOCX_LIMITS, { expandedBytes: fullLimit });
     await jsonFetch(base, paperPath, { method: "DELETE" }, adminToken);
   }
+
+  const bigTiff = await sharp({ create: { width: 64, height: 48, channels: 3, background: "white" } })
+    .tiff({ bigtiff: true, compression: "lzw" }).toBuffer();
+  const bigPaper = new FormData();
+  bigPaper.append("files", new Blob([bigTiff], { type: "image/tiff" }), "扫描原卷.tif");
+  const uploadedPaper = await jsonFetch(base, paperPath, { method: "POST", body: bigPaper }, adminToken);
+  ok(uploadedPaper.status === 200 && uploadedPaper.body.count === 1, "BigTIFF 原卷上传成功");
+  const paperPdf = await fetch(base + paperPath, { headers: { Authorization: `Bearer ${adminToken}` } });
+  const pdf = Buffer.from(await paperPdf.arrayBuffer());
+  ok(paperPdf.status === 200 && pdf.subarray(0, 5).toString() === "%PDF-", "BigTIFF 原卷可下载配对 PDF");
+  await jsonFetch(base, paperPath, { method: "DELETE" }, adminToken);
 
   // 落一张真实的第 1 页原卷图片（走既有卡片级分页表）
   const dir = paperDir(cardId);
@@ -536,6 +574,61 @@ async function main() {
   const draft = recognized.body?.ocr?.[0]?.drafts ?? [];
   ok(recognized.status === 200 && draft.map((entry: { answerText: string }) => entry.answerText).join("") === "BACDB",
     "上传一张清晰答案图后得到五题 OCR 草稿");
+
+  const answerPagesPath = `/api/exams/${ocrExamId}/answer-key/pages`;
+  const busyImage = new FormData();
+  busyImage.append("files", new Blob([answerPng], { type: "image/png" }), "待识别.png");
+  const { default: tesseract } = await import("tesseract.js");
+  const ocrStarted = Promise.withResolvers<void>();
+  const finishOcr = Promise.withResolvers<void>();
+  const originalRecognize = tesseract.recognize;
+  const pausedOcr = mock.method(tesseract, "recognize", async (...args: Parameters<typeof originalRecognize>) => {
+    ocrStarted.resolve();
+    await finishOcr.promise;
+    return originalRecognize(...args);
+  }, { times: 1 });
+  const pendingPage = jsonFetch(base, answerPagesPath, { method: "POST", body: busyImage }, adminToken);
+  let backup: Promise<Response> | undefined;
+  const replacement = await sharp({ create: { width: 43, height: 31, channels: 3, background: "white" } }).png().toBuffer();
+  try {
+    await Promise.race([ocrStarted.promise, pendingPage.then(() => { throw new Error("答案页未开始识别"); })]);
+    const activeTmp = readdirSync(path.join(answerKeysDir, "_tmp"));
+    ok(activeTmp.length === 0, "识别期间上传暂存目录已清理");
+    const busy = await jsonFetch(base, answerPagesPath + "/1/ocr", { method: "POST" }, adminToken);
+    ok(busy.status === 429 && busy.body.code === "PAPER_OCR_BUSY", "并发重新识别得到可重试的忙碌响应");
+    const removed = await jsonFetch(base, answerPagesPath + "/2", { method: "DELETE", signal: AbortSignal.timeout(5000) }, adminToken);
+    ok(removed.status === 200, "图片 OCR 工作期间可以删除该页");
+    const newFile = new FormData();
+    newFile.append("files", new Blob([replacement], { type: "image/png" }), "替换页.png");
+    const replaced = await jsonFetch(base, answerPagesPath + "?ocr=0", {
+      method: "POST", body: newFile, signal: AbortSignal.timeout(5000),
+    }, adminToken);
+    ok(replaced.status === 200 && replaced.body.pages?.[0]?.pageIndex === 2, "识别期间同一页码可以上传新的 PNG");
+
+    backup = fetch(base + "/api/db/backup", { headers: { Authorization: `Bearer ${adminToken}` } });
+    const { isServiceMaintenanceActive } = await import("../src/server/lib/serviceTasks");
+    const deadline = Date.now() + 5000;
+    while (!isServiceMaintenanceActive() && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    ok(isServiceMaintenanceActive(), "并发备份已进入维护流程，等待识别请求结束");
+  } finally {
+    finishOcr.resolve();
+    pausedOcr.mock.restore();
+  }
+  const finishedUpload = await pendingPage;
+  const oldDraft = finishedUpload.body?.ocr?.[0];
+  ok(finishedUpload.status === 200 && oldDraft?.recognized === false && oldDraft?.drafts?.length === 0 && oldDraft?.error,
+    "旧识别返回时，同页已替换的答案不会生成草稿");
+  if (backup) {
+    const response = await backup;
+    const data = new AdmZip(Buffer.from(await response.arrayBuffer()));
+    const copy = data.readFile(`data/answer-card/answer-keys/${ocrExamId}/answerkey-2.png`);
+    ok(response.status === 200 && copy?.equals(replacement), "备份保存替换后的答案文件");
+  }
+  const retry = await jsonFetch(base, answerPagesPath + "/1/ocr", { method: "POST" }, adminToken);
+  ok(retry.status === 200 && retry.body.drafts?.map((entry: { answerText: string }) => entry.answerText).join("") === "BACDB",
+    "并发替换结束后可重新识别，识别名额正常释放");
   const range = parseAnswerKeyText("1-5 BACDB\n6~10: CCBDA");
   ok(range.length === 10 && range[0].answerText === "B" && range[3].answerText === "D" && range[4].answerText === "B" && range[9].answerText === "A", "区间式「1-5 BACDB」「6~10: CCBDA」逐题展开");
   const single = parseAnswerKeyText("21. 叶绿体\n22、温度过高导致酶失活");
@@ -744,6 +837,22 @@ async function main() {
   const dirtyPaper = await modePaper();
   ok(dirtyFlags.listed === 0 && dirtyFlags.detail === 0 && dirtyPaper.status === 404,
     "脏值 FILE 按 text 处理，列表入口与 /paper 都不放行");
+
+  const tiffPage = await uploadModePage(new Blob([bigTiff], { type: "image/tiff" }), "扫描答案.tiff");
+  ok(tiffPage.status === 200 && tiffPage.body.count === 1, "BigTIFF 答案可保存原件和预览");
+  if (tiffPage.status === 200) {
+    await patchMode({ answerKeyMode: "file" });
+    const index = tiffPage.body.pages[0].pageIndex;
+    const file = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/answer-file/${index}`, {
+      headers: { Authorization: `Bearer ${stuToken}` },
+    });
+    ok(file.status === 200 && Buffer.from(await file.arrayBuffer()).equals(bigTiff), "学生下载的 BigTIFF 与教师上传的原件逐字节一致");
+    const preview = await fetch(`${base}/api/exams/${modeExamId}/answer-key/pages/${index}/image`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    const meta = await sharp(Buffer.from(await preview.arrayBuffer())).metadata();
+    ok(preview.status === 200 && meta.format === "jpeg" && meta.width === 64 && meta.height === 48, "教师可预览 BigTIFF 转换的 JPEG");
+  }
 
   // ── E. 删除考试时的文件清理 ──────────────────────────
   section("E. 删除考试清理答案页文件");

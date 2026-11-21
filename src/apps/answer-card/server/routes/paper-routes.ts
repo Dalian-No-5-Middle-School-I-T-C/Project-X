@@ -241,12 +241,14 @@ export function paperRoutes(): Router {
         let firstFilename = "";
         let firstRelPath = "";
 
+        // SQLite shares one connection across requests. Keep archive reads outside BEGIN
+        // so a rejected upload cannot roll back a concurrent save on that connection.
+        if (db.dialect === "sqlite") await validatePaperUpload(cardId, validFiles);
         await db.transaction(async (tx) => {
-          // Concurrent appends must observe the previous batch before choosing a format and page number.
           if (tx.dialect === "mariadb") {
             await tx.get("SELECT id FROM answer_cards WHERE id = ? FOR UPDATE", cardId);
+            await validatePaperUpload(cardId, validFiles);
           }
-          await validatePaperUpload(cardId, validFiles);
           const maxRow = await tx.get(
             "SELECT COALESCE(MAX(page_index), 0) AS mx FROM original_paper_pages WHERE card_id = ?",
             cardId

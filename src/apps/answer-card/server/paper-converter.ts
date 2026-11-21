@@ -58,7 +58,7 @@ export function isDocx(filename: string): boolean {
  * 返回压缩后的 Buffer，控制在 ~500KB-1MB
  */
 export async function compressImage(inputPath: string): Promise<Buffer> {
-  if (!await isValidImageFile(inputPath)) {
+  if (!await isValidImageFile(inputPath, { allowBigTiff: true })) {
     throw new PaperInputError("INVALID_PAPER_IMAGE", "文件内容与支持的原卷图片格式不符");
   }
   let image = sharp(inputPath);
@@ -82,10 +82,13 @@ export async function compressImage(inputPath: string): Promise<Buffer> {
 /**
  * 图片 → 单页 PDF
  */
-export async function imageToPdf(inputPath: string, outputPath: string): Promise<void> {
+export async function imageToPdf(inputPath: string, outputPath: string, jpegPreview?: Buffer): Promise<void> {
   const metadata = await sharp(inputPath).metadata();
   const width = metadata.width || 2480;
   const height = metadata.height || 3508;
+  // PDFKit embeds JPEG and PNG directly. Other paper images already have a JPEG preview.
+  const source = metadata.format === "jpeg" || metadata.format === "png"
+    ? inputPath : jpegPreview ?? await sharp(inputPath).jpeg().toBuffer();
 
   // pdfkit 使用 pt (1/72 inch)，假设 72 DPI
   const pageWidth = (width / 72) * 72; // scaled to fit
@@ -108,7 +111,7 @@ export async function imageToPdf(inputPath: string, outputPath: string): Promise
     stream.on("error", fail);
     try {
       doc.pipe(stream);
-      doc.image(inputPath, 0, 0, { width: pageWidth, height: pageHeight });
+      doc.image(source, 0, 0, { width: pageWidth, height: pageHeight });
       doc.end();
     } catch (err) {
       fail(err);
@@ -152,7 +155,7 @@ export async function storePaperFile(
 
   const pdfPath = path.join(paperDirPath, "original.pdf");
   try {
-    await imageToPdf(sourcePath, pdfPath);
+    await imageToPdf(sourcePath, pdfPath, compressed);
   } catch (err) {
     await discardStoredPaths([jpgPath, pdfPath]); // 安全 R14：不留孤儿产物
     throw err;
@@ -240,7 +243,7 @@ export async function storePaperPageFile(
   const pdfName = `${baseName}.pdf`;
   const pdfPath = path.join(paperDirPath, pdfName);
   try {
-    await imageToPdf(sourcePath, pdfPath);
+    await imageToPdf(sourcePath, pdfPath, compressed);
   } catch (err) {
     // 安全 R14：配对 PDF 转换失败时，这一页的 jpg 与半截 pdf 都会变成没人记账的孤儿
     // （DB 里不会有这一行，预览与删除接口都找不到它们），必须在抛出前清掉。

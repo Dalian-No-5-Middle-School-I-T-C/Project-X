@@ -1,9 +1,10 @@
-import { access, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { access, mkdtemp, open, readFile, readdir, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { copyOcrModels } from "./ocr-models";
-import { extractDocxFiles, validateDocxArchives, PaperInputError } from "./paper-docx";
+import { DOCX_LIMITS, extractDocxFiles, validateDocxArchives, PaperInputError } from "./paper-docx";
+import { MAX_PAPER_FILE_BYTES } from "../../../shared/paperStorageLimits";
 import * as path from "node:path";
 import { paperDir } from "./storage";
 
@@ -52,12 +53,12 @@ export async function validatePaperUpload(cardId: string, incoming: { originalna
  * 从 PDF 提取纯文本，检测文字层。
  * 返回 null 表示无文字层或提取失败（触发 OCR 或视觉增强兜底）。
  */
-export async function extractPdfText(filePath: string): Promise<string | null> {
-  if (!existsSync(filePath)) return null;
+export async function extractPdfText(filePath: string | Buffer): Promise<string | null> {
+  if (typeof filePath === "string" && !existsSync(filePath)) return null;
   try {
     // pdfjs-dist 为可选依赖，尝试动态加载
     const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const data = new Uint8Array(await readFile(filePath));
+    const data = new Uint8Array(typeof filePath === "string" ? await readFile(filePath) : filePath);
     const doc = await pdfjsLib.getDocument({ data }).promise;
 
     let fullText = "";
@@ -74,11 +75,55 @@ export async function extractPdfText(filePath: string): Promise<string | null> {
   }
 }
 
-/**
- * 从图片文件提取文本（使用 Tesseract.js OCR）
- */
+type OcrInput = { extension: string; bytes: Buffer };
+
+export async function readOcrInput(filePath: string): Promise<OcrInput> {
+  const extension = path.extname(filePath).toLowerCase();
+  const limit = extension === ".docx" ? Math.min(DOCX_LIMITS.compressedBytes, MAX_PAPER_FILE_BYTES) : MAX_PAPER_FILE_BYTES;
+  const file = await open(filePath, "r");
+  try {
+    if ((await file.stat()).size > limit) {
+      throw new PaperInputError("PAPER_TOO_LARGE", "文件超过识别大小限制。", 413);
+    }
+    return { extension, bytes: await file.readFile() };
+  } finally {
+    await file.close();
+  }
+}
+
+let recognizing = false;
+
+// Admit the job before reading its private copy. Uploads and manual retries share this slot.
+async function withOcrCapacity(work: () => Promise<string | null>): Promise<string | null> {
+  if (recognizing) throw new PaperInputError("PAPER_OCR_BUSY", "正在识别其他页面，请稍后重新识别。", 429);
+  recognizing = true;
+  try {
+    return await work();
+  } finally {
+    recognizing = false;
+  }
+}
+
+export function recognizePaperPage(load: () => Promise<OcrInput>): Promise<string | null> {
+  return withOcrCapacity(async () => {
+    const { extension, bytes } = await load();
+    if (extension === ".docx") return extractDocxFiles([bytes]);
+    if (extension === ".pdf") return extractPdfText(bytes);
+    return recognizeImage(bytes);
+  });
+}
+
 export async function extractImageText(filePath: string): Promise<string | null> {
   if (!existsSync(filePath)) return null;
+  try {
+    return await withOcrCapacity(async () => recognizeImage((await readOcrInput(filePath)).bytes));
+  } catch (error) {
+    if (error instanceof PaperInputError) throw error;
+    return null;
+  }
+}
+
+async function recognizeImage(bytes: Buffer): Promise<string | null> {
   const bundled = fileURLToPath(new URL("./ocr-models/", import.meta.url));
   let temporary: string | undefined;
   try {
@@ -90,7 +135,7 @@ export async function extractImageText(filePath: string): Promise<string | null>
     const langPath = temporary ?? bundled;
     await Promise.all(["chi_sim", "eng"].map(code => access(path.join(langPath, code + ".traineddata.gz"))));
     const { default: tesseract } = await import("tesseract.js");
-    const result = await tesseract.recognize(filePath, "chi_sim+eng", {
+    const result = await tesseract.recognize(bytes, "chi_sim+eng", {
       langPath,
       cacheMethod: "none",
       errorHandler: (error) => console.warn("[paper-ocr] OCR worker error:", String(error)),
