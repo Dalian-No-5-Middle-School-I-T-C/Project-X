@@ -348,7 +348,7 @@
       "assertText": "服务器版本与更新时间"
     },
     {
-      "assertText": "2.7.1"
+      "assertText": "{{appVersion}}"
     },
     {
       "snapshot": "管理控制台与构建版本"

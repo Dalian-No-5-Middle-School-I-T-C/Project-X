@@ -4,6 +4,7 @@ if (-not $source) {
     if (-not $PSScriptRoot) { throw 'Supply --source-root or PROJECTX_FLOW_SOURCE_ROOT with the repository path in Windows.' }
     $source = Split-Path $PSScriptRoot -Parent
 }
+$env:PROJECTX_FLOW_SOURCE_ROOT = $source
 $work = if ($env:PROJECTX_FLOW_WORKDIR) { $env:PROJECTX_FLOW_WORKDIR } else { Join-Path $env:LOCALAPPDATA 'ProjectX-Flow' }
 $shared = if ($env:PROJECTX_FLOW_SHARED_ROOT) { $env:PROJECTX_FLOW_SHARED_ROOT } else { Join-Path $source 'ignored\production-flow' }
 $env:PROJECTX_FLOW_SHARED_ROOT = $shared

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { getMysqlDb, initMariadbSchema, resetAdapter } from "../src/server/db/mysql";
+import { closeAdapter, getMysqlDb, initMariadbSchema } from "../src/server/db/mysql";
 import { WeeklyAuditService } from "../src/server/services/WeeklyAuditService";
 
 // This fixture initializes a new database on the Ubuntu test guest.
@@ -43,5 +43,5 @@ try {
   assert.deepEqual(members.map(row => Number(row.exam_id)), [Number(first.lastInsertRowid), Number(second.lastInsertRowid)]);
   console.log("PASS MariaDB weekly publication at 07:59:59 and 08:00:00, score delay, two members, idempotent retry");
 } finally {
-  resetAdapter();
+  await closeAdapter();
 }

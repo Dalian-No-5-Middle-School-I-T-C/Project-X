@@ -46,6 +46,9 @@ localStorage.setItem("projectx-scanner-settings-v1", JSON.stringify({
 }));
 
 const card = createDefaultCard("autostart-review");
+const nextCard = createDefaultCard("failed-fetch-card", "shuxue", "A4");
+nextCard.sided = "double";
+let failNextCardFetch = false;
 const scans: Array<Record<string, unknown>> = [];
 let resolveSources!: (response: Response) => void;
 const sourcesPending = new Promise<Response>((resolve) => { resolveSources = resolve; });
@@ -53,10 +56,14 @@ let sourcesCalls = 0;
 
 install("fetch", async (input: unknown, init?: RequestInit) => {
   const url = String(input);
+  if (url.includes(`/api/cards/${nextCard.id}`)) {
+    if (failNextCardFetch) return new Response("boom", { status: 500 });
+    return Response.json(nextCard);
+  }
   if (url.includes("/api/cards/")) return Response.json(card);
   if (url.endsWith("/sources")) {
     sourcesCalls += 1;
-    return sourcesPending;
+    return sourcesCalls === 1 ? sourcesPending : Response.json({ status: "ok", sources: [{ name: "Kodak i3000" }] });
   }
   if (url.endsWith("/scan")) {
     scans.push(JSON.parse(String(init?.body)));
@@ -74,13 +81,13 @@ const { ScannerPanel } = await import("../src/apps/answer-card/client/components
 const { TooltipProvider } = await import("../src/apps/answer-card/client/components/ui/v2");
 
 const { serverStatus } = await import("../src/apps/answer-card/client/lib/remoteServerStatus");
-const root = createRoot(document.getElementById("root")!);
+let activeRoot: ReturnType<typeof createRoot> | null = createRoot(document.getElementById("root")!);
 const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
 let consumed = 0;
 
 try {
   await act(async () => {
-    root.render(createElement(TooltipProvider, null, createElement(ScannerPanel, {
+    activeRoot!.render(createElement(TooltipProvider, null, createElement(ScannerPanel, {
       cardId: card.id,
       autoStartScan: true,
       onAutoStartConsumed: () => { consumed += 1; },
@@ -100,9 +107,47 @@ try {
   assert.equal(scans[0]?.sourceName, "Kodak i3000", "保留本机记忆里仍有效的设备，不覆盖成列表第一项");
   assert.equal(scans[0]?.dpi, 400, "继续扫描沿用本机记忆的 DPI");
   assert(document.body.textContent?.includes("停止扫描"), "自动开扫后进入扫描中，不被检测结果切回 ready");
-  console.log("PASS scanner panel autostart: 等数据源 / 保留记忆设备 / 不被晚到结果覆盖");
+
+  // 回归：切换新卡时如果 /api/cards/:id 失败，不能把上一张卡的 A3 / 单面写脏进新卡缓存，
+  // 否则后续网络恢复再打开该卡，会永远覆盖掉卡片自身的 A4 / 双面默认配置。
+  await act(async () => { activeRoot?.unmount(); activeRoot = null; });
+  localStorage.setItem("projectx-scanner-settings-v1", JSON.stringify({
+    cardId: "prev-a3-card",
+    dpi: 300,
+    colorMode: "color",
+    paperSize: "A3",
+    duplex: false,
+    maxSheets: 0,
+    pageTimeoutSec: 0,
+    showUi: false,
+    selectedSource: "Kodak i3000",
+  }));
+  failNextCardFetch = true;
+  activeRoot = createRoot(document.getElementById("root")!);
+  await act(async () => {
+    activeRoot!.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: nextCard.id })));
+  });
+  await settle();
+  const afterFailure = JSON.parse(localStorage.getItem("projectx-scanner-settings-v1") || "{}") as Record<string, unknown>;
+  assert.equal(afterFailure.cardId, "prev-a3-card", "拉卡失败时不得覆盖 localStorage 为新卡 ID");
+  assert.equal(afterFailure.paperSize, "A3", "拉卡失败时保留原缓存，不污染新卡设置");
+
+  await act(async () => { activeRoot?.unmount(); activeRoot = null; });
+  failNextCardFetch = false;
+  activeRoot = createRoot(document.getElementById("root")!);
+  await act(async () => {
+    activeRoot!.render(createElement(TooltipProvider, null, createElement(ScannerPanel, { cardId: nextCard.id })));
+  });
+  await settle();
+  const afterRecovery = JSON.parse(localStorage.getItem("projectx-scanner-settings-v1") || "{}") as Record<string, unknown>;
+  assert.equal(afterRecovery.cardId, nextCard.id, "拉卡成功后记录新卡 ID");
+  assert.equal(afterRecovery.paperSize, "A4", "拉卡成功后写入新卡真实纸型而非旧卡 A3");
+  assert.equal(afterRecovery.duplex, true, "拉卡成功后写入新卡真实双面配置");
+  await act(async () => { activeRoot?.unmount(); activeRoot = null; });
+
+  console.log("PASS scanner panel autostart: 等数据源 / 保留记忆设备 / 不被晚到结果覆盖 / 拉卡失败不污染缓存");
 } finally {
-  await act(async () => { root.unmount(); });
+  await act(async () => { activeRoot?.unmount(); activeRoot = null; });
   serverStatus.stop();
   for (const [name, descriptor] of globals) {
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);

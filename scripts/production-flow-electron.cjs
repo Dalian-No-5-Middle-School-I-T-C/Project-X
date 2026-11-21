@@ -11,7 +11,7 @@ const stages = new Set([
   "inspect", "prepare", "login", "scan", "early", "last-pair", "replay", "retry",
   "device-open", "device-scan", "device-cycle", "device-cancel-after-frame", "continuation",
   "cache-conflict", "cache-resume", "matrix-A", "matrix-B", "matrix-C", "roster-upload",
-  "policy-upload", "standby", "standby-empty", "offline", "notice-before", "notice-recovery",
+  "policy-upload", "standby", "standby-empty", "offline", "notice-recovery",
   "notice-workspace", "queued-student-correction", "postprocess-issues", "active-upload-lock",
   "ledger-recovery", "pause-badge", "legacy-import", "brotli-control", "outage-A",
   "canvas-rotation", "prepare-draft", "crash-draft", "session-crash", "draft-boundaries",
@@ -1042,7 +1042,7 @@ assert.ok(Number.isInteger(debugPort) && debugPort > 0 && debugPort < 65536);
           .waitFor({ state: "hidden" });
       }
       if (
-        ["notice-before", "notice-recovery", "notice-workspace"].includes(stage)
+        ["notice-recovery", "notice-workspace"].includes(stage)
       ) {
         if (stage === "notice-recovery") {
           const session = await page.context().newCDPSession(page);
@@ -1144,8 +1144,7 @@ assert.ok(Number.isInteger(debugPort) && debugPort > 0 && debugPort < 65536);
         await notice.getByRole("button", { name: "知道了" }).click();
         await notice.waitFor({ state: "hidden" });
         console.log(JSON.stringify({ results, dismissed: true }));
-        if (stage !== "notice-before")
-          assert.ok(results.every((r) => r.alpha === 255 && r.onTop));
+        assert.ok(results.every((r) => r.alpha === 255 && r.onTop));
 
         async function assertRecoveryWindow() {
           const deadline = Date.now() + 65000;
@@ -1927,6 +1926,7 @@ assert.ok(Number.isInteger(debugPort) && debugPort > 0 && debugPort < 65536);
               storageState: await page.context().storageState(),
             },
           );
+        try {
         const input = path.join(root, "卡型C", "旧卡");
         const local = state.scanner + "/api/cards/" + spec.card;
         const headers = { "X-Api-Key": state.scannerKey };
@@ -2062,7 +2062,9 @@ assert.ok(Number.isInteger(debugPort) && debugPort > 0 && debugPort < 65536);
             preview.failures.map((x) => x.message),
           );
         }
-        await api.dispose();
+        } finally {
+          await api.dispose();
+        }
         console.log(
           "Outdated card rejected with 409; only page one provided the student number",
         );

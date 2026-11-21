@@ -276,19 +276,20 @@ router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (r
       ORDER BY egm.sort_order, egm.id
     `, groupId) as Array<{ exam_id: number; subject: string | null; assigned_formula: string | null; sort_order: number; track_type: string | null }>;
 
+    const useAssigned = group.total_score_mode === "assigned";
+    const totalScoreMode = useAssigned ? "assigned" : "raw";
     if (members.length === 0) {
-      res.json({ groupId, groupName: group.name, totalScoreMode: group.total_score_mode, totalStudents: 0, displayColumns: [], rows: [] });
+      res.json({ groupId, groupName: group.name, totalScoreMode, totalStudents: 0, displayColumns: [], rows: [] });
       return;
     }
     const trackMembers = track === "all"
       ? members
       : members.filter((m) => memberMatchesTrack(m.track_type, track));
     if (trackMembers.length === 0) {
-      res.json({ groupId, groupName: group.name, totalScoreMode: group.total_score_mode, totalStudents: 0, displayColumns: [], rows: [] });
+      res.json({ groupId, groupName: group.name, totalScoreMode, totalStudents: 0, displayColumns: [], rows: [] });
       return;
     }
 
-    const useAssigned = group.total_score_mode === "assigned";
     const memberIds = trackMembers.map((m) => m.exam_id);
 
     // Get all scores for all member exams（按文理过滤学生）

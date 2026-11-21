@@ -9,8 +9,9 @@ assert(['prepare', 'early', 'sync', 'final', 'close'].includes(command), 'Usage:
 const state = JSON.parse(await readFile(path.join(root, 'state.json'), 'utf8'));
 import targets from "./production-flow-target.cjs";
 targets.validateTargets(state);
+const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const values = { server: state.server, cardTitle: state.cardTitle, examId: String(state.examId),
-  groupName: state.groupName };
+  groupName: state.groupName, appVersion: pkg.version };
 assert(values.cardTitle && Number.isSafeInteger(state.examId), 'Seed an isolated exam first');
 const render = value => {
   if (typeof value === 'string') return value.replace(/\{\{(\w+)\}\}/g, (_, key) => {

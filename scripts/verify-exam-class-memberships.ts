@@ -288,6 +288,16 @@ try {
           mode === "assigned" ? [[b, 1], [a, 2]] : [[a, 1], [b, 2]], `${mode}, fullOnly=${full}`);
       }
     }
+    // Empty group early-return paths must also normalize NULL/raw/assigned totalScoreMode.
+    const emptyGroup = await group([]);
+    await db.run("UPDATE exam_groups SET total_score_mode = NULL WHERE id = ?", emptyGroup);
+    const emptyNullRes = await fetch(`${base}/groups/${emptyGroup}/rankings`);
+    assert.equal(emptyNullRes.status, 200);
+    assert.equal((await emptyNullRes.json()).totalScoreMode, "raw", "空大考组 total_score_mode=NULL 必须归一为 raw");
+    await db.run("UPDATE exam_groups SET total_score_mode = 'assigned' WHERE id = ?", emptyGroup);
+    const emptyAssignedRes = await fetch(`${base}/groups/${emptyGroup}/rankings`);
+    assert.equal(emptyAssignedRes.status, 200);
+    assert.equal((await emptyAssignedRes.json()).totalScoreMode, "assigned", "空大考组 total_score_mode=assigned 保持 assigned");
     const hiddenExam = await exam("未参加的考试");
     await score(hiddenExam, c, 99);
     const mixedGroup = await group([e1, hiddenExam]);

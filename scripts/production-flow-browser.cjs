@@ -367,6 +367,9 @@ async function checkResponsivePages(page) {
   const observations = [];
   const student = step.startsWith('student');
   const routes = student ? ['/scores'] : ['/home', '/design', '/exam-manage', '/analysis', '/admin-console', '/guide', '/sponsor'];
+  const originalSettingsRes = await page.request.get(state.server + '/api/users/me/settings');
+  const originalSettings = originalSettingsRes.ok() ? await originalSettingsRes.json() : null;
+  try {
   for (const [skin, label] of [['flat', /明澈/], ['paper-edge', /纸锋/]]) {
     for (const [theme, themeLabel] of [['light', '亮色'], ['dark', '暗色']]) {
       await page.setViewportSize({ width: 1440, height: 900 });
@@ -403,6 +406,16 @@ async function checkResponsivePages(page) {
           await page.screenshot({path:path.join(shared,'evidence',skin+'-'+theme+'-'+width+'-'+route.slice(1)+'.png')});
         }
       }
+    }
+  }
+  } finally {
+    if (originalSettings?.themeSkin || originalSettings?.colorScheme) {
+      await page.request.patch(state.server + '/api/users/me/settings', {
+        data: {
+          ...(originalSettings.themeSkin ? { themeSkin: originalSettings.themeSkin } : {}),
+          ...(originalSettings.colorScheme ? { colorScheme: originalSettings.colorScheme } : {}),
+        },
+      }).catch(() => {});
     }
   }
   const overflow=observations.filter(r=>r.scrollWidth>r.width+1);
