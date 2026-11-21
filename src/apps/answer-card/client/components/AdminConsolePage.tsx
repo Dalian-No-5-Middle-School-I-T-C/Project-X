@@ -28,6 +28,7 @@ type Preferences = { scoreDisplayMode: Distribution; showTabBar: Distribution; t
 type AiUsage = {
   available: boolean;
   reason?: string;
+  providerCalls?: { count: number; success: number; failed: number } | null;
   totals?: { runs: number; success: number; failed: number; pending: number; totalTokensIn: number; totalTokensOut: number; avgLatencyMs: number };
   byFeature?: Array<{ feature: string; count: number; success: number; failed: number; pending: number; successRate: number; avgLatencyMs: number; totalTokens: number }>;
 };
@@ -357,16 +358,19 @@ export function AdminConsolePage({ onBack }: Props) {
       </SectionCard>
 
       {/* AI 用量 */}
-      <SectionCard title="AI 调用观测" desc="逻辑任务层聚合：成功率 / 延迟 / Token 用量。">
+      <SectionCard title="AI 调用观测">
         {aiUsage ? (
           aiUsage.available && aiUsage.totals ? (
             <div className="flex flex-col gap-4">
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-                <StatTile label="调用次数" value={fmtNum(aiUsage.totals.runs)} />
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                <StatTile label="分析任务数" value={fmtNum(aiUsage.totals.runs)} />
                 <StatTile label="成功率" value={rateOf(aiUsage.totals.success, aiUsage.totals.failed)} hint={`成功 ${fmtNum(aiUsage.totals.success)} · 失败 ${fmtNum(aiUsage.totals.failed)}${aiUsage.totals.pending > 0 ? ` · 进行中 ${fmtNum(aiUsage.totals.pending)}` : ""}`} />
                 <StatTile label="平均延迟" value={aiUsage.totals.avgLatencyMs > 0 ? `${fmtNum(aiUsage.totals.avgLatencyMs)} ms` : "—"} />
                 <StatTile label="输入 Token" value={fmtNum(aiUsage.totals.totalTokensIn)} />
                 <StatTile label="输出 Token" value={fmtNum(aiUsage.totals.totalTokensOut)} />
+                {aiUsage.providerCalls && (
+                  <StatTile label="模型服务调用" value={fmtNum(aiUsage.providerCalls.count)} hint={`成功 ${fmtNum(aiUsage.providerCalls.success)} · 失败 ${fmtNum(aiUsage.providerCalls.failed)}`} />
+                )}
               </div>
               {aiUsage.byFeature && aiUsage.byFeature.length > 0 && (
                 <div className="overflow-x-auto">

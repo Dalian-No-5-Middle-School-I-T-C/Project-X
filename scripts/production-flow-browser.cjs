@@ -854,7 +854,9 @@ async function main() {
     if (step === 'teacher-roster-extra') await decideExtraPapers(page);
     if (step === 'teacher-essay-pages') {
       const { B: spec } = JSON.parse(fs.readFileSync(path.join(shared, 'matrix-exams.json')));
-      assert.equal(spec.title, '跨页作文评分补测');
+      assert.ok(['跨页作文评分补测', '跨页作文半分补测'].includes(spec.title));
+      const halfPoint = spec.title === '跨页作文半分补测';
+      const expectedScore = halfPoint ? 30.5 : 30;
       assert.ok(spec.parts.length >= 2);
       const who = await (await page.request.get(state.server + '/api/auth/me')).json();
       const reviewer = who.user || who;
@@ -904,13 +906,13 @@ async function main() {
       await page.getByRole('button', { name: '30', exact: true }).click();
       const [saved] = await Promise.all([
         page.waitForResponse(r => new URL(r.url()).pathname === savePath && r.request().method() === 'POST'),
-        page.getByRole('button', { name: '保存并下一份', exact: true }).click(),
+        page.getByRole('button', { name: halfPoint ? '0.5' : '保存并下一份', exact: true }).click(),
       ]);
       assert.equal(saved.status(), 200);
       const submission = await saved.json();
-      assert.equal(submission.finalScore ?? submission.data?.finalScore, 30);
+      assert.equal(submission.finalScore ?? submission.data?.finalScore, expectedScore);
       assert.equal(requests.filter(r => r.method === 'POST' && new URL(r.url).pathname === savePath).length, 1);
-      fs.writeFileSync(path.join(evidence, '跨页作文教师评分.json'), JSON.stringify({ exam: spec.exam, block: spec.block, reviewer: reviewer.id, seen, score: 30, submission }, null, 2));
+      fs.writeFileSync(path.join(evidence, '跨页作文教师评分.json'), JSON.stringify({ exam: spec.exam, block: spec.block, reviewer: reviewer.id, seen, score: expectedScore, submission }, null, 2));
     }
     if (step === 'teacher-grading-draft') {
       const enter=async()=>{

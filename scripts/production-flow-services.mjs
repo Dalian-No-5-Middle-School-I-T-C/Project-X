@@ -1285,13 +1285,25 @@ async function studentAnalysis() {
     { token: student, method: "POST", body: { model: "gpt-5.5" } },
   );
   assert.ok(one.report.overallJudgement);
-  const usage = await call("/api/admin/console/ai-usage");
   evidence.push({
     overallModel: overall.model,
     examModel: one.model,
     examTools: one.toolCalls?.map((t) => t.name),
-    usageSections: Object.keys(usage),
   });
+  await consoleAiUsage();
+}
+
+async function consoleAiUsage() {
+  const usage = await call("/api/admin/console/ai-usage");
+  assert.ok(usage.available && usage.providerCalls);
+  for (const feature of usage.byFeature) {
+    const finished = feature.success + feature.failed;
+    assert.equal(feature.count, finished + feature.pending);
+    assert.equal(feature.successRate, finished ? Math.round(1000 * feature.success / finished) / 10 : 0);
+  }
+  assert.equal(usage.byFeature.reduce((total, item) => total + item.totalTokens, 0),
+    usage.totals.totalTokensIn + usage.totals.totalTokensOut);
+  evidence.push({ usage });
 }
 async function ladderGate() {
   const student = await account("flow_10008");
@@ -3628,6 +3640,7 @@ const stages = {
   formula: formulaChecks,
   "multi-arbitration": multiArbitration,
   "pdf-knowledge": pdfKnowledge,
+  "console-ai-usage": consoleAiUsage,
   "review-repeat": reviewRepeat,
   "login-rate": loginRate,
   "ticket-expiry": ticketExpiry,
