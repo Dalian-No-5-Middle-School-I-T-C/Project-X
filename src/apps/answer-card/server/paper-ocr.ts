@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { copyOcrModels } from "./ocr-models";
-import { extractDocxFiles, PaperInputError } from "./paper-docx";
+import { extractDocxFiles, validateDocxArchives, PaperInputError } from "./paper-docx";
 import * as path from "node:path";
 import { paperDir } from "./storage";
 
@@ -15,16 +15,37 @@ export async function extractDocxText(filePath: string): Promise<string | null> 
   return extractDocxFiles([filePath]);
 }
 
-/** Refuse a partial analysis, including when a vision model would skip DOCX. */
-export async function getPaperInputKind(cardId: string, incoming: readonly string[] = []): Promise<"docx" | "other"> {
-  const entries = (await readdir(paperDir(cardId)).catch(() => []))
-    .filter(name => /^original(-\d+)?\.[^.]+$/i.test(name));
-  const formats = [...entries, ...incoming];
+async function originalPaperFiles(cardId: string): Promise<string[]> {
+  try {
+    return (await readdir(paperDir(cardId))).filter(name => /^original(-\d+)?\.[^.]+$/i.test(name));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+function paperInputKind(formats: string[]): "docx" | "other" {
   const hasDocx = formats.some(name => /\.docx$/i.test(name));
   if (hasDocx && formats.some(name => !/\.docx$/i.test(name))) {
     throw new PaperInputError("MIXED_PAPER_FORMATS", "同一份原卷不能混用 DOCX 与 PDF/图片。请将整份原卷统一为 DOCX，或统一转为 PDF/图片后重新上传。");
   }
   return hasDocx ? "docx" : "other";
+}
+
+/** Refuse a partial analysis, including when a vision model would skip DOCX. */
+export async function getPaperInputKind(cardId: string): Promise<"docx" | "other"> {
+  return paperInputKind(await originalPaperFiles(cardId));
+}
+
+export async function validatePaperUpload(cardId: string, incoming: { originalname: string; file: { path: string } }[]): Promise<void> {
+  const stored = await originalPaperFiles(cardId);
+  if (paperInputKind([...stored, ...incoming.map(item => item.originalname)]) === "docx") {
+    // Validate the complete paper while the card is locked, before storing this batch.
+    await validateDocxArchives([
+      ...stored.map(name => path.join(paperDir(cardId), name)),
+      ...incoming.map(item => item.file.path),
+    ]);
+  }
 }
 
 /**
@@ -113,14 +134,13 @@ export async function autoExtractPaperText(
   cardId: string
 ): Promise<{ text: string | null; source: "docx" | "pdf" | "ocr" | null }> {
   const dir = paperDir(cardId);
-  await getPaperInputKind(cardId);
+  const stored = await originalPaperFiles(cardId);
+  const kind = paperInputKind(stored);
 
   // Multi-file uploads use original-2.docx, original-3.docx, etc. Read every
   // document in page order; never hand a DOCX ZIP to the image OCR engine.
-  const docxFiles = (await readdir(dir).catch(() => []))
-    .filter((name) => /^original(-\d+)?\.docx$/i.test(name))
-    .sort((a, b) => Number(a.match(/-(\d+)/)?.[1] ?? 1) - Number(b.match(/-(\d+)/)?.[1] ?? 1));
-  if (docxFiles.length > 0) {
+  if (kind === "docx") {
+    const docxFiles = stored.sort((a, b) => Number(a.match(/-(\d+)/)?.[1] ?? 1) - Number(b.match(/-(\d+)/)?.[1] ?? 1));
     const text = await extractDocxFiles(docxFiles.map(name => path.join(dir, name)));
     return { text, source: text ? "docx" : null };
   }

@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer, type Server } from "node:http";
 import bcrypt from "bcryptjs";
+import AdmZip from "adm-zip";
 import sharp from "sharp";
 
 // 先在一个带 remote config.yml 的目录里确认配置能被读到，再切到干净临时目录。
@@ -119,7 +120,7 @@ async function main() {
   const { createApp } = await import("../src/apps/answer-card/server/index");
   const { getMysqlDb } = await import("../src/server/db");
   const { parseAnswerKeyText } = await import("../src/apps/answer-card/server/answer-key-ocr");
-  const { answerKeyDir, answerKeysDir, paperDir } = await import("../src/apps/answer-card/server/storage");
+  const { answerKeyDir, answerKeysDir, paperDir, paperTmpDir } = await import("../src/apps/answer-card/server/storage");
   const { resolveAnswerKeyPageFile, resolveAnswerKeyPreviewFile } = await import("../src/server/services/ExamPaperViewService");
 
   initializeDatabase();
@@ -275,6 +276,37 @@ async function main() {
   await getMysqlDb().run("INSERT INTO exam_archives (exam_id, archive_path, is_deleted) VALUES (?, 'x', 1)", examId);
   ok((await studentPaper(stuToken)).status === 404, "软删除考试 → 404");
   await getMysqlDb().run("DELETE FROM exam_archives WHERE exam_id = ?", examId);
+
+  // Use a normal document at the isolated process's exact expanded-byte limit.
+  const { DOCX_LIMITS } = await import("../src/apps/answer-card/server/paper-docx");
+  const document = new AdmZip();
+  const parts = {
+    "[Content_Types].xml": '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+    "_rels/.rels": '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="r1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+    "word/document.xml": '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>练习题</w:t></w:r></w:p></w:body></w:document>',
+  };
+  for (const [name, xml] of Object.entries(parts)) document.addFile(name, Buffer.from(xml));
+  const docx = document.toBuffer();
+  const paperPath = `/api/cards/${cardId}/paper`;
+  const sendDocument = () => {
+    const form = new FormData();
+    form.append("files", new Blob([new Uint8Array(docx)]), "练习.docx");
+    return jsonFetch(base, paperPath, { method: "POST", body: form }, adminToken);
+  };
+  const fullLimit = DOCX_LIMITS.expandedBytes;
+  try {
+    Object.assign(DOCX_LIMITS, { expandedBytes: Object.values(parts).reduce((n, xml) => n + Buffer.byteLength(xml), 0) });
+    ok((await sendDocument()).status === 200, "普通 DOCX 恰好达到解压限额时上传成功");
+    const next = await sendDocument();
+    ok(next.status === 413 && next.body.code === "PAPER_TOO_LARGE", "追加普通 DOCX 超过整卷解压限额时返回 413");
+    const info = await jsonFetch(base, paperPath + "/info", {}, adminToken);
+    ok(info.body.pages?.length === 1 && readdirSync(paperDir(cardId)).length === 1 &&
+      readFileSync(path.join(paperDir(cardId), "original.docx")).equals(docx) && readdirSync(paperTmpDir).length === 0,
+    "拒绝后原页内容完整，页记录、原卷目录和暂存目录均无新增");
+  } finally {
+    Object.assign(DOCX_LIMITS, { expandedBytes: fullLimit });
+    await jsonFetch(base, paperPath, { method: "DELETE" }, adminToken);
+  }
 
   // 落一张真实的第 1 页原卷图片（走既有卡片级分页表）
   const dir = paperDir(cardId);

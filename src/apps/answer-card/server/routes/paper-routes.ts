@@ -30,7 +30,7 @@ import {
   readPaperQuota,
 } from "../paperQuota";
 import { requestUploadBudget } from "../../../../server/lib/uploadBudget";
-import { autoExtractPaperText, getFileMime, getPaperInputKind } from "../paper-ocr";
+import { autoExtractPaperText, getFileMime, getPaperInputKind, validatePaperUpload } from "../paper-ocr";
 import { PaperInputError } from "../paper-docx";
 import type { DbAdapter } from "../../../../server/db/mysql";
 import { getMysqlDb } from "../../../../server/db/mysql";
@@ -246,7 +246,7 @@ export function paperRoutes(): Router {
           if (tx.dialect === "mariadb") {
             await tx.get("SELECT id FROM answer_cards WHERE id = ? FOR UPDATE", cardId);
           }
-          await getPaperInputKind(cardId, validFiles.map(file => file.originalname));
+          await validatePaperUpload(cardId, validFiles);
           const maxRow = await tx.get(
             "SELECT COALESCE(MAX(page_index), 0) AS mx FROM original_paper_pages WHERE card_id = ?",
             cardId
