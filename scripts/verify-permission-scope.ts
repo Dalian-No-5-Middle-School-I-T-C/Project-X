@@ -404,6 +404,9 @@ async function main(): Promise<void> {
   const r21Other = await get(`/api/classes/${classB}/students`, tokenA);
   ok(r21Other.status === 403, `任教教师读其它班级花名册被 403（实际 ${r21Other.status}）`);
   ok((await get(`/api/classes/${classB}/students`, tokenA)).body?.message?.includes("花名册") === true, "越权花名册返回可读原因");
+  matrix(teacherA.id, { class_id: classA, block_id: "assigned-question", can_view_students: 0 });
+  ok((await get(`/api/classes/${classA}/students`, tokenA)).status === 403, "仅有题块授权的教师不能读取全班名单");
+  clearMatrix(teacherA.id);
   matrix(teacherA.id, { class_id: classA, can_view_students: 0 });
   ok((await get(`/api/classes/${classA}/students`, tokenA)).status === 403, "矩阵关闭 can_view_students 后本人班级也 403");
   clearMatrix(teacherA.id);
