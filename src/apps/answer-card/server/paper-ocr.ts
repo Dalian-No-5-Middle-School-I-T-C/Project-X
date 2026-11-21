@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { copyOcrModels } from "./ocr-models";
 import { DOCX_LIMITS, extractDocxFiles, validateDocxArchives, PaperInputError } from "./paper-docx";
-import { MAX_PAPER_FILE_BYTES } from "../../../shared/paperStorageLimits";
+import { MAX_PAPER_FILE_BYTES, MAX_PAPER_FILES_PER_REQUEST, MAX_PAPER_REQUEST_BYTES } from "../../../shared/paperStorageLimits";
+import { isImageExtension } from "./validate-upload";
 import * as path from "node:path";
 import { paperDir } from "./storage";
 
@@ -77,13 +78,17 @@ export async function extractPdfText(filePath: string | Buffer): Promise<string 
 
 type OcrInput = { extension: string; bytes: Buffer };
 
-export async function readOcrInput(filePath: string): Promise<OcrInput> {
+export async function readOcrInput(filePath: string, remainingBytes = Infinity): Promise<OcrInput> {
   const extension = path.extname(filePath).toLowerCase();
   const limit = extension === ".docx" ? Math.min(DOCX_LIMITS.compressedBytes, MAX_PAPER_FILE_BYTES) : MAX_PAPER_FILE_BYTES;
   const file = await open(filePath, "r");
   try {
-    if ((await file.stat()).size > limit) {
+    const size = (await file.stat()).size;
+    if (size > limit) {
       throw new PaperInputError("PAPER_TOO_LARGE", "文件超过识别大小限制。", 413);
+    }
+    if (size > remainingBytes) {
+      throw new PaperInputError("PAPER_AI_BUNDLE_TOO_LARGE", "原卷文件累计体积超过分析上限，请拆分后分析。", 413);
     }
     return { extension, bytes: await file.readFile() };
   } finally {
@@ -170,7 +175,7 @@ export function getFileMime(filename: string): string {
 /**
  * 自动提取试卷文本（根据文件类型选择策略）
  * 1. DOCX → mammoth
- * 2. PDF → pdf-parse（返回 null 则无文字层）
+ * 2. PDF → PDF.js 文字层
  * 3. 图片 → Tesseract.js OCR
  *
  * 返回 { text, source: "docx"|"pdf"|"ocr"|null }
@@ -182,31 +187,36 @@ export async function autoExtractPaperText(
   const stored = await originalPaperFiles(cardId);
   const kind = paperInputKind(stored);
 
-  // Multi-file uploads use original-2.docx, original-3.docx, etc. Read every
-  // document in page order; never hand a DOCX ZIP to the image OCR engine.
+  const pageNumber = (name: string) => Number(name.match(/-(\d+)/)?.[1] ?? 1);
   if (kind === "docx") {
-    const docxFiles = stored.sort((a, b) => Number(a.match(/-(\d+)/)?.[1] ?? 1) - Number(b.match(/-(\d+)/)?.[1] ?? 1));
+    const docxFiles = stored.sort((a, b) => pageNumber(a) - pageNumber(b));
     const text = await extractDocxFiles(docxFiles.map(name => path.join(dir, name)));
     return { text, source: text ? "docx" : null };
   }
 
-  // 查找原始文件（original.docx/original.pdf/original.jpg 等）
-  const extensions = [".pdf", ".jpg", ".jpeg", ".png"];
-  for (const ext of extensions) {
-    const filePath = path.join(dir, `original${ext}`);
-    if (!existsSync(filePath)) continue;
-
-    if (ext === ".pdf") {
-      const text = await extractPdfText(filePath);
-      if (text) return { text, source: "pdf" };
-      // 无文字层 → 需要 OCR（但 Tesseract 不支持直接处理 PDF，Skip）
-      return { text: null, source: null };
-    }
-
-    // 图片 → Tesseract.js OCR
-    const ocrText = await extractImageText(filePath);
-    return { text: ocrText, source: ocrText ? "ocr" : null };
+  // An image upload has both a JPEG and a PDF containing that same image.
+  // Select the image for that page; a standalone PDF uses its text layer.
+  const pages = new Map<number, string>();
+  for (const name of stored) {
+    const index = pageNumber(name);
+    const extension = path.extname(name).toLowerCase();
+    if (isImageExtension(extension) || (extension === ".pdf" && !pages.has(index))) pages.set(index, name);
   }
-
-  return { text: null, source: null };
+  if (pages.size > MAX_PAPER_FILES_PER_REQUEST) {
+    throw new PaperInputError("PAPER_AI_BUNDLE_TOO_LARGE", `原卷超过分析上限 ${MAX_PAPER_FILES_PER_REQUEST} 页，请拆分后分析。`, 413);
+  }
+  const texts: string[] = [];
+  let source: "ocr" | "pdf" = "pdf";
+  let remainingBytes = MAX_PAPER_REQUEST_BYTES;
+  for (const filename of [...pages.values()].sort((a, b) => pageNumber(a) - pageNumber(b))) {
+    const text = await recognizePaperPage(async () => {
+      const input = await readOcrInput(path.join(dir, filename), remainingBytes);
+      remainingBytes -= input.bytes.length;
+      return input;
+    });
+    if (!text) return { text: null, source: null };
+    if (isImageExtension(path.extname(filename))) source = "ocr";
+    texts.push(text);
+  }
+  return texts.length ? { text: texts.join("\n\n"), source } : { text: null, source: null };
 }

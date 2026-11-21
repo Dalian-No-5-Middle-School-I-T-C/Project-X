@@ -2,8 +2,8 @@ import { multipartTask, taskDiskStorage } from "../../../../server/lib/multipart
 import { Router } from "express";
 import multer from "multer";
 import path from "node:path";
-import { existsSync, unlinkSync } from "node:fs";
-import { ensurePaperDir, paperDir, paperTmpDir, safeId } from "../storage";
+import { existsSync, renameSync, unlinkSync } from "node:fs";
+import { dataDir, ensurePaperDir, paperDir, paperTmpDir, safeId } from "../storage";
 import { answerCardDataOperation } from "../../../../server/lib/answerCardDataLock";
 import { refreshAuthenticatedUser, recheckWritePermission } from "../../../../server/middleware/auth";
 import { PERMISSIONS } from "../../../../server/auth/permissions";
@@ -22,7 +22,7 @@ import {
 } from "../../../../shared/paperStorageLimits";
 import {
   adjustPaperUsageCache,
-  assertWrittenPaperWithinQuota,
+  assertStagedPaperWithinQuota,
   evaluatePaperQuota,
   invalidatePaperUsageCache,
   PaperQuotaRollbackError,
@@ -176,11 +176,9 @@ export function paperRoutes(): Router {
     }),
     async (req: Request, res: Response) => {
       const staged = ((req.files as Express.Multer.File[]) || []).filter(Boolean);
-      // 本次已落盘但尚未被 DB 行引用的文件；提交成功后清空，失败时逐个删除（安全 R14）
-      const storedPaths: string[] = [];
-      // 本轮**实际落盘**的页数与字节数：事务内累加。声明在 try 之外，成功路径用它前推缓存、
-      // 失败路径用它判断「磁盘被本轮动过，缓存要重测」（评审 A2）
-      let writtenPages = 0;
+      const temporaryPaths: string[] = [];
+      const publishedPaths: string[] = [];
+      const replacedFiles: Array<{ backup: string; target: string }> = [];
       let writtenBytes = 0;
       try {
         const cardId = String(req.params.cardId);
@@ -221,7 +219,7 @@ export function paperRoutes(): Router {
         }
 
         // ── 累计容量闸门（安全 R10）：admission 只能按上传件字节数**估算**，真实产物在下述
-        //    落盘后用 assertWrittenPaperWithinQuota 复测——原卷转换会变大（jpg + 配对 PDF）。
+        //    落盘后用 assertStagedPaperWithinQuota 复测——原卷转换会变大（jpg + 配对 PDF）。
         const incomingBytes = validFiles.reduce((sum, item) => sum + Math.max(0, item.file.size), 0);
         const usageBefore = await readPaperQuota(db, cardId);
         const quota = evaluatePaperQuota(usageBefore, { pages: validFiles.length, bytes: incomingBytes });
@@ -235,77 +233,61 @@ export function paperRoutes(): Router {
           return;
         }
 
-        // 事务内完成 page_index 分配与入库，避免并发竞争
-
         const uploaded: Array<{ pageIndex: number; filename: string }> = [];
-        let firstFilename = "";
-        let firstRelPath = "";
+        const converted: Awaited<ReturnType<typeof storePaperPageFile>>[] = [];
+        const prepare = async (reader: DbAdapter) => {
+          await validatePaperUpload(cardId, validFiles);
+          for (const { file, originalname } of validFiles) {
+            const stem = path.basename(file.path) + "-converted";
+            for (const ext of [".jpg", ".pdf", ".docx"]) temporaryPaths.push(path.join(paperTmpDir, stem + ext));
+            const page = await storePaperPageFile(file.path, originalname, paperTmpDir, 1, stem);
+            converted.push(page);
+            writtenBytes += page.bytes;
+          }
+          await assertStagedPaperWithinQuota(reader, cardId, { pages: converted.length, bytes: writtenBytes });
+        };
 
-        // SQLite shares one connection across requests. Keep archive reads outside BEGIN
-        // so a rejected upload cannot roll back a concurrent save on that connection.
-        if (db.dialect === "sqlite") await validatePaperUpload(cardId, validFiles);
-        await db.transaction(async (tx) => {
+        // SQLite uses one connection for all requests. Conversion and quota scans must
+        // finish before BEGIN so a rollback cannot undo another request's writes.
+        if (db.dialect === "sqlite") await prepare(db);
+        await db.transaction(async tx => {
           if (tx.dialect === "mariadb") {
             await tx.get("SELECT id FROM answer_cards WHERE id = ? FOR UPDATE", cardId);
-            await validatePaperUpload(cardId, validFiles);
+            await prepare(tx);
           }
-          const maxRow = await tx.get(
-            "SELECT COALESCE(MAX(page_index), 0) AS mx FROM original_paper_pages WHERE card_id = ?",
-            cardId
-          ) as { mx: number } | undefined;
-          let nextIndex = (maxRow?.mx ?? 0) + 1;
-
-          for (const { file, originalname } of validFiles) {
-            const pageIndex = nextIndex;
-            nextIndex += 1;
-
-            const stored = await storePaperPageFile(file.path, originalname, dir, pageIndex);
-            // 先登记再入库：这一页此刻还没有任何 DB 行引用，失败时必须由本路由删掉（安全 R14）
-            storedPaths.push(...stored.writtenPaths);
-            writtenPages += 1;
-            writtenBytes += stored.bytes;
-
-            // UNIQUE(card_id, page_index) 约束保证不会重复写入
+          const last = await tx.get<{ mx: number }>(
+            "SELECT COALESCE(MAX(page_index), 0) AS mx FROM original_paper_pages WHERE card_id = ?", cardId);
+          let pageIndex = Number(last?.mx ?? 0);
+          for (const page of converted) {
+            pageIndex++;
+            const stem = pageIndex === 1 ? "original" : `original-${pageIndex}`;
+            const filename = stem + path.extname(page.diskFilename);
             await tx.run(
               "INSERT INTO original_paper_pages (card_id, page_index, filename, stored_path) VALUES (?, ?, ?, ?)",
-              cardId, pageIndex, stored.diskFilename, stored.relPath
+              cardId, pageIndex, filename, path.relative(dataDir, path.join(dir, filename))
             );
-            if (pageIndex === 1) {
-              firstFilename = stored.diskFilename;
-              firstRelPath = stored.relPath;
+            for (const source of page.writtenPaths) {
+              const target = path.join(dir, stem + path.extname(source));
+              if (existsSync(target)) {
+                const backup = source + ".previous";
+                renameSync(target, backup);
+                replacedFiles.push({ backup, target });
+              }
+              renameSync(source, target);
+              publishedPaths.push(target);
             }
-            uploaded.push({ pageIndex, filename: stored.diskFilename });
+            uploaded.push({ pageIndex, filename });
           }
-          // 提交前用**实际落盘体积**复测容量（PR #312 CR14）：上面的 admission 只能按输入字节估，
-          // 而原卷转换会变大（jpg + 配对 PDF）。越界就在这里抛错——事务回滚掉这批页行，
-          // 已写出的文件由下面的 catch 逐个删除，不会留下「按输入算合格、按产物算超限」的占盘。
-          await assertWrittenPaperWithinQuota(tx, cardId, usageBefore, { pages: writtenPages, bytes: writtenBytes });
+          const first = await tx.get<{ filename: string; stored_path: string }>(
+            "SELECT filename, stored_path FROM original_paper_pages WHERE card_id = ? ORDER BY page_index LIMIT 1", cardId);
+          await tx.run(
+            "UPDATE answer_cards SET has_original_paper = 1, original_paper_filename = ?, original_paper_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            first?.filename ?? "", first?.stored_path ?? "", cardId);
         });
-        // 事务已提交：这些文件正式被 DB 行引用，回滚窗口到此结束
-        storedPaths.length = 0;
-        // 安全（PR #312 评审 A2）：写入成功是**增量修正**缓存，不是作废缓存。
-        // 原先 `finally` 里无条件 `invalidatePaperUsageCache()`，5 条返回路径（400 校验失败 /
-        // 413 admission / 413 落盘复测 / 500 / 200）每条都把 60 秒缓存清掉——而请求在被拒之前
-        // 已经先读过一次配额（`readPaperQuota`），于是「持续上传垃圾」的开销被放大成
-        // 每一次都重扫整个 `papers/`：配额闸门本身成了可被打的靶子。
-        // 现在只有真正改了磁盘占用的路径才动缓存：写入按实测增量前推，删除走重新实测。
+        publishedPaths.length = 0;
+        temporaryPaths.push(...replacedFiles.map(file => file.backup));
+        replacedFiles.length = 0;
         adjustPaperUsageCache(writtenBytes);
-
-
-        // legacy 字段保留首页，向后兼容预览/导出/AI 读取
-        const firstRow = firstFilename
-          ? { filename: firstFilename, stored_path: firstRelPath }
-          : await db.get(
-              "SELECT filename, stored_path FROM original_paper_pages WHERE card_id = ? ORDER BY page_index LIMIT 1",
-              cardId
-            ) as { filename: string; stored_path: string } | undefined;
-        const firstFilenameOut = firstRow?.filename || "";
-        const firstRelPathOut = firstFilename ? firstRelPath : (firstRow?.stored_path || "");
-        await db.run(
-          "UPDATE answer_cards SET has_original_paper = 1, original_paper_filename = ?, original_paper_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-          firstFilenameOut, firstRelPathOut, cardId
-        );
-
 
         res.json({
           success: true,
@@ -315,12 +297,8 @@ export function paperRoutes(): Router {
         });
 
       } catch (err: any) {
-        // 事务未提交就失败：本轮落地的文件没有任何 DB 行引用，全部删掉（安全 R14）
-        if (storedPaths.length > 0) await discardStoredPaths(storedPaths);
-        // 回滚删了文件就把可能被本轮写盘污染的实测值丢掉：`assertWrittenPaperWithinQuota`
-        // 里的那一次全局实测会把「即将被删掉的文件」算进缓存（评审 A2 的反面情形——
-        // 不删就会让后续请求凭空多算一整批原卷，直到 60 秒 TTL 到期）。
-        if (writtenBytes > 0) invalidatePaperUsageCache();
+        await discardStoredPaths(publishedPaths);
+        for (const { backup, target } of replacedFiles) renameSync(backup, target);
         if (err instanceof PaperInputError) {
           res.status(err.status).json({ code: err.code, error: err.message });
           return;
@@ -339,9 +317,10 @@ export function paperRoutes(): Router {
         console.error("[paper] upload failed:", err);
         res.status(500).json({ error: err.message || "上传失败" });
       } finally {
-        // multer 已把文件写进 _tmp：任何返回路径（400 校验失败 / 413 配额 / 500）都要清干净
-        for (const file of staged) {
-          try { unlinkSync(file.path); } catch {}
+        for (const file of [...temporaryPaths, ...staged.map(item => item.path)]) {
+          try { unlinkSync(file); } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.warn("[paper] 无法清理暂存件", path.basename(file));
+          }
         }
         // 评审 A2：这里**不再**无条件作废用量缓存——`_tmp` 本来就不计入长期占盘，
         // 清临时文件不需要重扫 `papers/`；缓存的增减由上面的写入增量与下面的删除路径负责。

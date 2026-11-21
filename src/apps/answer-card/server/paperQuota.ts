@@ -213,7 +213,7 @@ export interface IncomingPaperUpload {
   pages: number;
   /**
    * 本次增量的字节数。admission 阶段只有上传件本身的体积可看，只能当下界用；
-   * 落盘之后由 `assertWrittenPaperWithinQuota` 按实际写入量复测（原卷转换会变大）。
+   * 落盘之后由 `assertStagedPaperWithinQuota` 按实际写入量复测（原卷转换会变大）。
    */
   bytes: number;
 }
@@ -275,37 +275,14 @@ export class PaperQuotaRollbackError extends Error {
 }
 
 /**
- * 用**实际落盘体积**复测容量闸门（PR #312 CR14）。
- *
- * 上传 admission 只能按输入字节估算，而原卷是要转换的：一张 844 KiB 的 JPEG 会同时落成
- * jpg 与配对 PDF，实测约 1.41 MiB——单看输入，1 MiB 的额度会被穿透。所以写入完成后必须
- * 按磁盘真实增量再判一次，越界就抛错：事务回滚掉这一批 DB 行，已落盘的文件由调用方删除。
- *
- * - 单卡这一维**重新实测**：卡目录最多几百个文件，扫得起，而且这才是刚写出来的真相；
- *   基线取「实测值减去本轮写入量」，不引入会漂移的计数器。
- * - 全局这一维沿用 admission 读到的缓存值 + 本轮实测增量：每次上传都强制重扫整个 `papers/`
- *   会把 60 秒缓存的收益全部赔掉。缓存若恰好在本次请求期间被别人刷新过，这一维会把自己
- *   算两次——方向是保守的（宁多少拒一次）。
- *
- * 必须在事务内用 `tx` 调用，才看得见本次尚未提交的页行。
+ * 转换产物暂存在 _tmp 中。登记页行和移动文件前，按转换后的真实字节数核对所有上限。
  */
-export async function assertWrittenPaperWithinQuota(
+export async function assertStagedPaperWithinQuota(
   db: DbAdapter,
   cardId: string,
-  admission: PaperQuotaSnapshot,
-  written: { pages: number; bytes: number },
+  staged: IncomingPaperUpload,
   limits?: Parameters<typeof evaluatePaperQuota>[2]
 ): Promise<void> {
-  const post = await readPaperQuota(db, cardId);
-  const verdict = evaluatePaperQuota(
-    {
-      cardPages: Math.max(0, post.cardPages - written.pages),
-      cardBytes: Math.max(0, post.cardBytes - written.bytes),
-      totalBytes: admission.totalBytes,
-      totalExact: admission.totalExact && post.totalExact,
-    },
-    { pages: written.pages, bytes: written.bytes },
-    limits
-  );
+  const verdict = evaluatePaperQuota(await readPaperQuota(db, cardId), staged, limits);
   if (!verdict.ok) throw new PaperQuotaRollbackError(verdict.reason, verdict.message);
 }

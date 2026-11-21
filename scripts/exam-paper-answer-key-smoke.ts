@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer, type Server } from "node:http";
 import { mock } from "node:test";
+import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import AdmZip from "adm-zip";
 import sharp from "sharp";
@@ -51,6 +52,7 @@ process.env.PROJECTX_DB_PATH = path.join(tmpDir, "verify.db");
 process.env.PROJECTX_TOKEN_DIR = path.join(tmpDir, "tokens");
 // 原卷/答案页文件也写进临时目录，避免污染仓库 data/
 process.env.ANSWER_CARD_DATA_DIR = path.join(tmpDir, "data");
+process.env.PROJECTX_PAPER_MAX_BYTES_PER_CARD_MIB = "1";
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("PROJECTX_MARIADB_") || key.startsWith("PROJECTX_MYSQL_")) delete process.env[key];
 }
@@ -171,8 +173,9 @@ async function main() {
   }
   sqlite.prepare("UPDATE exams SET created_by=? WHERE id=?").run(outsiderId,ownedQuiz);
   const app = await createApp();
-  const server: Server = await new Promise((resolve) => {
+  const server: Server = await new Promise((resolve, reject) => {
     const s = createServer(app);
+    s.once("error", reject);
     s.listen(0, "127.0.0.1", () => resolve(s));
   });
   const base = `http://127.0.0.1:${(server.address() as any).port}`;
@@ -335,15 +338,79 @@ async function main() {
     await jsonFetch(base, paperPath, { method: "DELETE" }, adminToken);
   }
 
-  const bigTiff = await sharp({ create: { width: 64, height: 48, channels: 3, background: "white" } })
-    .tiff({ bigtiff: true, compression: "lzw" }).toBuffer();
+  const scanImage = (line: string) => sharp(Buffer.from(
+    `<svg width="1000" height="220" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="white"/><text x="60" y="145" font-family="sans-serif" font-size="85">${line}</text></svg>`
+  ));
+  const bigTiff = await scanImage("1-5 BACDB").tiff({ bigtiff: true, compression: "lzw" }).toBuffer();
+  const secondPage = await scanImage("6-10 ACCAB").png().toBuffer();
+  // A database failure after conversion must roll back just this upload.
+  const converting = Promise.withResolvers<void>();
+  const resumeConversion = Promise.withResolvers<void>();
+  const toBuffer = sharp.prototype.toBuffer;
+  const delayConversion = mock.method(sharp.prototype, "toBuffer", function (this: sharp.Sharp, ...args: unknown[]) {
+    converting.resolve();
+    return resumeConversion.promise.then(() => Reflect.apply(toBuffer, this, args));
+  }, { times: 1 });
+  sqlite.exec("CREATE TRIGGER paper_upload_failure BEFORE INSERT ON original_paper_pages BEGIN SELECT RAISE(ABORT,'test upload failure'); END");
+  try {
+    const form = new FormData();
+    form.append("files", new Blob([bigTiff], { type: "image/tiff" }), "正常扫描件.tif");
+    const attempt = jsonFetch(base, paperPath, { method: "POST", body: form }, adminToken);
+    try {
+      await Promise.race([converting.promise, attempt.then(() => { throw new Error("未进入扫描件转换"); })]);
+      const edit = await jsonFetch(base, "/api/cards/PAPERNOTES02/paper/info", {
+        method: "PUT", body: JSON.stringify({ questionRange: "全部", extraNotes: "图像转换期间保存" }), signal: AbortSignal.timeout(10000)
+      }, adminToken);
+      ok(edit.status === 200, "图像转换期间可保存其他卡备注");
+    } finally {
+      resumeConversion.resolve();
+    }
+    const response = await attempt;
+    const notes = await jsonFetch(base, "/api/cards/PAPERNOTES02/paper/info", {}, adminToken);
+    ok(response.status === 500 && notes.body.extra_notes === "图像转换期间保存",
+      "转换后入库失败，独立请求已保存的备注保留");
+    ok(readdirSync(paperTmpDir).length === 0 && readdirSync(paperDir(cardId)).length === 0,
+      "转换后入库失败，生成的图片和配对 PDF 均清理");
+  } finally {
+    delayConversion.mock.restore();
+    sqlite.exec("DROP TRIGGER paper_upload_failure");
+  }
+  const calibrationImage = await sharp(randomBytes(900 * 900), { raw: { width: 900, height: 900, channels: 1 } })
+    .toColourspace("b-w").png().toBuffer();
+  const calibration = new FormData();
+  calibration.append("files", new Blob([new Uint8Array(calibrationImage)]), "灰度扫描校准.png");
+  const measured = await jsonFetch(base, paperPath, { method: "POST", body: calibration }, adminToken);
+  ok(calibrationImage.length < 1024 * 1024 && measured.status === 413 && measured.body.measuredAfterConversion === true,
+    "输入小于 1 MiB，转换后的 JPEG 与 PDF 合计超出单卡额度时返回 413");
+  ok((await jsonFetch(base, paperPath + "/info", {}, adminToken)).body.pages.length === 0
+    && readdirSync(paperTmpDir).length === 0 && readdirSync(paperDir(cardId)).length === 0,
+    "实际转换容量超额后，正式目录、暂存目录和页记录均为空");
+
   const bigPaper = new FormData();
   bigPaper.append("files", new Blob([bigTiff], { type: "image/tiff" }), "扫描原卷.tif");
+  bigPaper.append("files", new Blob([secondPage], { type: "image/png" }), "第二页.png");
   const uploadedPaper = await jsonFetch(base, paperPath, { method: "POST", body: bigPaper }, adminToken);
-  ok(uploadedPaper.status === 200 && uploadedPaper.body.count === 1, "BigTIFF 原卷上传成功");
+  ok(uploadedPaper.status === 200 && uploadedPaper.body.count === 2, "单页 BigTIFF 和 PNG 按顺序上传为两页原卷");
   const paperPdf = await fetch(base + paperPath, { headers: { Authorization: `Bearer ${adminToken}` } });
   const pdf = Buffer.from(await paperPdf.arrayBuffer());
   ok(paperPdf.status === 200 && pdf.subarray(0, 5).toString() === "%PDF-", "BigTIFF 原卷可下载配对 PDF");
+  const { autoExtractPaperText } = await import("../src/apps/answer-card/server/paper-ocr");
+  const scanned = await autoExtractPaperText(cardId);
+  ok(scanned.source === "ocr" && /BACDB[\s\S]*ACCAB/.test(scanned.text ?? ""), "纯文本分析按页识别两张原卷图片");
+  const multiTiff = await sharp([bigTiff, secondPage], { join: { animated: true } }).tiff({ bigtiff: true }).toBuffer();
+  const multiPaper = new FormData();
+  multiPaper.append("files", new Blob([multiTiff], { type: "image/tiff" }), "两页原卷.tif");
+  const rejectedTiff = await jsonFetch(base, paperPath, { method: "POST", body: multiPaper }, adminToken);
+  const paperInfo = await jsonFetch(base, paperPath + "/info", {}, adminToken);
+  ok(rejectedTiff.status === 400 && rejectedTiff.body.code === "MULTIPAGE_PAPER_IMAGE"
+    && paperInfo.body.pages?.length === 2 && readdirSync(paperDir(cardId)).length === 4 && readdirSync(paperTmpDir).length === 0,
+    "多页 BigTIFF 明确拒收，原卷只保留先前两页及其配对 PDF");
+  const interrupted = new FormData();
+  interrupted.append("files", new Blob([secondPage.subarray(0, Math.floor(secondPage.length / 2))], { type: "image/png" }), "传输中断.png");
+  const invalidImage = await jsonFetch(base, paperPath, { method: "POST", body: interrupted }, adminToken);
+  ok(invalidImage.status === 400 && invalidImage.body.code === "INVALID_PAPER_IMAGE" &&
+    readdirSync(paperDir(cardId)).length === 4 && readdirSync(paperTmpDir).length === 0,
+    "PNG 文件像素数据传输中断时返回图片格式错误，已上传原卷可保留");
   await jsonFetch(base, paperPath, { method: "DELETE" }, adminToken);
 
   // 落一张真实的第 1 页原卷图片（走既有卡片级分页表）
@@ -838,20 +905,20 @@ async function main() {
   ok(dirtyFlags.listed === 0 && dirtyFlags.detail === 0 && dirtyPaper.status === 404,
     "脏值 FILE 按 text 处理，列表入口与 /paper 都不放行");
 
-  const tiffPage = await uploadModePage(new Blob([bigTiff], { type: "image/tiff" }), "扫描答案.tiff");
-  ok(tiffPage.status === 200 && tiffPage.body.count === 1, "BigTIFF 答案可保存原件和预览");
+  const tiffPage = await uploadModePage(new Blob([multiTiff], { type: "image/tiff" }), "扫描答案.tiff");
+  ok(tiffPage.status === 200 && tiffPage.body.count === 1, "多页 BigTIFF 答案可保存原件和预览");
   if (tiffPage.status === 200) {
     await patchMode({ answerKeyMode: "file" });
     const index = tiffPage.body.pages[0].pageIndex;
     const file = await fetch(`${base}/api/scores/me/exams/${modeExamId}/paper/answer-file/${index}`, {
       headers: { Authorization: `Bearer ${stuToken}` },
     });
-    ok(file.status === 200 && Buffer.from(await file.arrayBuffer()).equals(bigTiff), "学生下载的 BigTIFF 与教师上传的原件逐字节一致");
+    ok(file.status === 200 && Buffer.from(await file.arrayBuffer()).equals(multiTiff), "学生下载的多页 BigTIFF 与教师上传的原件逐字节一致");
     const preview = await fetch(`${base}/api/exams/${modeExamId}/answer-key/pages/${index}/image`, {
       headers: { Authorization: `Bearer ${adminToken}` },
     });
     const meta = await sharp(Buffer.from(await preview.arrayBuffer())).metadata();
-    ok(preview.status === 200 && meta.format === "jpeg" && meta.width === 64 && meta.height === 48, "教师可预览 BigTIFF 转换的 JPEG");
+    ok(preview.status === 200 && meta.format === "jpeg" && meta.width === 1000 && meta.height === 220, "教师可预览多页 BigTIFF 的首页 JPEG");
   }
 
   // ── E. 删除考试时的文件清理 ──────────────────────────
