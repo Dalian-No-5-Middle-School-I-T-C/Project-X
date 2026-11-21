@@ -204,31 +204,32 @@ export function splitBlockTotal(
   const nums = items.map((it) => it.questionNumber);
   if (nums.length === 0) return result;
 
-  const sumMax = nums.reduce((acc, q) => acc + (maxScoreByQuestion.get(q) ?? 0), 0);
-  const raw = nums.map((q) => {
+  const maxima = nums.map(q => maxScoreByQuestion.get(q) ?? 0);
+  const sumMax = maxima.reduce((sum, max) => sum + max, 0);
+  if (Math.abs(blockTotal - sumMax) <= 1e-9) {
+    return new Map(nums.map((q, i) => [q, maxima[i]]));
+  }
+  const raw = maxima.map(max => {
     if (distribution === "equal") {
       return blockTotal / nums.length;
     }
-    const max = maxScoreByQuestion.get(q) ?? 0;
     const denom = maxBlockScore > 0 ? maxBlockScore : sumMax || 1;
     return (blockTotal * max) / denom;
   });
 
-  // 先按 step 取整并 clamp 到 [0, max]
-  const rounded = raw.map((r, i) => {
-    const max = maxScoreByQuestion.get(nums[i]) ?? 0;
-    return Math.max(0, Math.min(Math.round(r / step) * step, max));
-  });
+  // 先在各题完整步长内分配，避免被小数满分截断后合计多出半步。
+  const stepMaxima = maxima.map(max => Math.floor(max / step) * step);
+  const rounded = raw.map((r, i) => Math.max(0, Math.min(Math.round(r / step) * step, stepMaxima[i])));
 
   // 修正取整漂移，使合计精确等于题块总分（从末题向前吸收余量）
-  let residual =
-    Math.round((blockTotal - rounded.reduce((a, b) => a + b, 0)) / step) * step;
-  for (let i = nums.length - 1; i >= 0 && Math.abs(residual) > 1e-9; i--) {
-    const before = rounded[i];
-    const max = maxScoreByQuestion.get(nums[i]) ?? 0;
-    const next = Math.max(0, Math.min(before + residual, max));
-    residual -= next - before;
-    rounded[i] = next;
+  let residual = roundScore(blockTotal - rounded.reduce((a, b) => a + b, 0));
+  // 完整步长不足以容纳给定总分时，才使用各小题满分末尾的小数容量。
+  for (const limits of [stepMaxima, maxima]) {
+    for (let i = nums.length - 1; i >= 0 && residual !== 0; i--) {
+      const next = Math.max(0, Math.min(rounded[i] + residual, limits[i]));
+      residual = roundScore(residual - (next - rounded[i]));
+      rounded[i] = next;
+    }
   }
 
   nums.forEach((q, i) => result.set(q, rounded[i]));
@@ -428,8 +429,9 @@ export async function submitReviewCropScores(params: {
           if (total > maxBlockScore + 1e-6) {
             throw new ReviewValidationError(`题块总分不能超过本题块满分 ${maxBlockScore}`);
           }
-          if (!isOnScoreStep(total, step)) {
-            throw new ReviewValidationError(`题块总分必须是 ${step} 分的整数倍`);
+          const isFullMark = Math.abs(total - maxBlockScore) <= 1e-9;
+          if (!isFullMark && !isOnScoreStep(total, step)) {
+            throw new ReviewValidationError(`题块总分必须是 ${step} 分的整数倍或题块满分 ${maxBlockScore}`);
           }
           // 题号集合校验：题块总分代表整个题块，提交项必须恰好覆盖本题块的权威小题，
           // 且每题只允许出现一次（否则 totalScore 虚高且 scoreBreakdown 内部不一致）。
@@ -437,7 +439,7 @@ export async function submitReviewCropScores(params: {
           const coverage = validateBlockTotalCoverage(authoritativeNums, scores);
           if (!coverage.ok) throw new ReviewValidationError(coverage.error);
           const split = splitBlockTotal(
-            Math.round(total * 100) / 100,
+            isFullMark ? maxBlockScore : roundScore(total),
             scores,
             maxScoreByQuestion,
             maxBlockScore,
@@ -531,9 +533,6 @@ export async function submitReviewCropScores(params: {
       disputed = disputeResult.disputed;
       disputeReason = disputeResult.reason;
       if (!disputed) {
-        // Rounding an average upwards must not award more than the questions are worth.
-        const submittedMax = submittedScores.reduce((sum, item) => sum + Number(item.maxScore), 0);
-        finalScore = disputeResult.finalScore == null ? null : Math.min(disputeResult.finalScore, submittedMax);
         const resolvedQuestionScores: Array<{ item: typeof submittedScores[number]; score: number }> = [];
         for (const item of submittedScores) {
           const values = effectiveVotes.map((round) => round.questionScores?.[String(item.questionNumber)]).filter((v): v is number => typeof v === "number");
@@ -542,18 +541,16 @@ export async function submitReviewCropScores(params: {
           if (resolved.disputed || resolved.finalScore == null) {
             disputed = true;
             disputeReason = `第${item.questionNumber}题${resolved.reason}`;
-            finalScore = null;
             break;
           }
           resolvedQuestionScores.push({ item, score: Math.min(resolved.finalScore, item.maxScore) });
         }
         // Do not persist a partial set if a later question is disputed.
         if (!disputed) {
+          finalScore = roundScore(resolvedQuestionScores.reduce((sum, question) => sum + question.score, 0));
           for (const resolved of resolvedQuestionScores) {
             await tx.run(upsertSQL, params.examId, crop.student_id, resolved.item.questionNumber, null, crop.block_id, resolved.score, resolved.item.maxScore, resolved.item.scoreType, 1, params.userId, now);
           }
-        }
-        if (!disputed) {
           totalScore = await recomputeStudentTotals(tx, params.examId, crop.student_id!);
           // 评审 P1：仅当本轮评阅写下正式分数并重算总分时才视为成绩变更 →
           // 同一事务内按管理员策略处理公布状态

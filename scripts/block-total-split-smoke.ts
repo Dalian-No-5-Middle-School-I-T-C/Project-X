@@ -39,6 +39,10 @@ const cases: Case[] = [
   { name: "负余量 1×1×1 总2", blockTotal: 2, qs: [1, 2, 3], maxes: { 1: 1, 2: 1, 3: 1 }, step: 1, distribution: "equal" },
   { name: "单题 总7", blockTotal: 7, qs: [1], maxes: { 1: 10 }, step: 1, distribution: "proportional" },
   { name: "均分 含0分题 总6", blockTotal: 6, qs: [1, 2, 3], maxes: { 1: 0, 2: 6, 3: 6 }, step: 1, distribution: "equal" },
+  { name: "均分 小数满分 总5", blockTotal: 5, qs: [1, 2], maxes: { 1: 2.5, 2: 3.5 }, step: 1, distribution: "equal" },
+  { name: "比例 半分粒度与四分之一满分", blockTotal: 5.5, qs: [1, 2], maxes: { 1: 2.25, 2: 3.75 }, step: 0.5, distribution: "proportional" },
+  { name: "均分 高分使用两题的小数满分", blockTotal: 7, qs: [1, 2, 3], maxes: { 1: 1.5, 2: 2.5, 3: 3.5 }, step: 1, distribution: "equal" },
+  { name: "均分 精确小数满分", blockTotal: 8.5, qs: [1, 2], maxes: { 1: 5.5, 2: 3 }, step: 1, distribution: "equal" },
 ];
 
 let failed = 0;
@@ -57,7 +61,7 @@ for (const c of cases) {
     const max = c.maxes[q];
     if (v < -1e-9) { ok = false; details.push(`第${q}题<0(${v})`); }
     if (v > max + 1e-9) { ok = false; details.push(`第${q}题>max(${v}>${max})`); }
-    if (!isMultipleOf(v, c.step)) { ok = false; details.push(`第${q}题非${c.step}粒度(${v})`); }
+    if (v !== max && !isMultipleOf(v, c.step)) { ok = false; details.push(`第${q}题非${c.step}粒度(${v})`); }
   }
   if (!approxEqual(sum, c.blockTotal)) { ok = false; details.push(`合计${sum}≠${c.blockTotal}`); }
 
