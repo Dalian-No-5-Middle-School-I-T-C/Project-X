@@ -1916,8 +1916,8 @@ async function pdfKnowledge() {
       body: form,
       statuses: [200, 201],
     });
-    const analyze = () =>
-      fetch(state.server + route + "/knowledge-points/analyze", {
+    const analyze = (cardRoute = route) =>
+      fetch(state.server + cardRoute + "/knowledge-points/analyze", {
         method: "POST",
         headers: {
           Authorization: "Bearer " + teacher,
@@ -1925,6 +1925,11 @@ async function pdfKnowledge() {
         },
         body: JSON.stringify({ questionRange: "1" }),
       }).then(async (r) => ({ status: r.status, body: await r.json() }));
+    const empty = await standaloneCard("知识点失败后释放配额");
+    const failed = await analyze("/api/cards/" + empty.id);
+    assert.equal(failed.status, 400);
+    assert.equal(failed.body.error, "NO_FILES");
+    evidence.push({ emptyCard: empty.id, status: failed.status, error: failed.body.error });
     const jobs = await Promise.all([analyze(), analyze(), analyze()]);
     const success = jobs.filter((r) => r.status === 200),
       denied = jobs.filter((r) => r.status === 429);
@@ -1941,7 +1946,9 @@ async function pdfKnowledge() {
       assert.equal(r.body.mode, "direct");
       assert.equal(r.body.knowledgePoints[0].points[0], "一二三四五六七八九十");
     }
-    assert.equal((await analyze()).status, 200);
+    const next = await analyze();
+    assert.equal(next.status, 200);
+    evidence.push({ nextStatus: next.status, mode: next.body.mode, points: next.body.knowledgePoints[0].points });
     const suggest = "/api/analysis/knowledge-points/" + s.exam;
     await call(suggest + "/suggest", { token: teacher });
     const applied = await call(suggest + "/apply-suggestions", {

@@ -1,8 +1,8 @@
 # Ubuntu 与 Windows 双机全链路测试记录
 
-2026 年 11 月 21 日，分支 `gemini/fix-end2end`，基础提交 `686e4fb21632f20bb301fb3826a764218e470ae6`，版本 2.7.1。产品修复已提交到当前本地分支。最终产品提交为 `59739b5fc1d66bb0f361fca5bcf26435643e32f2`，共 9 个产品修复提交。构建时测试驱动与报告尚在整理，构建信息标记 commitDirty=true。计划中的 44 项业务用例逐项登记在下表。
+2026 年 11 月 21 日，分支 `gemini/fix-end2end`，基础提交 `686e4fb21632f20bb301fb3826a764218e470ae6`，版本 2.7.1。产品修复已提交到当前本地分支。首轮双机安装包的产品提交为 `59739b5fc1d66bb0f361fca5bcf26435643e32f2`，DOCX 上传补测使用 Ubuntu 提交 `fe7f934bd49d6d65ac47beb221b213dfaec5b2db`。构建时测试驱动与报告尚在整理，构建信息标记 commitDirty=true。计划中的 44 项业务用例逐项登记在下表。
 
-**44 项业务场景中，27 项直接通过，15 项修复后通过，2 项部分验证。** 本轮修复 29 个产品问题。部分验证的是 S3-03 的压缩膨胀样本和 S12-02 的对抗性 AI 工具调用。
+**44 项业务场景中，28 项直接通过，15 项修复后通过，1 项部分验证。** 前两轮共修复 30 个产品问题。推送前核查发现的修复及其证据另列如下。S12-02 的考试、班级越界用例已通过。S3-03 实测了普通 DOCX 超过正式解压限额时的拒绝和清理，原方案单列的高倍率压缩炸弹样本未执行。
 
 ## 环境与产物
 
@@ -10,12 +10,13 @@
 | --- | --- |
 | Ubuntu | Parallels Ubuntu 24.04.3 ARM64，MariaDB 10.11.14，Nginx 1.24，Node v24.22.1。systemd 账户 projectx，Node 在 127.0.0.1:5174，Nginx 向双机网段提供 HTTPS。数据库为 projectx_e2e_20261121，迁移至 v71。 |
 | Windows | Parallels Windows 11 Pro ARM64，系统构建 26200，安装 ia32 扫描端，Electron 43.8.3，TWAIN 软件扫描仪 2.5.0，微软 x86 VC++ 运行库 14.44.35211.0。 |
-| Ubuntu ZIP | SHA-256 为 `cc9a8eeff1b8c19defda6dd67a82023a970f5cc341c815a136997b1e97e620e5`。最终安装包的服务端构建时间为 2026-11-21 09:47:26 UTC。 |
-| Windows MSI | 最后一次实际安装的 SHA-256 为 `fec2a5cf950667cd4d62b3e3b80feb93a93ea8a49c63b794baf10acf23ecfbd7`，安装后的 app.asar 与本机包内文件 SHA-256 均为 `32b71bd1cbceeb03bfd520e42b2721dc429ecfae6964180954c4da86a81d3142`。 |
+| 首轮 Ubuntu ZIP | SHA-256 为 `cc9a8eeff1b8c19defda6dd67a82023a970f5cc341c815a136997b1e97e620e5`。首轮安装包的服务端构建时间为 2026-11-21 09:47:26 UTC。 |
+| 补测 Ubuntu ZIP | SHA-256 为 `43924842042bfe7a4b473e2a8514a678c8128915bcd98748eb2095072dcfa969`。2026-11-21 10:21:20 UTC 构建并在同一 Ubuntu 虚拟机重装。[服务版本](../ignored/e2e-20261121/supplement/installed.log) |
+| 首轮 Windows MSI | SHA-256 为 `fec2a5cf950667cd4d62b3e3b80feb93a93ea8a49c63b794baf10acf23ecfbd7`，安装后的 app.asar 与本机包内文件 SHA-256 均为 `32b71bd1cbceeb03bfd520e42b2721dc429ecfae6964180954c4da86a81d3142`。 |
 | TLS | 测试客户端使用此服务的证书。Windows 无人值守导入当前用户根证书时要求交互，因而在专用 Edge/Electron 进程指定本次服务证书的 SPKI。Node 读取本轮 CA。 |
 | 隔离与快照 | 双机使用测试账户及合成试卷。可能清库的 6 个 MariaDB 专项指向独立守护进程与数据库。Ubuntu 运维演练前快照 `ade5c051-12da-4036-8cf2-193585093de3`。两轮恢复前另建快照 `c26951fd-da47-4131-b101-23ff118a533d` 和 `65ac0839-92b9-4b51-917f-5bec0a839a53`。 |
 
-**Stage 0 通过。** Ubuntu 与 Windows 安装、升级和扫描设备测试均已执行。Windows 测试机按确认直接重启，随后重装最终 MSI。虚拟扫描仪需要加载官方软件设备的 Qt 组件，设备阶段将安装包内扫描桥复制到测试运行目录并核对二进制摘要。原生识别和其他扫描端操作使用安装包的程序。[Ubuntu 最终安装记录](../ignored/e2e-20261121/logs/queue-final-installed.log) · [Windows 安装和摘要](../ignored/e2e-20261121/logs/queue-final-windows-installed.log) · [TWAIN 扩展设备用例](../ignored/e2e-20261121/logs/twain-vc.log)
+**Stage 0 通过。** Ubuntu 与 Windows 安装、升级和扫描设备测试均已执行。Windows 测试机按确认直接重启，随后重装首轮 MSI。虚拟扫描仪需要加载官方软件设备的 Qt 组件，设备阶段将安装包内扫描桥复制到测试运行目录并核对二进制摘要。原生识别和其他扫描端操作使用安装包的程序。[首轮 Ubuntu 安装记录](../ignored/e2e-20261121/logs/queue-final-installed.log) · [Windows 安装和摘要](../ignored/e2e-20261121/logs/queue-final-windows-installed.log) · [TWAIN 扩展设备用例](../ignored/e2e-20261121/logs/twain-vc.log)
 
 ## 修复与复测
 
@@ -30,7 +31,7 @@
 | 本机交叉打包缺少 ia32 UCRT | `scripts/package-scanner-win32.cjs` | Windows MSI 管理解包核对 44 个文件，含 15 个 UCRT API DLL 和 ucrtbase.dll。 | [最终安装目录的 UCRT](../ignored/e2e-20261121/logs/queue-final-essay-and-ucrt.log) |
 | 未同意明文传输时，健康探测被显示为上传鉴权成功 | `ServerConfigDialog.tsx` 区分仅可达与权限验证成功 | 在已安装 Electron 原界面按相同步骤复测，两种结果均与网络记录匹配。 | [明文与 HTTPS 连接](../ignored/e2e-20261121/logs/queue-final-connection-result.log) |
 | 教师网页在登录前请求受保护的全局设置，收到 401，登录后缺少刷新 | `App.tsx` 按登录和改密状态加载 | Windows Edge 冷启动新登录，权限设置请求返回 200。[登录后的网络记录](../ignored/e2e-20261121/flow/evidence/teacher-login-retest-requests.json)。 | [冷启动后登录](../ignored/e2e-20261121/logs/queue-final-teacher-cold-login.log) |
-| 混传图片与 DOCX 可通过上传，后续分析失败 | `paper-ocr.ts` 与 `paper-routes.ts` 在事务内检查已有文件及新文件 | 旧包同一组合返回 200。重装 Ubuntu 后返回 400，原文件保留。[原卷实测](../ignored/e2e-20261121/flow/evidence/service-papers.json)。 | [混传被拒、原文件保留](../ignored/e2e-20261121/logs/queue-final-service-papers.log) |
+| 混传图片与 DOCX 可通过上传，后续分析失败 | `paper-ocr.ts` 与 `paper-routes.ts` 在卡片写锁内检查已有文件及新文件 | 旧包同一组合返回 200。重装 Ubuntu 后返回 400，原文件保留。[原卷实测](../ignored/e2e-20261121/flow/evidence/service-papers.json)。 | [混传被拒、原文件保留](../ignored/e2e-20261121/logs/queue-final-service-papers.log) |
 | 六选项竖排题的分页估算把独占多行的题目按一行计算 | `src/shared/layout.ts` 使用实际绘制高度分页，`scripts/verify-a3.ts` 检查每个选项坐标和生成 PDF 的页数 | 原卡 272 页，修复后 3 页。Linux ELF 四个旋转角度均识别正确。 | [C 卷三页设计器预览](../ignored/e2e-20261121/logs/queue-final-retest-admin-card-previews.log) |
 | 下一批扫描重新读取卡面默认纸型，覆盖上批选用的 Letter | `ScannerPanel.tsx` 依据同一卡的已保存设置恢复纸型及单双面 | 旧包第二批请求 A4，TWAIN 报纸型不支持。新包设备复测记录见分项。 | [虚拟设备连续两批](../ignored/e2e-20261121/logs/queue-final-twain-db.log) |
 | 单独作文页没有填涂格，旧布局未给切图提供题号，识别器在裁图前退出 | `src/shared/layout.ts` 保留作文题信息。`answer_recognition.cpp` 允许仅有答题块的物理页参与识别 | 原包 10 份双面卷背页均返回 500。重装后 Windows 对 24 个正反面全部完成识别。Ubuntu 为 10 名在册学生持久化 10 张作文切图、20 张解答切图。另 2 份名单外答卷进入待确认。 | [B 卷背页实际切图](../ignored/e2e-20261121/logs/queue-final-essay-and-ucrt.log) |
@@ -50,6 +51,20 @@
 | 网阅面板的作文分数在刷新后从 30 变为 0，空队列显示 1 / 0 | `GradePanel.tsx` 按切图 ID 恢复草稿，按操作顺序保存分数和翻页进度，空队列显示正确页数 | Windows 同一教师给同一篇作文选 30 分，刷新后重新打开作文，读回 30 分。[修复前](../ignored/e2e-20261121/logs/grading-draft-before.log) · [最终包](../ignored/e2e-20261121/logs/queue-final-teacher-grading-draft.log) | [刷新后读回 30 分](../ignored/e2e-20261121/logs/queue-final-teacher-grading-draft.log) |
 | 含副空的填空题块重复累计分数，A 卷预览标题写为 6 分，实际题块为 4 分 | `cardScoreValidation.ts` 提供题块分数计算，`App.tsx` 用同一计算生成标题 | 重装后重新打开 A 卷，核对标题为 4 分。四套卡的 SVG 题号、分数、页数及导出弹窗总分均通过。[Windows 设计器](../ignored/e2e-20261121/logs/queue-final-retest-admin-card-previews.log) | [四套卡的题块与总分](../ignored/e2e-20261121/logs/queue-final-retest-admin-card-previews.log) |
 | 后处理页的浮动上传状态盖住“选择”，收起后鼠标也点不到 | `ScannerApp.tsx`、`ScannerPostprocessPage.tsx`、`UploadProgressCard.tsx` 把上传状态和任务放入后处理页标题下方，任务列表可滚动 | 重装 Windows MSI，以在途卷 10021 核对面板展开、收起时“选择”均可用。保存和删除均受保护，原图保留。[最终包实测](../ignored/e2e-20261121/logs/queue-final-electron-active-upload-lock.log) | [上传中展开和收起后均可操作](../ignored/e2e-20261121/logs/queue-final-electron-active-upload-lock.log) |
+| DOCX 上传时只累计磁盘占用，单个文件或多次追加超过解压限额也能入库 | `paper-routes.ts` 在持有卡片锁时校验已有页与暂存文件。`paper-docx.ts` 复用有界的 ZIP 读取，上传时无需提取正文 | 旧包在两种情况下均返回 200。新包返回 413，原页 SHA-256 一致，暂存目录为空。[双机单卷](../ignored/e2e-20261121/supplement/docx-initial/single-upload-windows.json) · [跨批次](../ignored/e2e-20261121/supplement/docx-initial/ordinary-upload-windows.json) | [MariaDB 与原件](../ignored/e2e-20261121/supplement/docx-initial/storage-telemetry.log) |
+
+## 补测后的独立核查
+
+| 核查对象 | 复测结果 |
+| --- | --- |
+| 已印纸卷升级后识别 | 用基础提交导出 V2 A3 纸卷，再用当前版本读取同一张卡生成识别坐标。另用 V3 设计导出一张新卷。第 25 题 A 框左上角分别在 (31.8, 265.6) 和 (163.133, 44.5) mm。Windows 安装包内的 ia32 识别器在 300 DPI 下读取了两卷，每卷 25 题，故意填错的一题得 0 分，另外 24 题各 2 分，两卷均为 48/50，学号均为 54321。V1/V2 的 360 份完整版式与基础提交一致，V3 的 180 份版式与新版分页结果一致。[纸卷、坐标及逐题结果](../ignored/e2e-20261121/supplement/版式实卷/旧版与新版识别验收.json) |
+| 大考榜单总分 | 修复前在赋分模式下，Windows Edge 显示第一名 149、第二名 150。复测中，原始总分依次为 150、149，赋分总分依次为 165、155，第一名随模式从 10001 切换为 10002。复测后恢复了原设置。[修复前榜单](../ignored/e2e-20261121/supplement/essay-run/evidence/大考名次与总分-before.png) · [修复后两种模式](../ignored/e2e-20261121/supplement/rank-both.log) |
+| 阈值缓存与默认双评 | 一次读取旧及格线的请求延后完成。阈值更新后，新请求及后续缓存读取均为 80 分。题块没有覆盖配置时，首评教师能领回争议卷。次评教师重复领取和显式关闭改派的题块按各自配置拒绝。分析专项 62 项、试卷池专项 22 项通过。[分析专项](../ignored/e2e-20261121/supplement/analysis-review.log) · [试卷池专项](../ignored/e2e-20261121/supplement/pool-review.log) |
+| 升级后的赞助配置 | Ubuntu 发布包默认渠道正常。以 systemd 服务账号在持久化数据目录放入一个启用渠道和一个停用渠道。接口只列启用渠道，下载图片逐字节相符，停用渠道请求为 404。移除测试配置后恢复默认渠道。[部署验证](../ignored/e2e-20261121/supplement/sponsor-interim.log) |
+| 双班 AI 报告 | 考试 74 的两份报告各锁定一个班，模型两次调用 `get_class_summaries` 均只传考试编号。任务 7 回传 1 班的 2 人、均分 77.5，任务 8 回传 2 班的 1 人、均分 70。两项均完成。原有任务 6 同时覆盖考试和班级编号不匹配的拒绝。[客户端轨迹](../ignored/e2e-20261121/flow/evidence/service-ai-class-summaries.json) · [模型收到的内容](../ignored/e2e-20261121/supplement/class-summaries-provider.log) |
+| 跨页作文实际阅卷 | Windows 安装版导入考试 91 的四页答题卡，Ubuntu 收到第 2、3、4 页的三张作文切图。教师在 Edge 领取一份作文，三张图逐一打开后给 30 分。一次保存产生一张评分票和一条第 2 题成绩。MariaDB 中客观 3 分、主观 30 分、总分 33 分。[各页原文与切图比对](../ignored/e2e-20261121/supplement/essay-run/evidence/原印刷页与阅卷切图比对.json) · [教师查看各页](../ignored/e2e-20261121/supplement/essay-run/evidence/跨页作文教师领卷.json) · [提交评分](../ignored/e2e-20261121/supplement/essay-run/evidence/跨页作文教师评分.json) · [数据库成绩](../ignored/e2e-20261121/supplement/essay-run/evidence/作文评分落库.json) |
+| 作文双评和仲裁 | 对同一题的六段切图在 SQLite 和独立的 MariaDB 中执行双评、仲裁和再导入。首评 20、次评 40，仲裁给 32 分。重新导入的答卷单独评分为 45 分。缺页时拒绝领取，旧领取记录和同卷普通解答题保留各自归属。[MariaDB 运行记录](../ignored/e2e-20261121/supplement/essay-maria.log) |
+| 原卷上传与答案识别 | 验证、图像转换和 OCR 移到数据库写事务之外。转换后超出实际磁盘配额返回 413，数据库登记失败会撤销已移入的文件，另一张卡并发保存的备注保留。单页 BigTIFF 可预览，多页 TIFF 原卷提示分拆或使用 PDF，答案原件保留全部页。本机通过实际 HTTP、SQLite 和图像 OCR 核对。[原卷与答案专项](../ignored/e2e-20261121/supplement/paper-quota-and-files.log) |
 
 ## 分项记录
 
@@ -66,7 +81,7 @@ PASS 表示该场景通过，FIXED 表示发现产品缺陷并在修复后通过
 | S2-03 | API Key 归属链与软删除防线 | PASS | MariaDB 中两条密钥均存储为 64 位十六进制摘要。有效扫描密钥验证上传为 200，不存在的会话为 404，密钥列表已脱敏。禁用密钥后上传校验实测 403，持机器密钥访问教师待确认列表实测 401，已按维护者选择校正原方案 S2-03。同一测试卷软删前、软删中、恢复后，扫描密钥和教师各得到 200、404、200。将一份有效回执与另一场已归档测试卷绑定后，机器密钥读取原卷从 200 变为 404。移除该测试绑定后恢复 200。缺失卡、记录、考试三种 ID 均为 404。[MariaDB 混合绑定实测](../ignored/e2e-20261121/logs/card-final-mixed-scope.log) |
 | S3-01 | 全类型卡面设计、交错块顺序（`#350`）与分值联动（`#342` `#351`） | FIXED | 导出四张卡。Windows 进一步按新卡真实导入 A 型 50 份、B 型 12 份（24 面）、C 型 3 份（9 面）。收到名单外审批前 MariaDB 分别有 50、10、3 行成绩。A 核对交错题块和 11.1 题号，B 核对 800 字作文格和双面，C 核对 A3 三栏和 6 个纵排选项，D 的分值由 0 改 3 后出现分数格。Windows 设计器修改标题后点击返回，先选择留在此页，再选择离开，重新获取保存的标题一致。批量删除两张专用卡时先取消后确认，两场考试保留并解除关联。四套卡由产品接口建立，在 Windows 设计器逐一重新载入，核对题号、分数、纸面及导出弹窗。A、B、C、D 分别为 1、2、3、1 页，总分分别为 69、104、182、13。修复了 A 卡副空重复计分的预览标题。[四套卡预览](../ignored/e2e-20261121/logs/queue-final-retest-admin-card-previews.log) · [设计器操作](../ignored/e2e-20261121/logs/designer-lifecycle.log) |
 | S3-02 | PDF 导出版本门（`?v=`）与中文字体渲染 | FIXED | 六选项纵排 A3 卡原导出 272 页，选项最远超出纸面 700 多毫米。重新部署并导出同卡后，实际 PDF 与版式均为 3 页。实际渲染 A、B、C 的 6 页 PDF，每页均独立解码出对应卡号和页码的二维码、检测到 6 个黑色定位标记。另用独立专项检查 324 个选项均在可打印区域内、物理页数匹配，原生四向旋转识别通过。三种非法 v 返回 400、旧版 409。 |
-| S3-03 | 原卷上传（图/PDF/DOCX）与安全配额 | 部分 | 图像双页与 DOCX 上传成功，旧式 DOC 返回 400。修复了向已有 DOCX 混入图片的问题，重装后相同请求返回 MIXED_PAPER_FORMATS，原来的一页保留。改了扩展名的普通文本 400，合法双页 JPEG 预览、合成 PDF、删除单页和删除整份均通过。另取本轮普通 DOCX，解压后为 826,338 字节。在独立进程将解压限额设为 826,337 字节，提取返回 413。调至 826,338 后，原文正常读出。压缩膨胀样本未执行。[普通文件的配额边界](../ignored/e2e-20261121/logs/card-final-docx-size.log) |
+| S3-03 | 原卷上传（图/PDF/DOCX）与安全配额 | 部分 | 图像双页与 DOCX 上传成功，旧式 DOC 返回 400。修复了向已有 DOCX 混入图片的问题，重装后相同请求返回 MIXED_PAPER_FORMATS，原来的一页保留。改了扩展名的普通文本 400，合法双页 JPEG 预览、合成 PDF、删除单页和删除整份均通过。另取本轮普通 DOCX，解压后为 826,338 字节。在独立进程将解压限额设为 826,337 字节，提取返回 413。调至 826,338 后，原文正常读出。补测在正式 32 MiB 配额下使用一份带灰度图的普通 Word 练习。文件 14,613,095 字节，展开为 35,507,363 字节，压缩比 2.43。Windows 向 Ubuntu 上传后得到 413 / PAPER_TOO_LARGE，页数为 0，随后上传小文件成功。另在一张卡先存 33 份带图练习，展开总量为 33,553,278 字节，再追加一份得到 413。MariaDB 和原卷目录各保留 33 页，所有文件摘要吻合，暂存目录为空。高倍率压缩炸弹样本未执行。[旧包单卷](../ignored/e2e-20261121/supplement/baseline-single.json) · [旧包追加](../ignored/e2e-20261121/supplement/baseline.json) · [普通文件的配额边界](../ignored/e2e-20261121/logs/card-final-docx-size.log) |
 | S3-04 | 考试建档与「本次正确答案」双模式（v68 `#368`） | FIXED | 文字答案保存、切换文件模式、教师和已出分学生下载 PDF 均已验证字节摘要。未出分学生被拒。关闭显示原卷时按教师选择直接下发文件。切回文字且不开放原卷后学生得到 404。另在隔离考试上传 PNG、PDF、DOCX，追加至 10 页后第 11 页返回 400。删除 7 张附加页后学生下载的三件均与源文件字节一致。另外在专用考试复测两张答案图片，旧包返回空草稿，修复后前五题正确，第六题经教师核对，保存后的六题答案逐项一致。 |
 | S4-01 | Electron 壳体、单实例、日志与 Brotli 门禁 | PASS | Windows 扫描端第二次启动复用原进程。占用 5174 后两次启动均在 5175 健康，释放后恢复使用 5174，重新加载虚拟驱动。实际 Electron 开启门禁返回 200。同一路径配置分别返回普通文本与标准 Brotli 压缩的相同文本，普通文本可读，压缩响应被 Chromium 以 ERR_CONTENT_DECODING_FAILED 拒绝。Ubuntu 独立解压并逐字节比对通过。 |
 | S4-02 | 跨机明文 HTTP 凭据闸门（R32）与 HTTPS 切换 | FIXED | 旧包仅健康探测即显示上传权限有效。重装后，未确认时未发送 key 并给出提示。明确确认后上传校验成功，换主机清除勾选。HTTPS 测试和实际上传成功。 |
@@ -95,7 +110,7 @@ PASS 表示该场景通过，FIXED 表示发现产品缺陷并在修复后通过
 | S11-02 | 大考联考组、文理分科与总分排名（必验 0.3-#2 缺陷！） | FIXED | raw/assigned 与 fullOnly 的四种组合均核对了名次互换。3 种文理筛选、2 种全科开关组合下逐项请求总览、指标、逐题、分布、班级对比、排名，共 36 次成功。逐一打开 ZIP 内总览.xlsx、化学.xlsx、数学.xlsx，均有表头与两行数据。另外在 4 人、3 科、含一名缺科学生的联考中，2 种总分 × 2 种全科开关 × 3 种文理筛选逐一对照成员数、显示学科、每人原始分、赋分与年级名次，12 种均吻合。 |
 | S11-03 | 首页仪表盘与周测审计（`WeeklyAudit`） | PASS | 三个教师账号检查首页。导入隔离演示数据后，11 月 9 日当周五次周测覆盖五个工作日，80 人次，16 人全勤，5 个薄弱知识点。环比平均得分率 −5.6 个百分点、考试数 +2。手动列表排除自动周组。清除演示数据后主测考试保留。另在 Ubuntu 新建专用 MariaDB，向实际周报服务传入时间。在周六 07:59:59 已出分卷未建组，08:00 增加一场未出分卷后顺延，补齐成绩后建组含两场，再执行一次没有重复组。[MariaDB 时间边界](../ignored/e2e-20261121/logs/viewport-mariadb-weekly.log) |
 | S12-01 | 真实 Python `llmclient` + 本地 OpenAI 兼容桩联调 | PASS | 管理员在 Windows 全局设置新增回环 OpenAI 服务，省略 /v1 后读回规范地址，密钥脱敏。浏览器请求启动真实 Python 任务，经过 get_exam_overview，状态 done 并产生报告。停用同一服务后 409。另已跑通大考组。最终 Ubuntu 包的边车健康检查连接 MariaDB 成功，未带内部凭据读取模型列表返回 401。在已部署的 Python 配置校验器中，私网 HTTPS 地址和清单外的回环端口均被拒，8000 端口通过。[部署复测](../ignored/e2e-20261121/logs/queue-final-sidecar-and-install.log) |
-| S12-02 | 4 类 AI 业务 + 越权防逃逸（R26）+ PDF 子进程隔离 + 配额遥测 | 部分 | 单科与大考组产生异步报告。学生单科调用 Python 与回环桩，总体调用产品内置统计，两者均得到报告。对真实 PDF 并发提取知识点返回 200/200/429 AI_QUOTA_EXCEEDED，完成后再次 200。direct 模式结果按 10 个字符截断。静态建议读取、应用及使用统计已测。在 Ubuntu 已部署的 Python 注册器内，用无数据的处理器验证自动传入当前考试和班级，并拒绝缺少班级参数的处理器。对抗性模型调用未执行。[班级范围核对](../ignored/e2e-20261121/logs/queue-final-sidecar-and-install.log) |
+| S12-02 | 4 类 AI 业务 + 越权防逃逸（R26）+ PDF 子进程隔离 + 配额遥测 | PASS | 单科与大考组产生异步报告。学生单科调用 Python 与回环桩，总体调用产品内置统计，两者均得到报告。Windows 对没有原卷的新卡发起分析，得到 400 / NO_FILES。同一教师紧接着对真实 PDF 并发提取知识点返回 200/200/429 AI_QUOTA_EXCEEDED，完成后再次 200。direct 模式结果按 10 个字符截断。MariaDB 运行 13 记录 NO_FILES、没有模型调用，运行 14–16 均成功且各有一次模型调用。[Windows 配额与后续请求](../ignored/e2e-20261121/supplement/quota-run/evidence/service-pdf-knowledge.json) · [MariaDB 配额账本](../ignored/e2e-20261121/supplement/quota-ledger.log)。静态建议读取、应用及使用统计已测。在 Ubuntu 已部署的 Python 注册器内，用无数据的处理器验证自动传入当前考试和班级，并拒绝缺少班级参数的处理器。Windows 从 HTTP 接口提交指定考试和班级的任务 6，Ubuntu 返回 202。模型桩实际发出三次工具调用。考试 ID 或班级 ID 不匹配时，桩收到的回复均只有 error 字段。授权范围的对照调用读到 50 人，任务完成，MariaDB 中运行与服务调用均为成功。两个越界编号经数据库确认不存在。对含两个班的考试 74，Windows 另提交任务 7、8。两次工具调用都省略班级编号，Python 给 1 班返回 2 人、均分 77.5，给 2 班返回 1 人、均分 70，每次只返回一个班，MariaDB 中两项任务均已完成。[双班任务](../ignored/e2e-20261121/flow/evidence/service-ai-class-summaries.json) · [模型收到的双班统计](../ignored/e2e-20261121/supplement/class-summaries-provider.log) · [任务轨迹](../ignored/e2e-20261121/flow/evidence/service-ai-scope.json) · [桩收到的字段](../ignored/e2e-20261121/supplement/scope-provider.log) · [班级范围核对](../ignored/e2e-20261121/logs/queue-final-sidecar-and-install.log) |
 | S13-01 | 问题反馈全链路（`#357`） | PASS | Windows 教师在账号设置提交两张截图，管理员在全局设置复制 Markdown、下载两份附件逐字节比对、标为已处理、筛选并删除。学生提交 403。16 个附件返回 400，单件 100 MiB + 1 字节返回 413，两次均未增加记录。另构造 101 条反馈，管理员点击“加载更多”后全部显示且无重复。Linux 文件事件记录到本轮新附件目录移入 _trash 后删除。 |
 | S13-02 | 管理控制台、版本更新时间与数据保留/软删恢复 | PASS | 八个控制台接口经实际 Windows 页面与 Ubuntu API 验证。专用 1 天策略绑定在 2 天前关闭的测试卷，重启自动软删。另场 grading 的过期原图与记录保留。教师读取软删卷 404，管理员恢复后 37 分和名册可读，策略为空，重复恢复 404。另在管理员控制台设置保留策略并实际点击“恢复”。三人测试卷恢复前后核对 10、16、39 三个分数，教师与机器密钥的访问结果见 S2-03。 |
 | S13-03 | MariaDB 在线备份与灾难恢复演练 | PASS | 业务库在线备份 9,687,687 字节，包含 SQL 与试卷数据，4 次并发返回 503。删除考试并改分，恢复后旧令牌 401，原考试、45 分及答案文件 SHA-256 一致。另交付有效 SQLite 格式 ZIP 与损坏 ZIP 均返回 400，学生在原会话继续读到 45 分。另通过 Windows 管理员账户菜单导出 51,926,036 字节的 ZIP，把测试生 10010 从 10 分改为 9 分，再用账户菜单选入该备份。恢复后旧会话 401，新会话读回 10 分。981 个数据文件在恢复前后与 ZIP 逐一比对摘要，全部相同。 |
@@ -104,13 +119,13 @@ PASS 表示该场景通过，FIXED 表示发现产品缺陷并在修复后通过
 
 ## Stage 14 与证据
 
-**Stage 14 的重装和修复项回归已完成。** 最终修复包已经在两台虚拟机重装。上方修复表的最后一列给出 29 个产品问题在最终包上的证据。独立类型检查、Web 与扫描端完整构建通过。产物完整性 72 项通过，散列清单核对成功。跨阶段缺少的实测操作见上表“部分”行。[完整扫描端构建](../ignored/e2e-20261121/logs/queue-final-scanner-full.log) · [最终完整性](../ignored/e2e-20261121/logs/queue-final-integrity.log) · [校验清单](../ignored/e2e-20261121/logs/queue-final-msi-verify.log)
+首轮 29 个产品问题在 `59739b5f` 双机包上复测。补测的第 30 个问题在 Ubuntu `fe7f934b` 上复测，详见修复表最后一行。独立类型检查、Web 与扫描端完整构建通过。产物完整性 72 项通过，散列清单核对成功。跨阶段缺少的实测操作见上表“部分”行。[完整扫描端构建](../ignored/e2e-20261121/logs/queue-final-scanner-full.log) · [最终完整性](../ignored/e2e-20261121/logs/queue-final-integrity.log) · [校验清单](../ignored/e2e-20261121/logs/queue-final-msi-verify.log)
 
-最终 Windows 安装包复测了恢复提示、上传中的操作锁、缺页删除、低置信度确认和待命。Edge 在四套卡预览的初次复测中提前退出，重新启动后四套卡全部通过，随后通过了成绩单打印、分析弹窗和色带核对。最终 Ubuntu 安装包完成部署接口核验，包括原卷、答案 OCR、题块权限和成绩。双评、三评复评、多题仲裁、关闭考试采用名单外卷及 Python 服务也已复测。[Windows 首轮](../ignored/e2e-20261121/logs/queue-final-windows-stages.log) · [Edge 重跑及补充项](../ignored/e2e-20261121/logs/queue-final-windows-additional.log) · [Ubuntu 接口](../ignored/e2e-20261121/logs/queue-final-services.log) · [阅卷](../ignored/e2e-20261121/logs/queue-final-retest-review-flow.log) · [多题仲裁](../ignored/e2e-20261121/logs/queue-final-retest-multi-arbitration.log) · [Python 与升级配置](../ignored/e2e-20261121/logs/queue-final-sidecar-and-install.log)
+首轮 Windows 安装包复测了恢复提示、上传中的操作锁、缺页删除、低置信度确认和待命。Edge 在四套卡预览的初次复测中提前退出，重新启动后四套卡全部通过，随后通过了成绩单打印、分析弹窗和色带核对。首轮 Ubuntu 安装包完成部署接口核验，包括原卷、答案 OCR、题块权限和成绩。双评、三评复评、多题仲裁、关闭考试采用名单外卷及 Python 服务也已复测。[Windows 首轮](../ignored/e2e-20261121/logs/queue-final-windows-stages.log) · [Edge 重跑及补充项](../ignored/e2e-20261121/logs/queue-final-windows-additional.log) · [Ubuntu 接口](../ignored/e2e-20261121/logs/queue-final-services.log) · [阅卷](../ignored/e2e-20261121/logs/queue-final-retest-review-flow.log) · [多题仲裁](../ignored/e2e-20261121/logs/queue-final-retest-multi-arbitration.log) · [Python 与升级配置](../ignored/e2e-20261121/logs/queue-final-sidecar-and-install.log)
 
 本机执行了类型检查、Web、扫描端及服务端构建、原生来源、systemd、Node 版本与产物散列校验。现有安全完整性专项输出 431 通过、0 失败，扫描订正安全专项通过。六项独立 MariaDB 回归为 exam-class-memberships、class-archive、card-export-revision、feedback、mariadb 和 mariadb-migration。
 
-26 项本机专项全部通过。最后一次布局改动另跑扫描后处理 UI 回归、类型检查和完整构建。最终提交的 6 项 MariaDB 回归在独立数据库服务与空库上重跑通过。[26 项本机回归](../ignored/e2e-20261121/logs/card-final-regressions.log) · [六项 MariaDB 回归](../ignored/e2e-20261121/logs/queue-final-mariadb.log) · [数据库初始化与端口](../ignored/e2e-20261121/logs/queue-final-setup.log)。阅卷规则修复后另跑了 review-pool 与 review-285。Windows 原生测试使用 TWAIN 软件设备，实体设备的送纸器、驱动和吞吐量需现场验收。微信推送缺少真机订阅和生产配置，本轮验证部署自检。AI 使用本机回环桩。
+26 项本机专项全部通过。最后一次布局改动另跑扫描后处理 UI 回归、类型检查和完整构建。首轮 6 项 MariaDB 回归在独立数据库服务与空库上重跑通过。[26 项本机回归](../ignored/e2e-20261121/logs/card-final-regressions.log) · [六项 MariaDB 回归](../ignored/e2e-20261121/logs/queue-final-mariadb.log) · [数据库初始化与端口](../ignored/e2e-20261121/logs/queue-final-setup.log)。阅卷规则修复后另跑了 review-pool 与 review-285。Windows 原生测试使用 TWAIN 软件设备，实体设备的送纸器、驱动和吞吐量需现场验收。微信推送缺少真机订阅和生产配置，本轮验证部署自检。AI 使用本机回环桩。
 
 [碰撞时数据库](../ignored/e2e-20261121/logs/pair-conflict-db.log) · [恢复后切图归属](../ignored/e2e-20261121/logs/pair-final-ownership.log) · [实际断网窗口](../ignored/e2e-20261121/logs/actual-nginx-window.log) · [50 张传输计数](../ignored/e2e-20261121/flow/evidence/断网续传网络计数.json) · [旧卷落库](../ignored/e2e-20261121/logs/legacy-ui-final-db.log) · [恢复后 981 个文件核对](../ignored/e2e-20261121/logs/menu-backup-files-after.log)
 
