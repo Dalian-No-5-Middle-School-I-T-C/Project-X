@@ -29,7 +29,7 @@ export async function lockEssayReview(db: DbAdapter, examId: number, blockId: st
 }
 
 type Part = {
-  id: string; card_id: string; student_id: number; student_number: string | null; block_id: string;
+  id: string; card_id: string; student_id: number; block_id: string;
   page_number: number; segment_index: number; source_type: string; source_record_id: string;
   width_px: number; height_px: number; image_path: string; batch_id: number | null; question_numbers: string | Array<number | string>;
   status: string; review_round: number; claimed_by: number | null; is_unit: number;
@@ -52,11 +52,10 @@ function arrayValue<T>(raw: string | T[]): T[] {
 }
 
 export async function loadEssayReviews(db: DbAdapter, examId: number, blockId?: string, studentId?: number): Promise<Map<string, Essay>> {
-  const rows = await db.all<Part>(`SELECT a.id,a.card_id,a.student_id,u.student_number,a.block_id,a.page_number,
+  const rows = await db.all<Part>(`SELECT a.id,a.card_id,a.student_id,a.block_id,a.page_number,
     a.segment_index,a.source_type,a.source_record_id,a.width_px,a.height_px,a.image_path,a.question_numbers,
     a.status,a.review_round,a.claimed_by,b.id AS batch_id,${reviewUnitPredicate("a")} AS is_unit
     FROM answer_block_crops a JOIN subjective_blocks eb ON eb.card_id=a.card_id AND eb.id=a.block_id AND eb.block_kind='essay'
-    JOIN users u ON u.id=a.student_id
     LEFT JOIN scan_records r ON a.source_type='scan_record' AND r.id=a.source_record_id AND r.student_id=a.student_id
     LEFT JOIN scan_batches b ON b.id=r.batch_id AND b.exam_id=a.exam_id
     WHERE a.exam_id=? AND a.student_id IS NOT NULL${blockId ? " AND a.block_id=?" : ""}${studentId != null ? " AND a.student_id=?" : ""}
@@ -98,20 +97,28 @@ export async function loadEssayReviews(db: DbAdapter, examId: number, blockId?: 
       examId, ...(studentId != null ? [studentId] : []));
     for (const b of batches) currentBatch.set(b.student_id, b.batch_id);
   }
-  // For a multi-page TWAIN answer the accepted receipt identifies each physical page.
-  const receipts = new Map<string, Array<Map<number, string>>>();
-  if ([...groups.values()].some(group => group.some(p => p.source_type === "twain_scan_record") && new Set(group.map(p => p.page_number)).size > 1)) {
-    const saved = await db.all<{ student_number: string; pages_json: string }>(
-      `SELECT student_number,pages_json FROM scanner_submissions WHERE exam_id=? AND state='saved'
-        ${studentId != null ? " AND student_number=?" : ""}`,
-      examId, ...(studentId != null ? [rows[0].student_number] : []));
-    for (const receipt of saved) {
-      const pages = arrayValue<ScanBatchPage>(receipt.pages_json);
-      if (!pages.length || pages.some(p => !p?.layoutPage || !p.recordId)
+  // Crop ownership is bound to the student's database id when the scan is saved.
+  // The receipt keeps the physical page ids even if that student's number changes or is reused.
+  const pageOwners = new Map<string, { receipt: number; layoutPage: number } | null>();
+  const neededRecords = new Set<string>();
+  for (const group of groups.values()) {
+    const scans = group.filter(p => p.source_type === "twain_scan_record");
+    if (new Set(scans.map(p => p.page_number)).size > 1) {
+      for (const p of scans) neededRecords.add(p.source_record_id);
+    }
+  }
+  if (neededRecords.size) {
+    const saved = await db.all<{ pages_json: string }>(
+      "SELECT pages_json FROM scanner_submissions WHERE exam_id=? AND state='saved'", examId);
+    for (const [receipt, row] of saved.entries()) {
+      const pages = arrayValue<ScanBatchPage>(row.pages_json);
+      if (pages.some(p => !p?.layoutPage || !p.recordId)
         || new Set(pages.map(p => p.layoutPage)).size !== pages.length) continue;
-      const answers = receipts.get(receipt.student_number) ?? [];
-      answers.push(new Map(pages.map(p => [p.layoutPage, p.recordId])));
-      receipts.set(receipt.student_number, answers);
+      for (const p of pages) {
+        if (neededRecords.has(p.recordId)) {
+          pageOwners.set(p.recordId, pageOwners.has(p.recordId) ? null : { receipt, layoutPage: p.layoutPage });
+        }
+      }
     }
   }
 
@@ -129,10 +136,13 @@ export async function loadEssayReviews(db: DbAdapter, examId: number, blockId?: 
     const byPage = new Map(group.map(p => [p.page_number, p.source_record_id]));
     const samePages = group.every(p => byPage.get(p.page_number) === p.source_record_id)
       && new Set(byPage.values()).size === byPage.size;
+    const receipt = pageOwners.get(unit.source_record_id)?.receipt;
     const sameAnswer = samePages && (unit.source_type === "scan_record"
       ? unit.batch_id != null && unit.batch_id === currentBatch.get(unit.student_id)
-      : byPage.size === 1 || (receipts.get(unit.student_number ?? "") ?? []).filter(
-          pages => group.every(p => pages.get(p.page_number) === p.source_record_id)).length === 1);
+      : byPage.size === 1 || (receipt != null && group.every(part => {
+          const owner = pageOwners.get(part.source_record_id);
+          return owner?.receipt === receipt && owner.layoutPage === part.page_number;
+        })));
     const essay: Essay = {
       unit,
       files: group.map(p => p.image_path),

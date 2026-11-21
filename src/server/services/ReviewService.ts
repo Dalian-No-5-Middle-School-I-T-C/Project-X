@@ -9,7 +9,7 @@ import {
   listReviewBlockCrops
 } from "./AnswerBlockCropService";
 import { computeMultiReviewResult } from "./ArbitrationService";
-import { getBlockConfig } from "./BlockGradingConfigService";
+import { getBlockConfig, loadHalfPointRule } from "./BlockGradingConfigService";
 import { validateScoringModeConsistency, validateBlockTotalCoverage, type ScoringMode } from "./scoringModeValidator";
 import type {
   ReviewBlockCropItem,
@@ -94,10 +94,8 @@ export async function listReviewBlocks(
        MAX(abc.block_type) AS blockType,
        COUNT(*) AS totalCount,
        SUM(CASE WHEN COALESCE(abc.status, 'ready') IN ('ready', 'pending') THEN 1 ELSE 0 END) AS pendingCount,
-       SUM(CASE WHEN abc.status = 'reviewed' THEN 1 ELSE 0 END) AS reviewedCount,
-       COALESCE(MAX(bgc.has_half_point), 0) AS hasHalfPoint
+       SUM(CASE WHEN abc.status = 'reviewed' THEN 1 ELSE 0 END) AS reviewedCount
      FROM answer_block_crops abc
-     LEFT JOIN block_grading_config bgc ON bgc.exam_id = abc.exam_id AND bgc.block_id = abc.block_id
      WHERE abc.exam_id = ? AND ${reviewUnitPredicate("abc")}${blockFilter}
      GROUP BY abc.block_id
      ORDER BY abc.block_id`,
@@ -109,7 +107,6 @@ export async function listReviewBlocks(
     totalCount: number;
     pendingCount: number;
     reviewedCount: number;
-    hasHalfPoint: number;
   }>;
 
   if (rows.length === 0) return [];
@@ -119,6 +116,7 @@ export async function listReviewBlocks(
   // （ERROR 1054 Unknown column 'abc.exam_id'），而 SQLite 又不要求派生表别名，
   // 两方言的写法无法统一；改为独立查询按 (block_id, question_number) 聚合后在内存合并。
   const maxScoreByBlock = await loadBlockMaxScores(examId, db);
+  const hasHalfPoint = await loadHalfPointRule(examId, db);
 
   return rows.map((row) => ({
     blockId: row.blockId,
@@ -127,7 +125,7 @@ export async function listReviewBlocks(
     totalCount: Number(row.totalCount),
     pendingCount: Number(row.pendingCount),
     reviewedCount: Number(row.reviewedCount),
-    hasHalfPoint: Number(row.hasHalfPoint ?? 0),
+    hasHalfPoint: hasHalfPoint(row.blockId),
     maxScore: maxScoreByBlock.get(row.blockId) ?? 0
   }));
 }

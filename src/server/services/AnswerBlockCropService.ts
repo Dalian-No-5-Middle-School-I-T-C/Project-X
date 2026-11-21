@@ -10,6 +10,7 @@ import type { AnswerBlockCrop, AnswerBlockCropSourceType, RecognitionBlockCrop, 
 import { CardRepository } from "../repositories/CardRepository";
 import { objectiveQuestionDefinitions } from "../../shared/grading";
 import type { AnswerCard } from "../../shared/types";
+import { loadHalfPointRule } from "./BlockGradingConfigService";
 import { examClassPredicate } from "./examClassMemberships";
 
 type CropRow = {
@@ -449,17 +450,6 @@ export async function listReviewBlockCrops(
   });
 }
 
-/** 读取某考试各题块的 has_half_point，供打分面板判断 0.5 行 */
-async function blockHasHalfPointMap(examId: number, db: DbAdapter): Promise<Map<string, number>> {
-  const configs = await db.all(
-    "SELECT block_id, has_half_point FROM block_grading_config WHERE exam_id = ?",
-    examId
-  ) as Array<{ block_id: string; has_half_point: number }>;
-  const map = new Map<string, number>();
-  for (const c of configs) map.set(c.block_id, c.has_half_point ?? 0);
-  return map;
-}
-
 function blockMaxScoreFromCard(card: AnswerCard): Map<string, number> {
   const map = new Map<string, number>();
   for (const block of card.bodyBlocks) {
@@ -488,7 +478,7 @@ async function withQuestionScores(rows: CropRow[], examId: number, db: DbAdapter
     scoresByStudent.set(studentId, scores);
   }
 
-  const halfMap = await blockHasHalfPointMap(examId, db);
+  const hasHalfPoint = await loadHalfPointRule(examId, db);
 
   let blockMaxMap: Map<string, number> | null = null;
   try {
@@ -501,7 +491,7 @@ async function withQuestionScores(rows: CropRow[], examId: number, db: DbAdapter
 
   return rows.map((row) => {
     const crop = toAnswerBlockCrop(row);
-    crop.hasHalfPoint = halfMap.get(row.block_id) ?? 0;
+    crop.hasHalfPoint = hasHalfPoint(row.block_id);
     const questionSet = new Set(crop.questionNumbers.map((item) => String(item)));
     const scores = row.student_id != null
       ? (scoresByStudent.get(row.student_id) ?? []).filter((score) => questionSet.has(String(score.question_number)))

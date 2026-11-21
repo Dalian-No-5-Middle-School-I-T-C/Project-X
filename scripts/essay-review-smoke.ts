@@ -27,7 +27,8 @@ if (mariadb) assert.equal((await db.all("SHOW TABLES")).length, 0);
 const { createApp } = await import("../src/apps/answer-card/server/index");
 const { authService } = await import("../src/server/services/AuthService");
 const { CardRepository } = await import("../src/server/repositories/CardRepository");
-const { getPoolSummary, getPoolEntries, claimNextPaper, claimSpecificPaper } = await import("../src/server/services/ReviewPoolService");
+const { UserRepository } = await import("../src/server/repositories/UserRepository");
+const { getPoolSummary, getPoolEntries, claimNextPaper, claimSpecificPaper, releasePaper } = await import("../src/server/services/ReviewPoolService");
 const { listReviewBlocks, submitReviewCropScores } = await import("../src/server/services/ReviewService");
 const { upsertBlockConfig } = await import("../src/server/services/BlockGradingConfigService");
 const app = await createApp();
@@ -75,7 +76,7 @@ try {
     await db.run("INSERT INTO review_assignments (exam_id,block_id,teacher_id,assigned_student_ids,student_count) VALUES (?,?,?,?,1)",
       exam, essayId, teacher, JSON.stringify(ids));
   }
-  await upsertBlockConfig(exam, essayId, { reviewMode: 2, scoringMode: "per_question", disputeThreshold: 1, arbitratorId: arb }, db);
+  await upsertBlockConfig(exam, "__default__", { reviewMode: 2, scoringMode: "per_question", hasHalfPoint: 1 }, db);
   await db.run("INSERT INTO student_scores(exam_id,student_id,objective_score,subjective_score,total_score) VALUES (?,?,0,0,0)", exam, student);
   const parts = buildLayout(card).pages.flatMap(page => page.blocks.flatMap((block, i) =>
     block.blockId === essayId ? [{ id: randomUUID(), page: page.pageNumber, segment: i + 1 }] : []));
@@ -109,6 +110,29 @@ try {
   await assert.rejects(claimNextPaper(exam, essayId, a, db), /文件缺失/);
   await rename(file(first.id) + ".pending", file(first.id));
   assert.equal((await pool()).inPoolCount, 1);
+  const users = new UserRepository();
+  await users.updateUser(student, { student_number: "80901" });
+  await users.updateUser(other, { student_number: "80001" });
+  assert.equal((await pool()).inPoolCount, 1, "改学号和旧号复用后领到原学生的作文");
+  const renamed = await claimNextPaper(exam, essayId, a, db);
+  assert.equal(renamed.studentId, student);
+  assert.deepEqual(renamed.reviewImages?.map(p => p.id), parts.map(p => p.id));
+  assert.equal(renamed.hasHalfPoint, 1, "领取结果继承考试的半分选项");
+  assert.equal((await listReviewBlocks(exam, db)).find(r => r.blockId === essayId)?.hasHalfPoint, 1);
+  await releasePaper(exam, essayId, renamed.id, a, db);
+
+  // A second student's saved receipt uses the old number and different physical pages.
+  // A replay claiming one of the first answer's pages is ambiguous until withdrawn.
+  const otherPages = pages.map(p => ({ ...p, recordId: "second-" + p.recordId }));
+  await db.run(`INSERT INTO scanner_submissions(exam_id,session_id,group_id,student_number,state,pages_json)
+    VALUES (?,'second-scanner','second','80001','saved',?)`, exam, JSON.stringify(otherPages));
+  assert.equal((await pool()).inPoolCount, 1);
+  const conflictPages = [...otherPages];
+  conflictPages[0] = pages[0];
+  await db.run("UPDATE scanner_submissions SET pages_json=? WHERE exam_id=? AND group_id='second'", JSON.stringify(conflictPages), exam);
+  assert.equal((await pool()).inPoolCount, 0);
+  await db.run("UPDATE scanner_submissions SET state='superseded' WHERE exam_id=? AND group_id='second'", exam);
+  assert.equal((await pool()).inPoolCount, 1);
   const last = parts.at(-1)!;
   // Pre-upgrade queue already has a claim on a continuation. Keep this unit's identity and vote history.
   await db.run("UPDATE answer_block_crops SET claimed_by=? WHERE id=?", a, last.id);
@@ -132,9 +156,15 @@ try {
   await rename(file(first.id), file(first.id) + ".pending");
   await assert.rejects(submit(last.id, a, 20), /文件缺失/);
   await rename(file(first.id) + ".pending", file(first.id));
-  assert.equal((await submit(last.id, a, 20)).status, "pending");
+  assert.equal((await submit(last.id, a, 20.5)).status, "pending");
+  const vote = await db.get("SELECT score_breakdown FROM answer_block_crops WHERE id=?", last.id);
+  assert.equal(JSON.parse(vote.score_breakdown)[0].questionScores["1"], 20.5);
+  await upsertBlockConfig(exam, essayId, { reviewMode: 2, scoringMode: "per_question", disputeThreshold: 1, arbitratorId: arb, hasHalfPoint: 0 }, db);
+  assert.equal((await listReviewBlocks(exam, db)).find(r => r.blockId === essayId)?.hasHalfPoint, 0);
   for (const image of images) assert.equal((await request("second", image.imageUrl)).status, 200, "复核教师可阅读全文");
-  assert.equal((await claimNextPaper(exam, essayId, b, db)).id, last.id);
+  const secondReview = await claimNextPaper(exam, essayId, b, db);
+  assert.equal(secondReview.id, last.id);
+  assert.equal(secondReview.hasHalfPoint, 0, "题块显式关闭半分覆盖考试默认设置");
   assert.equal((await submit(last.id, b, 40)).status, "disputed");
   const disputesRoute = `/api/review-arbitration/exams/${exam}/disputes`;
   const disputes = (await (await request("arbitrator", disputesRoute)).json()).data;
@@ -179,7 +209,7 @@ try {
     scores: [{ questionNumber: 1, score: 0, scoreType: "subjective" }] }, db);
   assert.equal(finished.finalScore, 45);
   assert.equal((await pool()).reviewedCount, 2);
-  console.log(`${db.dialect}: ${parts.length} ordered panels, incomplete receipt and files, late first page, legacy claim, separate short answers, two reviews and arbitration score 32, latest import scored 45`);
+  console.log(`${db.dialect}: ${parts.length} ordered panels, incomplete receipt and files, late first page, legacy claim, student renumbering and reuse, ambiguous replay, inherited half-point vote 20.5, integer block override, separate short answers, arbitration 32, latest import 45`);
 } finally {
   server.close();
   await once(server, "close");

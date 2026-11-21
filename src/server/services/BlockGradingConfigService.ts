@@ -94,6 +94,15 @@ export async function getBlockConfig(
   };
 }
 
+/** Resolve the score pad's half-point setting for multiple blocks in one query. */
+export async function loadHalfPointRule(examId: number, db: DbAdapter): Promise<(blockId: string) => number> {
+  const rows = await db.all<{ block_id: string; has_half_point: number | null }>(
+    "SELECT block_id, has_half_point FROM block_grading_config WHERE exam_id=?", examId);
+  const values = new Map(rows.map(row => [row.block_id, Number(row.has_half_point ?? 0)]));
+  const examDefault = values.get("__default__") ?? 0;
+  return blockId => values.get(blockId) ?? examDefault;
+}
+
 /** 获取某考试所有题块配置 */
 export async function getExamBlockConfigs(
   examId: number,
