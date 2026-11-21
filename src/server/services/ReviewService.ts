@@ -201,7 +201,7 @@ export function splitBlockTotal(
   distribution: "proportional" | "equal"
 ): Map<number, number> {
   const result = new Map<number, number>();
-  const nums = items.map((it) => it.questionNumber);
+  const nums = items.map((it) => it.questionNumber).sort((a, b) => a - b);
   if (nums.length === 0) return result;
 
   const maxima = nums.map(q => maxScoreByQuestion.get(q) ?? 0);
@@ -223,17 +223,61 @@ export function splitBlockTotal(
 
   // 修正取整漂移，使合计精确等于题块总分（从末题向前吸收余量）
   let residual = roundScore(blockTotal - rounded.reduce((a, b) => a + b, 0));
-  // 完整步长不足以容纳给定总分时，才使用各小题满分末尾的小数容量。
-  for (const limits of [stepMaxima, maxima]) {
-    for (let i = nums.length - 1; i >= 0 && residual !== 0; i--) {
-      const next = Math.max(0, Math.min(rounded[i] + residual, limits[i]));
-      residual = roundScore(residual - (next - rounded[i]));
-      rounded[i] = next;
-    }
+  for (let i = nums.length - 1; i >= 0 && residual !== 0; i--) {
+    const next = Math.max(0, Math.min(rounded[i] + residual, stepMaxima[i]));
+    residual = roundScore(residual - (next - rounded[i]));
+    rounded[i] = next;
   }
 
-  nums.forEach((q, i) => result.set(q, rounded[i]));
+  const scores = residual > 0 ? splitAboveStepMaxima(maxima, step, blockTotal) : rounded;
+  nums.forEach((q, i) => result.set(q, scores[i]));
   return result;
+}
+
+/** 完整步长已用完。从全满分往下扣，每题可不扣，或扣满分的小数尾差加若干完整步长。 */
+function splitAboveStepMaxima(maxima: number[], step: number, total: number): number[] {
+  // 成绩合计保留三位小数。只搜索「满分合计 − 提交分」，其上界是题数 × 步长，与卷面总分无关。
+  const scale = 1000;
+  const stepUnits = step * scale;
+  const maxUnits = maxima.map(max => Math.round(max * scale));
+  const tails = maxUnits.map(max => max % stepUnits);
+  let unit = stepUnits;
+  for (let tail of tails) {
+    while (tail) [unit, tail] = [tail, unit % tail];
+  }
+  const deficit = (maxUnits.reduce((sum, max) => sum + max, 0) - Math.round(total * scale)) / unit;
+  const unreachable = () => new ReviewValidationError(`题块总分无法按 ${step} 分步长和各题满分拆分，请调整给分`);
+  if (!Number.isInteger(deficit) || deficit < 0) throw unreachable();
+  const stride = stepUnits / unit;
+  const questionAt = new Int32Array(deficit + 1);
+  const previous = new Int32Array(deficit + 1);
+  const nearest = new Int32Array(stride);
+  questionAt[0] = -1;
+  for (let i = 0; i < maxima.length && !questionAt[deficit]; i++) {
+    const tail = tails[i] / unit;
+    const maxDeduction = maxUnits[i] / unit;
+    nearest.fill(-1);
+    for (let p = 0; p + tail <= deficit; p++) {
+      const residue = p % stride;
+      // 同余类中最近的旧状态即可判断能否在本题满分内扣到目标。跳过本轮新状态，每题只用一次。
+      if (questionAt[p] && questionAt[p] !== i + 1) nearest[residue] = p;
+      const from = nearest[residue];
+      const amount = p + tail;
+      if (!questionAt[amount] && from >= 0 && amount - from <= maxDeduction) {
+        questionAt[amount] = i + 1;
+        previous[amount] = from;
+      }
+    }
+  }
+  if (!questionAt[deficit]) throw unreachable();
+  const scores = [...maxima];
+  for (let d = deficit; d > 0; d = previous[d]) {
+    const i = questionAt[d] - 1;
+    scores[i] = (maxUnits[i] - (d - previous[d]) * unit) / scale;
+  }
+  const allocated = scores.reduce((sum, score) => sum + score, 0);
+  if (Math.abs(allocated - total) > 1e-9 || scores.some((score, i) => score > maxima[i])) throw unreachable();
+  return scores;
 }
 
 /** `answer_block_crops.score_breakdown` 的单条评阅记录（落库结构，与 demo/reviewDemo.ts 保持一致） */

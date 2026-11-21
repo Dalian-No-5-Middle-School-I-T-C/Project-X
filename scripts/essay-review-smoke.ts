@@ -39,6 +39,10 @@ try {
   const card = createDefaultCard("00190281", "yuwen", "A3");
   const essayId = "chinese-essay";
   const normalId = "chinese-short";
+  const splitCases = [
+    { id: "sparse", first: 4, maxima: [1.5, 1.5, 1.75], total: 4, expected: [1.5, 1.5, 1] },
+    { id: "gap", first: 7, maxima: [1.4, 1.4, 1.4], total: 3, expected: [1, 1, 1] },
+  ];
   card.bodyBlocks = [
     { id: essayId, type: "subjective", title: "作文", blockKind: "essay", questions: [{
       id: "long-q", number: 1, score: 60, style: "plain_subjective", kind: "plain_box", minHeightMm: 40,
@@ -51,6 +55,11 @@ try {
       id: "short-q3", number: 3, score: 3, style: "plain_subjective", kind: "plain_box", minHeightMm: 30,
     }] },
   ];
+  for (const test of splitCases) {
+    card.bodyBlocks.push({ id: test.id, type: "subjective", title: test.id, blockKind: "answer",
+      questions: test.maxima.map((score, i) => ({ id: test.id + i, number: test.first + i,
+        score, style: "plain_subjective", kind: "plain_box", minHeightMm: 30 })) });
+  }
   const cards = new CardRepository(db);
   await cards.createCard(card);
   await cards.updateCard(card);
@@ -87,12 +96,14 @@ try {
   const file = (id: string) => path.join(temp, id + ".png");
   async function insert(id: string, page: number, segment: number, block = essayId,
     sourceType = "twain_scan_record", recordId = source(page), owner = student) {
+    const definition = card.bodyBlocks.find(item => item.id === block);
+    assert.ok(definition?.type === "subjective");
     await sharp({ create: { width: 9 + segment, height: 13 + page, channels: 3, background: "#459ABC" } }).png().toFile(file(id));
     await db.run(`INSERT INTO answer_block_crops(id,card_id,exam_id,student_id,student_number,source_type,source_record_id,
       block_id,block_title,block_type,page_number,segment_index,question_numbers,rect_json,image_path,width_px,height_px,dpi)
       VALUES (?,?,?,?,?,?,?,?,?,'subjective',?,?,?,'{}',?,?,?,150)`,
       id, card.id, exam, owner, owner === student ? "80001" : "80002", sourceType, recordId, block, block === essayId ? "作文" : "简答", page, segment,
-      block === essayId ? "[1]" : "[2,3]", file(id), 9 + segment, 13 + page);
+      JSON.stringify(definition.questions.map(q => q.number)), file(id), 9 + segment, 13 + page);
   }
   const pages = [...new Set(parts.map(p => p.page))].map(page => ({ recordId: source(page), pageNum: page, layoutPage: page, side: "front" }));
   const receipt = (pages: object[]) => db.run("UPDATE scanner_submissions SET pages_json=? WHERE exam_id=? AND group_id='first'", JSON.stringify(pages), exam);
@@ -230,6 +241,49 @@ try {
   assert.equal(blockFull.status, 200, await blockFull.clone().text());
   await verifyShortTotals(await blockFull.json(), secondShort.id, 8.5);
   assert.deepEqual(await readShortScores(), [{ question_number: 2, score: 5.5, max_score: 5.5 }, { question_number: 3, score: 3, max_score: 3 }]);
+  for (const test of splitCases) for (const mode of ["equal", "proportional"] as const) {
+    const cropId = test.id + "-" + mode;
+    await upsertBlockConfig(exam, test.id, { reviewMode: 2, rounding: "ceil", scoringMode: "block_total", scoreDistribution: mode, hasHalfPoint: 0 }, db);
+    await insert(cropId, 1, mode === "equal" ? 10 : 11, test.id);
+    await claimSpecificPaper(exam, test.id, cropId, a, db);
+    const scores = test.maxima.map((_, i) => ({ questionNumber: test.first + i, scoreType: "subjective" }));
+    const vote = (teacher: string, total: number) => request(teacher, `/api/review/exams/${exam}/block-crops/${cropId}/submit`, {
+      scores: teacher === "first" ? scores : [...scores].reverse(), blockTotalScore: total,
+    });
+    const readVotes = () => db.get("SELECT status,claimed_by,review_round,score_breakdown,final_score FROM answer_block_crops WHERE id=?", cropId);
+    const readMarks = () => db.all("SELECT question_number,score FROM question_scores WHERE exam_id=? AND student_id=? AND block_id=? ORDER BY question_number", exam, student, test.id);
+    const readTotal = () => db.get("SELECT subjective_score,total_score FROM student_scores WHERE exam_id=? AND student_id=?", exam, student);
+    const marksBefore = await readMarks();
+    const totalBefore = await readTotal();
+    async function rejectUnreachable(teacher: string) {
+      const before = await readVotes();
+      const rejected = await vote(teacher, 4);
+      assert.equal(rejected.status, 422, await rejected.clone().text());
+      assert.match((await rejected.json()).message, /无法.*拆分/);
+      assert.deepEqual(await readVotes(), before);
+      assert.deepEqual(await readMarks(), marksBefore);
+      assert.deepEqual(await readTotal(), totalBefore);
+    }
+    if (test.id === "gap") await rejectUnreachable("first");
+    const firstVote = await vote("first", test.total);
+    assert.equal(firstVote.status, 200, await firstVote.clone().text());
+    assert.equal((await firstVote.json()).status, "pending");
+    await claimSpecificPaper(exam, test.id, cropId, b, db);
+    if (test.id === "gap") await rejectUnreachable("second");
+    const secondVote = await vote("second", test.total);
+    assert.equal(secondVote.status, 200, await secondVote.clone().text());
+    const result = await secondVote.json();
+    const expectedExam = totalBefore.total_score - marksBefore.reduce((sum, row) => sum + row.score, 0) + test.total;
+    assert.equal(result.finalScore, test.total);
+    assert.equal(result.totalScore, expectedExam);
+    assert.equal((await readTotal()).total_score, expectedExam);
+    const final = await readVotes();
+    assert.equal(final.final_score, test.total);
+    for (const ballot of JSON.parse(final.score_breakdown)) {
+      assert.deepEqual(scores.map(s => ballot.questionScores[s.questionNumber]), test.expected);
+    }
+    assert.deepEqual((await readMarks()).map(row => row.score), test.expected);
+  }
   // An import regrade keeps its earlier database rows. A missing page in the new
   // batch must not be replaced with a matching page from the student's older copy.
   async function importedBatch() {
@@ -255,7 +309,7 @@ try {
     scores: [{ questionNumber: 1, score: 0, scoreType: "subjective" }] }, db);
   assert.equal(finished.finalScore, 45);
   assert.equal((await pool()).reviewedCount, 2);
-  console.log(`${db.dialect}: ${parts.length} ordered panels, incomplete receipt and files, late first page, legacy claim, student renumbering and reuse, ambiguous replay, inherited half-point vote 20.5, invalid draft rejected with claim and votes retained, ceil double review 5.5 + 1 = 6.5, block full mark 8.5, arbitration 32, latest import 45`);
+  console.log(`${db.dialect}: ${parts.length} ordered panels, incomplete receipt and files, late first page, legacy claim, student renumbering and reuse, ambiguous replay, inherited half-point vote 20.5, invalid draft rejected with claim and votes retained, ceil double review 5.5 + 1 = 6.5, block full mark 8.5, sparse double reviews 1.5 + 1.5 + 1 = 4, unreachable totals return 422 with claims and votes retained, arbitration 32, latest import 45`);
 } finally {
   server.close();
   await once(server, "close");
