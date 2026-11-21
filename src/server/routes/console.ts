@@ -183,67 +183,61 @@ router.get("/ai-usage", async (_req, res, next) => {
       res.json({ available: false, reason: "ai_analysis_runs 表不存在（尚未运行期迁移）", generatedAt: new Date().toISOString() });
       return;
     }
-    const totals = await db.get<{
-      runs: number; success: number; failed: number;
-      tin: number | null; tout: number | null; avgLatency: number | null;
+    // One SELECT keeps the two ledgers on the same snapshot while a job finishes.
+    const hasCalls = await hasTable(db, "ai_provider_calls");
+    const rows = await db.all<{
+      feature: string | null; count: number; success: number; failed: number;
+      tokensIn: number | string | null; tokensOut: number | string | null;
+      latencySum: number | string | null; latencyCount: number;
     }>(
-      `SELECT COUNT(*) AS runs,
-              SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS success,
-              SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failed,
-              SUM(tokens_in) AS tin, SUM(tokens_out) AS tout,
-              AVG(latency_ms) AS avgLatency
-       FROM ai_analysis_runs`
+      `SELECT feature, COUNT(*) AS count,
+              COUNT(CASE WHEN success=1 THEN 1 END) AS success,
+              COUNT(CASE WHEN success=0 THEN 1 END) AS failed,
+              SUM(tokens_in) AS tokensIn, SUM(tokens_out) AS tokensOut,
+              SUM(latency_ms) AS latencySum, COUNT(latency_ms) AS latencyCount
+       FROM ai_analysis_runs GROUP BY feature
+       ${hasCalls ? `UNION ALL
+         SELECT NULL, COUNT(*), COUNT(CASE WHEN success=1 THEN 1 END),
+                COUNT(CASE WHEN success=0 THEN 1 END), NULL, NULL, NULL, 0
+         FROM ai_provider_calls` : ""}`
     );
-    const byFeature = await db.all<{
-      feature: string; cnt: number; success: number; failed: number;
-      avgLatency: number | null; tin: number | null; tout: number | null;
-    }>(
-      `SELECT feature, COUNT(*) AS cnt,
-              SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS success,
-              SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failed,
-              AVG(latency_ms) AS avgLatency,
-              SUM(tokens_in) AS tin, SUM(tokens_out) AS tout
-       FROM ai_analysis_runs GROUP BY feature ORDER BY cnt DESC`
-    );
-    // success 为 NULL 的行 = 进行中/被中断（pending）的调用：计入 count 不计入成功率
-    const runsTotal = Number(totals?.runs ?? 0);
-    const successTotal = Number(totals?.success ?? 0);
-    const failedTotal = Number(totals?.failed ?? 0);
-    const calls = await hasTable(db, "ai_provider_calls")
-      ? await db.get<{ count: number; success: number; failed: number }>(
-        `SELECT COUNT(*) AS count, COUNT(CASE WHEN success=1 THEN 1 END) AS success,
-                COUNT(CASE WHEN success=0 THEN 1 END) AS failed FROM ai_provider_calls`)
-      : null;
-    res.json({
-      available: true,
-      providerCalls: calls ? {
-        count: Number(calls.count), success: Number(calls.success), failed: Number(calls.failed),
-      } : null,
-      totals: {
-        runs: runsTotal,
-        success: successTotal,
-        failed: failedTotal,
-        pending: Math.max(0, runsTotal - successTotal - failedTotal),
-        totalTokensIn: Number(totals?.tin ?? 0),
-        totalTokensOut: Number(totals?.tout ?? 0),
-        avgLatencyMs: totals?.avgLatency != null ? Math.round(totals.avgLatency) : 0,
-      },
-      byFeature: byFeature.map((r) => {
-        const success = Number(r.success ?? 0);
-        const failed = Number(r.failed ?? 0);
-        const count = Number(r.cnt);
-        const completed = success + failed;
-        return {
-          feature: r.feature,
-          count, success, failed,
-          pending: Math.max(0, count - completed),
-          successRate: completed > 0 ? Math.round((success / completed) * 1000) / 10 : 0,
-          avgLatencyMs: r.avgLatency != null ? Math.round(r.avgLatency) : 0,
-          totalTokens: Number(r.tin ?? 0) + Number(r.tout ?? 0),
-        };
-      }),
-      generatedAt: new Date().toISOString(),
-    });
+    const totals = { runs: 0, success: 0, failed: 0, pending: 0, totalTokensIn: 0, totalTokensOut: 0, avgLatencyMs: 0 };
+    let providerCalls = null;
+    let latencySum = 0;
+    let latencyCount = 0;
+    const byFeature = [];
+    for (const row of rows) {
+      const count = Number(row.count);
+      const success = Number(row.success);
+      const failed = Number(row.failed);
+      if (row.feature === null) {
+        providerCalls = { count, success, failed };
+        continue;
+      }
+      const finished = success + failed;
+      const pending = count - finished;
+      const tokensIn = Number(row.tokensIn ?? 0);
+      const tokensOut = Number(row.tokensOut ?? 0);
+      const latency = Number(row.latencySum ?? 0);
+      const measured = Number(row.latencyCount);
+      totals.runs += count;
+      totals.success += success;
+      totals.failed += failed;
+      totals.pending += pending;
+      totals.totalTokensIn += tokensIn;
+      totals.totalTokensOut += tokensOut;
+      latencySum += latency;
+      latencyCount += measured;
+      byFeature.push({
+        feature: row.feature, count, success, failed, pending,
+        successRate: finished ? Math.round(1000 * success / finished) / 10 : 0,
+        avgLatencyMs: measured ? Math.round(latency / measured) : 0,
+        totalTokens: tokensIn + tokensOut,
+      });
+    }
+    totals.avgLatencyMs = latencyCount ? Math.round(latencySum / latencyCount) : 0;
+    byFeature.sort((a, b) => b.count - a.count || a.feature.localeCompare(b.feature));
+    res.json({ available: true, totals, providerCalls, byFeature, generatedAt: new Date().toISOString() });
   } catch (err) {
     next(err);
   }
