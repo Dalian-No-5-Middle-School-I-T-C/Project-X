@@ -13,8 +13,7 @@
  *   F. v68 答案原文件直发：exams.answer_key_mode 二选一、直发模式单独开门但原卷图片仍受
  *      「显示原卷」控制、答案文件按 DB 登记页码下发（图片内联 / DOCX 附件）、切回 text 不销毁数据。
  *
- * 不覆盖：tesseract.js 真实识别（需要 WASM 与数秒耗时，接口以 ?ocr=0 调用）、
- *         MariaDB 方言（见 scripts/verify-mariadb.ts 的 v54/v68 断言）。
+ * D 也通过默认上传入口识别一张答案图。MariaDB 的 v54/v68 断言见 scripts/verify-mariadb.ts。
  *
  * 运行：npm run verify:exam-paper
  */
@@ -101,7 +100,7 @@ async function jsonFetch(base: string, url: string, init: RequestInit = {}, toke
   const r = await fetch(`${base}${url}`, {
     ...init,
     headers: {
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
+      ...(init.body && !(init.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init.headers ?? {}),
     },
@@ -493,6 +492,18 @@ async function main() {
 
   // ── D. OCR 文本解析（纯函数）──────────────────────────
   section("D. OCR 文本解析");
+  const ocrExamId = insertExam("图片答案草稿", 1);
+  const answerPng = await sharp(Buffer.from(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="220"><rect width="100%" height="100%" fill="white"/><text x="60" y="145" font-family="sans-serif" font-size="85">1-5 BACDB</text></svg>'
+  )).png().toBuffer();
+  const answerImage = new FormData();
+  answerImage.append("files", new Blob([answerPng], { type: "image/png" }), "答案.png");
+  const recognized = await jsonFetch(base, `/api/exams/${ocrExamId}/answer-key/pages`, {
+    method: "POST", body: answerImage,
+  }, adminToken);
+  const draft = recognized.body?.ocr?.[0]?.drafts ?? [];
+  ok(recognized.status === 200 && draft.map((entry: { answerText: string }) => entry.answerText).join("") === "BACDB",
+    "上传一张清晰答案图后得到五题 OCR 草稿");
   const range = parseAnswerKeyText("1-5 BACDB\n6~10: CCBDA");
   ok(range.length === 10 && range[0].answerText === "B" && range[3].answerText === "D" && range[4].answerText === "B" && range[9].answerText === "A", "区间式「1-5 BACDB」「6~10: CCBDA」逐题展开");
   const single = parseAnswerKeyText("21. 叶绿体\n22、温度过高导致酶失活");

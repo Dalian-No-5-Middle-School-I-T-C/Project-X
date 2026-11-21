@@ -1,5 +1,8 @@
-import { readFile, readdir } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
+import { copyOcrModels } from "./ocr-models";
 import { extractDocxFiles, PaperInputError } from "./paper-docx";
 import * as path from "node:path";
 import { paperDir } from "./storage";
@@ -55,15 +58,27 @@ export async function extractPdfText(filePath: string): Promise<string | null> {
  */
 export async function extractImageText(filePath: string): Promise<string | null> {
   if (!existsSync(filePath)) return null;
+  const bundled = fileURLToPath(new URL("./ocr-models/", import.meta.url));
+  let temporary: string | undefined;
   try {
-    // 动态导入 tesseract.js（大 WASM 文件，按需加载）
-    const Tesseract = await import("tesseract.js");
-    const result = await Tesseract.recognize(filePath, "chi_sim+eng", {
-      // 不使用 worker 缓存，每次新建（避免内存泄漏）
+    // Source-based development uses the same pinned models as the production bundle.
+    if (!existsSync(bundled)) {
+      temporary = await mkdtemp(path.join(tmpdir(), "projectx-paper-ocr-"));
+      await copyOcrModels(temporary);
+    }
+    const langPath = temporary ?? bundled;
+    await Promise.all(["chi_sim", "eng"].map(code => access(path.join(langPath, code + ".traineddata.gz"))));
+    const { default: tesseract } = await import("tesseract.js");
+    const result = await tesseract.recognize(filePath, "chi_sim+eng", {
+      langPath,
+      cacheMethod: "none",
+      errorHandler: (error) => console.warn("[paper-ocr] OCR worker error:", String(error)),
     });
-    return result.data.text?.trim() || null;
+    return result.data.text.trim() || null;
   } catch {
     return null;
+  } finally {
+    if (temporary) await rm(temporary, { recursive: true, force: true });
   }
 }
 
