@@ -14,6 +14,7 @@ import { databaseTimestamp } from "../db/timestamp";
 import { markScoreMutated } from "./examPublishEvents";
 import { captureExamClasses } from "./examClassMemberships";
 import { scannerDuplicateEvidence } from "./scannerDuplicateEvidence";
+import { retireSupersededCropImages } from "./AnswerBlockCropService";
 
 /** Resolve persisted receipt ownership, including retries after exam closure. */
 export async function findSavedScannerOwners(db: DbAdapter, sessionId: string, groupId: string,
@@ -94,21 +95,30 @@ export function enqueueScannerSubmission<T>(work: () => Promise<T>): Promise<T> 
   writes = next.catch(() => undefined);
   return next;
 }
+
+/** SQLite readers share the scanner write queue. MariaDB readers share one MVCC snapshot. */
+export function runScannerCommittedRead<T>(work: (db: DbAdapter) => Promise<T>): Promise<T> {
+  const db = getMysqlDb();
+  return db.dialect === "sqlite" ? enqueueScannerSubmission(() => work(db)) : db.transaction(work, "readSnapshot");
+}
+
 async function lockExam(db: DbAdapter, examId: number) {
   await db.run("UPDATE exams SET id = id WHERE id = ?", examId);
 }
+/** Exam row locks and one DB transaction for scanner session mutations (caller supplies queue scope). */
+export async function runScannerSessionTransaction<T>(sessionId: string, work: (tx: DbAdapter) => Promise<T>): Promise<T> {
+  const db = getMysqlDb();
+  // Discover locks before BEGIN so MariaDB's first consistent read follows the locks.
+  const exams = await db.all<{ id: number }>(
+    "SELECT e.id FROM exams e JOIN twain_scan_sessions s ON s.card_id=e.card_id WHERE s.id=? ORDER BY e.id", sessionId);
+  return db.transaction(async tx => {
+    for (const exam of exams) await lockExam(tx, exam.id);
+    return work(tx);
+  });
+}
 /** Upload mutations share the grading queue and exam row locks through commit. */
 export function writeScannerSession<T>(sessionId: string, work: (tx: DbAdapter) => Promise<T>): Promise<T> {
-  return enqueueScannerSubmission(async () => {
-    const db = getMysqlDb();
-    // Discover locks before BEGIN so MariaDB's first consistent read follows the locks.
-    const exams = await db.all<{ id: number }>(
-      "SELECT e.id FROM exams e JOIN twain_scan_sessions s ON s.card_id=e.card_id WHERE s.id=? ORDER BY e.id", sessionId);
-    return db.transaction(async tx => {
-      for (const exam of exams) await lockExam(tx, exam.id);
-      return work(tx);
-    });
-  });
+  return enqueueScannerSubmission(() => runScannerSessionTransaction(sessionId, work));
 }
 async function receipts(db: DbAdapter, examId: number): Promise<Receipt[]> {
   return db.all<Receipt>("SELECT * FROM scanner_submissions WHERE exam_id = ? AND state NOT IN ('superseded', 'discarded')", examId);
@@ -160,7 +170,7 @@ async function withdraw(db: DbAdapter, examId: number, studentNumber: string, re
   await db.run("UPDATE scanner_submissions SET state = 'conflict' WHERE exam_id = ? AND student_number = ? AND state NOT IN ('superseded', 'discarded')", examId, studentNumber);
 }
 
-export async function invalidateScanRecognitionInTransaction(tx: DbAdapter, sessionId: string, recordId: string): Promise<Set<number>> {
+export async function invalidateScanRecognitionInTransaction(tx: DbAdapter, sessionId: string, recordId: string): Promise<{ changedExams: Set<number>; retiredCropPaths: string[] }> {
   const changedExams = new Set<number>();
   const owned = await tx.all<Receipt>("SELECT * FROM scanner_submissions WHERE session_id = ? AND state NOT IN ('superseded', 'discarded')", sessionId);
   for (const receipt of owned) {
@@ -177,9 +187,17 @@ export async function invalidateScanRecognitionInTransaction(tx: DbAdapter, sess
   await tx.run("UPDATE twain_scan_records SET identity_json = NULL, student_id = NULL, student_conf = NULL, ocr_status = 'processing', ocr_error = NULL WHERE id = ? AND session_id = ?", recordId, sessionId);
   await tx.run("DELETE FROM twain_recognition_results WHERE scan_record_id = ?", recordId);
   await tx.run("DELETE FROM scan_correction_pages WHERE source_type = 'twain_scan_record' AND source_id = ?", recordId);
+  const priorCrops = await tx.all<{ image_path: string }>(
+    "SELECT image_path FROM answer_block_crops WHERE source_type = ? AND source_record_id = ?",
+    "twain_scan_record",
+    recordId,
+  );
   await tx.run("DELETE FROM answer_block_crops WHERE source_type = ? AND source_record_id = ?", "twain_scan_record", recordId);
   await tx.run("DELETE FROM twain_student_grading_results WHERE session_id = ?", sessionId);
-  return changedExams;
+  return {
+    changedExams,
+    retiredCropPaths: priorCrops.map((row) => row.image_path).filter((filePath) => Boolean(filePath)),
+  };
 }
 
 /** Invalidate a page before retry; saved grades are withdrawn only through their owning receipt. */
@@ -191,9 +209,13 @@ export async function invalidateScanRecognition(sessionId: string, recordId: str
 export async function invalidateScanRecognitionInQueue(sessionId: string, recordId: string): Promise<void> {
   const db = getMysqlDb();
   const changedExams = new Set<number>();
+  let retiredCropPaths: string[] = [];
   await db.transaction(async tx => {
-    for (const id of await invalidateScanRecognitionInTransaction(tx, sessionId, recordId)) changedExams.add(id);
+    const invalidated = await invalidateScanRecognitionInTransaction(tx, sessionId, recordId);
+    for (const id of invalidated.changedExams) changedExams.add(id);
+    retiredCropPaths = invalidated.retiredCropPaths;
   });
+  await retireSupersededCropImages(retiredCropPaths);
   for (const examId of changedExams) {
     analysisCache.invalidateExam(examId);
     await recomputeExamRankings(db, examId);
@@ -305,15 +327,14 @@ export async function recoverScannerSubmissionSnapshot(examId: number, sessionId
 export async function processScannerSession(card: AnswerCard, sessionId: string,
   mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string, saveGroupIds?: ReadonlySet<string>,
   blockUnreviewed = false): Promise<ScanBatchResponse> {
-  return enqueueScannerSubmission(() => processScannerSessionInQueue(card, sessionId, mode, saveGroupId, saveGroupIds, blockUnreviewed));
+  return enqueueScannerSubmission(() => processScannerSessionInQueue(getMysqlDb(), card, sessionId, mode, saveGroupId, saveGroupIds, blockUnreviewed));
 }
 
 /** Caller retains scanner queue ownership through correction and admission. */
-export async function processScannerSessionInQueue(card: AnswerCard, sessionId: string,
+export async function processScannerSessionInQueue(db: DbAdapter, card: AnswerCard, sessionId: string,
   mode: "preview" | "validate" | "save" = "preview", saveGroupId?: string, saveGroupIds?: ReadonlySet<string>,
   blockUnreviewed = false): Promise<ScanBatchResponse> {
-    const db = getMysqlDb();
-    const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
+    const records = (await listScanRecordsGroupedByStudent(sessionId, undefined, db)).flatMap(g => g.records);
     const { groups, pageCount } = groupSessionPages(card, records);
     const invalidGroups = new Set<string>();
     const repeatedGroups = new Set<string>();
@@ -351,7 +372,7 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
       const ids = [...new Set(rows.map(r => r.record.student_id).filter((id): id is string => Boolean(id)))];
       return ids.length === 1 ? [{ groupId, studentNumber: ids[0], pages: rows.map(r => r.page) }] : [];
     });
-    const { exams, exam } = await resolveScannerExam(card.id, sessionId);
+    const { exams, exam } = await resolveScannerExam(card.id, sessionId, db);
     if (!exam) {
       return visible(await collectSessionResults(card, records, [], mode === "save" ? async () => {
         throw new Error(exams.length === 0 ? "答题卡未关联可阅卷的考试，成绩未入库" : "答题卡关联多个考试，无法确定成绩归属");
@@ -489,10 +510,24 @@ export async function processScannerSessionInQueue(card: AnswerCard, sessionId: 
     }
     let all = await receipts(db, exam.id);
     const cached: StudentGradingResultRow[] = [];
-    for (const row of all.filter(r => r.session_id === sessionId && r.state === "saved" && r.result_json
-      && candidates.some(candidate => candidate.groupId === r.group_id))) {
-      const exists = await db.get("SELECT ss.id FROM student_scores ss JOIN users u ON u.id = ss.student_id WHERE ss.exam_id = ? AND u.student_number = ?", exam.id, row.student_number);
-      if (!exists) continue;
+    const savedRows = all.filter(r => r.session_id === sessionId && r.state === "saved" && r.result_json
+      && candidates.some(candidate => candidate.groupId === r.group_id));
+    const savedGroups = new Set<string>();
+    // Keep student-number matching in SQL: MariaDB may compare case/accent
+    // insensitively, and old users/receipt columns can have different collations.
+    // Binding each number preserves the original comparison without a column
+    // join, while bounded UNION batches avoid a database round trip per receipt.
+    for (let start = 0; start < savedRows.length; start += 100) {
+      const chunk = savedRows.slice(start, start + 100);
+      const found = await db.all<{ group_id: string }>(chunk.map(() =>
+        `SELECT ? AS group_id WHERE EXISTS (
+          SELECT 1 FROM student_scores ss JOIN users u ON u.id = ss.student_id
+          WHERE ss.exam_id = ? AND u.student_number = ?)`
+      ).join(" UNION ALL "), ...chunk.flatMap(row => [row.group_id, exam.id, row.student_number]));
+      for (const row of found) savedGroups.add(row.group_id);
+    }
+    for (const row of savedRows) {
+      if (!savedGroups.has(row.group_id)) continue;
       // Historical partial saves can have grades and receipts but unbound crops.
       // Replay repairs their ownership without rewriting scores or publication.
       if (mode === "save" && (saveGroupId === undefined || row.group_id === saveGroupId) && (!saveGroupIds || saveGroupIds.has(row.group_id))) await db.transaction(async tx => {

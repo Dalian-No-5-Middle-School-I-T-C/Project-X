@@ -47,9 +47,13 @@ export type PersistAnswerBlockCropsParams = {
   studentNumber?: string | null;
   sourceType: AnswerBlockCropSourceType;
   sourceRecordId: string | number;
+  /** Must match scan_correction_pages.revision when paired with a correction snapshot for upload-payload reuse. */
+  correctionRevision?: number | null;
   crops?: RecognitionBlockCrop[] | null;
   /** Outer transaction owns these file moves until commit or rollback. */
   fileMoves?: CropFileMove[];
+  /** Crop bytes already live at `crop.path`; persist only database rows. */
+  skipFileMoves?: boolean;
 };
 
 function cropImageUrl(id: string): string {
@@ -161,6 +165,37 @@ function targetFileName(crop: RecognitionBlockCrop, index: number): string {
   return `p${page}_s${segment}_${String(index + 1).padStart(2, "0")}_${block}.png`;
 }
 
+/** Move staged scanner-upload crops into block storage before the DB transaction opens. */
+export async function relocateUploadedCropsToStorage(
+  params: Pick<PersistAnswerBlockCropsParams, "cardId" | "sourceType" | "sourceRecordId">,
+  crops: RecognitionBlockCrop[],
+): Promise<{ crops: RecognitionBlockCrop[]; paths: string[] }> {
+  const sourceRecordId = String(params.sourceRecordId);
+  const targetDir = path.join(blockCropsDir, safeId(params.cardId), `${params.sourceType}_${safeId(sourceRecordId)}`);
+  const relocated: RecognitionBlockCrop[] = [];
+  const paths: string[] = [];
+  try {
+    for (let index = 0; index < crops.length; index += 1) {
+      const crop = crops[index];
+      if (!crop?.path || !crop.blockId || !Array.isArray(crop.questionNumbers) || crop.questionNumbers.length === 0) continue;
+      const targetPath = path.join(targetDir, `${randomUUID()}_${targetFileName(crop, index)}`);
+      if (!isInsideDir(targetDir, targetPath)) continue;
+      try {
+        await moveCropFile(path.resolve(crop.path), targetPath);
+      } catch (error) {
+        await unlink(targetPath).catch(() => {});
+        throw error;
+      }
+      paths.push(targetPath);
+      relocated.push({ ...crop, path: targetPath });
+    }
+  } catch (error) {
+    await Promise.all(paths.map((filePath) => unlink(filePath).catch(() => {})));
+    throw error;
+  }
+  return { crops: relocated, paths };
+}
+
 /** 路径必须严格落在 base 目录内（R07：拒绝 `..`、绝对路径与同前缀目录名）。 */
 export function isInsideDir(base: string, target: string): boolean {
   const resolvedBase = normalizeFsPath(base);
@@ -177,6 +212,18 @@ export interface CropPersistenceStats {
   skipped: number;
   /** 识别结果根本没产出切块 */
   empty: boolean;
+  /** `skipFileMoves` 替换成功后、外层事务提交完成才可删除的旧切块文件 */
+  retireImagePaths?: string[];
+}
+
+/** Remove superseded crop files after the enclosing DB transaction has committed. */
+export async function retireSupersededCropImages(paths: string[]): Promise<void> {
+  const base = path.resolve(blockCropsDir);
+  for (const oldPath of paths) {
+    const resolved = path.resolve(oldPath);
+    if (!isInsideDir(base, resolved) || !existsSync(resolved)) continue;
+    await unlink(resolved).catch(() => {});
+  }
 }
 
 export async function persistAnswerBlockCrops(
@@ -188,6 +235,16 @@ export async function persistAnswerBlockCrops(
 
   // 五轮D1：无切块产出不再静默。扫描端/批量阅卷常因识别器版本差异（不支持 --crops-dir）
   // 致 blockCrops 恒空，留一行日志便于定位「有扫描无切块」而网阅队列为空的问题。
+  let previousImagePaths: string[] = [];
+  if (params.skipFileMoves) {
+    const prior = await db.all(
+      "SELECT image_path FROM answer_block_crops WHERE source_type = ? AND source_record_id = ?",
+      params.sourceType,
+      sourceRecordId,
+    ) as Array<{ image_path: string }>;
+    previousImagePaths = prior.map((row) => row.image_path).filter(Boolean);
+  }
+
   if (crops.length === 0) {
     await db.run(
       "DELETE FROM answer_block_crops WHERE source_type = ? AND source_record_id = ?",
@@ -197,7 +254,15 @@ export async function persistAnswerBlockCrops(
     console.warn(
       `[crop] 无切块产出 (cardId=${params.cardId}, source=${params.sourceType}:${sourceRecordId}); OCR 未返回 blockCrops，网阅队列将为空`
     );
-    return { persisted: 0, skipped: 0, empty: true };
+    return {
+      persisted: 0,
+      skipped: 0,
+      empty: true,
+      // 文件要等外层事务提交后再删。这里先把旧路径交回去，回滚时调用方不会收到这份返回值。
+      retireImagePaths: params.skipFileMoves
+        ? previousImagePaths.map((filePath) => path.resolve(filePath))
+        : [],
+    };
   }
 
   await db.run(
@@ -222,7 +287,16 @@ export async function persistAnswerBlockCrops(
       }
 
       const id = randomUUID();
-      const targetPath = path.join(targetDir, `${params.fileMoves ? `${id}_` : ""}${targetFileName(crop, index)}`);
+      let targetPath: string;
+      if (params.skipFileMoves) {
+        targetPath = path.resolve(crop.path);
+        if (!existsSync(targetPath)) {
+          stats.skipped += 1;
+          continue;
+        }
+      } else {
+        targetPath = path.join(targetDir, `${params.fileMoves ? `${id}_` : ""}${targetFileName(crop, index)}`);
+      }
       // 安全（R07）：目标路径必须仍在「该卡/该记录」的切块目录内。
       // 清单里的页码/分段号参与文件名拼装，越界就等于让上传方决定服务端写文件的位置。
       // 源文件由服务端自己产生（识别器临时目录 / 扫描上传临时目录），远端已无法指定。
@@ -232,21 +306,24 @@ export async function persistAnswerBlockCrops(
         continue;
       }
       const sourcePath = path.resolve(crop.path);
-      if (params.fileMoves) {
-        const move: CropFileMove = { sourcePath, targetPath };
-        params.fileMoves.push(move);
-        const createdDir = await mkdir(path.dirname(targetPath), { recursive: true });
-        move.createdDir = createdDir ? normalizeFsPath(createdDir) : undefined;
+      if (!params.skipFileMoves) {
+        if (params.fileMoves) {
+          const move: CropFileMove = { sourcePath, targetPath };
+          params.fileMoves.push(move);
+          const createdDir = await mkdir(path.dirname(targetPath), { recursive: true });
+          move.createdDir = createdDir ? normalizeFsPath(createdDir) : undefined;
+        }
+        await moveCropFile(sourcePath, targetPath);
+        movedPaths.push(targetPath);
       }
-      await moveCropFile(sourcePath, targetPath);
-      movedPaths.push(targetPath);
 
       await db.run(
         `INSERT INTO answer_block_crops (
           id, card_id, exam_id, student_id, student_number, source_type, source_record_id,
           block_id, block_title, block_type, page_number, segment_index,
-          question_numbers, rect_json, image_path, width_px, height_px, dpi, status, review_round
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+          question_numbers, rect_json, image_path, width_px, height_px, dpi, status, review_round,
+          correction_revision
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
         id,
         params.cardId,
         params.examId ?? null,
@@ -265,7 +342,8 @@ export async function persistAnswerBlockCrops(
         crop.widthPx,
         crop.heightPx,
         crop.dpi,
-        "ready"
+        "ready",
+        params.correctionRevision ?? null,
       );
 
       stats.persisted += 1;
@@ -275,7 +353,19 @@ export async function persistAnswerBlockCrops(
     throw error;
   }
 
-  return stats;
+  const retireImagePaths: string[] = [];
+  if (params.skipFileMoves && previousImagePaths.length > 0) {
+    const kept = new Set(
+      crops.map((crop) => (crop?.path ? path.resolve(crop.path) : "")).filter(Boolean),
+    );
+    for (const oldPath of previousImagePaths) {
+      const resolved = path.resolve(oldPath);
+      if (kept.has(resolved)) continue;
+      retireImagePaths.push(resolved);
+    }
+  }
+
+  return { ...stats, retireImagePaths };
 }
 
 export async function getAnswerBlockCropFile(id: string, db: DbAdapter = getMysqlDb()): Promise<string | null> {

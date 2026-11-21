@@ -847,6 +847,155 @@ async function main(): Promise<void> {
   const foreignCardsPreview = await get(`/api/cards/${scanCardId}/grading/preview/b1-page.png`, tokenB);
   ok(foreignCardsPreview.status === 403, `范围外教师走 cards 路径读同一张图同样 403（同级路由不再是收口的绕道，实际 ${foreignCardsPreview.status}）`);
 
+  // PR #373：upload-payload 须带齐持久化切块；题块范围账号不得复用部分页缓存（404），GET /record 仍按块过滤。
+  const { cardFingerprint } = await import("../src/shared/cardVersion");
+  const { parseQuestionNumbersFromDb } = await import("../src/apps/answer-card/server/scanner/scan-upload-payload");
+  ok(
+    parseQuestionNumbersFromDb('["21","22"]')?.join(",") === "21,22",
+    "upload-payload 切块题号：SQLite 文本 JSON 可解析",
+  );
+  ok(
+    parseQuestionNumbersFromDb([21, 22])?.join(",") === "21,22",
+    "upload-payload 切块题号：MariaDB 已解码数组可解析",
+  );
+  const scanCardFp = cardFingerprint(scanCard!);
+  const { storeImportUploadPayload } = await import("../src/apps/answer-card/server/import-upload-payload");
+  const importPayloadUrl = await storeImportUploadPayload(scanCardId, scanCardFp, previewFile,
+    { status: "ok", questions: [], subjectiveQuestions: [], studentId: { status: "ok", value: "91001" } });
+  ok((await get(importPayloadUrl, tokenA)).status === 200, "整卷教师可以读取导入上传缓存");
+  ok((await get(importPayloadUrl, tokenB)).status === 403, "范围外教师不能读取导入上传缓存");
+
+  const uploadGeom = {
+    imageWidth: 100, imageHeight: 100,
+    imageToLayout: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+    layoutToImage: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+  };
+  const uploadLayoutJson = JSON.stringify(scanLayout.pages.find(p => p.pageNumber === pageB1));
+  const uploadRecognitionJson = JSON.stringify({
+    status: "ok",
+    pageNumber: pageB1,
+    geometry: uploadGeom,
+    studentId: { status: "ok", value: "9001" },
+    questions: [],
+    subjectiveQuestions: [
+      { blockId: "B1", questionId: "q-B1", questionNumber: 21, score: 20, maxScore: 20, status: "ok", confidence: 1, validCells: [], invalidCells: [] },
+    ],
+  });
+  db.prepare(
+    `INSERT OR REPLACE INTO scan_correction_pages (source_type, source_id, card_version, layout_json, recognition_json, revision)
+     VALUES ('twain_scan_record', 'rec-p1', ?, ?, ?, 0)`
+  ).run(scanCardFp, uploadLayoutJson, uploadRecognitionJson);
+  const uploadCorrectionRevision = Number((db.prepare(
+    "SELECT revision FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id='rec-p1'"
+  ).get() as { revision: number }).revision);
+  const uploadCropDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "recognition", "crops");
+  const uploadCropRectJson = JSON.stringify({ x: 0, y: 0, width: 10, height: 10 });
+  mkdirSync(uploadCropDir, { recursive: true });
+  const { expectedCropSegmentsForLayoutPage } = await import("../src/apps/answer-card/server/scanner/scan-upload-payload");
+  const uploadSegmentMeta = new Map<string, { segmentIndex: number; questionKey: string; pageNumber: number }>();
+  for (const page of scanLayout.pages) {
+    for (const s of expectedCropSegmentsForLayoutPage(page)) {
+      uploadSegmentMeta.set(s.blockId, { segmentIndex: s.segmentIndex, questionKey: s.questionKey, pageNumber: s.pageNumber });
+    }
+  }
+  {
+    const metaB1 = uploadSegmentMeta.get("B1");
+    if (!metaB1) throw new Error("upload-payload 夹具：无法在布局页上解析 B1 切块元数据");
+    const cropPathB1 = path.join(uploadCropDir, "rec-p1-B1.png");
+    writeFileSync(cropPathB1, "crop-B1");
+    db.prepare(
+      `INSERT OR REPLACE INTO answer_block_crops
+       (id, card_id, source_type, source_record_id, block_id, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi, correction_revision)
+       VALUES ('upload-crop-B1', ?, 'twain_scan_record', 'rec-p1', 'B1', 'subjective', ?, ?, ?, ?, ?, 10, 10, 300, ?)`
+    ).run(scanCardId, metaB1.pageNumber, metaB1.segmentIndex, metaB1.questionKey, uploadCropRectJson, cropPathB1, uploadCorrectionRevision);
+  }
+  const wholeUploadPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+  const wholeCrops = (wholeUploadPayload.body as { cropImages?: Array<{ blockId: string }> })?.cropImages ?? [];
+  ok(wholeUploadPayload.status === 200 && wholeCrops.length === 1 && wholeCrops[0]?.blockId === "B1",
+    `整卷授权教师 upload-payload 返回本页完整切块（实际 ${wholeUploadPayload.status} / ${wholeCrops.length}）`);
+  db.prepare("DELETE FROM answer_block_crops WHERE id = 'upload-crop-B1'").run();
+  rmSync(path.join(uploadCropDir, "rec-p1-B1.png"), { force: true });
+  const missingCropPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+  ok(missingCropPayload.status === 404,
+    `切块不齐时 upload-payload 按缓存未命中返回 404（实际 ${missingCropPayload.status}）`);
+  const metaB1Restore = uploadSegmentMeta.get("B1")!;
+  writeFileSync(path.join(uploadCropDir, "rec-p1-B1.png"), "crop-B1");
+  db.prepare(
+    `INSERT OR REPLACE INTO answer_block_crops
+     (id, card_id, source_type, source_record_id, block_id, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi, correction_revision)
+     VALUES ('upload-crop-B1', ?, 'twain_scan_record', 'rec-p1', 'B1', 'subjective', ?, ?, ?, ?, ?, 10, 10, 300, ?)`
+  ).run(scanCardId, metaB1Restore.pageNumber, metaB1Restore.segmentIndex, metaB1Restore.questionKey, uploadCropRectJson, path.join(uploadCropDir, "rec-p1-B1.png"), uploadCorrectionRevision);
+
+  {
+    const dupPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+    ok(
+      dupPayload.status === 200 && Array.isArray((dupPayload.body as { cropImages?: unknown }).cropImages)
+        && (dupPayload.body as { cropImages: unknown[] }).cropImages.length === 1,
+      `本页期望切段齐全时 upload-payload 命中缓存（实际 ${dupPayload.status}）`,
+    );
+    // 库表对 (source, record, block, page, segment_index) 有唯一约束，无法用第二行模拟「同段重复」；
+    // 走错题号并集（一道切段写成两题题号）会偏离期望段落键 → 须未命中。
+    db.prepare("UPDATE answer_block_crops SET question_numbers = ? WHERE id = 'upload-crop-B1'").run('["21","99"]');
+    const wrongQuestionKeyPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+    ok(wrongQuestionKeyPayload.status === 404,
+      `题号集合与版式切段不一致时 upload-payload 按整页未命中处理（实际 ${wrongQuestionKeyPayload.status}）`);
+    db.prepare("UPDATE answer_block_crops SET question_numbers = ? WHERE id = 'upload-crop-B1'").run(metaB1Restore.questionKey);
+    const afterRestoreKey = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+    ok(afterRestoreKey.status === 200, `恢复正确题号后缓存再次命中（实际 ${afterRestoreKey.status}）`);
+  }
+  {
+    const mismatchedRecognition = JSON.parse(uploadRecognitionJson) as {
+      studentId?: { status: string; value: string };
+    };
+    mismatchedRecognition.studentId = { status: "ok", value: "9999" };
+    db.prepare(
+      "UPDATE scan_correction_pages SET recognition_json=? WHERE source_type='twain_scan_record' AND source_id='rec-p1'"
+    ).run(JSON.stringify(mismatchedRecognition));
+    const studentMismatchPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+    ok(
+      studentMismatchPayload.status === 404,
+      `扫描主行学号与订正快照学号不一致时 upload-payload 按未命中处理（实际 ${studentMismatchPayload.status}）`,
+    );
+    db.prepare(
+      "UPDATE scan_correction_pages SET recognition_json=? WHERE source_type='twain_scan_record' AND source_id='rec-p1'"
+    ).run(uploadRecognitionJson);
+    const studentAlignedPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+    ok(
+      studentAlignedPayload.status === 200
+        && (studentAlignedPayload.body as { studentId?: { value?: string } })?.studentId?.value === "9001",
+      `学号与快照对齐后 upload-payload 恢复命中（实际 ${studentAlignedPayload.status}）`,
+    );
+  }
+  {
+    const bumpedRecognition = JSON.parse(uploadRecognitionJson) as {
+      subjectiveQuestions: Array<{ blockId?: string; score?: number }>;
+    };
+    const b1 = bumpedRecognition.subjectiveQuestions.find(q => q.blockId === "B1");
+    if (b1) b1.score = 18;
+    db.prepare(
+      "UPDATE scan_correction_pages SET recognition_json=?, revision=revision+1 WHERE source_type='twain_scan_record' AND source_id='rec-p1'"
+    ).run(JSON.stringify(bumpedRecognition));
+    const splitSnapshotPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+    ok(
+      splitSnapshotPayload.status === 404,
+      `订正 revision 已升而切块仍绑旧 revision 时 upload-payload 不得命中（实际 ${splitSnapshotPayload.status}）`,
+    );
+    const alignedRevision = Number((db.prepare(
+      "SELECT revision FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id='rec-p1'"
+    ).get() as { revision: number }).revision);
+    db.prepare("UPDATE answer_block_crops SET correction_revision=? WHERE id='upload-crop-B1'").run(alignedRevision);
+    const repairedPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+    ok(
+      repairedPayload.status === 200
+        && (repairedPayload.body as { subjectiveQuestions?: Array<{ score?: number }> })?.subjectiveQuestions?.[0]?.score === 18,
+      `切块 revision 与快照对齐后 upload-payload 恢复命中（实际 ${repairedPayload.status}）`,
+    );
+    db.prepare(
+      "UPDATE scan_correction_pages SET recognition_json=?, revision=? WHERE source_type='twain_scan_record' AND source_id='rec-p1'"
+    ).run(uploadRecognitionJson, uploadCorrectionRevision);
+    db.prepare("UPDATE answer_block_crops SET correction_revision=? WHERE id='upload-crop-B1'").run(uploadCorrectionRevision);
+  }
+
   // CR5：题块教师只能读到含本人题块的排版页，同页他人题块与整卷总分一并剔除。
   matrix(teacherA.id, { class_id: classA, block_id: "B1" });
   const scopedForeignPage = await get(`/api/scanner/record/rec-p2`, tokenA);
@@ -857,6 +1006,38 @@ async function main(): Promise<void> {
     `本人页上他人题块的识别结果被剔除（实际 ${ownObjective.slice(0, 90)}）`);
   ok(scopedOwnPage.body?.recognition?.total_score === null && scopedOwnPage.body?.recognition?.max_score === null,
     "整卷总分不再随识别结果外发");
+  const scopedUploadPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+  ok(scopedUploadPayload.status === 404,
+    `题块教师 upload-payload 不得返回部分页缓存（须 404 迫使本机整页重识别，实际 ${scopedUploadPayload.status}）`);
+  clearMatrix(teacherA.id);
+  // PR #373：复用的识别结果会直接变成正式成绩，只能读已提交的那一份。
+  // SQLite 是一条连接，BEGIN..COMMIT 之间同连接的其它读看得到未提交行；本地模式必须
+  // 把这份读排进扫描提交链，并在事务开着时按缓存未命中（404）退回扫描端重新识别。
+  const uncommittedRecognition = (() => {
+    const parsed = JSON.parse(uploadRecognitionJson) as { subjectiveQuestions: Array<{ blockId?: string; score?: number }> };
+    const own = parsed.subjectiveQuestions.find(q => q.blockId === "B1");
+    if (own) own.score = 19;
+    return JSON.stringify(parsed);
+  })();
+  db.prepare("BEGIN").run();
+  db.prepare("UPDATE scan_correction_pages SET recognition_json=? WHERE source_type='twain_scan_record' AND source_id='rec-p1'").run(uncommittedRecognition);
+  const duringTxPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+  db.prepare("ROLLBACK").run();
+  ok(duringTxPayload.status === 404,
+    `订正事务尚未提交时 upload-payload 不外发未提交标记（实际 ${duringTxPayload.status}）`);
+  const afterTxPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+  ok(afterTxPayload.status === 200 && !JSON.stringify(afterTxPayload.body).includes('"score":19'),
+    `回滚后同一请求只读回已提交结果（实际 ${afterTxPayload.status}）`);
+  // 答题卡版本变了：快照里的坐标、题号与切块都属旧版卡，不能当现行版的识别结果外发。
+  const storedPageVersion = (db.prepare(
+    "SELECT card_version AS v FROM scan_correction_pages WHERE source_type='twain_scan_record' AND source_id='rec-p1'").get() as { v: string | null }).v;
+  db.prepare("UPDATE scan_correction_pages SET card_version=? WHERE source_type='twain_scan_record' AND source_id='rec-p1'").run("f".repeat(24));
+  const staleVersionPayload = await get(`/api/scanner/record/rec-p1/upload-payload`, tokenA);
+  db.prepare("UPDATE scan_correction_pages SET card_version=? WHERE source_type='twain_scan_record' AND source_id='rec-p1'").run(storedPageVersion);
+  ok(staleVersionPayload.status === 404,
+    `答题卡版本与快照不一致时 upload-payload 按未命中处理（实际 ${staleVersionPayload.status}）`);
+
+  matrix(teacherA.id, { class_id: classA, block_id: "B1" });
   const scopedSessionView = await get(`/api/scanner/scan/${scanSession}`, tokenA);
   const listedRecords = (scopedSessionView.body?.records ?? []).map((r: { id: string }) => r.id);
   ok(scopedSessionView.status === 200 && listedRecords.length === 1 && listedRecords[0] === "rec-p1",
@@ -873,6 +1054,10 @@ async function main(): Promise<void> {
   const scopedCardsPreview = await get(`/api/cards/${scanCardId}/grading/preview/b1-page.png`, tokenA);
   ok(scopedCardsPreview.status === 403,
     `题块级教师走 cards 路径读整卷原图同样 403（grading-image 的收口不再有绕道，实际 ${scopedCardsPreview.status}）`);
+  const blockedImport = await get(importPayloadUrl, tokenA);
+  ok(blockedImport.status === 404 && !JSON.stringify(blockedImport.body).includes("91001"),
+    `题块教师的导入缓存按未命中返回，上传才能退回本机识别（实际 ${blockedImport.status} ${JSON.stringify(blockedImport.body).slice(0, 80)}）`);
+  rmSync(`${previewFile}.upload.json`, { force: true });
   rmSync(previewFile, { force: true });
   clearMatrix(teacherA.id);
   const wholePaperResults = await get(`/api/scanner/session/${scanSession}/results`, tokenA);

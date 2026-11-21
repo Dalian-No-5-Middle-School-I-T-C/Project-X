@@ -10,6 +10,7 @@ export function useScannerResultRefresh(jobIds: string[]) {
   const watched = useRef(new Set(jobIds));
   watched.current = new Set(jobIds);
   const seen = useRef(new Map<string, string>());
+  const lastPollAt = useRef(0);
   const [error, setError] = useState("");
   const refresh = useCallback(async (requested = ids.split(",")) => {
     for (const id of requested) if (id) pending.current.add(id);
@@ -40,14 +41,21 @@ export function useScannerResultRefresh(jobIds: string[]) {
     return () => window.clearTimeout(timeout);
   }, [terminal, refresh]);
   useEffect(() => {
-    const onVisible = () => { if (document.visibilityState === "visible") void refresh(); };
-    const timer = window.setInterval(onVisible, 30_000);
-    window.addEventListener("focus", onVisible);
-    document.addEventListener("visibilitychange", onVisible);
+    const MIN_POLL_MS = 15_000;
+    const maybeRefresh = () => {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (now - lastPollAt.current < MIN_POLL_MS) return;
+      lastPollAt.current = now;
+      void refresh();
+    };
+    const timer = window.setInterval(maybeRefresh, 60_000);
+    window.addEventListener("focus", maybeRefresh);
+    document.addEventListener("visibilitychange", maybeRefresh);
     return () => {
       window.clearInterval(timer);
-      window.removeEventListener("focus", onVisible);
-      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", maybeRefresh);
+      document.removeEventListener("visibilitychange", maybeRefresh);
     };
   }, [refresh]);
   return { jobs: snapshot.jobs, error, refresh };

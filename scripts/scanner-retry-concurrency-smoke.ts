@@ -36,7 +36,7 @@ try {
   const store = await import("../src/apps/answer-card/server/database/scan-store");
   const { runOcrOnSession } = await import("../src/apps/answer-card/server/scanner/scanner-service");
   const { recognizeAnswerCard } = await import("../src/apps/answer-card/server/recognition");
-  const { sessionCorrection, saveSessionCorrection, studentCorrection, saveStudentCorrection, storeCorrectionPage } = await import("../src/server/services/scanCorrection");
+  const { sessionCorrection, saveSessionCorrection, studentCorrection, saveStudentCorrection, storeCorrectionPage, correctionPageRevision } = await import("../src/server/services/scanCorrection");
   const { enqueueScannerSubmission, processScannerSession } = await import("../src/server/services/scannerSubmissions");
   const db = getMysqlDb(), repo = new CardRepository();
   const card = (await repo.findById(info.cardId))!;
@@ -76,6 +76,8 @@ try {
     await db.run("UPDATE twain_scan_records SET identity_json=?,student_id='91001',ocr_status='done' WHERE id=?", JSON.stringify(identity), record.id);
     await store.upsertRecognitionResult({ scanRecordId: record.id, objectiveJson: JSON.stringify(recognition.questions), subjectiveJson: JSON.stringify(recognition.subjectiveQuestions) });
     await storeCorrectionPage(current, "twain_scan_record", record.id, recognition);
+    const storedRevision = await correctionPageRevision("twain_scan_record", record.id, db);
+    assert.ok((storedRevision ?? 0) > 2_147_483_647, "correction revision must not be truncated to signed INT");
     const oldPage = (await sessionCorrection(current, session.id, "0", false)).pages[0];
     const edit = (page: typeof oldPage) => {
       let selected = toggleCorrectionCell(current, page, page.selected, cells.find(c => c.type === "objective_option" && c.option === "B")!.id);

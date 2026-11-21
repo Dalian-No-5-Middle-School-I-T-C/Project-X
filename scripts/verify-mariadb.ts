@@ -78,6 +78,77 @@ async function main(): Promise<void> {
     assert.deepEqual(await db.all("SELECT version, name FROM schema_migrations ORDER BY version"), migrations);
     console.log("PASS: fresh schema, migrations, repeated initialization");
 
+    // v69 backfill must not join text identifiers across mixed collations (PR #373 P1).
+    {
+      const recordId = "v69-mixed-collation-record";
+      const expectedRevision = 1_730_000_000_999;
+      await db.exec("ALTER TABLE answer_block_crops MODIFY source_record_id VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL");
+      await db.exec("ALTER TABLE scan_correction_pages MODIFY source_id VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL");
+      await db.run(
+        `INSERT INTO scan_correction_pages (source_type, source_id, card_version, layout_json, recognition_json, revision)
+         VALUES ('twain_scan_record', ?, 'v1', '{}', '{}', ?)
+         ON DUPLICATE KEY UPDATE revision = VALUES(revision)`,
+        recordId, expectedRevision,
+      );
+      await db.run(
+        `INSERT INTO answer_block_crops (id, card_id, source_type, source_record_id, block_id, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi)
+         VALUES ('v69-mixed-collation-crop', 'v69-card', 'twain_scan_record', ?, 'block-1', 'subjective', 1, 0, '[]', '{}', 'data/v69.png', 10, 10, 200)
+         ON DUPLICATE KEY UPDATE correction_revision = NULL`,
+        recordId,
+      );
+      await db.run("UPDATE answer_block_crops SET correction_revision = NULL WHERE id = 'v69-mixed-collation-crop'");
+      await db.run("DELETE FROM schema_migrations WHERE version IN (69, 70, 71)");
+      const migrationConnection = await (await import("mysql2/promise")).createConnection(getMariadbConfig());
+      try { await runMariadbMigrations(migrationConnection); } finally { await migrationConnection.end(); }
+      const backfilled = await db.get<{ correction_revision: number }>(
+        "SELECT correction_revision FROM answer_block_crops WHERE id = 'v69-mixed-collation-crop'",
+      );
+      assert.equal(backfilled!.correction_revision, null, "matching record IDs alone cannot establish which original produced a crop");
+      assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version = 69"));
+      await db.run("DELETE FROM answer_block_crops WHERE id = 'v69-mixed-collation-crop'");
+      await db.run("DELETE FROM scan_correction_pages WHERE source_id = ?", recordId);
+      console.log("PASS: historical crops remain available without inferred revisions after upgrade across mixed collations");
+    }
+
+    // Recover an interrupted v69, then clear unverifiable stamps once during v71.
+    {
+      const recordId = "v69-midfail-int-record";
+      const expectedRevision = 1_730_000_000_999;
+      await db.exec("ALTER TABLE answer_block_crops MODIFY COLUMN correction_revision INT NULL");
+      await db.run(
+        `INSERT INTO scan_correction_pages (source_type, source_id, card_version, layout_json, recognition_json, revision)
+         VALUES ('twain_scan_record', ?, 'v1', '{}', '{}', ?)
+         ON DUPLICATE KEY UPDATE revision = VALUES(revision)`,
+        recordId, expectedRevision,
+      );
+      await db.run(
+        `INSERT INTO answer_block_crops (id, card_id, source_type, source_record_id, block_id, block_type, page_number, segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi, correction_revision)
+         VALUES ('v69-midfail-int-crop', 'v69-card', 'twain_scan_record', ?, 'block-1', 'subjective', 1, 0, '[]', '{}', 'data/v69-midfail.png', 10, 10, 200, NULL)
+         ON DUPLICATE KEY UPDATE correction_revision = NULL`,
+        recordId,
+      );
+      await db.run("DELETE FROM schema_migrations WHERE version IN (69, 70, 71)");
+      const migrationConnection = await (await import("mysql2/promise")).createConnection(getMariadbConfig());
+      try { await runMariadbMigrations(migrationConnection); } finally { await migrationConnection.end(); }
+      const column = await db.get<{ Type: string }>(
+        "SHOW COLUMNS FROM answer_block_crops LIKE 'correction_revision'",
+      );
+      assert.match(column!.Type, /bigint/i, "v69 retry must widen an existing INT correction_revision column");
+      const backfilled = await db.get<{ correction_revision: number }>(
+        "SELECT correction_revision FROM answer_block_crops WHERE id = 'v69-midfail-int-crop'",
+      );
+      assert.equal(backfilled!.correction_revision, null);
+      await db.run("UPDATE answer_block_crops SET correction_revision=? WHERE id='v69-midfail-int-crop'", expectedRevision);
+      await initMariadbSchema();
+      assert.equal(Number((await db.get("SELECT correction_revision FROM answer_block_crops WHERE id='v69-midfail-int-crop'"))!.correction_revision),
+        expectedRevision, "new paired crops retain the full revision after restart");
+      assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version = 69"));
+      assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version = 70"));
+      await db.run("DELETE FROM answer_block_crops WHERE id = 'v69-midfail-int-crop'");
+      await db.run("DELETE FROM scan_correction_pages WHERE source_id = ?", recordId);
+      console.log("PASS: v69 correction-revision backfill retries after INT column mid-fail");
+    }
+
     // ===== v65：语文/数学模板的 13.1 这类小题号必须能落 MariaDB =====
     {
       const { CardRepository } = await import("../src/server/repositories/CardRepository");

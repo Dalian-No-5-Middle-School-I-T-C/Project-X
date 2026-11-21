@@ -168,6 +168,31 @@ async function main() {
     assert(clock.liveCount() === 0, `E-5: stop 后应无存活定时器，实际 ${clock.liveCount()}`);
   }
 
+  {
+    const clock = makeClock();
+    let probes = 0, firstSignal: AbortSignal | undefined;
+    let releaseLate!: (value: { ok: boolean; body: null }) => void;
+    const mon = createServerStatusMonitor({ serverUrl: () => "https://health.test", schedule: clock.schedule,
+      fetchHealth: async signal => {
+        probes++;
+        if (probes === 1) {
+          firstSignal = signal;
+          return new Promise(resolve => { releaseLate = resolve; });
+        }
+        return { ok: true, body: { capabilities: { scannerClientApi: true } } };
+      },
+    });
+    mon.subscribe(() => {});
+    await clock.flush(10_000);
+    assert(firstSignal?.aborted && mon.getState().kind === "offline", "timeout aborts a hanging probe");
+    assert(clock.nextDelay() === 5_000, "timeout schedules the recovery probe");
+    await clock.flush(5_000);
+    assert(mon.getState().kind === "online", "polling recovers after a hung request");
+    releaseLate({ ok: false, body: null });
+    await clock.flush(0);
+    assert(mon.getState().kind === "online", "late timed-out response must not change current status");
+    mon.stop();
+  }
   console.log("remote-server-status-smoke: 全部通过");
 }
 

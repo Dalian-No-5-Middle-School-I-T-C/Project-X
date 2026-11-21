@@ -7,8 +7,7 @@ import { getMysqlDb } from "../db";
  * 只看 `exams` 会把「绑定的考试全部被软删除」当成「本机扫描、尚未绑定」而放行，
  * 于是软删除反而绕开了范围校验（PR #312 复核 CR4）。这里一次性查出带归档标记的集合。
  */
-export async function resolveScannerExam(cardId: string, sessionId: string) {
-  const db = getMysqlDb();
+export async function resolveScannerExam(cardId: string, sessionId: string, db = getMysqlDb()) {
   const rows = await db.all<{ id: number; status: string; archived: number | string }>(
     `SELECT e.id, e.status,
             CASE WHEN EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)

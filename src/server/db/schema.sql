@@ -466,7 +466,8 @@ CREATE TABLE IF NOT EXISTS answer_block_crops (
     score_breakdown  TEXT,
     claimed_by       INTEGER REFERENCES users(id),
     claimed_at       DATETIME,
-    claim_count      INTEGER NOT NULL DEFAULT 0,
+    claim_count          INTEGER NOT NULL DEFAULT 0,
+    correction_revision  INTEGER,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(source_type, source_record_id, block_id, page_number, segment_index)
 );

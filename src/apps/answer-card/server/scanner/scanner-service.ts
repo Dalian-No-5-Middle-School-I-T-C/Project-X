@@ -1,9 +1,9 @@
-import { storeCorrectionPage } from "../../../../server/services/scanCorrection";
+import { correctionPageRevision, storeCorrectionPage } from "../../../../server/services/scanCorrection";
 import path from "node:path";
-import { mkdir } from "node:fs/promises";
+import { mkdir, unlink } from "node:fs/promises";
 import { dataDir } from "../storage";
 import {
-  createSession, createScanRecord, getSession, listScanRecords,
+  createSession, createScanRecord, getSession, getScanRecord, listScanRecords,
   updateScanOcrResult, updateScanQuality, updateSessionStatus,
   incrementPageCount, upsertRecognitionResult, rememberSessionCardVersion
 } from "../database/scan-store";
@@ -17,8 +17,8 @@ import { enqueueScannerSubmission, invalidateScanRecognitionInQueue } from "../.
 import { gradeCombinedRecognition } from "../../../../shared/grading";
 import type { CombinedRecognitionResult } from "../../../../shared/types";
 import { getMysqlDb } from "../../../../server/db";
-import { persistAnswerBlockCrops } from "../../../../server/services/AnswerBlockCropService";
-import { prepareCardLayoutById } from "../card-layout";
+import { persistAnswerBlockCrops, relocateUploadedCropsToStorage, retireSupersededCropImages } from "../../../../server/services/AnswerBlockCropService";
+import { findCardForLayout, prepareCardLayoutById } from "../card-layout";
 import { parseRecognitionDpi } from "../helpers";
 import { mapScanPageToLayout, applyScanStudentId, assignScanRecordPageNums } from "../../../../shared/scanPages";
 import { verifyDeliveredScanDpi } from "../../../../shared/scanDeliveredDpi";
@@ -233,28 +233,16 @@ export async function runOcrOnSession(
   retry?: { recordIds: Set<string>; studentId?: string },
   recognize: typeof recognizeAnswerCard = recognizeAnswerCard,
 ): Promise<void> {
-  // Keep native work, snapshots, OCR/crops and failure writes ordered with human
-  // corrections. The invalidation helper below already runs inside this queue.
-  return enqueueScannerSubmission(() => runOcrOnSessionInQueue(sessionId, cardId, onProgress, retry, recognize));
-}
-
-async function runOcrOnSessionInQueue(
-  sessionId: string,
-  cardId: string,
-  onProgress: ProgressHandler,
-  retry: { recordIds: Set<string>; studentId?: string } | undefined,
-  recognize: typeof recognizeAnswerCard,
-): Promise<void> {
   const records = (await listScanRecords(sessionId))
     .filter(r => !retry || retry.recordIds.has(r.id))
     .sort((a, b) => a.page_num - b.page_num || (a.side === b.side ? 0 : a.side === "front" ? -1 : 1));
-  const prepared = await prepareCardLayoutById(cardId);
+  const prepared = await enqueueScannerSubmission(() => prepareCardLayoutById(cardId));
   if (!prepared) {
     throw new Error("答题卡不存在，无法识别扫描结果");
   }
   const { card, layout, layoutPath: currentLayoutPath } = prepared;
   // 识别用的就是这一版卡。补传若改报「现在库里的卡」，版本守卫会把旧版面识别当成新版放行。
-  await rememberSessionCardVersion(sessionId, cardFingerprint(card));
+  await enqueueScannerSubmission(() => rememberSessionCardVersion(sessionId, cardFingerprint(card)));
   const session = await getSession(sessionId);
   const studentIdsByGroup = new Map<number, string>();
   // ③（issue #331）：整批一张红笔分数都没读到，说明色彩模式或笔迹出了问题，
@@ -264,144 +252,184 @@ async function runOcrOnSessionInQueue(
   let redMarkPages = 0;
   let redRejectedPages = 0;
 
+  const recordGroups = new Map<number, typeof records>();
   for (const record of records) {
-    if (!record.image_path) continue;
-    const { groupIndex, layoutPage, unusedSide } = mapScanPageToLayout(
-      record.page_num,
-      record.side,
-      layout.pages.length,
-      card.sided
-    );
-
-    if (unusedSide) {
-      await updateScanOcrResult(record.id, studentIdsByGroup.get(groupIndex) ?? null, null, "done", "已跳过未使用的空白背面");
-      onProgress({
-        sessionId,
-        type: "ocr_page_done",
-        recordId: record.id,
-        pageNum: record.page_num,
-        side: record.side,
-        studentId: studentIdsByGroup.get(groupIndex) ?? null,
-        message: "已跳过未使用的空白背面"
-      });
-      continue;
-    }
-
-    let invalidated = false;
-    try {
-      // Invalidate before retry: a failed new attempt must not expose old grades/crops.
-      await invalidateScanRecognitionInQueue(sessionId, record.id);
-      invalidated = true;
-      const recognition = (await recognize({
-        identityMode: session?.identity_mode ?? "strict",
-        imagePath: record.image_path,
-        layoutPath: currentLayoutPath,
-        pageNumber: layoutPage,
-        // 安全（#24）：会话里可能是修复前落库的超大 DPI，识别前统一夹紧。
-        dpi: parseRecognitionDpi(session?.dpi),
-        cropsDir: await createRecognitionCropTempDir(cardId, record.id)
-      })) as CombinedRecognitionResult;
-
-      // 分母只数「本页自己有分数格」且「格子真被采样过」的记录：needsRedPen 是整卡判定，
-      // 纯客观题页的 subjectiveQuestions 恒为空，跟着整卡计数会把「分数页不在这批里」说成
-      // 「一张都没读到」；而二维码/定位点失败时识别器提前返回 status:"failed"，格子一张没看过，
-      // 那种批次的故障是该页识别失败（已按页报出），再说红笔读不到会把排查带去笔迹和色彩模式。
-      const redPenOutcome = redPenPageOutcome(layout.pages[layoutPage - 1], recognition);
-      if (redPenOutcome !== "ignored") {
-        redPenPages += 1;
-        if (redPenOutcome === "accepted") redMarkPages += 1;
-        if (redPenOutcome === "rejected") redRejectedPages += 1;
-      }
-
-      await getMysqlDb().run("UPDATE twain_scan_records SET identity_json = ? WHERE id = ?", JSON.stringify(recognition.identity), record.id);
-      const recognizedStudentId = retry?.studentId ?? (recognition.studentId?.status === "ok" ? recognition.studentId.value : null);
-      if (retry?.studentId) applyScanStudentId(recognition, retry.studentId);
-      // 安全 R34：兼容模式（无二维码）没有可校验页序的身份信息，分组完全依赖物理页序，
-      // 而学号填涂区只在布局第 1 页生成（layout.ts 只对 page 1 调 layoutStudentArea）。
-      // 若允许任意页把学号写进分组表，缺页/乱序/ADF 双进纸造成的错位就会让后一份答卷
-      // 静默继承前一名学生的学号。因此兼容模式下只有第 1 页能为本组定学号；
-      // 其它页即使读到了学号也只记在自己名下（进而在汇总时暴露为「学号不一致」），
-      // 人工订正（retry.studentId）不受此限。
-      const legacyIdentity = (session?.identity_mode ?? "strict") === "legacy";
-      const maySeedGroupStudentId = !legacyIdentity || layoutPage === 1 || Boolean(retry?.studentId);
-      if (recognizedStudentId && maySeedGroupStudentId) {
-        studentIdsByGroup.set(groupIndex, recognizedStudentId);
-      } else if (recognizedStudentId && legacyIdentity) {
-        console.warn(
-          `[checkpoint] ocr session=${sessionId} record=${record.id} page=${record.page_num} side=${record.side} ` +
-            `第 ${layoutPage} 页读到学号 ${recognizedStudentId}，但兼容模式只认第 1 页的学号，未写入分组（疑似缺页/乱序/双进纸）`,
+    const { groupIndex } = mapScanPageToLayout(record.page_num, record.side, layout.pages.length, card.sided);
+    const group = recordGroups.get(groupIndex) ?? [];
+    group.push(record);
+    recordGroups.set(groupIndex, group);
+  }
+  for (const group of recordGroups.values()) {
+    // Keep all sides of one card ordered with human corrections, then let other
+    // submissions run before recognizing the next student's card.
+    await enqueueScannerSubmission(async () => {
+      for (const listedRecord of group) {
+        const record = await getScanRecord(listedRecord.id);
+        if (!record || record.session_id !== sessionId || !record.image_path) continue;
+        const currentCard = await findCardForLayout(cardId);
+        if (!currentCard || cardFingerprint(currentCard) !== cardFingerprint(card)) throw new Error("识别期间答题卡版本已变化，请重新识别");
+        const { groupIndex, layoutPage, unusedSide } = mapScanPageToLayout(
+          record.page_num,
+          record.side,
+          layout.pages.length,
+          card.sided
         );
-      }
-      const inheritedStudentId = studentIdsByGroup.get(groupIndex) ?? null;
-      const studentId = recognizedStudentId ?? inheritedStudentId;
-      const inherited = !recognizedStudentId && Boolean(inheritedStudentId);
-      if (inherited) {
-        applyScanStudentId(recognition, inheritedStudentId!, true);
-      }
-      const studentConf = recognizedStudentId ? 0.9 : inherited ? 0.9 : 0.0;
-      if (card) await storeCorrectionPage(card, "twain_scan_record", record.id, recognition);
-      const ocrStatus = recognition.status === "ok" ? "done" : recognition.status === "failed" ? "failed" : "review";
 
-      // 诊断检查点：每页识别结果摘要（考号是否读到/识别状态/失败原因），进 main.log 便于实机取证
-      const objectiveHits = Array.isArray(recognition.questions) ? recognition.questions.length : -1;
-      console.log(`[checkpoint] ocr session=${sessionId} record=${record.id} page=${record.page_num} side=${record.side} studentId=${recognizedStudentId ?? "none"} conf=${studentConf} status=${ocrStatus} objectiveHits=${objectiveHits}${recognition.message ? ` msg=${recognition.message}` : ""}`);
-
-      await updateScanOcrResult(record.id, studentId, studentConf,
-        ocrStatus as "done" | "failed" | "review", recognition.message);
-
-      if (card && recognition.status !== "failed") {
-        try {
-          const graded = gradeCombinedRecognition(card, record.image_path, recognition);
-          await upsertRecognitionResult({
-            scanRecordId: record.id,
-            objectiveJson: JSON.stringify(recognition.questions),
-            subjectiveJson: JSON.stringify(recognition.subjectiveQuestions ?? []),
-            totalScore: graded.totalScore,
-            maxScore: graded.totalMaxScore,
-            gradeStatus: "done"
+        if (unusedSide) {
+          await updateScanOcrResult(record.id, studentIdsByGroup.get(groupIndex) ?? null, null, "done", "已跳过未使用的空白背面");
+          onProgress({
+            sessionId,
+            type: "ocr_page_done",
+            recordId: record.id,
+            pageNum: record.page_num,
+            side: record.side,
+            studentId: studentIdsByGroup.get(groupIndex) ?? null,
+            message: "已跳过未使用的空白背面"
           });
-        } catch (gradeError) {
-          console.error(`[Scanner] Grading failed for record ${record.id}:`, gradeError);
-          await upsertRecognitionResult({
-            scanRecordId: record.id,
-            objectiveJson: JSON.stringify(recognition.questions),
-            subjectiveJson: JSON.stringify(recognition.subjectiveQuestions ?? []),
-            gradeStatus: "pending"
+          continue;
+        }
+
+        let invalidated = false;
+        try {
+          // Invalidate before retry: a failed new attempt must not expose old grades/crops.
+          await invalidateScanRecognitionInQueue(sessionId, record.id);
+          invalidated = true;
+          const recognition = (await recognize({
+            identityMode: session?.identity_mode ?? "strict",
+            imagePath: record.image_path,
+            layoutPath: currentLayoutPath,
+            pageNumber: layoutPage,
+            // 安全（#24）：会话里可能是修复前落库的超大 DPI，识别前统一夹紧。
+            dpi: parseRecognitionDpi(session?.dpi),
+            cropsDir: await createRecognitionCropTempDir(cardId, record.id)
+          })) as CombinedRecognitionResult;
+
+          // 分母只数「本页自己有分数格」且「格子真被采样过」的记录：needsRedPen 是整卡判定，
+          // 纯客观题页的 subjectiveQuestions 恒为空，跟着整卡计数会把「分数页不在这批里」说成
+          // 「一张都没读到」；而二维码/定位点失败时识别器提前返回 status:"failed"，格子一张没看过，
+          // 那种批次的故障是该页识别失败（已按页报出），再说红笔读不到会把排查带去笔迹和色彩模式。
+          const redPenOutcome = redPenPageOutcome(layout.pages[layoutPage - 1], recognition);
+          if (redPenOutcome !== "ignored") {
+            redPenPages += 1;
+            if (redPenOutcome === "accepted") redMarkPages += 1;
+            if (redPenOutcome === "rejected") redRejectedPages += 1;
+          }
+
+          await getMysqlDb().run("UPDATE twain_scan_records SET identity_json = ? WHERE id = ?", JSON.stringify(recognition.identity), record.id);
+          const recognizedStudentId = retry?.studentId ?? (recognition.studentId?.status === "ok" ? recognition.studentId.value : null);
+          if (retry?.studentId) applyScanStudentId(recognition, retry.studentId);
+          // 安全 R34：兼容模式（无二维码）没有可校验页序的身份信息，分组完全依赖物理页序，
+          // 而学号填涂区只在布局第 1 页生成（layout.ts 只对 page 1 调 layoutStudentArea）。
+          // 若允许任意页把学号写进分组表，缺页/乱序/ADF 双进纸造成的错位就会让后一份答卷
+          // 静默继承前一名学生的学号。因此兼容模式下只有第 1 页能为本组定学号；
+          // 其它页即使读到了学号也只记在自己名下（进而在汇总时暴露为「学号不一致」），
+          // 人工订正（retry.studentId）不受此限。
+          const legacyIdentity = (session?.identity_mode ?? "strict") === "legacy";
+          const maySeedGroupStudentId = !legacyIdentity || layoutPage === 1 || Boolean(retry?.studentId);
+          if (recognizedStudentId && maySeedGroupStudentId) {
+            studentIdsByGroup.set(groupIndex, recognizedStudentId);
+          } else if (recognizedStudentId && legacyIdentity) {
+            console.warn(
+              `[checkpoint] ocr session=${sessionId} record=${record.id} page=${record.page_num} side=${record.side} ` +
+                `第 ${layoutPage} 页读到学号 ${recognizedStudentId}，但兼容模式只认第 1 页的学号，未写入分组（疑似缺页/乱序/双进纸）`,
+            );
+          }
+          const inheritedStudentId = studentIdsByGroup.get(groupIndex) ?? null;
+          const studentId = recognizedStudentId ?? inheritedStudentId;
+          const inherited = !recognizedStudentId && Boolean(inheritedStudentId);
+          if (inherited) {
+            applyScanStudentId(recognition, inheritedStudentId!, true);
+          }
+          const studentConf = recognizedStudentId ? 0.9 : inherited ? 0.9 : 0.0;
+          // Write correction geometry before OCR metadata so human edits can proceed while
+          // recognition rows are still in flight (scanner-retry-concurrency regression).
+          if (card) await storeCorrectionPage(card, "twain_scan_record", record.id, recognition);
+          const ocrStatus = recognition.status === "ok" ? "done" : recognition.status === "failed" ? "failed" : "review";
+
+          // 诊断检查点：每页识别结果摘要（考号是否读到/识别状态/失败原因），进 main.log 便于实机取证
+          const objectiveHits = Array.isArray(recognition.questions) ? recognition.questions.length : -1;
+          console.log(`[checkpoint] ocr session=${sessionId} record=${record.id} page=${record.page_num} side=${record.side} studentId=${recognizedStudentId ?? "none"} conf=${studentConf} status=${ocrStatus} objectiveHits=${objectiveHits}${recognition.message ? ` msg=${recognition.message}` : ""}`);
+
+          await updateScanOcrResult(record.id, studentId, studentConf,
+            ocrStatus as "done" | "failed" | "review", recognition.message);
+
+          if (card && recognition.status !== "failed") {
+            try {
+              const graded = gradeCombinedRecognition(card, record.image_path, recognition);
+              await upsertRecognitionResult({
+                scanRecordId: record.id,
+                objectiveJson: JSON.stringify(recognition.questions),
+                subjectiveJson: JSON.stringify(recognition.subjectiveQuestions ?? []),
+                totalScore: graded.totalScore,
+                maxScore: graded.totalMaxScore,
+                gradeStatus: "done"
+              });
+            } catch (gradeError) {
+              console.error(`[Scanner] Grading failed for record ${record.id}:`, gradeError);
+              await upsertRecognitionResult({
+                scanRecordId: record.id,
+                objectiveJson: JSON.stringify(recognition.questions),
+                subjectiveJson: JSON.stringify(recognition.subjectiveQuestions ?? []),
+                gradeStatus: "pending"
+              });
+            }
+          }
+
+          let stagedCropPaths: string[] = [];
+          try {
+            const rawCrops = recognition.status === "failed" ? [] : recognition.blockCrops ?? [];
+            let cropsToPersist = rawCrops;
+            if (rawCrops.length > 0) {
+              const relocated = await relocateUploadedCropsToStorage({
+                cardId,
+                sourceType: "twain_scan_record",
+                sourceRecordId: record.id,
+              }, rawCrops);
+              stagedCropPaths = relocated.paths;
+              cropsToPersist = relocated.crops;
+            }
+            const db = getMysqlDb();
+            const saved = await db.transaction(async (tx) => {
+              const correctionRevision = card
+                ? await correctionPageRevision("twain_scan_record", record.id, tx)
+                : null;
+              return persistAnswerBlockCrops({
+                cardId,
+                studentNumber: studentId,
+                sourceType: "twain_scan_record",
+                sourceRecordId: record.id,
+                correctionRevision,
+                crops: cropsToPersist,
+                skipFileMoves: true,
+              }, tx);
+            });
+            await retireSupersededCropImages(saved.retireImagePaths ?? []);
+          } catch (cropError) {
+            await Promise.all(stagedCropPaths.map((filePath) => unlink(filePath).catch(() => {})));
+            console.error(`[Scanner] Block crop persistence failed for record ${record.id}:`, cropError);
+          }
+
+          if (recognition.quality?.overallScore !== undefined) {
+            await updateScanQuality(record.id, recognition.quality.overallScore as number);
+          }
+
+          onProgress({
+            sessionId, type: "ocr_page_done",
+            recordId: record.id, pageNum: record.page_num, side: record.side,
+            studentId, studentConf, ocrStatus, message: recognition.message
+          });
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          if (invalidated) await updateScanOcrResult(record.id, null, null, "failed", msg);
+
+          onProgress({
+            sessionId, type: "ocr_page_done",
+            recordId: record.id, pageNum: record.page_num, side: record.side,
+            studentId: null, ocrStatus: "failed", message: msg
           });
         }
       }
-
-      try {
-        await persistAnswerBlockCrops({
-          cardId,
-          studentNumber: studentId,
-          sourceType: "twain_scan_record",
-          sourceRecordId: record.id,
-          crops: recognition.status === "failed" ? [] : recognition.blockCrops ?? []
-        }, getMysqlDb());
-      } catch (cropError) {
-        console.error(`[Scanner] Block crop persistence failed for record ${record.id}:`, cropError);
-      }
-
-      if (recognition.quality?.overallScore !== undefined) {
-        await updateScanQuality(record.id, recognition.quality.overallScore as number);
-      }
-
-      onProgress({
-        sessionId, type: "ocr_page_done",
-        recordId: record.id, pageNum: record.page_num, side: record.side,
-        studentId, studentConf, ocrStatus, message: recognition.message
-      });
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      if (invalidated) await updateScanOcrResult(record.id, null, null, "failed", msg);
-
-      onProgress({
-        sessionId, type: "ocr_page_done",
-        recordId: record.id, pageNum: record.page_num, side: record.side,
-        studentId: null, ocrStatus: "failed", message: msg
-      });
-    }
+    });
   }
 
   const missNotice = redPenMissNotice({

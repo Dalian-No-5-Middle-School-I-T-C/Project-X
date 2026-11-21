@@ -89,7 +89,7 @@ export async function startScannerFlowFixture(port = 0, host = "127.0.0.1", opti
   const server = app.listen(port, host);
   await new Promise<void>(resolve => server.once("listening", resolve));
   const address = server.address() as { port: number };
-  return { baseUrl: `http://127.0.0.1:${address.port}`, close: async () => {
+  return { server, baseUrl: `http://127.0.0.1:${address.port}`, close: async () => {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     resetAdapter(); closeDatabase();
   } };

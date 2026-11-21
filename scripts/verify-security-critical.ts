@@ -1859,9 +1859,8 @@ async function main(): Promise<void> {
     check(pathOverride.status === 200 && pathOverrideBody.count === 1
       && !existsSync(escapedTarget) && Boolean(storedCrop) && isInsideDir(blockCropsDir, storedCrop!.image_path),
       "客户端上报的 path 被丢弃：切块只写进服务端决定的切块目录");
-    const r07TempDir = path.join(scannerUploadsDir, "crops-temp",
-      path.basename(r07Session.sessionId), path.basename(r07Session.token));
-    check(!existsSync(r07TempDir), "切块临时目录不残留（此前每次重试都在盘上留一份副本）");
+    const r07TempDir = path.join(scannerUploadsDir, "crops-temp");
+    check(!existsSync(r07TempDir) || readdirSync(r07TempDir).length === 0, "切块临时目录不残留（此前每次重试都在盘上留一份副本）");
     const unitSourcePath = path.join(scannerUploadsDir, "r07-unit-source.png");
     writeFileSync(unitSourcePath, pngBytes);
     const evilRawCrop = {

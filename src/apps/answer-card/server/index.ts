@@ -1,3 +1,5 @@
+import { cardFingerprint } from "../../../shared/cardVersion";
+import { readImportUploadPayload, storeImportUploadPayload } from "./import-upload-payload";
 import { runServiceTask } from "../../../server/lib/serviceTasks";
 import { loadRestoreRecoveryState } from "../../../server/lib/restoreRecovery";
 import { isServiceMaintenanceActive } from "../../../server/lib/serviceTasks";
@@ -159,7 +161,7 @@ import { parseIdentityMode } from "../../../shared/cardIdentity";
 import { recognizeAnswerCard, recognizeObjectiveAnswers } from "./recognition";
 import { createScannerRouter } from "./scanner/index";
 import { makeScannerAuth } from "../../../server/middleware/scanner-auth";
-import { enforceScannerCardScope } from "../../../server/middleware/scanner-scope";
+import { enforceScannerCardScope, scanPageScopeOf } from "../../../server/middleware/scanner-scope";
 
 import { assertImageFile, imageContentTypeFor, isImageExtension, rejectReasonForImportedAsset, safeImageExtension } from "./validate-upload";
 import {
@@ -604,7 +606,16 @@ async function persistGradingResultsLocked(
           student_id: stu.id
         });
         const correctionCard = await new CardRepository(tx).findById(String(exam.card_id));
-        if (correctionCard) await storeCorrectionPage(correctionCard, "scan_record", recordId, row.recognition, tx);
+        let correctionRevision: number | null = null;
+        if (correctionCard) {
+          await storeCorrectionPage(correctionCard, "scan_record", recordId, row.recognition, tx);
+          const revisionRow = await tx.get<{ revision: number }>(
+            "SELECT revision FROM scan_correction_pages WHERE source_type=? AND source_id=?",
+            "scan_record",
+            String(recordId),
+          );
+          correctionRevision = revisionRow ? Number(revisionRow.revision) : null;
+        }
         await persistAnswerBlockCrops({
           cardId: row.recognition.cardId ?? String(exam.card_id ?? ""),
           examId,
@@ -612,6 +623,7 @@ async function persistGradingResultsLocked(
           studentNumber: studentId,
           sourceType: "scan_record",
           sourceRecordId: recordId,
+          correctionRevision,
           crops: row.recognition.blockCrops ?? [],
           fileMoves,
         }, tx);
@@ -1584,6 +1596,10 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "答题卡不存在" });
         return;
       }
+      if (req.body.cardVersion && req.body.cardVersion !== cardFingerprint(card)) {
+        res.status(409).json({ message: "答题卡版本已变化，请重新识别后上传" });
+        return;
+      }
       if (!req.file) {
         res.status(400).json({ message: "没有收到答题卡图片" });
         return;
@@ -1619,6 +1635,8 @@ export async function createApp(): Promise<express.Express> {
       }
     } catch (error) {
       next(error);
+    } finally {
+      if (req.file?.path) await rm(req.file.path, { force: true }).catch(err => console.warn("[Recognition] upload temp cleanup failed", err));
     }
   });
 
@@ -1868,8 +1886,19 @@ export async function createApp(): Promise<express.Express> {
             cropsDir
           })) as CombinedRecognitionResult;
           recognition.subjectiveQuestions = recognition.subjectiveQuestions ?? [];
+          // 缓存只为上传省一次识别。写盘失败不能把已经判出来的成绩改成失败卷。
+          let uploadPayloadUrl: string | undefined;
+          if (boolField(req.body.prepareUpload)) {
+            try {
+              uploadPayloadUrl = await storeImportUploadPayload(cardId, cardFingerprint(card), file.path, recognition);
+            } catch (cacheError) {
+              console.warn("[grading] 导入识别缓存未写入，上传时将重新识别:", cacheError);
+            }
+          }
           return {
             ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition, confidenceThreshold),
+            inputIndex: files.indexOf(file),
+            uploadPayloadUrl,
             previewUrl: gradingPreviewUrl(cardId, file.path),
             actualPath: file.path
           };
@@ -1884,6 +1913,7 @@ export async function createApp(): Promise<express.Express> {
           };
           return {
             ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition, confidenceThreshold),
+            inputIndex: files.indexOf(file),
             previewUrl: gradingPreviewUrl(cardId, file.path),
             actualPath: file.path
           };
@@ -1907,6 +1937,7 @@ export async function createApp(): Promise<express.Express> {
       const result: CombinedGradingBatchResult = {
         batchId: `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         cardId,
+        cardVersion: cardFingerprint(card),
         rows,
         ...(persistence ? { persistence } : {})
       };
@@ -1924,6 +1955,24 @@ export async function createApp(): Promise<express.Express> {
       }
       next(error);
     }
+  });
+
+  app.get("/api/cards/:cardId/grading/upload-payload/:fileName", async (req, res, next) => {
+    try {
+      const cardId = safeId(paramValue(req.params.cardId));
+      // 身份、考试范围仍按原口径拒绝。只有「能看这张卡、但题块不够读整页缓存」按未命中，
+      // 让上传退回本机整页识别；整卷原图预览继续走下面的 403。
+      if (!await enforceScannerCardScope(req, res, cardId)) return;
+      if (scanPageScopeOf(res)?.restricted) {
+        res.status(404).json({ message: "导入识别缓存已失效" });
+        return;
+      }
+      const card = await cardRepo.findById(cardId);
+      const payload = card && await readImportUploadPayload(cardId, paramValue(req.params.fileName), cardFingerprint(card));
+      res.setHeader("Cache-Control", "no-store");
+      if (!payload) { res.status(404).json({ message: "导入识别缓存已失效" }); return; }
+      res.json(payload);
+    } catch (error) { next(error); }
   });
 
   app.get("/api/cards/:cardId/grading/preview/:fileName", async (req, res, next) => {

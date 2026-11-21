@@ -545,6 +545,8 @@ export type SubjectiveQuestionGrade = {
 };
 
 export type CombinedGradingRow = ObjectiveGradingRow & {
+  inputIndex?: number;
+  uploadPayloadUrl?: string;
   objectiveScore: number;
   objectiveMaxScore: number;
   subjectiveScore: number;
@@ -557,6 +559,7 @@ export type CombinedGradingRow = ObjectiveGradingRow & {
 
 export type CombinedGradingBatchResult = {
   batchId: string;
+  cardVersion?: string;
   cardId: string;
   rows: CombinedGradingRow[];
   persistence?: GradingPersistenceResult;
