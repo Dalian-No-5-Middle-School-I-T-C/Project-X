@@ -199,16 +199,19 @@ def pdf_bytes_to_images(pdf_bytes: bytes, max_pages: int = MAX_AI_PAGES) -> list
 def normalize_direct_files(files: list[dict[str, str]], max_pages: int = MAX_AI_PAGES) -> list[dict[str, str]]:
     """直传前归一化：PDF 转压缩页图，图片原样保留。"""
     out: list[dict[str, str]] = []
-    pdf_pages_used = 0
+    image_count = sum((f.get("mimeType") or "").lower() != "application/pdf" for f in files)
+    remaining_pages = max_pages - image_count
+    if remaining_pages < 0:
+        raise PdfPageLimitError(f"原卷图片超过多模态直传的 {max_pages} 页上限")
     for f in files:
         mime = (f.get("mimeType") or "").lower()
         if mime == "application/pdf":
             page_images = pdf_bytes_to_images(
                 base64.b64decode(f["base64"]),
-                max_pages=max_pages - pdf_pages_used,
+                max_pages=remaining_pages,
             )
             out.extend(page_images)
-            pdf_pages_used += len(page_images)
+            remaining_pages -= len(page_images)
         else:
             out.append(f)
     return out

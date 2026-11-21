@@ -246,7 +246,9 @@ def knowledge_points(
             # 给 504 + 可重试语义，前端才不会把它当成服务商不可用去换 key 重打。
             logger.warning("knowledge-points PDF render timed out: %s", exc)
             raise HTTPException(status_code=504, detail=str(exc)) from exc
-        except (PdfPageLimitError, PdfRenderError) as exc:
+        except PdfPageLimitError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except PdfRenderError as exc:
             logger.warning("knowledge-points PDF rejected: %s", exc)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
@@ -256,10 +258,12 @@ def knowledge_points(
     # Text mode (default)
     if not paper_text:
         raise HTTPException(status_code=400, detail="paperText required for text mode")
+    if len(paper_text) > 32_000:
+        raise HTTPException(status_code=413, detail="原卷分析最多支持 32000 个字符，请拆分后分析。")
     try:
         result = run_text_only(
             model=model,
-            paper_text=paper_text[:32000],
+            paper_text=paper_text,
             subject=subject,
             question_range=question_range,
             extra_notes=extra_notes,

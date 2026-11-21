@@ -195,6 +195,15 @@ class RealRenderTest(unittest.TestCase):
         with self.assertRaises(pdfmod.PdfPageLimitError):
             pdfmod.pdf_bytes_to_images(self.make_pdf(3), max_pages=2)
 
+    def test_pdf_and_images_share_page_limit_in_both_orders(self):
+        pdf = {"mimeType": "application/pdf", "base64": base64.b64encode(self.make_pdf(2)).decode()}
+        image = pdfmod.pdf_bytes_to_images(self.make_pdf(1))[0]
+        for files in ([pdf, image], [image, pdf]):
+            with self.subTest(first=files[0]["mimeType"]):
+                self.assertEqual(len(pdfmod.normalize_direct_files(files, max_pages=3)), 3)
+                with self.assertRaises(pdfmod.PdfPageLimitError):
+                    pdfmod.normalize_direct_files(files, max_pages=2)
+
     def test_giant_page_rejected_by_pixel_budget(self):
         # 一张 60000x60000 pt 的「伪装的巨页」：即使降到最低 DPI 也仍有上亿像素，
         # 以前会把渲染所在进程的内存打爆

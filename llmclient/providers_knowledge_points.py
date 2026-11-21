@@ -165,7 +165,7 @@ def run_text_only(
         model=model.id,
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": paper_text[:32000]},  # truncate for safety
+            {"role": "user", "content": paper_text},
         ],
         response_format={"type": "json_object"},
         max_tokens=4096,

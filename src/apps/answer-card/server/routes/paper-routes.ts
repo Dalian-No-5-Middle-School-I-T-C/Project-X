@@ -30,21 +30,21 @@ import {
   readPaperQuota,
 } from "../paperQuota";
 import { requestUploadBudget } from "../../../../server/lib/uploadBudget";
-import { autoExtractPaperText, getFileMime, getPaperInputKind, validatePaperUpload } from "../paper-ocr";
+import { getFileMime, readPaperForAnalysis, validatePaperUpload } from "../paper-ocr";
 import { PaperInputError } from "../paper-docx";
 import type { DbAdapter } from "../../../../server/db/mysql";
 import { getMysqlDb } from "../../../../server/db/mysql";
 import { CardRepository } from "../../../../server/repositories/CardRepository";
 import { KnowledgePointRepository } from "../../../../server/repositories/KnowledgePointRepository";
 import type { Request, Response } from "express";
-import { readFile, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "../llm-client";
 import { finalizeAiRun } from "../../../../server/services/aiTelemetry";
 // 安全（R11）：AI 计费与并发配额（占位与判定原子完成）；安全（R25）：对外错误摘要脱敏
 import { AiQuotaError, reserveAiCall } from "../../../../server/services/aiQuota";
 import { sanitizeOpsMessage } from "../../../../server/lib/opsErrorMessage";
 import { decryptField } from "../../../../server/lib/field-crypto";
-import { isVisionProvider, resolveKnowledgePointMode } from "../llm-capabilities";
+import { isVisionProvider } from "../llm-capabilities";
 import { buildObjectiveContext } from "../objective-context";
 
 function decodeMultipartFilename(name: string): string {
@@ -153,6 +153,7 @@ async function readKnowledgePointResponse(resp: globalThis.Response): Promise<an
   const data = await resp.json().catch(() => ({} as any));
   if (!resp.ok) {
     const detail = data?.detail || data?.message || data?.error || `LLM 服务返回 ${resp.status}`;
+    if (resp.status === 413) throw new PaperInputError("PAPER_TOO_LARGE", String(detail), 413);
     throw new Error(String(detail));
   }
   return data.knowledgePoints || [];
@@ -607,56 +608,24 @@ export function paperRoutes(): Router {
         ? JSON.stringify({ objectiveQuestions: objectiveItems })
         : "";
 
-      // 4. 构建对 llmclient 的请求
-      let knowledgePoints: any[] = [];
-      // DOCX is a ZIP document, not an image input. Even vision models need its
-      // extracted text when there are no image/PDF inputs.
-      const kind = await getPaperInputKind(cardId);
-      const mode = resolveKnowledgePointMode(isMultimodal && kind !== "docx");
-
-      if (mode === "direct") {
-        const files = await getPaperFiles(cardId);
-        // 多模态：读取文件 → base64 → 直传
-        if (files.length === 0) {
-          await finalizeAiRun(runId, { success: false, errorCode: "NO_FILES" });
-          res.status(400).json({ error: "NO_FILES", message: "未找到原卷文件" });
-          return;
-        }
-
-        const resp = await fetchLlmClient("/analysis/knowledge-points", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            mode, providerId: provider.providerId, model: provider.model, providerOverride: provider.providerOverride,
-            subject, questionRange: range, extraNotes: notes, files, answerCardJson,
-          }),
-        }, 60_000, { runId, provider: "llmclient", model: provider.model ?? null, stage: "knowledge_points" });
-
-        knowledgePoints = await readKnowledgePointResponse(resp);
-      } else {
-        // 纯文本模型：本地提取文字后发送
-        const extracted = await autoExtractPaperText(cardId);
-        if (!extracted.text || extracted.text.length < 10) {
-          await finalizeAiRun(runId, { success: false, errorCode: "TEXT_EXTRACTION_FAILED" });
-          res.status(400).json({
-            error: "TEXT_EXTRACTION_FAILED",
-            message: "无法从原卷提取文字。请上传带文字层的 DOCX/PDF，或改用具备视觉能力的模型（如 deepseek-v4-flash-vision-exp / Gemini / GPT）直读扫描件"
-          });
-          return;
-        }
-
-        const resp = await fetchLlmClient("/analysis/knowledge-points", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            mode, providerId: provider.providerId, model: provider.model, providerOverride: provider.providerOverride,
-            subject,
-            questionRange: range, extraNotes: notes, paperText: extracted.text, answerCardJson,
-          }),
-        }, 60_000, { runId, provider: "llmclient", model: provider.model ?? null, stage: "knowledge_points" });
-
-        knowledgePoints = await readKnowledgePointResponse(resp);
+      const input = await readPaperForAnalysis(cardId, isMultimodal);
+      const { mode } = input;
+      if (input.mode === "direct" && !input.files.length) {
+        throw new PaperInputError("NO_FILES", "未找到原卷文件");
       }
+      if (input.mode === "text" && !input.paperText) {
+        throw new PaperInputError("TEXT_EXTRACTION_FAILED", "无法从原卷提取文字。请上传带文字层的 DOCX/PDF，或改用具备视觉能力的模型直读扫描件。");
+      }
+
+      const resp = await fetchLlmClient("/analysis/knowledge-points", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...input, providerId: provider.providerId, model: provider.model, providerOverride: provider.providerOverride,
+          subject, questionRange: range, extraNotes: notes, answerCardJson,
+        }),
+      }, 60_000, { runId, provider: "llmclient", model: provider.model ?? null, stage: "knowledge_points" });
+      const knowledgePoints = await readKnowledgePointResponse(resp);
 
       await finalizeAiRun(runId, { success: true });
       res.json({ mode, knowledgePoints });
@@ -726,47 +695,4 @@ export function paperRoutes(): Router {
   });
 
   return router;
-}
-
-/**
- * 读取原卷文件并转为 base64 数组（用于多模态/OCR增强模式）
- *
- * 安全（R10）：AI 组包也受预算约束。一张「合法但很大」的卡（例如 60 页 × 每页 50MB）
- * 在旧实现里会被整份读进内存再 base64（体积再涨约 4/3），一次点击就能把服务端内存打满。
- * 这里复用同一档「单次请求体积」预算：页数 ≤ 每请求文件数、字节 ≤ 每请求体积，
- * 超限直接 413，而不是悄悄截断——截断会让 AI 分析出「只看了前几页」的错误结论。
- */
-async function getPaperFiles(cardId: string): Promise<Array<{ mimeType: string; base64: string }>> {
-  const dir = paperDir(cardId);
-  const files: Array<{ mimeType: string; base64: string }> = [];
-  let entries: string[] = [];
-  try { entries = await readdir(dir); } catch { return files; }
-
-  const imgRe = /^original(-\d+)?\.(jpg|jpeg|png|bmp|tiff|webp)$/i;
-  const pdfRe = /^original(-\d+)?\.pdf$/i;
-  let totalBytes = 0;
-
-  const collect = async (names: string[], mimeOf: (name: string) => string) => {
-    for (const name of names) {
-      if (files.length >= MAX_PAPER_FILES_PER_REQUEST) {
-        throw new PaperInputError("PAPER_AI_BUNDLE_TOO_LARGE",
-          `原卷共 ${names.length} 个文件，超过 AI 组包上限 ${MAX_PAPER_FILES_PER_REQUEST} 个，请拆分后分析`, 413);
-      }
-      const buf = await readFile(path.join(dir, name));
-      if (totalBytes + buf.length > MAX_PAPER_REQUEST_BYTES) {
-        throw new PaperInputError("PAPER_AI_BUNDLE_TOO_LARGE",
-          `原卷累计 ${Math.round((totalBytes + buf.length) / 1024 / 1024)}MB 超过 AI 组包预算 ${Math.round(MAX_PAPER_REQUEST_BYTES / 1024 / 1024)}MB`, 413);
-      }
-      totalBytes += buf.length;
-      files.push({ mimeType: mimeOf(name), base64: buf.toString("base64") });
-    }
-  };
-
-  // 所有页的图片（按页码排序）
-  await collect(entries.filter((e) => imgRe.test(e)).sort(), (name) => getFileMime(name));
-  if (files.length) return files;
-
-  // 回退：所有页的 PDF
-  await collect(entries.filter((e) => pdfRe.test(e)).sort(), () => "application/pdf");
-  return files;
 }

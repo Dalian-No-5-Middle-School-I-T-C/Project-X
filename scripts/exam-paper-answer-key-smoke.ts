@@ -27,6 +27,7 @@ import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import AdmZip from "adm-zip";
 import sharp from "sharp";
+import PDFDocument from "pdfkit";
 import { ZipFile } from "yauzl";
 
 // 先在一个带 remote config.yml 的目录里确认配置能被读到，再切到干净临时目录。
@@ -112,6 +113,121 @@ async function jsonFetch(base: string, url: string, init: RequestInit = {}, toke
   });
   const body = await r.json().catch(() => ({}));
   return { status: r.status, body };
+}
+
+async function textPdf(pages: string[]): Promise<Buffer> {
+  const doc = new PDFDocument({ autoFirstPage: false });
+  const chunks: Buffer[] = [];
+  const result = new Promise<Buffer>((resolve, reject) => {
+    doc.on("data", chunk => chunks.push(chunk));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+  });
+  for (const text of pages) {
+    doc.addPage().fontSize(8).text(text.match(/.{1,90}/g)?.join("\n") ?? "");
+  }
+  doc.end();
+  return result;
+}
+
+// Starts with two scanned images whose text is BACDB and ACCAB.
+async function verifyPaperAnalysis(base: string, cardId: string, token: string, dir: string) {
+  const { getMysqlDb } = await import("../src/server/db/mysql");
+  const db = getMysqlDb();
+  type Payload = { mode: string; paperText?: string; files?: { mimeType: string; base64: string }[] };
+  const received: Payload[] = [];
+  const sidecar = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    received.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ knowledgePoints: [] }));
+  });
+  await new Promise<void>((resolve, reject) => {
+    sidecar.once("error", reject);
+    sidecar.listen(0, "127.0.0.1", resolve);
+  });
+  const address = sidecar.address();
+  if (!address || typeof address === "string") throw new Error("缺少本机测试端口");
+  process.env.LLMCLIENT_AUTOSTART = "false";
+  process.env.LLMCLIENT_URL = `http://127.0.0.1:${address.port}`;
+  const provider = await db.run(
+    "INSERT INTO ai_providers (user_id, name, provider_type, base_url, api_key, models, is_system, is_active, sort_order) VALUES (1, '原卷测试', 'deepseek', '', '', ?, 1, 1, -100)",
+    JSON.stringify(["text"])
+  );
+  const paperPath = `/api/cards/${cardId}/paper`;
+  const analyze = () => jsonFetch(base, `/api/cards/${cardId}/knowledge-points/analyze`, {
+    method: "POST", body: JSON.stringify({ questionRange: "全部" }), signal: AbortSignal.timeout(30000),
+  }, token);
+  const upload = async (files: Buffer[], extension: "pdf" | "png", replace = true) => {
+    if (replace) {
+      const deleted = await jsonFetch(base, paperPath, { method: "DELETE", signal: AbortSignal.timeout(5000) }, token);
+      if (deleted.status !== 200) throw new Error("清理测试卷失败");
+    }
+    const form = new FormData();
+    files.forEach((file, i) => form.append("files", new Blob([new Uint8Array(file)]), `第${i + 1}件.${extension}`));
+    const result = await jsonFetch(base, paperPath, { method: "POST", body: form, signal: AbortSignal.timeout(5000) }, token);
+    if (result.status !== 200) throw new Error("原卷上传失败：" + JSON.stringify(result));
+  };
+  try {
+    const sixPages = await textPdf(["P1", "P2", "P3", "P4", "P5", "P6"]);
+    const shortPage = await textPdf(["X"]);
+    const { default: tesseract } = await import("tesseract.js");
+    const started = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const recognize = tesseract.recognize;
+    const pause = mock.method(tesseract, "recognize", async (...args: Parameters<typeof recognize>) => {
+      started.resolve();
+      await resume.promise;
+      return recognize(...args);
+    }, { times: 1 });
+    const analysis = analyze();
+    try {
+      await Promise.race([started.promise, analysis.then(result => { throw new Error("原卷未进入 OCR：" + JSON.stringify(result)); })]);
+      await upload([sixPages, shortPage], "pdf");
+    } finally {
+      resume.resolve();
+      pause.mock.restore();
+    }
+    const old = await analysis;
+    ok(old.status === 200 && /BACDB[\s\S]*ACCAB/.test(received.at(-1)?.paperText ?? ""),
+      "识别首页期间可更换整份原卷，知识点分析收到旧卷两页");
+    const fresh = await analyze();
+    ok(fresh.status === 200 && received.at(-1)?.paperText?.split(/\s+/).join(" ") === "P1 P2 P3 P4 P5 P6 X",
+      "换卷后读取六页 PDF 全部文字并收录单字短页");
+
+    const images = [];
+    for (let n = 3; n <= 10; n++) {
+      images.push(await sharp({ create: { width: 30, height: 20, channels: 3, background: { r: n * 20, g: 30, b: 60 } } }).png().toBuffer());
+    }
+    await upload(images, "png", false);
+    await db.run("UPDATE ai_providers SET provider_type = 'openai' WHERE id = ?", provider.lastInsertRowid);
+    const direct = await analyze();
+    const actual = received.at(-1)?.files ?? [];
+    const originals = [sixPages, shortPage, ...images.map((_, i) => readFileSync(path.join(dir, `original-${i + 3}.jpg`)))];
+    ok(direct.status === 200 && actual.length === originals.length &&
+      originals.every((file, i) => actual[i].base64 === file.toString("base64") && actual[i].mimeType === (i < 2 ? "application/pdf" : "image/jpeg")),
+      "直传按数字页序提交两份独立 PDF 和第 3 至 10 页图片，每页仅发送一次");
+    await db.run("UPDATE ai_providers SET provider_type = 'deepseek' WHERE id = ?", provider.lastInsertRowid);
+
+    await upload([shortPage], "pdf");
+    const single = await analyze();
+    ok(single.status === 200 && received.at(-1)?.paperText === "X", "整卷只有一个字符时完整交给文本模型");
+    const beforeLimits = received.length;
+    const longPdf = await textPdf(["A".repeat(16500)]);
+    await upload([longPdf, longPdf], "pdf");
+    const characters = await analyze();
+    ok(characters.status === 413 && characters.body.error === "PAPER_TOO_LARGE", "两份普通 PDF 累计超过 32000 字符时返回 413");
+    const twentyOne = await textPdf(Array.from({ length: 21 }, (_, i) => `Page ${i + 1}`));
+    await upload([twentyOne, twentyOne], "pdf");
+    const pages = await analyze();
+    ok(pages.status === 413 && pages.body.error === "PAPER_TOO_LARGE" && received.length === beforeLimits,
+      "两份普通 PDF 合计 42 页时返回 413，超额原卷均未送达模型");
+  } finally {
+    await db.run("DELETE FROM ai_providers WHERE id = ?", provider.lastInsertRowid);
+    sidecar.closeAllConnections();
+    await new Promise<void>(resolve => sidecar.close(() => resolve()));
+  }
 }
 
 async function main() {
@@ -411,6 +527,7 @@ async function main() {
   ok(invalidImage.status === 400 && invalidImage.body.code === "INVALID_PAPER_IMAGE" &&
     readdirSync(paperDir(cardId)).length === 4 && readdirSync(paperTmpDir).length === 0,
     "PNG 文件像素数据传输中断时返回图片格式错误，已上传原卷可保留");
+  await verifyPaperAnalysis(base, cardId, adminToken, paperDir(cardId));
   await jsonFetch(base, paperPath, { method: "DELETE" }, adminToken);
 
   // 落一张真实的第 1 页原卷图片（走既有卡片级分页表）
