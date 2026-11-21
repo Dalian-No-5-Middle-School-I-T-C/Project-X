@@ -139,6 +139,7 @@ import {
   optionLabelsForQuestion
 } from "../../../shared/grading";
 import {
+  subjectiveBlockTotalScore,
   validateCardScores
 } from "../../../shared/cardScoreValidation";
 import { buildLayout } from "../../../shared/layout";
@@ -1226,7 +1227,7 @@ function App() {
         }
         const prefix = toChineseBlockIndex(index + 1);
         const count = sub.questions.length;
-        const total = sub.questions.reduce((sum, q) => sum + (q.score || 0), 0);
+        const total = subjectiveBlockTotalScore(sub);
         block.title = buildAutoBlockTitle(prefix, typeName, count, total);
       }
       index++;
