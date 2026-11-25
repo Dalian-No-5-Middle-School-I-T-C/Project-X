@@ -228,8 +228,8 @@ export async function listScanRecords(sessionId: string): Promise<ScanRecord[]> 
   ) as ScanRecord[];
 }
 
-export async function listScanRecordsByCard(cardId: string): Promise<ScanRecord[]> {
-  return await db().all(
+export async function listScanRecordsByCard(cardId: string, d = db()): Promise<ScanRecord[]> {
+  return await d.all(
     "SELECT * FROM twain_scan_records WHERE card_id = ? ORDER BY created_at DESC",
     cardId
   ) as ScanRecord[];

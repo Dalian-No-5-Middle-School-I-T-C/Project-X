@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, CheckSquare, Database, ImageOff, Search, Trash2 } from "lucide-react";
 import {
   Badge, Button, Checkbox, ConfirmDialog, EmptyState, Input, SegmentedControl, Tip,
@@ -9,6 +9,7 @@ import type { PostprocessChannel } from "./postprocessChannel";
 
 type Filter = "all" | "normal" | "issue";
 type Layout = "grid" | "list";
+type DeleteBlock = { blocked?: string[]; uploadBlocked?: number };
 
 export interface DeleteTarget { sessionId: string; groupIds: string[] }
 
@@ -39,6 +40,8 @@ function statusOf(group: PostprocessGroup): { tone: "success" | "warning" | "dan
   }
 }
 
+const groupKey = (group: PostprocessGroup) => `${group.sessionId}/${group.groupId}`;
+
 export function PostprocessResultsView({
   groups, channel, onDelete, onOpen, onSaveAll, saveAllBusy = false, saveAllLabel = "保存成绩入库",
   saveAllTip, saveAllCount,
@@ -48,10 +51,17 @@ export function PostprocessResultsView({
   const [layout, setLayout] = useState<Layout>("grid");
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [blockedNotice, setBlockedNotice] = useState<string[] | null>(null);
+  const [confirmation, setConfirmation] = useState<"initial" | DeleteBlock | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelected(prev => {
+      if (prev.size === 0) return prev;
+      const remaining = new Set(groups.filter(group => prev.has(groupKey(group))).map(groupKey));
+      return remaining.size === prev.size ? prev : remaining;
+    });
+  }, [groups]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -66,12 +76,27 @@ export function PostprocessResultsView({
   // 正常但未入库的份数：这就是「保存成绩入库」要写的对象（异常卷保存会被服务端拒）
   const unsavedNormal = groups.filter(g => !g.issues.length && !g.saved).length;
   const pendingSaveCount = saveAllCount ?? unsavedNormal;
-  const stopSelecting = () => { setSelecting(false); setSelected(new Set()); };
-  const groupKey = (group: PostprocessGroup) => `${group.sessionId}/${group.groupId}`;
+  const visibleSelectedCount = visible.filter(group => selected.has(groupKey(group))).length;
+  const allVisibleSelected = visible.length > 0 && visibleSelectedCount === visible.length;
+  const hiddenSelectedCount = selected.size - visibleSelectedCount;
+  const filtered = filter !== "all" || query.trim() !== "";
+  const stopSelecting = () => {
+    setSelecting(false);
+    setSelected(new Set());
+    setDeleteError(null);
+  };
   const toggle = (group: PostprocessGroup) => setSelected(prev => {
     const next = new Set(prev);
     const key = groupKey(group);
     if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+  const toggleVisible = () => setSelected(prev => {
+    const next = new Set(prev);
+    for (const group of visible) {
+      if (allVisibleSelected) next.delete(groupKey(group));
+      else next.add(groupKey(group));
+    }
     return next;
   });
   /** 选中的组按所属会话归组下发，避免第二批的同名组被误删 */
@@ -79,27 +104,40 @@ export function PostprocessResultsView({
     const bySession = new Map<string, string[]>();
     for (const group of groups) {
       if (!selected.has(groupKey(group))) continue;
-      bySession.set(group.sessionId, [...(bySession.get(group.sessionId) ?? []), group.groupId]);
+      const ids = bySession.get(group.sessionId);
+      if (ids) ids.push(group.groupId);
+      else bySession.set(group.sessionId, [group.groupId]);
     }
     return [...bySession].map(([sessionId, groupIds]) => ({ sessionId, groupIds }));
   };
 
+  const blockedNotice = confirmation === "initial" ? null : confirmation;
+  const deleteWarnings = [
+    hiddenSelectedCount > 0 ? `已选扫描卡中有 ${hiddenSelectedCount} 张不在当前结果中。` : "",
+    blockedNotice?.uploadBlocked
+      ? `其中 ${blockedNotice.uploadBlocked} 张卷尚未上传完成或上传记录异常。继续删除将取消这些卷的未完成上传任务，移除本机扫描记录、原图和识别结果。服务器已保存的成绩不受影响。`
+      : "",
+    blockedNotice?.blocked?.length
+      ? `其中 ${blockedNotice.blocked.length} 张已有成绩记录或待处理，请先核对成绩状态。删除会移除本机扫描记录、原图和识别结果。服务器上已保存的成绩会保留，未保存的待处理记录将无法再从本机补传。`
+      : "",
+    blockedNotice ? "" : "本机扫描记录、原图和识别结果将被移除，且无法恢复。已上传到服务器的成绩不受影响。",
+  ].filter(Boolean).join(" ");
+
   async function runDelete(force: boolean) {
+    if (deleting) return;
     setDeleting(true);
     setDeleteError(null);
     try {
       await onDelete(selectedTargets(), force);
       stopSelecting();
-      setConfirmOpen(false);
-      setBlockedNotice(null);
+      setConfirmation(null);
     } catch (error) {
-      const err = error as { blocked?: string[] };
-      if (err?.blocked?.length) { setBlockedNotice(err.blocked); return; }
-      // 删除失败必须留在当前视图显示；直接抛给 void onConfirm 会触发扫描端全局
-      // unhandledrejection 遮罩，整页不可用。确认框的开关是 confirmOpen || blockedNotice，
-      // 不清掉上一次的 blockedNotice 就会让框继续挡在错误前面。
-      setConfirmOpen(false);
-      setBlockedNotice(null);
+      const block = error as DeleteBlock | null;
+      if (!force && (block?.blocked?.length || block?.uploadBlocked)) {
+        setConfirmation(block);
+        return;
+      }
+      setConfirmation(null);
       setDeleteError(error instanceof Error ? error.message : "删除失败");
     } finally {
       setDeleting(false);
@@ -123,7 +161,7 @@ export function PostprocessResultsView({
             { value: "issue", label: `异常 ${issueCount}` },
           ]}
         />
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
           {onSaveAll && pendingSaveCount > 0 && (
             <Tip label={saveAllTip ?? `把 ${pendingSaveCount} 份正常卷写成本机正式成绩；异常卷请先处理完再保存`}>
               <Button variant="secondary" size="sm" icon={<Database />} loading={saveAllBusy} disabled={saveAllBusy} onClick={() => void onSaveAll()}>
@@ -140,6 +178,11 @@ export function PostprocessResultsView({
           >
             选择
           </Button>
+          {selecting && (
+            <Button variant="outline" size="sm" disabled={visible.length === 0} onClick={toggleVisible}>
+              {allVisibleSelected ? "取消全选" : `${filtered ? "全选当前结果" : "全选"}（${visible.length}）`}
+            </Button>
+          )}
           <SegmentedControl
             aria-label="视图"
             size="sm"
@@ -149,6 +192,13 @@ export function PostprocessResultsView({
           />
         </div>
       </div>
+
+      {selecting && (deleteError || hiddenSelectedCount > 0) && (
+        <div className="shrink-0 border-b border-border-subtle bg-card px-4 py-2 text-xs">
+          {deleteError && <div className="text-destructive-fg" role="alert">{deleteError}</div>}
+          {hiddenSelectedCount > 0 && <div className="text-muted-foreground">已选扫描卡中有 {hiddenSelectedCount} 张不在当前结果中。</div>}
+        </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-auto p-4">
         {visible.length === 0 ? (
@@ -201,7 +251,15 @@ export function PostprocessResultsView({
             <Table>
               <TableHeader>
                 <TableRow>
-                  {selecting && <TableHead className="w-10" aria-label="选择" />}
+                  {selecting && (
+                    <TableHead className="w-10">
+                      <Checkbox
+                        checked={allVisibleSelected || (visibleSelectedCount > 0 ? "indeterminate" : false)}
+                        onCheckedChange={toggleVisible}
+                        aria-label="全选当前结果"
+                      />
+                    </TableHead>
+                  )}
                   <TableHead>考号</TableHead>
                   <TableHead numeric>页数</TableHead>
                   <TableHead numeric>客观</TableHead>
@@ -217,7 +275,11 @@ export function PostprocessResultsView({
                   return (
                     <TableRow key={groupKey(group)} clickable tabIndex={0}
                       onClick={() => (selecting ? toggle(group) : onOpen(group))}
-                      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (selecting) toggle(group); else onOpen(group); } }}>
+                      onKeyDown={e => {
+                        if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+                        e.preventDefault();
+                        if (selecting) toggle(group); else onOpen(group);
+                      }}>
                       {selecting && (
                         <TableCell onClick={e => e.stopPropagation()}>
                           <Checkbox checked={isSel} onCheckedChange={() => toggle(group)} aria-label={`选择 ${group.studentId ?? `组 ${group.groupId}`}`} />
@@ -239,13 +301,12 @@ export function PostprocessResultsView({
       </div>
 
       {selecting && (
-        <div className="flex items-center gap-3 border-t border-border-subtle bg-card px-4 py-2">
-          <b className="text-sm tabular-nums">已选 {selected.size} 张</b>
-          <span className="text-xs text-muted-foreground">删除 = 移除本机扫描记录与识别结果，不影响已上传的服务器成绩</span>
-          {deleteError && <span className="text-xs text-destructive-fg" role="alert">{deleteError}</span>}
-          <div className="ml-auto flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-3 border-t border-border-subtle bg-card px-4 py-2">
+          <b className="shrink-0 text-sm tabular-nums" aria-live="polite">已选 {selected.size} 张</b>
+          <span className="hidden min-w-0 truncate text-xs text-muted-foreground sm:block">删除会移除本机扫描记录和原图，服务器已保存的成绩会保留</span>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
             <Button variant="outline" size="sm" onClick={stopSelecting}>取消</Button>
-            <Button variant="destructive" size="sm" icon={<Trash2 />} disabled={!selected.size} onClick={() => setConfirmOpen(true)}>
+            <Button variant="destructive" size="sm" icon={<Trash2 />} disabled={!selected.size} onClick={() => setConfirmation("initial")}>
               删除选中（{selected.size}）
             </Button>
           </div>
@@ -253,12 +314,10 @@ export function PostprocessResultsView({
       )}
 
       <ConfirmDialog
-        open={confirmOpen || !!blockedNotice}
-        onOpenChange={open => { if (!open) { setConfirmOpen(false); setBlockedNotice(null); } }}
+        open={confirmation !== null}
+        onOpenChange={open => { if (!open && !deleting) setConfirmation(null); }}
         title={`删除 ${selected.size} 张扫描卡？`}
-        description={blockedNotice
-          ? `其中 ${blockedNotice.length} 张已有成绩记录或待处理，请先核对成绩状态。删除只会移除本机扫描记录和识别结果；服务器上已保存的成绩会保留，未保存的待处理记录将无法再从本机补传。`
-          : "本机扫描记录与识别结果将被移除，且无法恢复。已上传到服务器的成绩不受影响。"}
+        description={deleteWarnings}
         confirmLabel={blockedNotice ? "知晓代价，仍删除" : "删除"}
         loading={deleting}
         onConfirm={() => void runDelete(!!blockedNotice)}

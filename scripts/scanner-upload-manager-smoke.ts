@@ -2,6 +2,7 @@
 // ①全成功 ②断线暂停→恢复续传 ③重试耗尽→error→手动 retryFailed 补发 complete
 import { createScannerUploadManager } from "../src/apps/answer-card/client/lib/scannerUploadManager";
 import type { StartUploadInput } from "../src/apps/answer-card/client/lib/scannerUploadManager";
+import { isGroupQueued, readScanUploadRecovery, writeScanUploadRecovery } from "../src/apps/answer-card/client/lib/scannerUploadLedger";
 import { mapImportedScanPages, mapScanPageToLayout, uniqueScanConflictCards } from "../src/shared/scanPages";
 import { createDefaultCard } from "../src/shared/defaultCard";
 import { gradeCombinedRecognition } from "../src/shared/grading";
@@ -75,6 +76,245 @@ async function waitTerminal(
     if (Date.now() > deadline) throw new Error("等待任务终态超时");
     await sleepReal(5);
   }
+}
+
+async function waitUntil(ready: () => boolean, message: string): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  while (!ready()) {
+    if (Date.now() > deadline) throw new Error(message);
+    await sleepReal(5);
+  }
+}
+
+function localScan(localSessionId: string, groupIds = ["0"]): StartUploadInput {
+  const input = baseInput(groupIds.length);
+  return {
+    ...input, kind: "scan", localSessionId,
+    pages: input.pages.map((page, index) => ({ ...page, groupId: groupIds[index] })),
+  };
+}
+
+async function verifyLateUploadCancellation(): Promise<void> {
+  for (const heldEndpoint of ["/sessions", "/pages", "/crops", "/complete", "/correct"]) {
+    const sessionId = `late-${heldEndpoint.slice(1)}`;
+    if (heldEndpoint === "/correct") {
+      writeScanUploadRecovery("card_1", sessionId, "0", {
+        remoteBase: "", remoteSessionId: sessionId, cardVersion: TEST_CARD_VERSION, completed: false,
+        dpi: 300, paperSize: "A4", identityMode: "strict", pendingStudentId: "82048",
+        pages: [{ pageNum: 1, side: "front", token: "original", done: true }],
+      });
+    }
+    let releaseResponse: () => void = () => {};
+    const heldResponse = new Promise<void>(resolve => { releaseResponse = resolve; });
+    const requests: string[] = [];
+    let creates = 0;
+    let held = false;
+    const manager = createScannerUploadManager(deps({
+      localFetch: async () => jsonRes({ status: "ok", studentId: { status: "ok", value: "82048" },
+        questions: [], subjectiveQuestions: [], cropImages: [{ dataBase64: "eA==" }] }),
+      remoteFetch: async url => {
+        requests.push(url);
+        if (!held && url.endsWith(heldEndpoint)) { held = true; await heldResponse; }
+        if (url.endsWith("/sessions")) {
+          const first = creates++ === 0 && heldEndpoint !== "/correct";
+          return jsonRes({ sessionId: first ? sessionId : "next-upload", uploadTokens: ["original"] });
+        }
+        if (url.endsWith("/results")) {
+          return jsonRes({ results: [{ groupId: "0", saved: false, pages: [{ recordId: "original" }] }], failures: [] });
+        }
+        if (url.endsWith("/crops")) return jsonRes({ count: 1 });
+        return jsonRes({ ok: true });
+      },
+    }));
+    const id = manager.startUpload(localScan(sessionId));
+    await waitUntil(() => held, `未发出 ${heldEndpoint} 请求`);
+    assert(!manager.releaseGroupForLocalDelete("card_1", "0", sessionId, { force: false }).ok, "默认删除应保护在途任务");
+    if (heldEndpoint !== "/sessions") {
+      assert(readScanUploadRecovery("card_1", sessionId, "0")?.completed === false, "远端会话已建立，应有未完成的恢复记录");
+    }
+    const forced = manager.releaseGroupForLocalDelete("card_1", "0", sessionId, { force: true });
+    assert(forced.ok && forced.forgetLedger, "显式删除释放在途任务与尚未完成的入队资格");
+    assert(!manager.getState().jobs.some(job => job.id === id), "强制取消立即移出任务卡");
+
+    const before = requests.filter(url => url.includes(`/sessions/${sessionId}/`)).length;
+    releaseResponse();
+    const next = manager.startUpload(baseInput(1));
+    assert((await waitTerminal(manager, next)).status === "done", "忽略已取消的响应后队列可继续执行");
+    assert(requests.filter(url => url.includes(`/sessions/${sessionId}/`)).length === before, "晚到的响应不能触发原会话的下一步请求");
+    assert(readScanUploadRecovery("card_1", sessionId, "0") === null, "晚到的响应不能重建恢复记录");
+    assert(!isGroupQueued("card_1", sessionId, "0"), "晚到的完成响应不能补写去重标记");
+    assert(!manager.hasGroupUpload("card_1", "0", sessionId), "取消后不能占住原卷的上传资格");
+  }
+}
+
+async function verifyBulkUploadCleanup(): Promise<void> {
+  let offline = false;
+  let failFirstPageAndPause = false;
+  let pageReads = 0;
+  let nextSession = 0;
+  const manager = createScannerUploadManager(deps({
+    getServerKind: () => offline ? "offline" : "online",
+    remoteFetch: async (url, init) => {
+      if (url.endsWith("/sessions")) {
+        nextSession++;
+        return jsonRes({ sessionId: `bulk-${nextSession}`, uploadTokens: ["first", "second"] });
+      }
+      if (url.endsWith("/pages")) {
+        if (failFirstPageAndPause && (init?.body as FormData).get("pageNum") === "1") offline = true;
+        if (offline || url.includes("/bulk-2/") || url.includes("/bulk-3/")) {
+          return jsonRes({ message: "受控上传失败" }, 400);
+        }
+      }
+      return jsonRes({ ok: true });
+    },
+  }));
+  const completed = manager.startUpload(localScan("bulk-done"));
+  assert((await waitTerminal(manager, completed)).status === "done");
+  const failed = ["bulk-failed-1", "bulk-failed-2"].map(sessionId => manager.startUpload(localScan(sessionId)));
+  for (const id of failed) assert((await waitTerminal(manager, id)).status === "error");
+  const pending = localScan("bulk-paused", ["0", "1"]);
+  const paused = manager.startUpload(pending);
+  failFirstPageAndPause = true;
+  await waitUntil(() => manager.getState().jobs.some(job => job.id === paused && job.status === "paused"), "任务未暂停");
+  const queued = ["bulk-queued-1", "bulk-queued-2"].map(sessionId => {
+    const input = localScan(sessionId);
+    input.pages[0].getBlob = async () => { pageReads++; return blob(); };
+    return manager.startUpload(input);
+  });
+  assert(manager.getState().queuedCount === 2, "暂停任务后的两项应在排队");
+
+  let notifications = 0;
+  const unsubscribe = manager.subscribe(() => { notifications++; });
+  manager.dismissTerminalJobs("error");
+  assert(notifications === 1, "清空失败仅通知一次");
+  assert(failed.every(id => !manager.getState().jobs.some(job => job.id === id)), "所有失败任务已移出");
+  assert(manager.getState().jobs.some(job => job.id === completed && job.status === "done"), "清空失败保留完成任务");
+  assert(readScanUploadRecovery("card_1", "bulk-failed-1", "0")?.completed === false, "清空失败保留续传记录");
+  assert(manager.localGroupDeleteBlock("card_1", "0", "bulk-failed-1") !== null, "清空失败后仍默认保护原卷");
+  const gone = await manager.getFailedPageBlobs(failed[0]).then(() => false, () => true);
+  assert(gone, "已关闭的失败任务不能再读取失败页缓存");
+
+  const canReadFailedPage = await manager.getFailedPageBlobs(paused);
+  assert(canReadFailedPage.length === 1 && canReadFailedPage[0].blob.size > 0, "暂停时可读取已经失败的页面");
+  notifications = 0;
+  manager.cancelPendingJobs();
+  assert(notifications === 1, "批量取消仅通知一次");
+  assert(manager.getState().jobs.some(job => job.id === paused && job.status === "cancelled"), "暂停任务显示已取消");
+  assert(queued.every(id => !manager.getState().jobs.some(job => job.id === id)), "排队任务均已移出");
+  const releasedPage = await manager.getFailedPageBlobs(paused).then(() => false, () => true);
+  assert(releasedPage, "取消暂停任务释放该任务的失败页资源");
+
+  notifications = 0;
+  manager.dismissTerminalJobs();
+  assert(notifications === 1 && manager.getState().jobs.length === 0, "清理全部终态移出完成和取消任务");
+  unsubscribe();
+  failFirstPageAndPause = offline = false;
+  const next = manager.startUpload(baseInput(1));
+  assert((await waitTerminal(manager, next)).status === "done", "批量取消已唤醒暂停等待器");
+  assert(pageReads === 0, "已取消的排队任务未读取任何原图");
+}
+
+async function verifyForcedGroupRelease(): Promise<void> {
+  let offline = false;
+  let failPages = true;
+  const manager = createScannerUploadManager(deps({
+    getServerKind: () => offline ? "offline" : "online",
+    remoteFetch: async url => {
+      if (url.endsWith("/sessions")) return jsonRes({ sessionId: "force-remote", uploadTokens: ["token"] });
+      if (url.endsWith("/pages") && failPages) return jsonRes({ message: "版本不同，无法上传" }, 409);
+      return jsonRes({ ok: true });
+    },
+  }));
+  const failed = manager.startUpload(localScan("force-error"));
+  assert((await waitTerminal(manager, failed)).status === "error");
+  const incomplete = readScanUploadRecovery("card_1", "force-error", "0");
+  assert(incomplete?.completed === false, "创建成功但传页失败应保留未完成记录");
+  assert(!manager.releaseGroupForLocalDelete("card_1", "0", "force-error").ok, "默认删除保护未完成的恢复记录");
+  const forcedError = manager.releaseGroupForLocalDelete("card_1", "0", "force-error", { force: true });
+  assert(forcedError.ok && forcedError.forgetLedger, "强制删除失败的卷恢复入队资格");
+  assert(!manager.getState().jobs.some(job => job.id === failed), "强制删除关闭错误任务");
+  assert(readScanUploadRecovery("card_1", "force-error", "0") === null, "强制删除清理未完成记录");
+
+  localStorage.setItem(`projectx-scanner-upload-recovery/${JSON.stringify(["card_1", "force-damaged", "0"])}`, '{"remoteSessionId":');
+  assert(!manager.releaseGroupForLocalDelete("card_1", "0", "force-damaged").ok, "默认删除保护已损坏的恢复记录");
+  const forcedDamaged = manager.releaseGroupForLocalDelete("card_1", "0", "force-damaged", { force: true });
+  assert(forcedDamaged.ok && forcedDamaged.forgetLedger, "损坏记录不会占住强制删除后的入队资格");
+  assert(readScanUploadRecovery("card_1", "force-damaged", "0") === null, "强制删除清理损坏记录");
+
+  writeScanUploadRecovery("card_1", "force-completed-recovery", "0", { ...incomplete, completed: true });
+  const completedRecovery = manager.releaseGroupForLocalDelete("card_1", "0", "force-completed-recovery", { force: true });
+  assert(completedRecovery.ok && !completedRecovery.forgetLedger, "已完成的恢复记录保护远端去重标记");
+  assert(readScanUploadRecovery("card_1", "force-completed-recovery", "0")?.completed, "保留已完成的恢复记录");
+
+  offline = true;
+  const paused = manager.startUpload(localScan("force-paused"));
+  const queued = manager.startUpload(localScan("force-queued"));
+  assert(manager.getState().jobs.some(job => job.id === paused && job.status === "paused"), "当前任务等待网络恢复");
+  assert(manager.getState().jobs.some(job => job.id === queued && job.status === "queued"), "后续任务等待入队");
+  for (const sessionId of ["force-queued", "force-paused"]) {
+    const forced = manager.releaseGroupForLocalDelete("card_1", "0", sessionId, { force: true });
+    assert(forced.ok && forced.forgetLedger, "强制删除允许从排队或暂停状态取消任务");
+  }
+  assert(manager.getState().jobs.length === 0, "强制取消移出暂停与排队的任务卡");
+
+  const cancelled = manager.startUpload(localScan("force-cancelled"));
+  await waitUntil(() => manager.getState().jobs.some(job => job.id === cancelled && job.status === "paused"), "强制取消应唤醒泵内的等待任务");
+  manager.cancelJob(cancelled);
+  assert(manager.getState().jobs.some(job => job.id === cancelled && job.status === "cancelled"), "单个取消保留终态卡");
+  const forcedCancelled = manager.releaseGroupForLocalDelete("card_1", "0", "force-cancelled", { force: true });
+  assert(forcedCancelled.ok && forcedCancelled.forgetLedger && manager.getState().jobs.length === 0, "强制删除移出已取消任务卡");
+
+  const unsubscribe = manager.subscribe(() => {
+    if (manager.getState().jobs.some(job => job.status === "paused")) manager.cancelPendingJobs();
+  });
+  const justPaused = manager.startUpload(localScan("force-just-paused"));
+  await waitUntil(() => manager.getState().jobs.some(job => job.id === justPaused && job.status === "cancelled"), "暂停通知中的取消未执行");
+  unsubscribe();
+  offline = failPages = false;
+  const done = manager.startUpload(localScan("force-done"));
+  assert((await waitTerminal(manager, done)).status === "done");
+  const forcedDone = manager.releaseGroupForLocalDelete("card_1", "0", "force-done", { force: true });
+  assert(forcedDone.ok && !forcedDone.forgetLedger, "已完成任务保留入队去重标记");
+  assert(isGroupQueued("card_1", "force-done", "0"), "已完成任务移出后完成标记保留");
+  const restarted = createScannerUploadManager(deps());
+  for (const force of [false, true]) {
+    const afterRestart = restarted.releaseGroupForLocalDelete("card_1", "0", "force-done", { force });
+    assert(afterRestart.ok && !afterRestart.forgetLedger, "重启后继续保留服务器已完成的凭据");
+  }
+}
+
+async function verifySharedUploadRelease(): Promise<void> {
+  let offline = true;
+  let pageCount: number | undefined;
+  const uploadedPages: string[] = [];
+  let releaseCreate: () => void = () => {};
+  const heldCreate = new Promise<void>(resolve => { releaseCreate = resolve; });
+  const manager = createScannerUploadManager(deps({
+    getServerKind: () => offline ? "offline" : "online",
+    remoteFetch: async (url, init) => {
+      if (url.endsWith("/sessions")) {
+        pageCount = JSON.parse(String(init?.body)).pageCount;
+        await heldCreate;
+        return jsonRes({ sessionId: "shared", uploadTokens: ["first", "second"] });
+      }
+      if (url.endsWith("/pages")) uploadedPages.push(String((init?.body as FormData).get("pageNum")));
+      return jsonRes({ ok: true });
+    },
+  }));
+  const blocker = manager.startUpload(baseInput(1));
+  const shared = manager.startUpload(localScan("force-shared", ["0", "1", "2"]));
+  const detached = manager.releaseGroupForLocalDelete("card_1", "0", "force-shared", { force: true });
+  assert(detached.ok && detached.forgetLedger, "远端未建会话的混合任务可单独放弃选中卷");
+  assert(!manager.hasGroupUpload("card_1", "0", "force-shared"), "删除组已脱离混合任务");
+  assert(manager.hasGroupUpload("card_1", "1", "force-shared") && manager.hasGroupUpload("card_1", "2", "force-shared"), "其余组保留在混合任务");
+  offline = false;
+  manager.cancelJob(blocker);
+  await waitUntil(() => pageCount !== undefined, "剩余组未请求创建会话");
+  const mixedInFlight = manager.releaseGroupForLocalDelete("card_1", "1", "force-shared", { force: true });
+  assert(!mixedInFlight.ok, "已请求远端页槽的混合任务不会被单组删除打断");
+  releaseCreate();
+  assert((await waitTerminal(manager, shared)).status === "done", "保留组能完成原任务");
+  assert(pageCount === 2 && uploadedPages.join(",") === "2,3", "只给保留组分配令牌并上传其原页");
 }
 
 async function main() {
@@ -1213,7 +1453,6 @@ async function main() {
       removeItem: (key: string) => { values.delete(key); },
     } });
     try {
-      const { isGroupQueued } = await import("../src/apps/answer-card/client/lib/scannerUploadLedger");
       let releaseBlocker: () => void = () => {};
       const blockerGate = new Promise<void>(resolve => { releaseBlocker = resolve; });
       let sessions = 0;
@@ -1328,6 +1567,10 @@ async function main() {
         assert(completes >= 1 && isGroupQueued("card_1",localSessionId,"0"),"完成后保留去重凭据");
         assert(restored.localGroupDeleteBlock("card_1","0",localSessionId) === null,"完成后可以删除本机原图");
       }
+      await verifyLateUploadCancellation();
+      await verifyBulkUploadCleanup();
+      await verifyForcedGroupRelease();
+      await verifySharedUploadRelease();
     } finally {
       if (previous) Object.defineProperty(globalThis, "localStorage", previous);
       else Reflect.deleteProperty(globalThis, "localStorage");

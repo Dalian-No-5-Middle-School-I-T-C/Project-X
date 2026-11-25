@@ -1,6 +1,8 @@
 import { runServiceTask } from "../../../../server/lib/serviceTasks";
 import { scanCorrectionRouter } from "../../../../server/routes/scan-correction";
-import { processScannerSession, discardScannerGroup, listActiveReceiptGroups, writeScannerSession } from "../../../../server/services/scannerSubmissions";
+import {
+  processScannerSession, discardScannerGroup, listActiveReceiptGroups, runScannerCommittedRead, writeScannerSession,
+} from "../../../../server/services/scannerSubmissions";
 import { scannerLegacyRecoveryRouter } from "../../../../server/routes/scanner-legacy-recovery";
 import {
   filterRecognitionJson,
@@ -16,12 +18,14 @@ import { resolveScannerExam } from "../../../../server/services/scannerExam";
 import { parseRecognitionDpi } from "../helpers";
 import { Router, type Response } from "express";
 import { existsSync } from "node:fs";
+import { lstat, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
-import { listSources, runScanSession, createScanSession, runOcrOnSession, getCardScansWithStudents } from "./scanner-service";
+import { listSources, runScanSession, createScanSession, runOcrOnSession, getCardScansWithStudents, scansDir } from "./scanner-service";
 import { cancelScan } from "./twain-bridge";
 import { isScanWorkerActive } from "./scanWorkers";
 import {
   listScanRecords,
+  listScanRecordsByCard,
   getScanRecordWithResult,
   deleteScanRecord,
   deleteScanRecordInTransaction,
@@ -53,6 +57,38 @@ function enqueuePersist(task: () => Promise<void>): Promise<void> {
   const run = persistQueue.then(() => task());
   persistQueue = run.then(() => undefined, () => undefined);
   return run;
+}
+
+/** 清理本次扫描在本机生成的原图。扫描桥以会话 ID 命名文件，上传和切图另有目录。 */
+async function removeLocalScanImages(cardId: string, sessionId: string, imagePaths: string[]): Promise<void> {
+  const scanDir = scansDir(safeId(cardId));
+  const prefix = `session_${sessionId}_`;
+  const candidates = new Set<string>();
+  for (const imagePath of imagePaths) {
+    if (!path.isAbsolute(imagePath) || path.relative(scanDir, path.dirname(imagePath))) continue;
+    const name = path.basename(imagePath);
+    if (name.startsWith(prefix) && /^\d+_(front|back)\.jpg$/.test(name.slice(prefix.length))) candidates.add(name);
+  }
+  if (candidates.size === 0) return;
+
+  try {
+    const expectedDir = path.join(await realpath(dataDir), "scans", safeId(cardId));
+    const actualDir = await realpath(scanDir);
+    if (path.relative(expectedDir, actualDir)) return;
+    const references = await runScannerCommittedRead(db => listScanRecordsByCard(cardId, db));
+    const retainedNames = new Set(references.map(row => path.basename(row.image_path).toLowerCase()));
+    for (const name of candidates) {
+      if (retainedNames.has(name.toLowerCase())) continue;
+      try {
+        const target = path.join(actualDir, name);
+        if ((await lstat(target)).isFile()) await unlink(target);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.warn("[Scanner] 删除本机原图失败", error);
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.warn("[Scanner] 清理本机原图失败", error);
+  }
 }
 
 /** 未带 groupIds：整会话保存（扫描面板原按钮）。带了：只保存点名的组，且调用方要自己排除待复核组。 */
@@ -746,32 +782,41 @@ export function createScannerRouter(twainEnabled = true): Router {
         ? [...new Set(body.groupIds.filter((g): g is string => typeof g === "string" && g.length > 0))]
         : [];
       if (!groupIds.length) { res.status(400).json({ message: "groupIds 不能为空" }); return; }
-      const session = await getSession(sessionId);
-      if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
-      if (session.status === "scanning") { res.status(409).json({ message: "请等待扫描结束" }); return; }
-      const card = await findCardForLayout(session.card_id);
-      if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
-      const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
-      const groups = groupSessionPages(card, records).groups;
-      // 回执检查必须和删除在同一条提交队列里。先在队列外查、再排队删除时，
-      // 并发的保存可以在两次之间提交 saved/held/conflict，删除就会用不带 force 的过期集合把刚入库的本地页删掉。
-      const decision = await writeScannerSession(sessionId, async tx => {
-        const active = await listActiveReceiptGroups(tx, sessionId, groupIds);
-        const next = filterDeletableGroups(groupIds, new Map(active.map(groupId => [groupId, true])), body.force === true);
-        if (next.blocked.length) return next;
-        const targets = next.deletable.flatMap(groupId => (groups.get(groupId) ?? []).map(row => row.record.id));
-        for (const recordId of targets) await deleteScanRecordInTransaction(tx, recordId);
-        return next;
+      // 与重识别和保存共用队列，避免其间清理仍在使用的原图。
+      await enqueuePersist(async () => {
+        const session = await getSession(sessionId);
+        if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
+        if (!await sessionReadyForResults(sessionId, session.status)) {
+          res.status(409).json({ message: "请等待扫描和识别全部完成" });
+          return;
+        }
+        const card = await findCardForLayout(session.card_id);
+        if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+        // 持锁读取回执和页记录，删除请求排队期间可能有其他提交。
+        const decision = await writeScannerSession(sessionId, async tx => {
+          const active = await listActiveReceiptGroups(tx, sessionId, groupIds);
+          const next = filterDeletableGroups(groupIds, new Map(active.map(groupId => [groupId, true])), body.force === true);
+          if (next.blocked.length) return { ...next, missing: [], imagePaths: [] };
+          const records = (await listScanRecordsGroupedByStudent(sessionId, undefined, tx)).flatMap(g => g.records);
+          const groups = groupSessionPages(card, records).groups;
+          const targets = next.deletable.flatMap(groupId => (groups.get(groupId) ?? []).map(row => row.record));
+          for (const record of targets) await deleteScanRecordInTransaction(tx, record.id);
+          return {
+            ...next,
+            missing: groupIds.filter(groupId => !groups.has(groupId)),
+            imagePaths: targets.map(record => record.image_path),
+          };
+        });
+        if (decision.blocked.length) {
+          res.status(409).json({ message: "所选卷包含已入库或待老师确认的回执，确认删除远端不受影响后请重试", blocked: decision.blocked });
+          return;
+        }
+        if (twainEnabled) await removeLocalScanImages(card.id, sessionId, decision.imagePaths);
+        // 远端后处理读结果用 previewOnly。删除后若 validate，会给留下来的组写回执，并可能 withdraw 已有成绩。
+        const refresh = body.previewOnly === true ? "preview" : "validate";
+        const result = await processScannerSession(card, sessionId, refresh);
+        res.json({ ...result, deletedGroups: decision.deletable.length - decision.missing.length, missingGroups: decision.missing });
       });
-      if (decision.blocked.length) {
-        res.status(409).json({ message: "所选卷包含已入库或待老师确认的回执，确认删除远端不受影响后请重试", blocked: decision.blocked });
-        return;
-      }
-      const missing = groupIds.filter(groupId => !groups.has(groupId));
-      // 远端后处理读结果用 previewOnly。删除后若仍 validate，会给留下来的组写回执，并可能 withdraw 已有成绩。
-      const refresh = body.previewOnly === true ? "preview" : "validate";
-      const result = await processScannerSession(card, sessionId, refresh);
-      res.json({ ...result, deletedGroups: decision.deletable.length - missing.length, missingGroups: missing });
     } catch (error) { next(error); }
   });
 

@@ -1,6 +1,4 @@
 import { CardCorrectionButton } from "./CardCorrectionEditor";
-// v2.5.1: 右上角下弹上传进度卡（直扫/导入共用）。
-// 数据源 scannerUploadManager 单例；成功 3 秒自动收起，失败保留并可重试。
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { CheckCircle2, ChevronDown, ChevronUp, CloudUpload, PauseCircle, RefreshCw, X, XCircle } from "lucide-react";
 import { Button, Input, Progress, Spinner } from "./ui/v2";
@@ -30,7 +28,6 @@ export function UploadProgressCard() {
   const [entered, setEntered] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
 
-  // 入场下弹动画（挂载后下一帧过渡到位）
   useEffect(() => {
     const raf = requestAnimationFrame(() => setEntered(true));
     return () => cancelAnimationFrame(raf);
@@ -55,8 +52,22 @@ export function UploadProgressCard() {
   const visible = snap.jobs.filter((j) => !dismissed.has(j.id) || j.status === "error" || Boolean(j.reviewCards?.length));
   if (visible.length === 0) return null;
 
+  const counts = { active: 0, queued: 0, paused: 0, error: 0, done: 0, cancelled: 0 };
+  for (const { status } of visible) {
+    if (status === "creating" || status === "uploading" || status === "completing") counts.active++;
+    else counts[status]++;
+  }
+  const pendingCount = counts.queued + counts.paused;
+  const summary = [
+    counts.active > 0 && `上传中 ${counts.active}`,
+    counts.queued > 0 && `排队 ${counts.queued}`,
+    counts.paused > 0 && `已暂停 ${counts.paused}`,
+    counts.error > 0 && `失败 ${counts.error}`,
+    counts.done > 0 && `已完成 ${counts.done}`,
+    counts.cancelled > 0 && `已取消 ${counts.cancelled}`,
+  ].filter(Boolean).join(" · ");
   const seen = new Set<string>();
-  const conflictCards = new Map(visible.map(job => [job.id, uniqueScanConflictCards([
+  const conflictCards = new Map((collapsed ? [] : visible).map(job => [job.id, uniqueScanConflictCards([
     ...(job.reviewCards ?? []), ...(job.failures ?? []).flatMap(f => f.conflicts ?? []),
   ]).filter(card => {
     const key = JSON.stringify([card.sessionId, card.groupId]);
@@ -66,49 +77,64 @@ export function UploadProgressCard() {
   })]));
 
   return (
-    <div
-      className={`fixed z-50 flex max-h-[calc(100vh-5rem)] w-80 flex-col gap-2 overflow-y-auto transition-all duration-200 ${
-        entered ? "translate-y-0 opacity-100" : "-translate-y-2 opacity-0"
+    <section
+      aria-label="上传任务"
+      className={`fixed right-[var(--px-scanner-upload-right,1rem)] bottom-[var(--px-scanner-upload-bottom,3.75rem)] z-(--px-z-sticky) flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden transition-[transform,opacity] duration-200 ${
+        entered ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"
+      } ${
+        collapsed
+          ? "w-auto rounded-full shadow-1"
+          : "max-h-[min(60vh,calc(100vh_-_var(--px-scanner-upload-bottom,3.75rem)_-_12rem))] w-80 rounded-lg border border-border bg-card shadow-2"
       }`}
-      // 扫描工作台右侧有 340px 侧栏：进度卡贴在主区域右上角，避免盖住侧栏的
-      // 「图片去向 / 开始扫描 / 导入阅卷」等按钮。没有侧栏的页面沿用 1rem。
-      style={{ top: "calc(var(--px-page-header-h) + 0.5rem)", right: "var(--px-scanner-upload-right, 1rem)" }}
     >
-      <div className="flex items-center justify-end gap-2 pr-1">
-        <ServerStatusIndicator />
+      <div className={`flex shrink-0 items-center gap-2 ${collapsed ? "" : "justify-between px-2 pt-2"}`}>
+        {!collapsed && <ServerStatusIndicator />}
         <Button
           variant="outline"
           size="sm"
           type="button"
-          className="h-7 bg-card px-2 text-xs shadow-1"
-          icon={collapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? `展开上传（${visible.length}） · ${summary}` : undefined}
+          title={collapsed ? summary : undefined}
+          className={`h-7 max-w-full px-2 text-xs ${collapsed ? "min-w-0 shrink rounded-full" : ""}`}
+          icon={collapsed ? <ChevronUp className="size-3.5" aria-hidden /> : <ChevronDown className="size-3.5" aria-hidden />}
           onClick={() => setCollapsed(value => !value)}
         >
-          {collapsed ? `展开上传（${visible.length}）` : "收起上传"}
+          {collapsed ? <span className="truncate tabular-nums">{summary}</span> : "收起上传"}
         </Button>
       </div>
-      {collapsed ? (
-        <div className="rounded-lg border border-info-border bg-card px-3 py-2 text-xs text-muted-foreground shadow-md">
-          上传任务 <span className="font-medium tabular-nums text-foreground">{visible.length}</span> 项正在后台处理
-        </div>
-      ) : visible.map((job) => (
-        <UploadJobCard
-          key={job.id}
-          job={job}
-          conflictCards={conflictCards.get(job.id) ?? []}
-          queuedCount={snap.queuedCount}
-          onDismiss={(id) => {
-            // 审查 P2:关闭需真正移除任务并释放页面资源,不能只从视图收起
-            scannerUploadManager.dismissJob(id);
-            setDismissed((prev) => {
-              const next = new Set(prev);
-              next.add(id);
-              return next;
-            });
-          }}
-        />
-      ))}
-    </div>
+      {!collapsed && (
+        <>
+          {(counts.error > 0 || pendingCount > 0) && (
+            <div className="flex shrink-0 flex-wrap justify-end gap-1.5 px-2 pt-2">
+              {counts.error > 0 && (
+                <Button variant="outline" size="sm" type="button" className="h-7 px-2 text-xs"
+                  onClick={() => scannerUploadManager.dismissTerminalJobs("error")}>
+                  清空失败（{counts.error}）
+                </Button>
+              )}
+              {pendingCount > 0 && (
+                <Button variant="outline" size="sm" type="button" className="h-7 px-2 text-xs"
+                  onClick={() => scannerUploadManager.cancelPendingJobs()}>
+                  取消排队（{pendingCount}）
+                </Button>
+              )}
+            </div>
+          )}
+          <div role="region" aria-label="上传任务列表" tabIndex={0} className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
+            {visible.map((job) => (
+              <UploadJobCard
+                key={job.id}
+                job={job}
+                conflictCards={conflictCards.get(job.id) ?? []}
+                queuedCount={snap.queuedCount}
+                onDismiss={scannerUploadManager.dismissJob}
+              />
+            ))}
+          </div>
+        </>
+      )}
+    </section>
   );
 }
 
@@ -132,7 +158,7 @@ function UploadJobCard({
   const busy = job.status === "creating" || job.status === "uploading" || job.status === "completing";
 
   return (
-    <div className={`rounded-lg border bg-card p-3 shadow-md ${BORDER_BY_STATUS[job.status]}`}>
+    <div className={`shrink-0 rounded-lg border bg-card p-3 shadow-md ${BORDER_BY_STATUS[job.status]}`}>
       <div className="flex items-center gap-2">
         <CloudUpload size={15} className="shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">

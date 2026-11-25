@@ -18,7 +18,7 @@ import { skinPatchDecision } from "./lib/skinPatchGuard";
 import { useSkinPreferenceWriter } from "./lib/skinSync";
 import {
   clearActivePostprocess, clearPostprocessView, readActivePostprocess, readPostprocessSessions,
-  resolvePersistCardId, writeActivePostprocess, writePostprocessSessions,
+  resolvePersistCardId, writeActivePostprocess, writePostprocessSessions, type PostprocessSessionRef,
 } from "./lib/postprocessResume";
 
 // ── ScannerApp：三屏容器 ──
@@ -45,7 +45,7 @@ function ScannerAppInner() {
   /** 每个扫描会话的发起账号：晚到交接即使当前已换人，也只能写回原账号的槽位。 */
   const scanSessionOwnersRef = useRef(new Map<string, number>());
   // v2.7.2：本卡已扫完的批次会话；返回工作台续扫后新批次累加进来，异常队列共用同一份
-  const [postSessions, setPostSessions] = useState<Array<{ sessionId: string; pageCount: number }>>([]);
+  const [postSessions, setPostSessions] = useState<PostprocessSessionRef[]>([]);
   /** 离开工作台时 selectedCardId 会先被清空，而扫描面板的卸载清理要等到提交阶段才归档；
    *  落盘得认「刚才那张卡」。账号一起记：换账号后不能把上一个账号的卡写进新账号的槽位。 */
   const lastSelectionRef = useRef<{ userId: number; cardId: string } | null>(null);
@@ -188,13 +188,18 @@ function ScannerAppInner() {
     return <LoginPageScanner skin={skin} onSkinChange={setSkin} />;
   }
 
-  if (page === "postprocess" && selectedCardId && postSessions.length) {
+  if (page === "postprocess" && selectedCardId) {
     return (
       <ScannerPostprocessPage
         cardId={selectedCardId}
         cardTitle={selectedCardTitle}
         sessions={postSessions}
         userId={user?.id ?? null}
+        onSessionsEmptied={sessionIds => {
+          if (currentUserIdRef.current !== user.id || currentCardIdRef.current !== selectedCardId) return;
+          setPostSessions(current => current.filter(item => !sessionIds.has(item.sessionId)));
+          setLiveScanSessionId(current => current && sessionIds.has(current) ? null : current);
+        }}
         onBack={() => { clearActivePostprocess(user?.id); clearPostprocessView(selectedCardId, user?.id); setPage("workspace"); }}
         onContinueScan={() => {
           clearPostprocessView(selectedCardId, user?.id);
@@ -303,7 +308,7 @@ function ScannerAppInner() {
               const restored = readPostprocessSessions(cardId, user?.id);
               const active = readActivePostprocess(user?.id);
               setPostSessions(restored);
-              setPage(active?.cardId === cardId && active.userId === user?.id ? "postprocess" : "workspace");
+              setPage(restored.length && active?.cardId === cardId && active.userId === user?.id ? "postprocess" : "workspace");
               return;
             }
             // 远端新建的卡不在本机库：直扫/阅卷只读本机服务，先进本机库（幂等 upsert）
@@ -316,7 +321,7 @@ function ScannerAppInner() {
             const restored = readPostprocessSessions(cardId, user?.id);
             const active = readActivePostprocess(user?.id);
             setPostSessions(restored);
-            setPage(active?.cardId === cardId && active.userId === user?.id ? "postprocess" : "workspace");
+            setPage(restored.length && active?.cardId === cardId && active.userId === user?.id ? "postprocess" : "workspace");
           } catch (e: unknown) {
             const err = e as { status?: number; message?: string };
             if (err?.status === 404) {
@@ -342,7 +347,7 @@ function ScannerAppInner() {
   );
 }
 
-/** v2.5.1: 对外入口 = 原双屏容器 + 全局上传进度卡（右上角下弹） */
+/** 扫描端页面共用全局上传进度卡。 */
 export function ScannerApp() {
   return (
     <>
