@@ -21,7 +21,7 @@ def paper_provider_credentials(
     default_keys = {"gemini": "GEMINI_API_KEY", "deepseek": "DEEPSEEK_API_KEY", "openai": "OPENAI_API_KEY"}
     api_key = (override or {}).get("api_key") or env_value(default_keys[model.provider])
     if override and override.get("api_key"):
-        base_url = validate_base_url(override.get("base_url", "").rstrip("/") or None)
+        base_url = validate_base_url((override.get("base_url") or "").rstrip("/") or None)
     else:
         base_url = validate_base_url(env_value("OPENAI_BASE_URL") or None) if model.provider == "openai" else None
     if model.provider == "deepseek" and not base_url:
@@ -49,6 +49,10 @@ def request_gemini_json(
     return response.text or "", gemini_usage(response)
 
 
+def uses_max_completion_tokens(model_id: str) -> bool:
+    return bool(re.search(r"(?:^|/)(?:gpt-[5-9]|o[134](?:-mini|-preview|-pro)?)(?:[.:-]|$)", model_id.lower()))
+
+
 def request_openai_json(
     model: ModelConfig, api_key: str, base_url: str | None, prompt: str, text: str,
     files: list[dict[str, str]], max_tokens: int,
@@ -60,8 +64,8 @@ def request_openai_json(
             "url": f"data:{file['mimeType']};base64,{file['base64']}",
         }} for file in files)
 
-    # GPT-5 Chat Completions use max_completion_tokens. Other compatible APIs use max_tokens.
-    limit = "max_completion_tokens" if re.search(r"(?:^|/)gpt-5(?:[.:-]|$)", model.id.lower()) else "max_tokens"
+    # GPT-5 and o1/o3/o4 Chat Completions use max_completion_tokens. Other compatible APIs use max_tokens.
+    limit = "max_completion_tokens" if uses_max_completion_tokens(model.id) else "max_tokens"
     with OpenAI(api_key=api_key, base_url=base_url, timeout=PROVIDER_TIMEOUT_SECONDS, max_retries=0) as client:
         response = client.chat.completions.create(
             model=model.id,

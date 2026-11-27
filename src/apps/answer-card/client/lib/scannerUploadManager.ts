@@ -163,6 +163,8 @@ interface JobRecord {
   apiKey: string | null;
   /** 取消后，挂起的上传在恢复时退出，后续响应不再写入恢复记录。 */
   cancelled: boolean;
+  /** 取消任务时立刻中断在途请求与退避等待，避免卡住串行队列。 */
+  abortController: AbortController;
   failures?: ScanBatchFailure[];
   /** 非终态提示：相关联的冲突（如重复学号撤出），不影响任务继续上传 */
   notice?: string;
@@ -262,11 +264,40 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
   const pageTimeoutMs = deps.pageTimeoutMs ?? 120_000;
   const genId = deps.genId ?? defaultGenId;
 
+  function linkedRequestSignal(j: JobRecord, upstream?: AbortSignal | null): { signal: AbortSignal; cleanup: () => void } {
+    if (!upstream) return { signal: j.abortController.signal, cleanup: () => {} };
+    const merged = new AbortController();
+    const forward = () => merged.abort();
+    if (j.abortController.signal.aborted || upstream.aborted) {
+      merged.abort();
+      return { signal: merged.signal, cleanup: () => {} };
+    }
+    j.abortController.signal.addEventListener("abort", forward, { once: true });
+    upstream.addEventListener("abort", forward, { once: true });
+    return {
+      signal: merged.signal,
+      cleanup: () => {
+        j.abortController.signal.removeEventListener("abort", forward);
+        upstream.removeEventListener("abort", forward);
+      },
+    };
+  }
+
   function jobFetch(j: JobRecord): (url: string, init?: RequestInit) => Promise<Response> {
-    // 注入的 mock（冒烟测试）直接使用，不走快照
-    if (baseRemoteFetch !== remoteScannerFetch) return baseRemoteFetch;
+    // 注入的 mock（冒烟测试）仍绑定任务取消信号，让强制取消可立刻中断在途请求。
+    if (baseRemoteFetch !== remoteScannerFetch || !j.remoteBase) {
+      return (url: string, init?: RequestInit) => {
+        if (j.cancelled) return Promise.reject(cancelledError(j));
+        const { signal, cleanup } = linkedRequestSignal(j, init?.signal);
+        try {
+          return baseRemoteFetch(url, { ...init, signal }).finally(cleanup);
+        } catch (error) {
+          cleanup();
+          return Promise.reject(error);
+        }
+      };
+    }
     // 快照：用创建时的 base/key，避免切服后把 A 的 session 发往 B
-    if (!j.remoteBase) return baseRemoteFetch;
     return (url: string, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
       const sendsCredential = Boolean(j.apiKey) || headers.has("X-Api-Key") || headers.has("Authorization");
@@ -285,7 +316,8 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       // 与 remoteScannerFetch 同一口径：先装好编码限制，再创建远端请求。
       return ensureScannerRemoteGate().then(() => {
         if (j.cancelled) throw cancelledError(j);
-        return fetch(resolved, { ...init, headers });
+        const { signal, cleanup } = linkedRequestSignal(j, init?.signal);
+        return fetch(resolved, { ...init, headers, signal }).finally(cleanup);
       });
     };
   }
@@ -727,7 +759,16 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
           }
           throw err;
         }
-        await sleep(RETRY_BACKOFF_MS[Math.min(tries - 1, RETRY_BACKOFF_MS.length - 1)]);
+        const backoffMs = RETRY_BACKOFF_MS[Math.min(tries - 1, RETRY_BACKOFF_MS.length - 1)];
+        await new Promise<void>((resolve) => {
+          if (j.cancelled || j.abortController.signal.aborted) { resolve(); return; }
+          const onAbort = () => resolve();
+          j.abortController.signal.addEventListener("abort", onAbort, { once: true });
+          void sleep(backoffMs).then(() => {
+            j.abortController.signal.removeEventListener("abort", onAbort);
+            resolve();
+          });
+        });
       }
     }
   }
@@ -1030,7 +1071,9 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
           });
           continue;
         }
+        if (job.status === "done" && job.reviewCards?.length) continue;
         job.cancelled = true;
+        job.abortController.abort();
         removeJob(job);
         wakePausedJob(job);
       }
@@ -1098,6 +1141,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       remoteBase: readRemoteBase(),
       apiKey: getStoredApiKey(),
       cancelled: false,
+      abortController: new AbortController(),
     };
     restoreRecovery(job);
     jobs.push(job);
@@ -1141,6 +1185,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
 
   function cancelPendingJob(j: JobRecord): void {
     j.cancelled = true;
+    j.abortController.abort();
     if (j.status === "queued") {
       removeJob(j);
       return;

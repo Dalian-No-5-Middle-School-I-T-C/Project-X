@@ -5,7 +5,7 @@ import { MAX_ANSWER_TEXT_LENGTH, MAX_QUESTION_NUMBER, parseAnswerKeyText } from 
 import { fetchLlmClient } from "./llm-client";
 import { getKnowledgePointProvider } from "./paper-ai-provider";
 import { PaperInputError } from "./paper-docx";
-import { extractOcrInputText, getFileMime, type OcrInput } from "./paper-ocr";
+import { extractOcrInputText, getFileMime, withOcrCapacity, type OcrInput } from "./paper-ocr";
 
 type Draft = { questionNumber: number; answerText: string };
 export type AnswerRecognition = {
@@ -34,7 +34,7 @@ export async function recognizeAnswerKeyInput(input: OcrInput, userId?: number):
   let text: string | null = null;
   if (isDocument) {
     try {
-      text = await extractOcrInputText(input);
+      text = await withOcrCapacity(() => extractOcrInputText(input));
     } catch (error) {
       if (!(isPdf && error instanceof PaperInputError && error.code === "PDF_PAGE_NO_TEXT")) throw error;
     }
@@ -85,7 +85,7 @@ export async function recognizeAnswerKeyInput(input: OcrInput, userId?: number):
       422,
     );
   }
-  if (!isDocument) text = await extractOcrInputText(input);
+  if (!isDocument) text = await withOcrCapacity(() => extractOcrInputText(input));
   const drafts = parseAnswerKeyText(text ?? "").map(({ questionNumber, answerText }) => ({ questionNumber, answerText }));
   return { recognized: Boolean(text), drafts, engine: "local-ocr", ...(warning ? { warning } : {}) };
 }

@@ -76,10 +76,18 @@ export async function verifyPaperOcrInputs(dir: string, ok: Check): Promise<void
   ok(bounds.length === 1 && bounds[0].questionNumber === 200 && bounds[0].answerText === "甲".repeat(MAX_ANSWER_TEXT_LENGTH),
     "题号上限、去重和答案长度生效");
 
-  const inlineAndCase = parseAnswerKeyText("1. a 2. b\n3. 叶绿体 4. 线粒体\n5. 共 2、3 两项符合要求");
+  const inlineAndCase = parseAnswerKeyText([
+    "1. a 2. b",
+    "3. 叶绿体 4. 线粒体",
+    "5. 共 2、3 两项符合要求",
+    "选择题：6-8 ABD",
+    "参考答案：9. C 10. D",
+    "填空题：11. 3.14 12. 5",
+  ].join("\n"));
   ok(isDeepStrictEqual(inlineAndCase.map(d => [d.questionNumber, d.answerText]), [
     [1, "A"], [2, "B"], [3, "叶绿体"], [4, "线粒体"], [5, "共 2、3 两项符合要求"],
-  ]), "小写选项统一大写，同行多题按分隔符拆开且不误拆「2、3」");
+    [6, "A"], [7, "B"], [8, "D"], [9, "C"], [10, "D"], [11, "3.14"], [12, "5"],
+  ]), "小写选项统一大写，同行多题与带章节前缀的单行答案均正确解析且不误拆「2、3」");
 
   const exif = path.join(dir, "orientation-six.jpg");
   const tall = path.join(dir, "tall.png");
@@ -111,10 +119,10 @@ export async function verifyPaperOcrInputs(dir: string, ok: Check): Promise<void
   const cjkText = await extractPdfText(cjkPdfFixture());
   ok(cjkText?.replace(/\s+/g, "") === "答案", `PDF.js 从本地 CMap 提取中文文字层（提取结果：${cjkText}）`);
 
-  const vision = ["qwen2.5-vl-72b", "glm-4v", "doubao-vision", "gpt-4", "gpt-4o", "gpt-5.4",
-    "gemini-3.5-flash", "claude-3-haiku", "claude-sonnet-4", "deePseeK-v4-flash-vision-exp"];
+  const vision = ["qwen3-vl", "glm-5v", "doubao-vision", "gpt-5.5", "gpt-6",
+    "gemini-3.5-flash", "claude-sonnet-5", "deePseeK-v4-flash-vision-exp"];
   ok(vision.every(model => isVisionProvider("custom", model)) &&
-    ["deepseek-chat", "deepseek-reasoner", "gpt-3.5-turbo", "text"].every(model => !isVisionProvider("openai", model)),
+    ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "text"].every(model => !isVisionProvider("openai", model)),
   "兼容服务商按模型名识别视觉能力，纯文本模型走文字路径");
 
   const emptyModelsGeminiDb = {

@@ -100,7 +100,7 @@ export function UploadProgressCard({ region }: { region?: HTMLElement | null }) 
           aria-label={collapsed ? `展开上传（${visible.length}） · ${summary}` : undefined}
           title={collapsed ? summary : undefined}
           className={region
-            ? "h-7 bg-card px-2 text-xs shadow-1"
+            ? "h-7 min-w-0 max-w-full shrink bg-card px-2 text-xs shadow-1"
             : `h-7 max-w-full px-2 text-xs ${collapsed ? "min-w-0 shrink rounded-full" : ""}`}
           icon={region
             ? (collapsed ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronUp className="size-3.5" aria-hidden />)
@@ -142,15 +142,7 @@ export function UploadProgressCard({ region }: { region?: HTMLElement | null }) 
                 job={job}
                 conflictCards={conflictCards.get(job.id) ?? []}
                 queuedCount={snap.queuedCount}
-                onDismiss={(id) => {
-                  // 审查 P2:关闭需真正移除任务并释放页面资源,不能只从视图收起
-                  scannerUploadManager.dismissJob(id);
-                  setDismissed((prev) => {
-                    const next = new Set(prev);
-                    next.add(id);
-                    return next;
-                  });
-                }}
+                onDismiss={scannerUploadManager.dismissJob}
               />
             ))}
           </div>

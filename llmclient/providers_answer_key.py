@@ -8,7 +8,12 @@ from typing import Any
 from llmclient.config import ModelConfig
 from llmclient.pdf_to_images import normalize_direct_files
 from llmclient.prompts.answer_key import ANSWER_KEY_PROMPT, MAX_ANSWER_TEXT_LENGTH, MAX_QUESTION_NUMBER
-from llmclient.providers_paper import paper_provider_credentials, request_gemini_json, request_openai_json
+from llmclient.providers_paper import (
+    paper_provider_credentials,
+    request_gemini_json,
+    request_openai_json,
+    uses_max_completion_tokens,
+)
 from llmclient.usage import usage_dict
 
 
@@ -51,5 +56,8 @@ def run_answer_key_ocr(
     if model.provider == "gemini":
         raw, usage = request_gemini_json(model, api_key, ANSWER_KEY_PROMPT, content, images, base_url)
     else:
-        raw, usage = request_openai_json(model, api_key, base_url, ANSWER_KEY_PROMPT, content, images, 16_384)
+        # DeepSeek and most OpenAI-compatible APIs cap max_tokens at 8192;
+        # reasoning models using max_completion_tokens need a 16k budget.
+        token_limit = 16_384 if uses_max_completion_tokens(model.id) else 8192
+        raw, usage = request_openai_json(model, api_key, base_url, ANSWER_KEY_PROMPT, content, images, token_limit)
     return {"answers": parse_answer_key_response(raw), "usage": usage_dict(usage)}

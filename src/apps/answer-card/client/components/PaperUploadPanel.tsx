@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { KnowledgeTagList } from "./KnowledgeTagList";
 import { BrainCircuit } from "lucide-react";
 import { authFetch, fetchJson, mediaUrl } from "../auth/api";
@@ -65,15 +65,23 @@ export function PaperUploadPanel({ cardId, open, onClose, onUploaded }: Props) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
+  const sessionRef = useRef(0);
+  const analyzeAbortRef = useRef<AbortController | null>(null);
 
   const cardUrl = `/api/cards/${cardId}`;
 
-  async function loadPages() {
+  async function loadPages(session: number) {
     const info = await fetchJson<PaperInfo>(`${cardUrl}/paper/info`);
-    setPages(info.pages ?? []);
+    if (sessionRef.current === session) setPages(info.pages ?? []);
   }
 
   useEffect(() => {
+    const session = ++sessionRef.current;
+    analyzeAbortRef.current?.abort();
+    analyzeAbortRef.current = null;
+    setUploading(false);
+    setAnalyzing(false);
+    setSaving(false);
     if (!open) return;
     const controller = new AbortController();
     const { signal } = controller;
@@ -92,7 +100,7 @@ export function PaperUploadPanel({ cardId, open, onClose, onUploaded }: Props) {
       fetchJson<PaperInfo>(`${cardUrl}/paper/info`, { signal }),
       fetchJson<{ points: KnowledgePointResponse[] }>(`${cardUrl}/knowledge-points`, { signal }),
     ]).then(([info, saved]) => {
-      if (signal.aborted) return;
+      if (signal.aborted || sessionRef.current !== session) return;
       const range = info.question_range?.trim() ?? "";
       const custom = range !== "" && range !== "全部";
       setPages(info.pages ?? []);
@@ -101,17 +109,24 @@ export function PaperUploadPanel({ cardId, open, onClose, onUploaded }: Props) {
       setExtraNotes(info.extra_notes ?? "");
       setKnowledgePoints(normalizeKnowledgePoints(saved.points));
     }).catch((error) => {
-      if (!signal.aborted) setLoadError(error instanceof Error ? error.message : "读取原卷信息失败");
+      if (!signal.aborted && sessionRef.current === session) {
+        setLoadError(error instanceof Error ? error.message : "读取原卷信息失败");
+      }
     }).finally(() => {
-      if (!signal.aborted) setLoading(false);
+      if (!signal.aborted && sessionRef.current === session) setLoading(false);
     });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      analyzeAbortRef.current?.abort();
+      analyzeAbortRef.current = null;
+    };
   }, [open, cardUrl, loadAttempt]);
 
   if (!open) return null;
 
   const handleFiles = async (files: File[]) => {
-    if (files.length === 0) return;
+    if (files.length === 0 || loading || loadError) return;
+    const session = sessionRef.current;
     setUploading(true);
     setUploadError(null);
     try {
@@ -127,27 +142,29 @@ export function PaperUploadPanel({ cardId, open, onClose, onUploaded }: Props) {
         const err = await res.json();
         throw new Error(err.error || err.message || "上传失败");
       }
-
-      await loadPages();
-      onUploaded?.();
+      if (sessionRef.current !== session) return;
+      await loadPages(session);
+      if (sessionRef.current === session) onUploaded?.();
     } catch (err: any) {
-      setUploadError(err.message || "上传失败");
+      if (sessionRef.current === session) setUploadError(err.message || "上传失败");
     } finally {
-      setUploading(false);
+      if (sessionRef.current === session) setUploading(false);
     }
   };
 
   const handleDeletePage = async (pageIndex: number) => {
+    const session = sessionRef.current;
     try {
       await authFetch(`/api/cards/${cardId}/paper/page/${pageIndex}`, { method: "DELETE" });
-      await loadPages();
+      if (sessionRef.current === session) await loadPages(session);
     } catch { /* ignore */ }
   };
 
   const handleDelete = async () => {
+    const session = sessionRef.current;
     try {
       await authFetch(`/api/cards/${cardId}/paper`, { method: "DELETE" });
-      setPages([]);
+      if (sessionRef.current === session) setPages([]);
     } catch {
       // ignore
     }
@@ -155,6 +172,10 @@ export function PaperUploadPanel({ cardId, open, onClose, onUploaded }: Props) {
 
   const handleAnalyze = async () => {
     if (analyzing || loading || loadError) return;
+    const session = sessionRef.current;
+    analyzeAbortRef.current?.abort();
+    const controller = new AbortController();
+    analyzeAbortRef.current = controller;
     setAnalyzing(true);
     setAnalyzeError(null);
     try {
@@ -167,6 +188,7 @@ export function PaperUploadPanel({ cardId, open, onClose, onUploaded }: Props) {
       const res = await authFetch(`/api/cards/${cardId}/knowledge-points/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           questionRange: range,
           extraNotes: extraNotes.trim(),
@@ -179,6 +201,7 @@ export function PaperUploadPanel({ cardId, open, onClose, onUploaded }: Props) {
       }
 
       const data = await res.json();
+      if (controller.signal.aborted || sessionRef.current !== session) return;
 
       // Check if backend returned a placeholder (AI not fully implemented)
       if (data.message && data.knowledgePoints?.length === 0) {
@@ -188,14 +211,18 @@ export function PaperUploadPanel({ cardId, open, onClose, onUploaded }: Props) {
 
       setKnowledgePoints(normalizeKnowledgePoints(data.knowledgePoints));
     } catch (err: any) {
-      setAnalyzeError(err.message || "分析失败");
+      if (!controller.signal.aborted && sessionRef.current === session) {
+        setAnalyzeError(err.message || "分析失败");
+      }
     } finally {
-      setAnalyzing(false);
+      if (analyzeAbortRef.current === controller) analyzeAbortRef.current = null;
+      if (sessionRef.current === session) setAnalyzing(false);
     }
   };
 
   const handleSave = async () => {
     if (saving || loading || loadError) return;
+    const session = sessionRef.current;
     const range = questionRange === "all" ? "全部" : customRange.trim();
     if (!range) { setSaveError("请填写自定义题目范围"); return; }
     setSaving(true);
@@ -232,11 +259,11 @@ export function PaperUploadPanel({ cardId, open, onClose, onUploaded }: Props) {
         }
       }
 
-      onClose();
+      if (sessionRef.current === session) onClose();
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : "保存失败");
+      if (sessionRef.current === session) setSaveError(err instanceof Error ? err.message : "保存失败");
     } finally {
-      setSaving(false);
+      if (sessionRef.current === session) setSaving(false);
     }
   };
 
@@ -264,7 +291,7 @@ export function PaperUploadPanel({ cardId, open, onClose, onUploaded }: Props) {
               maxSize={50 * 1024 * 1024}
               multiple
               onFiles={handleFiles}
-              disabled={uploading || loading}
+              disabled={uploading || loading || !!loadError}
               label={uploading ? "上传中..." : "拖拽文件到此处，或点击选择"}
               sublabel="DOCX、PDF、JPEG、PNG、BMP、TIFF 或 WebP，单个文件最大 50MB"
             />
@@ -381,6 +408,7 @@ export function PaperUploadPanel({ cardId, open, onClose, onUploaded }: Props) {
                   variant="ghost"
                   className="self-start"
                   loading={analyzing}
+                  disabled={loading || !!loadError || pages.length === 0}
                   onClick={() => void handleAnalyze()}
                 >
                   重新分析

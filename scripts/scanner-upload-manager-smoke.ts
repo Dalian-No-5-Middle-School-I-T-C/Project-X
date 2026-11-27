@@ -302,6 +302,49 @@ async function verifyForcedGroupRelease(): Promise<void> {
     const afterRestart = restarted.releaseGroupForLocalDelete("card_1", "0", "force-done", { force });
     assert(afterRestart.ok && !afterRestart.forgetLedger, "重启后继续保留服务器已完成的凭据");
   }
+
+  // 单组已完成但仍挂有远端待处理冲突卡（reviewCards）时，强制删本机原图不得把冲突卡从进度卡删掉。
+  const conflictMgr = createScannerUploadManager(deps({
+    remoteFetch: async (url) => {
+      if (url.endsWith("/sessions")) return jsonRes({ sessionId: "conflict-remote", uploadTokens: ["tok"] });
+      if (url.endsWith("/complete")) {
+        return jsonRes({
+          ok: true,
+          reviewCards: [{ sessionId: "conflict-remote", groupId: "0", studentId: "1001", pages: [1], previouslySaved: false }],
+        });
+      }
+      return jsonRes({ ok: true });
+    },
+  }));
+  const conflictJob = conflictMgr.startUpload({ ...localScan("force-done-conflict"), trackResults: true });
+  await waitUntil(() => conflictMgr.getState().jobs.some(job => job.id === conflictJob && job.status === "done" && (job.reviewCards?.length ?? 0) > 0), "已完成任务应携带待处理冲突卡");
+  const conflictRelease = conflictMgr.releaseGroupForLocalDelete("card_1", "0", "force-done-conflict", { force: true });
+  assert(conflictRelease.ok && !conflictRelease.forgetLedger, "带冲突卡的已完成任务强制释放保留去重标记");
+  assert(conflictMgr.getState().jobs.some(job => job.id === conflictJob && (job.reviewCards?.length ?? 0) > 0), "强制删本机原图不得移除仍有远端冲突卡的已完成任务");
+
+  // 强制取消正在等待远端响应的在途任务，应立刻 abort 请求信号并释放串行队列给后续任务。
+  let abortedFirst = false;
+  const abortMgr = createScannerUploadManager(deps({
+    remoteFetch: (url, init) => {
+      if (url.endsWith("/sessions") && !abortedFirst) {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            abortedFirst = true;
+            reject(new DOMException("Aborted", "AbortError"));
+          }, { once: true });
+        });
+      }
+      if (url.endsWith("/sessions")) return Promise.resolve(jsonRes({ sessionId: "after-abort", uploadTokens: ["tok"] }));
+      return Promise.resolve(jsonRes({ ok: true }));
+    },
+  }));
+  const hung = abortMgr.startUpload(localScan("force-hung"));
+  const next = abortMgr.startUpload(localScan("force-after-hung"));
+  await waitUntil(() => abortMgr.getState().jobs.some(job => job.id === hung && job.status === "creating"), "首任务应进入在途创建状态");
+  const releasedHung = abortMgr.releaseGroupForLocalDelete("card_1", "0", "force-hung", { force: true });
+  assert(releasedHung.ok && releasedHung.forgetLedger, "强制取消在途任务应成功释放");
+  assert(abortedFirst, "强制取消应立即触发在途请求的 AbortSignal");
+  assert((await waitTerminal(abortMgr, next)).status === "done", "取消在途任务后串行队列应立刻推进后续任务");
 }
 
 async function verifySharedUploadRelease(): Promise<void> {

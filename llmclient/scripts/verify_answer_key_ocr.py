@@ -126,10 +126,41 @@ class AnswerKeyOcrTest(unittest.TestCase):
                 usage=SimpleNamespace(prompt_tokens=10, completion_tokens=15),
             )
             response = self.client.post(API_PATH, headers=HEADERS, json={
-                "providerId": 0, "model": "gpt-5.4", "mode": "text", "paperText": "5. BD",
+                "providerId": 0, "model": "gpt-5.5", "mode": "text", "paperText": "5. BD",
             })
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["answers"], [{"questionNumber": 5, "answerText": "BD"}])
+        self.assertEqual(complete.call_args.kwargs.get("max_completion_tokens"), 16_384)
+        self.assertNotIn("max_tokens", complete.call_args.kwargs)
+
+    def test_deepseek_token_cap_and_empty_model_override_matching_provider(self):
+        with patch.object(providers_paper, "OpenAI") as provider:
+            complete = provider.return_value.__enter__.return_value.chat.completions.create
+            complete.return_value = SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(
+                    content='{"answers":[{"questionNumber":1,"answerText":"A"}]}'
+                ))],
+                usage=SimpleNamespace(prompt_tokens=8, completion_tokens=6),
+            )
+            ds_resp = self.client.post(API_PATH, headers=HEADERS, json={
+                "providerId": 0, "model": "deepseek-v4-flash", "mode": "text", "paperText": "1. A",
+            })
+            self.assertEqual(ds_resp.status_code, 200, ds_resp.text)
+            self.assertEqual(complete.call_args.kwargs.get("max_tokens"), 8192)
+
+            override_resp = self.client.post(API_PATH, headers=HEADERS, json={
+                "providerId": 7, "model": None, "mode": "text", "paperText": "1. A",
+                "providerOverride": {"provider_type": "openai", "api_key": "sk-test", "base_url": ""},
+            })
+            self.assertEqual(override_resp.status_code, 200, override_resp.text)
+            self.assertTrue(complete.call_args.kwargs["model"].startswith("gpt-"))
+
+            kp_resp = self.client.post("/analysis/knowledge-points", headers=HEADERS, json={
+                "providerId": 7, "model": None, "mode": "text", "paperText": "第1题",
+                "providerOverride": {"provider_type": "openai", "api_key": "sk-test", "base_url": None},
+            })
+            self.assertEqual(kp_resp.status_code, 200, kp_resp.text)
+            self.assertTrue(complete.call_args.kwargs["model"].startswith("gpt-"))
 
     def test_auth_and_input_guards(self):
         payload = {"providerId": 0, "mode": "text", "paperText": "1. A"}

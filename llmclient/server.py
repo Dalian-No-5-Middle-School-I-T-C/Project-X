@@ -183,14 +183,18 @@ def analysis_run(request: AnalysisRunRequest, _: None = Depends(require_internal
 
 
 def paper_analysis_model(model_id: str | None, provider_override: dict[str, str] | None) -> ModelConfig:
-    model_id = model_id or default_model_id()
     if provider_override and provider_override.get("api_key"):
         provider_type = provider_override.get("provider_type") or "openai"
         if provider_type not in {"gemini", "deepseek", "openai"}:
             provider_type = "openai"
-        return ModelConfig(
-            id=model_id, provider=provider_type, label=f"{provider_type}/{model_id}", key_env="", thinking=False,
+        resolved_id = (model_id or "").strip() or next(
+            (item.id for item in MODEL_CATALOG if item.provider == provider_type),
+            default_model_id(),
         )
+        return ModelConfig(
+            id=resolved_id, provider=provider_type, label=f"{provider_type}/{resolved_id}", key_env="", thinking=False,
+        )
+    model_id = model_id or default_model_id()
     model = find_model(model_id)
     if model is None:
         raise HTTPException(status_code=400, detail="Unknown paper analysis model")

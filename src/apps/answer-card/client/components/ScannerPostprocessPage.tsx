@@ -66,6 +66,9 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onSessions
   /** 完成名单持久化；未完成上传由 manager 恢复原远端会话。 */
   const queuedByPage = useRef<Set<string>>(readQueuedGroups(cardId));
   const deletingGroups = useRef(new Set<string>());
+  /** 本页已由用户强制取消上传的组：即使删除请求失败触发二次 reload，也不再自动重新入队。 */
+  const suppressedAutoUpload = useRef(new Set<string>());
+  useEffect(() => { suppressedAutoUpload.current.clear(); }, [cardId]);
   const reloadRevision = useRef(0);
   /** 崩溃重载后只恢复一次上次停留的组，避免用户返回结果页又被弹回去。 */
   const resumeAppliedRef = useRef(false);
@@ -135,7 +138,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onSessions
       // 老师中止的批次只允许显式「保存成绩」，不跟着首传自动补传。
       const uploadable = Object.fromEntries(Object.entries(nextBatches)
         .filter(([sid]) => nextMetas[sid]?.status !== "cancelled"));
-      const queuedNow = ensureFirstUploads(cardId, display.id, uploadable, nextMetas, isRemoteUploadOn(), queuedByPage.current, deletingGroups.current);
+      const queuedNow = ensureFirstUploads(cardId, display.id, uploadable, nextMetas, isRemoteUploadOn(), queuedByPage.current, deletingGroups.current, suppressedAutoUpload.current);
       if (queuedNow > 0) notify.info(queuedNow === 1 ? "已加入上传队列，图片后台续传" : `已加入上传队列（${queuedNow} 份），图片后台续传`);
       setLocalCard(loaded.local);
       setRemoteCard(loaded.remote);
@@ -403,6 +406,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onSessions
           if (gate.forgetLedger) {
             forgetQueuedGroup(cardId, sessionId, groupId);
             queuedByPage.current.delete(`${sessionId}/${groupId}`);
+            if (force) suppressedAutoUpload.current.add(`${sessionId}/${groupId}`);
           }
         }
         const res = await channel.request(channel.deleteGroupsUrl(sessionId), {
@@ -447,6 +451,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onSessions
    */
   async function syncAfterFix(sessionId: string, groupId: string) {
     const key = `${sessionId}/${groupId}`;
+    suppressedAutoUpload.current.delete(key);
     const wasAbnormal = abnormalSeen.current.has(key);
     const alreadyQueued = queuedByPage.current.has(key) || isGroupQueued(cardId, sessionId, groupId)
       || scannerUploadManager.hasGroupUpload(cardId, groupId, sessionId);
@@ -727,13 +732,15 @@ function ensureFirstUploads(
   remote: boolean,
   queued: Set<string>,
   deleting: ReadonlySet<string>,
+  suppressed: ReadonlySet<string> = new Set(),
 ): number {
   if (!remote) return 0;
   let count = 0;
   let missingVersion = false;
   for (const [sessionId, batch] of Object.entries(batches)) {
     for (const result of batch.results) {
-      if (deleting.has(`${sessionId}/${result.groupId}`)) continue;
+      const key = `${sessionId}/${result.groupId}`;
+      if (deleting.has(key) || suppressed.has(key)) continue;
       const outcome = queueCleanGroup(cardId, uploadCardId, sessionId, metas[sessionId], result, queued);
       if (outcome === "queued") count += 1;
       if (outcome === "missing-version") missingVersion = true;

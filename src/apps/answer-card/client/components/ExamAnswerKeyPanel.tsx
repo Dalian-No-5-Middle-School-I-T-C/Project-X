@@ -453,7 +453,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
                   </p>
                 )}
                 <UploadZone
-                  accept=".docx,.pdf,image/*"
+                  accept=".docx,.pdf,.jpg,.jpeg,.png,.bmp,.tif,.tiff,.webp"
                   maxSize={50 * 1024 * 1024}
                   multiple
                   onFiles={(files) => void handleFiles(files)}

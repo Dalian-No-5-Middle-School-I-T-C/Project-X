@@ -123,17 +123,15 @@ function changedOcrPage(): PaperInputError {
   return new PaperInputError("ANSWER_PAGE_CHANGED", "答案页已删除或替换，请重新选择页面。", 409);
 }
 
-function recognizeAnswerPage(examId: number, page: OcrPage, userId?: number): Promise<AnswerRecognition> {
-  return withOcrCapacity(async () => {
-    const input = await withAnswerCardDataMutationLock(async () => {
-      const current = await loadOcrPage(examId, page.pageIndex);
-      if (current?.id !== page.id) throw changedOcrPage();
-      const file = resolveAnswerKeyPreviewFile(examId, page.pageIndex, current.filename);
-      if (!file) throw new PaperInputError("ANSWER_PAGE_MISSING", "答案页文件不存在。", 404);
-      return readOcrInput(file.filePath);
-    });
-    return recognizeAnswerKeyInput(input, userId);
+async function recognizeAnswerPage(examId: number, page: OcrPage, userId?: number): Promise<AnswerRecognition> {
+  const input = await withAnswerCardDataMutationLock(async () => {
+    const current = await loadOcrPage(examId, page.pageIndex);
+    if (current?.id !== page.id) throw changedOcrPage();
+    const file = resolveAnswerKeyPreviewFile(examId, page.pageIndex, current.filename);
+    if (!file) throw new PaperInputError("ANSWER_PAGE_MISSING", "答案页文件不存在。", 404);
+    return readOcrInput(file.filePath);
   });
+  return recognizeAnswerKeyInput(input, userId);
 }
 
 function failedRecognition(error: unknown): AnswerRecognition & { error: string } {

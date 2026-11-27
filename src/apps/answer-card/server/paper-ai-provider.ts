@@ -59,21 +59,21 @@ export async function getKnowledgePointProvider(
     };
   }
 
-  let response: globalThis.Response;
-  try {
-    response = await fetch(llmClientUrl("/health"), {
-      headers: llmClientHeaders(),
-      signal: AbortSignal.timeout(2500),
-    });
-  } catch {
-    return null;
-  }
-  if (!response.ok) return null;
-  const status = await response.json() as {
+  let status: {
     internalAuthConfigured?: boolean;
     defaultModel?: string;
     models?: Array<{ id: string; provider: string; available: boolean; vision?: boolean }>;
   };
+  try {
+    const response = await fetch(llmClientUrl("/health"), {
+      headers: llmClientHeaders(),
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!response.ok) return null;
+    status = await response.json();
+  } catch {
+    return null;
+  }
   if (status.internalAuthConfigured === false) return null;
   const available = status.models?.filter(item => item.available &&
     (!visionOnly || (item.vision ?? isVisionProvider(item.provider, item.id))));
