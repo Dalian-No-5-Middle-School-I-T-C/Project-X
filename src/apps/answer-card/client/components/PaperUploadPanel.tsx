@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { KnowledgeTagList } from "./KnowledgeTagList";
 import { BrainCircuit } from "lucide-react";
-import { authFetch } from "../auth/api";
+import { authFetch, fetchJson, mediaUrl } from "../auth/api";
 import {
   Button,
   ControlRow,
@@ -37,8 +37,19 @@ interface PaperPage {
   filename: string;
 }
 
-export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, existingFilename, onUploaded }: Props) {
-  const [filename, setFilename] = useState<string | null>(existingFilename || null);
+type PaperInfo = { pages?: PaperPage[]; question_range?: string | null; extra_notes?: string | null };
+type KnowledgePointResponse = { questionNumber?: number; question_number?: number; points: string[] };
+
+function normalizeKnowledgePoints(items: KnowledgePointResponse[] | undefined): KnowledgePointItem[] {
+  return (items ?? []).flatMap(item => {
+    const number = item.question_number ?? item.questionNumber;
+    return typeof number === "number" && Number.isFinite(number) && number > 0
+      ? [{ question_number: number, points: item.points }]
+      : [];
+  });
+}
+
+export function PaperUploadPanel({ cardId, open, onClose, onUploaded }: Props) {
   const [pages, setPages] = useState<PaperPage[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -51,30 +62,51 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const loadPages = useCallback(async () => {
-    try {
-      const res = await authFetch(`/api/cards/${cardId}/paper/info`);
-      if (res.ok) {
-        const data = await res.json();
-        setPages(data.pages || []);
-        setFilename(data.filename || (data.pages && data.pages[0]?.filename) || null);
-      }
-    } catch { /* silent */ }
-  }, [cardId]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
-  // Reset when panel opens
+  const cardUrl = `/api/cards/${cardId}`;
+
+  async function loadPages() {
+    const info = await fetchJson<PaperInfo>(`${cardUrl}/paper/info`);
+    setPages(info.pages ?? []);
+  }
+
   useEffect(() => {
-    if (open) {
-      setQuestionRange("all");
-      setCustomRange("");
-      setExtraNotes("");
-      setUploadError(null);
-      setAnalyzeError(null);
-      setSaveError(null);
-      setKnowledgePoints([]);
-      void loadPages();
-    }
-  }, [open, loadPages]);
+    if (!open) return;
+    const controller = new AbortController();
+    const { signal } = controller;
+    setLoading(true);
+    setLoadError(null);
+    setPages([]);
+    setQuestionRange("all");
+    setCustomRange("");
+    setExtraNotes("");
+    setUploadError(null);
+    setAnalyzeError(null);
+    setSaveError(null);
+    setKnowledgePoints([]);
+
+    void Promise.all([
+      fetchJson<PaperInfo>(`${cardUrl}/paper/info`, { signal }),
+      fetchJson<{ points: KnowledgePointResponse[] }>(`${cardUrl}/knowledge-points`, { signal }),
+    ]).then(([info, saved]) => {
+      if (signal.aborted) return;
+      const range = info.question_range?.trim() ?? "";
+      const custom = range !== "" && range !== "全部";
+      setPages(info.pages ?? []);
+      setQuestionRange(custom ? "custom" : "all");
+      setCustomRange(custom ? range : "");
+      setExtraNotes(info.extra_notes ?? "");
+      setKnowledgePoints(normalizeKnowledgePoints(saved.points));
+    }).catch((error) => {
+      if (!signal.aborted) setLoadError(error instanceof Error ? error.message : "读取原卷信息失败");
+    }).finally(() => {
+      if (!signal.aborted) setLoading(false);
+    });
+    return () => controller.abort();
+  }, [open, cardUrl, loadAttempt]);
 
   if (!open) return null;
 
@@ -84,14 +116,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
     setUploadError(null);
     try {
       const formData = new FormData();
-      for (const file of files) {
-        if (file.type.startsWith("image/")) {
-          const compressed = await compressImageFile(file);
-          formData.append("files", compressed, file.name.replace(/\.[^.]+$/, ".jpg"));
-        } else {
-          formData.append("files", file);
-        }
-      }
+      for (const file of files) formData.append("files", file);
 
       const res = await authFetch(`/api/cards/${cardId}/paper`, {
         method: "POST",
@@ -122,16 +147,14 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
   const handleDelete = async () => {
     try {
       await authFetch(`/api/cards/${cardId}/paper`, { method: "DELETE" });
-      setFilename(null);
       setPages([]);
-      setKnowledgePoints([]);
     } catch {
       // ignore
     }
   };
 
   const handleAnalyze = async () => {
-    if (analyzing) return;
+    if (analyzing || loading || loadError) return;
     setAnalyzing(true);
     setAnalyzeError(null);
     try {
@@ -163,7 +186,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
         return;
       }
 
-      setKnowledgePoints(data.knowledgePoints || []);
+      setKnowledgePoints(normalizeKnowledgePoints(data.knowledgePoints));
     } catch (err: any) {
       setAnalyzeError(err.message || "分析失败");
     } finally {
@@ -172,7 +195,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
   };
 
   const handleSave = async () => {
-    if (saving) return;
+    if (saving || loading || loadError) return;
     const range = questionRange === "all" ? "全部" : customRange.trim();
     if (!range) { setSaveError("请填写自定义题目范围"); return; }
     setSaving(true);
@@ -226,17 +249,24 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
         </DialogHeader>
 
         <DialogBody className="flex flex-col gap-6">
+          {loading && <p role="status" className="m-0 text-sm text-muted-foreground">正在读取原卷与知识点…</p>}
+          {loadError && (
+            <div className="flex items-center gap-2">
+              <p role="alert" className="m-0 text-sm text-destructive-fg">读取原卷信息失败：{loadError}</p>
+              <Button size="sm" variant="outline" onClick={() => setLoadAttempt(attempt => attempt + 1)}>重试加载</Button>
+            </div>
+          )}
           {/* 导入文件区（支持多页） */}
           <section className="flex flex-col gap-2">
             <h4 className="m-0 text-base font-medium text-foreground">导入文件</h4>
             <UploadZone
-              accept=".docx,.pdf,image/*"
+              accept=".docx,.pdf,.jpg,.jpeg,.png,.bmp,.tif,.tiff,.webp"
               maxSize={50 * 1024 * 1024}
               multiple
               onFiles={handleFiles}
-              disabled={uploading}
+              disabled={uploading || loading}
               label={uploading ? "上传中..." : "拖拽文件到此处，或点击选择"}
-              sublabel="DOCX / PDF / 图片，最大 50MB，可一次选择多页"
+              sublabel="DOCX、PDF、JPEG、PNG、BMP、TIFF 或 WebP，单个文件最大 50MB"
             />
             {pages.length > 0 && (
               <div className="mt-1 flex flex-col gap-2">
@@ -252,7 +282,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
                       <Button
                         size="sm"
                         variant="ghost"
-                        onClick={() => window.open(`/api/cards/${cardId}/paper?page=${p.pageIndex}`, "_blank")}
+                        onClick={() => window.open(mediaUrl(`${cardUrl}/paper?page=${p.pageIndex}`), "_blank", "noopener")}
                       >
                         查看
                       </Button>
@@ -287,6 +317,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
             </h4>
             <RadioGroup
               value={questionRange}
+              disabled={loading || !!loadError}
               onValueChange={(value) => setQuestionRange(value as "all" | "custom")}
             >
               <ControlRow
@@ -318,6 +349,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
               placeholder="如：本次考试重点考察力学综合运用能力..."
               aria-label="特别描述"
               value={extraNotes}
+              disabled={loading || !!loadError}
               onChange={(e) => setExtraNotes(e.target.value)}
               rows={3}
             />
@@ -332,7 +364,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
               className="self-start"
               icon={<BrainCircuit />}
               loading={analyzing}
-              disabled={pages.length === 0}
+              disabled={loading || !!loadError || pages.length === 0}
               onClick={() => void handleAnalyze()}
             >
               {analyzing ? "分析中..." : "开始分析"}
@@ -365,7 +397,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
           <Button
             variant="primary"
             loading={saving}
-            disabled={pages.length === 0}
+            disabled={loading || !!loadError || pages.length === 0}
             onClick={() => void handleSave()}
           >
             {saving ? "保存中..." : "保存全部"}
@@ -374,43 +406,4 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
       </DialogContent>
     </Dialog>
   );
-}
-
-/**
- * 前端压缩图片：Canvas resize max 2048px, JPEG 80%
- */
-async function compressImageFile(file: File): Promise<File> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const objectUrl = URL.createObjectURL(file);
-    img.onload = () => {
-      const maxDim = 2048;
-      let w = img.width;
-      let h = img.height;
-      if (w > maxDim || h > maxDim) {
-        const ratio = maxDim / Math.max(w, h);
-        w = Math.round(w * ratio);
-        h = Math.round(h * ratio);
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext("2d")!;
-      ctx.drawImage(img, 0, 0, w, h);
-      URL.revokeObjectURL(objectUrl);
-      canvas.toBlob(
-        (blob) => {
-          if (blob) resolve(new File([blob], file.name.replace(/\.[^.]+$/, ".jpg"), { type: "image/jpeg" }));
-          else reject(new Error("压缩失败"));
-        },
-        "image/jpeg",
-        0.8
-      );
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
-      reject(new Error("图片加载失败"));
-    };
-    img.src = objectUrl;
-  });
 }

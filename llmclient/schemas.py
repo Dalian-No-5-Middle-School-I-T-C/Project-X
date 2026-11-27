@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -18,6 +18,20 @@ class AnalysisRunRequest(BaseModel):
     model: str | None = None
     locale: str = "zh-CN"
     providerOverride: ProviderOverride | None = None
+
+
+class AnswerKeyFile(BaseModel):
+    mimeType: Literal["application/pdf", "image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff"]
+    base64: str = Field(min_length=1)
+
+
+class AnswerKeyOcrRequest(BaseModel):
+    providerId: int = Field(strict=True, ge=0)
+    providerOverride: ProviderOverride | None = None
+    model: str | None = None
+    mode: Literal["direct", "text"]
+    files: list[AnswerKeyFile] = Field(default_factory=list)
+    paperText: str = ""
 
 
 class AiAnalysisQuestionAction(BaseModel):

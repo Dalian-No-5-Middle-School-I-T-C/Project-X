@@ -1,5 +1,6 @@
 import { access, mkdtemp, open, readFile, readdir, rm, type FileHandle } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { copyOcrModels } from "./ocr-models";
@@ -80,7 +81,13 @@ class PaperText {
 
 async function appendPdfText(bytes: Buffer, output: PaperText): Promise<boolean> {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const loading = pdfjs.getDocument({ data: new Uint8Array(bytes) });
+  const root = path.dirname(createRequire(import.meta.url).resolve("pdfjs-dist/package.json"));
+  const loading = pdfjs.getDocument({
+    data: new Uint8Array(bytes),
+    cMapUrl: path.join(root, "cmaps") + path.sep,
+    cMapPacked: true,
+    standardFontDataUrl: path.join(root, "standard_fonts") + path.sep,
+  });
   try {
     const doc = await loading.promise;
     const firstPage = output.addPages(doc.numPages);
@@ -127,7 +134,7 @@ export async function extractPdfText(filePath: string | Buffer): Promise<string 
   return await appendPdfText(bytes, text) ? text.value : null;
 }
 
-type OcrInput = { extension: string; bytes: Buffer };
+export type OcrInput = { extension: string; bytes: Buffer };
 
 export async function readOcrInput(filePath: string): Promise<OcrInput> {
   const extension = path.extname(filePath).toLowerCase();
@@ -147,7 +154,7 @@ export async function readOcrInput(filePath: string): Promise<OcrInput> {
 let recognizing = false;
 
 // Admit the job before reading its private copy. Uploads and manual retries share this slot.
-async function withOcrCapacity<T>(work: () => Promise<T>): Promise<T> {
+export async function withOcrCapacity<T>(work: () => Promise<T>): Promise<T> {
   if (recognizing) throw new PaperInputError("PAPER_OCR_BUSY", "正在识别其他页面，请稍后重新识别。", 429);
   recognizing = true;
   try {
@@ -157,13 +164,10 @@ async function withOcrCapacity<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
-export function recognizePaperPage(load: () => Promise<OcrInput>): Promise<string | null> {
-  return withOcrCapacity(async () => {
-    const { extension, bytes } = await load();
-    if (extension === ".docx") return extractDocxFiles([bytes]);
-    if (extension === ".pdf") return extractPdfText(bytes);
-    return recognizeImage(bytes);
-  });
+export function extractOcrInputText({ extension, bytes }: OcrInput): Promise<string | null> {
+  if (extension === ".docx") return extractDocxFiles([bytes]);
+  if (extension === ".pdf") return extractPdfText(bytes);
+  return recognizeImage(bytes);
 }
 
 export async function extractImageText(filePath: string): Promise<string | null> {
@@ -194,7 +198,8 @@ async function recognizeImage(bytes: Buffer): Promise<string | null> {
       errorHandler: (error) => console.warn("[paper-ocr] OCR worker error:", String(error)),
     });
     return result.data.text.trim() || null;
-  } catch {
+  } catch (error) {
+    console.warn("[paper-ocr] 图片文字识别失败:", error);
     return null;
   } finally {
     if (temporary) await rm(temporary, { recursive: true, force: true });

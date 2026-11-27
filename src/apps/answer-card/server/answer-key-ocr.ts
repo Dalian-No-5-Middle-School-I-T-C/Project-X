@@ -18,95 +18,143 @@ export type AnswerKeyDraft = {
   matchedBy: "range" | "single";
 };
 
-const FULLWIDTH_DIGITS = /[\uFF10-\uFF19]/g;
-const QUESTION_NUMBER_SEPARATORS = "[.、．:：)）]";
+const FULLWIDTH_DIGITS = /[０-９]/g;
+const OPTION = /^[A-K]+$/i;
+const SECTION_HEADING = /^[一二三四五六七八九十]+[、.．]|^(?:参考答案|答案解析|[单双多]?选题|选择题|填空题|解答题|主观题|判断题|计算题)(?:[：:]|$)/;
+const RANGE_HEAD = /(?:^|[\s,，;；])([0-9]{1,3})\s*[-—–~～至]\s*([0-9]{1,3})\s*[:：]?\s*/g;
+const NUMBERED_HEAD = /^(?:第\s*(\d+)\s*题\s*[:：、.．]?|(\d+)\s*(?:[.．:：](?!\d)|[、)）]))\s*/;
+const INLINE_NUMBERED_HEAD = /\s+(?:第\s*(\d+)\s*题\s*[:：、.．]?\s*|(\d+)(?:\.(?!\d)\s+|[．、](?!\d)\s*))/g;
 
 function normalizeDigits(value: string): string {
   return value.replace(FULLWIDTH_DIGITS, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xff10 + 48));
 }
 
-/** 清洗 OCR 噪声：去掉竖线/波浪线装饰与多余空白 */
-function cleanAnswerText(value: string): string {
-  return normalizeDigits(value)
-    .replace(/[|｜~∼]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+function validQuestionNumber(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= MAX_QUESTION_NUMBER;
 }
 
-/** 「1-5 BACDB」「6~10：CCBDA」「11—13 ABD」：题号区间 + 等长选项串 */
-const RANGE_PATTERN = new RegExp(
-  `(\\d{1,3})\\s*[-—–~至]\\s*(\\d{1,3})\\s*[:：]?\\s*([A-Ka-k]{2,})`,
-  "g"
-);
+function choiceTokens(value: string): string[] {
+  return value.trim().toUpperCase().split(/[\s、,，;；|｜]+/).filter(Boolean);
+}
 
-/** 「12. 光合作用的场所是叶绿体」：行内「题号 + 分隔符」开头的题 */
-const QUESTION_HEAD_PATTERN = new RegExp(`(\\d{1,3})\\s*${QUESTION_NUMBER_SEPARATORS}\\s*`, "g");
+function matchChoices(value: string, count: number): string[] | null {
+  const tokens = choiceTokens(value);
+  if (!tokens.every(token => OPTION.test(token))) return null;
+  if (tokens.length === count) return tokens;
+  if (tokens.length === 1 && tokens[0].length === count) return [...tokens[0]];
+  return null;
+}
 
-/**
- * 把一行拆成「题号 → 该题答案文字」若干段，支持一行多题（「1．A 2．B 3．C」）。
- * 题号必须位于行首或紧跟非数字字符 —— 否则「21. 甲」会被再从「1.」处切开，
- * 把第 21 题错解析成第 1 题。
- */
-function splitLabeledQuestions(line: string): Array<{ questionNumber: number; answerText: string }> {
-  const heads: Array<{ number: number; start: number; end: number }> = [];
-  QUESTION_HEAD_PATTERN.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = QUESTION_HEAD_PATTERN.exec(line)) !== null) {
-    const start = match.index;
-    const before = start === 0 ? "" : line[start - 1];
-    if (before && /\d/.test(before)) continue;
-    heads.push({ number: Number(match[1]), start, end: start + match[0].length });
+function matchRanges(line: string): AnswerKeyDraft[] | null {
+  const heads = [...line.matchAll(RANGE_HEAD)];
+  if (heads[0]?.index !== 0) return null;
+
+  return heads.flatMap((head, index) => {
+    const start = Number(head[1]);
+    const end = Number(head[2]);
+    if (!validQuestionNumber(start) || !validQuestionNumber(end) || end < start) return [];
+    const value = line.slice(head.index + head[0].length, heads[index + 1]?.index);
+    const options = matchChoices(value, end - start + 1);
+    return options?.map((answerText, offset) => ({
+      questionNumber: start + offset, answerText, matchedBy: "range" as const,
+    })) ?? [];
+  });
+}
+
+function matchChoiceTable(numbers: string, answers: string): AnswerKeyDraft[] | null {
+  const headings = choiceTokens(numbers.replace(/^题\s*号\s*[:：]?/, ""));
+  if (headings.length < 2 || !headings.every(n => /^\d+$/.test(n))) return null;
+  const start = Number(headings[0]);
+  if (!validQuestionNumber(start) || !validQuestionNumber(start + headings.length - 1)) return null;
+  if (!headings.every((n, offset) => Number(n) === start + offset)) return null;
+  const options = matchChoices(answers.replace(/^答\s*案\s*[:：]?/, ""), headings.length);
+  return options?.map((answerText, offset) => ({
+    questionNumber: start + offset, answerText, matchedBy: "range",
+  })) ?? null;
+}
+
+// Require an entire row of options before treating bare numbers or inline punctuation as question labels.
+function matchChoiceRow(line: string): AnswerKeyDraft[] | null {
+  if (!/^(?:\d+(?:\s*[.．、:：)）]\s*|\s+)[A-K]+)(?:[\s、,，;；]+\d+(?:\s*[.．、:：)）]\s*|\s+)[A-K]+)*$/i.test(line)) {
+    return null;
   }
-  return heads.map((head, i) => ({
-    questionNumber: head.number,
-    answerText: line.slice(head.end, i + 1 < heads.length ? heads[i + 1].start : line.length),
+  return [...line.matchAll(/(\d+)(?:\s*[.．、:：)）]\s*|\s+)([A-K]+)/gi)].map(match => ({
+    questionNumber: Number(match[1]), answerText: match[2].toUpperCase(), matchedBy: "single",
   }));
 }
 
-function pushDraft(
-  drafts: Map<number, AnswerKeyDraft>,
-  questionNumber: number,
-  answerText: string,
-  matchedBy: AnswerKeyDraft["matchedBy"]
-): void {
-  if (!Number.isInteger(questionNumber) || questionNumber <= 0 || questionNumber > MAX_QUESTION_NUMBER) return;
-  const text = cleanAnswerText(answerText);
-  if (!text) return;
-  // 先命中的规则优先：OCR 同一题往往只在一种格式里出现
-  if (drafts.has(questionNumber)) return;
-  drafts.set(questionNumber, {
-    questionNumber,
-    answerText: text.slice(0, MAX_ANSWER_TEXT_LENGTH),
-    matchedBy,
-  });
+function splitInlineNumberedLine(firstNumber: number, rest: string): Array<{ questionNumber: number; answerText: string }> {
+  const inlineHeads = [...rest.matchAll(INLINE_NUMBERED_HEAD)];
+  if (inlineHeads.length === 0) return [{ questionNumber: firstNumber, answerText: rest }];
+  const items: Array<{ questionNumber: number; answerText: string }> = [
+    { questionNumber: firstNumber, answerText: rest.slice(0, inlineHeads[0].index) },
+  ];
+  for (let i = 0; i < inlineHeads.length; i++) {
+    const match = inlineHeads[i];
+    const start = match.index + match[0].length;
+    const end = i + 1 < inlineHeads.length ? inlineHeads[i + 1].index : rest.length;
+    items.push({ questionNumber: Number(match[1] ?? match[2]), answerText: rest.slice(start, end) });
+  }
+  return items;
 }
 
 export function parseAnswerKeyText(text: string): AnswerKeyDraft[] {
   const drafts = new Map<number, AnswerKeyDraft>();
-  if (!text) return [];
+  let current: { questionNumber: number; lines: string[] } | undefined;
 
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = normalizeDigits(rawLine).trim();
-    if (!line) continue;
-
-    // 区间式优先整行扫描：一行可含多组「1-5 BACDB 6-10 CCBDA」
-    RANGE_PATTERN.lastIndex = 0;
-    let range: RegExpExecArray | null;
-    while ((range = RANGE_PATTERN.exec(line)) !== null) {
-      const start = Number(range[1]);
-      const end = Number(range[2]);
-      const options = range[3].toUpperCase();
-      if (!(end >= start) || end - start + 1 !== options.length) continue;
-      for (let i = 0; i < options.length; i += 1) {
-        pushDraft(drafts, start + i, options[i], "range");
-      }
-    }
-
-    // 区间已占用的题号由 pushDraft 的「先命中优先」自动跳过
-    for (const item of splitLabeledQuestions(line)) {
-      pushDraft(drafts, item.questionNumber, item.answerText, "single");
-    }
+  function save(draft: AnswerKeyDraft): void {
+    if (!validQuestionNumber(draft.questionNumber) || drafts.has(draft.questionNumber)) return;
+    const answerText = draft.answerText.replace(/\s+/g, " ").trim().slice(0, MAX_ANSWER_TEXT_LENGTH);
+    if (answerText) drafts.set(draft.questionNumber, { ...draft, answerText });
   }
 
+  function finishQuestion(): void {
+    if (!current) return;
+    save({ questionNumber: current.questionNumber, answerText: current.lines.join(" "), matchedBy: "single" });
+    current = undefined;
+  }
+
+  const lines = text.split(/\r?\n/).map(line => normalizeDigits(line).trim()).filter(Boolean);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const table = matchChoiceTable(line, lines[i + 1] ?? "");
+    if (table) {
+      finishQuestion();
+      table.forEach(save);
+      i++;
+      continue;
+    }
+
+    const ranges = matchRanges(line);
+    const choices = matchChoiceRow(line);
+    if (ranges?.length || (choices && choices.length > 1)) {
+      finishQuestion();
+      (ranges?.length ? ranges : choices)?.forEach(save);
+      continue;
+    }
+
+    if (SECTION_HEADING.test(line)) {
+      finishQuestion();
+      continue;
+    }
+
+    const head = NUMBERED_HEAD.exec(line);
+    const choice = choices?.[0];
+    if (head) {
+      finishQuestion();
+      const segments = splitInlineNumberedLine(Number(head[1] ?? head[2]), line.slice(head[0].length));
+      for (let s = 0; s < segments.length - 1; s++) {
+        save({ questionNumber: segments[s].questionNumber, answerText: segments[s].answerText, matchedBy: "single" });
+      }
+      const last = segments[segments.length - 1];
+      current = { questionNumber: last.questionNumber, lines: [last.answerText] };
+    } else if (choice) {
+      finishQuestion();
+      current = { questionNumber: choice.questionNumber, lines: [choice.answerText] };
+    } else {
+      current?.lines.push(line);
+    }
+  }
+  finishQuestion();
   return [...drafts.values()].sort((a, b) => a.questionNumber - b.questionNumber);
 }

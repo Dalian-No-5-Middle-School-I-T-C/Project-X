@@ -76,21 +76,18 @@ export async function compressImage(inputPath: string, { requireSinglePage = fal
   if (!await isValidImageFile(inputPath, { allowBigTiff: true, propagateReadErrors: true })) {
     throw new PaperInputError("INVALID_PAPER_IMAGE", "文件内容与支持的原卷图片格式不符");
   }
-  let image = sharp(inputPath);
+  const image = sharp(inputPath).rotate();
   const metadata = await image.metadata().catch(rethrowImageDecodeError);
   if (requireSinglePage && (metadata.pages ?? 1) > 1) {
     throw new PaperInputError("MULTIPAGE_PAPER_IMAGE", "原卷图片包含多页。请逐页上传图片，或将整份原卷导出为 PDF 后上传。");
   }
 
-  if (metadata.width && metadata.width > 2048) {
-    image = image.resize(2048, 2048, { fit: "inside", withoutEnlargement: true });
-  }
-
-  const buf = await image.jpeg({ quality: 80 }).toBuffer().catch(rethrowImageDecodeError);
+  const buf = await image.resize(2048, 2048, { fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 80 }).toBuffer().catch(rethrowImageDecodeError);
 
   // 如果压缩后仍然 > 10MB（极罕见），再压到 1600px
   if (buf.length > 10 * 1024 * 1024) {
-    const img2 = sharp(inputPath).resize(1600, 1600, { fit: "inside", withoutEnlargement: true });
+    const img2 = sharp(inputPath).rotate().resize(1600, 1600, { fit: "inside", withoutEnlargement: true });
     return img2.jpeg({ quality: 70 }).toBuffer().catch(rethrowImageDecodeError);
   }
 
@@ -102,11 +99,12 @@ export async function compressImage(inputPath: string, { requireSinglePage = fal
  */
 export async function imageToPdf(inputPath: string, outputPath: string, jpegPreview?: Buffer): Promise<void> {
   const metadata = await sharp(inputPath).metadata();
-  const width = metadata.width || 2480;
-  const height = metadata.height || 3508;
-  // PDFKit embeds JPEG and PNG directly. Other paper images already have a JPEG preview.
-  const source = metadata.format === "jpeg" || metadata.format === "png"
-    ? inputPath : jpegPreview ?? await sharp(inputPath).jpeg().toBuffer();
+  const width = metadata.autoOrient.width || 2480;
+  const height = metadata.autoOrient.height || 3508;
+  // PDFKit embeds JPEG and PNG directly without applying EXIF orientation.
+  // Any rotated JPEG/PNG or other image format must be rotated/encoded first.
+  const source = (metadata.format === "jpeg" || metadata.format === "png") && (metadata.orientation ?? 1) === 1
+    ? inputPath : jpegPreview ?? await sharp(inputPath).rotate().jpeg().toBuffer();
 
   // pdfkit 使用 pt (1/72 inch)，假设 72 DPI
   const pageWidth = (width / 72) * 72; // scaled to fit
