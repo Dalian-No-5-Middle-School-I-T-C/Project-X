@@ -19,7 +19,7 @@ function readConfigDbMode(): { mode: string; remote?: any } | null {
       mode: "remote",
       remote: {
         host: cfg.remote.host,
-        port: cfg.remote.port ?? 443,
+        port: cfg.remote.port ?? 3306,
         database: cfg.remote.database ?? "projectx",
         user: cfg.remote.user ?? "projectx_app",
         password: cfg.remote.password ?? "",

@@ -4,7 +4,7 @@ import type { AnswerCard, ObjectiveOptionLayout } from "../../shared/types";
 import { normalizeObjectiveQuestions } from "../../shared/grading";
 import { DEFAULT_STUDENT_INFO } from "../../shared/defaultCard";
 import type { StudentInfoSettings } from "../../shared/types";
-import { createDefaultCard } from "../../shared/defaultCard";
+import { createDefaultCard, normalizeLayoutVersion } from "../../shared/defaultCard";
 import { validateCardScores } from "../../shared/cardScoreValidation";
 import { analysisCache } from "../services/analysisCache";
 
@@ -266,7 +266,7 @@ export class CardRepository {
       paper: { size: cardRow.paper_size, orientation: cardRow.orientation },
       studentInfo: parseStudentInfo(cardRow.student_fields, cardRow.student_number_digits),
       bodyBlocks: [], sided: (cardRow.sided as "single" | "double") ?? "double",
-      layoutVersion: cardRow.layout_version === 2 ? 2 : 1, updatedAt: cardRow.updated_at,
+      layoutVersion: normalizeLayoutVersion(cardRow.layout_version), updatedAt: cardRow.updated_at,
       revision: Number(cardRow.revision ?? 0)
     };
     const persistedBlocks: Array<{ sortOrder: number; block: any }> = [];

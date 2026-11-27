@@ -145,6 +145,46 @@
       "snapshot": "教师最终班级对比"
     },
     {
+      "role": "tab",
+      "name": "偏科"
+    },
+    {
+      "settle": true
+    },
+    {
+      "snapshot": "教师最终偏科页"
+    },
+    {
+      "role": "tab",
+      "name": "总体分析"
+    },
+    {
+      "settle": true
+    },
+    {
+      "snapshot": "教师最终总体分析页"
+    },
+    {
+      "role": "tab",
+      "name": "AI分析"
+    },
+    {
+      "settle": true
+    },
+    {
+      "snapshot": "教师最终AI分析页"
+    },
+    {
+      "role": "tab",
+      "name": "概况"
+    },
+    {
+      "settle": true
+    },
+    {
+      "snapshot": "教师最终概况页"
+    },
+    {
       "name": "导出"
     },
     {
@@ -295,6 +335,23 @@
     },
     {
       "snapshot": "复测学生本人作答图片"
+    },
+    {
+      "assertNoApiErrors": true
+    }
+  ],
+  "admin-console": [
+    {
+      "goto": "{{server}}/admin-console"
+    },
+    {
+      "assertText": "服务器版本与更新时间"
+    },
+    {
+      "assertText": "{{appVersion}}"
+    },
+    {
+      "snapshot": "管理控制台与构建版本"
     },
     {
       "assertNoApiErrors": true

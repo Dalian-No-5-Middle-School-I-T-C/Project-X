@@ -20,7 +20,12 @@ function overBudget(): never {
 type Budget = { compressed: number; expanded: number; entries: number; text: number };
 let extracting = false;
 
-async function readBounded(filePath: string, budget: Budget): Promise<Buffer> {
+async function readBounded(filePath: string | Buffer, budget: Budget): Promise<Buffer> {
+  if (Buffer.isBuffer(filePath)) {
+    budget.compressed += filePath.length;
+    if (budget.compressed > DOCX_LIMITS.compressedBytes) overBudget();
+    return filePath;
+  }
   const chunks: Buffer[] = [];
   for await (const chunk of createReadStream(filePath)) {
     budget.compressed += chunk.length;
@@ -69,7 +74,7 @@ async function validateArchive(buffer: Buffer, budget: Budget): Promise<void> {
   }
 }
 
-export async function extractDocxFiles(filePaths: string[]): Promise<string | null> {
+async function processDocxFiles(filePaths: (string | Buffer)[], extractText: boolean): Promise<string | null> {
   // Bound aggregate memory across simultaneous requests, without an unbounded queue.
   if (extracting) throw new PaperInputError("PAPER_ANALYSIS_BUSY", "正在提取其他原卷，请稍后重试。", 429);
   extracting = true;
@@ -80,6 +85,7 @@ export async function extractDocxFiles(filePaths: string[]): Promise<string | nu
     for (const filePath of filePaths) {
       const buffer = await readBounded(filePath, budget);
       await validateArchive(buffer, budget);
+      if (!extractText) continue;
       const result = await mammoth.extractRawText({ buffer });
       const text = result.value?.trim();
       if (!text) return null;
@@ -94,4 +100,12 @@ export async function extractDocxFiles(filePaths: string[]): Promise<string | nu
   } finally {
     extracting = false;
   }
+}
+
+export async function validateDocxArchives(filePaths: string[]): Promise<void> {
+  await processDocxFiles(filePaths, false);
+}
+
+export function extractDocxFiles(filePaths: (string | Buffer)[]): Promise<string | null> {
+  return processDocxFiles(filePaths, true);
 }

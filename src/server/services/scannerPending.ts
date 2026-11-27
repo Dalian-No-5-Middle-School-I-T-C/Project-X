@@ -244,6 +244,7 @@ export async function confirmPendingScan(
         await persistScannerResultToMainDb(e.card.id, e.result, true, {
           db: tx,
           examId,
+          rosterApproval: true,
         });
         // The teacher explicitly selects this attempt; archive other attempts without deleting their evidence.
         await tx.run(

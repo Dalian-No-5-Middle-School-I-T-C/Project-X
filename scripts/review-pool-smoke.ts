@@ -201,6 +201,20 @@ async function main(): Promise<void> {
     ok(!msg.includes("已被其他教师领取") && err instanceof ReviewValidationError === false, `A 提交未被归属拦截（业务错误: ${msg.slice(0, 40)}）`);
   }
 
+  const { upsertBlockConfig } = await import("../src/server/services/BlockGradingConfigService");
+  await upsertBlockConfig(examId, "__default__", { reviewMode: 2, autoReassignNoArb: 1 }, poolDb);
+  for (const teacher of [teacherA, teacherB]) {
+    db.prepare("INSERT INTO review_assignments (exam_id, block_id, teacher_id) VALUES (?, ?, ?)").run(examId, blockId, teacher);
+  }
+  db.prepare("UPDATE answer_block_crops SET claimed_by=NULL, status='disputed', score_breakdown=?, review_round=2 WHERE id=?")
+    .run(JSON.stringify([{ reviewerId: teacherA }, { reviewerId: teacherB }]), claimed.id);
+  await expectError("采用考试默认双评时，次评教师不能替换首评", () => claimSpecificPaper(examId, blockId, claimed.id, teacherB, poolDb), "不能重复领取");
+  const disputed = await claimNextPaper(examId, blockId, teacherA, poolDb);
+  ok(disputed.id === claimed.id && disputed.claimedBy === teacherA, "题块继承考试双评配置，争议卷回到首评教师");
+  await releasePaper(examId, blockId, claimed.id, teacherA, poolDb);
+  await upsertBlockConfig(examId, blockId, { reviewMode: 2, autoReassignNoArb: 0 }, poolDb);
+  await expectError("题块显式关闭改派优先于考试默认", () => claimSpecificPaper(examId, blockId, claimed.id, teacherA, poolDb), "不能重复领取");
+
   closeDatabase();
   rmSync(tmpDir, { recursive: true, force: true });
 

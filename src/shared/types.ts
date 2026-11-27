@@ -162,7 +162,8 @@ export type AnswerCard = {
   studentInfo: StudentInfoSettings;
   bodyBlocks: BodyBlock[];
   sided: "single" | "double";
-  layoutVersion: 1 | 2;
+  /** V2 introduced compact score cells. V3 paginates objective blocks by printed height. */
+  layoutVersion: 1 | 2 | 3;
   updatedAt: string;
   /**
    * 服务端维护的保存计数器：每次 PUT 落库 +1，客户端只读。
@@ -417,7 +418,11 @@ export type RecognitionBlockCrop = {
 
 export type AnswerBlockCropSourceType = "scan_record" | "twain_scan_record";
 
+export type ReviewImage = { id: string; imageUrl: string; pageNumber: number; segmentIndex: number; widthPx: number; heightPx: number };
+
 export type AnswerBlockCrop = {
+  reviewImages?: ReviewImage[];
+  reviewIssue?: string;
   id: string;
   cardId: string;
   examId?: number | null;
@@ -1560,6 +1565,7 @@ export interface GroupRankingRow {
 
 /** 大考排名响应 */
 export interface GroupRankingResponse {
+  totalScoreMode: "raw" | "assigned";
   groupId: number;
   groupName: string;
   totalStudents: number;
@@ -1862,6 +1868,9 @@ export interface GroupClassComparisonResponse {
 
 /** 争议卷条目 */
 export interface DisputeItem {
+  reviewImages?: ReviewImage[];
+  reviewIssue?: string;
+  questionNumbers: number[];
   cropId: string;
   studentId: number;
   studentName: string;

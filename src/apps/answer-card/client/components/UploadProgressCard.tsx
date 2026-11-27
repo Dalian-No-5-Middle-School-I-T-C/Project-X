@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { CardCorrectionButton } from "./CardCorrectionEditor";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { CheckCircle2, ChevronDown, ChevronUp, CloudUpload, PauseCircle, RefreshCw, X, XCircle } from "lucide-react";
@@ -22,7 +23,7 @@ const BORDER_BY_STATUS: Record<UploadJobSnapshot["status"], string> = {
   cancelled: "border-border-subtle",
 };
 
-export function UploadProgressCard() {
+export function UploadProgressCard({ region }: { region?: HTMLElement | null }) {
   const snap = useSyncExternalStore(scannerUploadManager.subscribe, scannerUploadManager.getState);
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   const [entered, setEntered] = useState(false);
@@ -76,19 +77,21 @@ export function UploadProgressCard() {
     return true;
   })]));
 
-  return (
+  const panel = (
     <section
-      aria-label="上传任务"
-      className={`fixed right-[var(--px-scanner-upload-right,1rem)] bottom-[var(--px-scanner-upload-bottom,3.75rem)] z-(--px-z-sticky) flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden transition-[transform,opacity] duration-200 ${
-        entered ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"
-      } ${
-        collapsed
-          ? "w-auto rounded-full shadow-1"
-          : "max-h-[min(60vh,calc(100vh_-_var(--px-scanner-upload-bottom,3.75rem)_-_12rem))] w-80 rounded-lg border border-border bg-card shadow-2"
-      }`}
+      aria-label={region ? "后台上传任务" : "上传任务"}
+      className={region
+        ? "flex max-h-[35dvh] flex-col overflow-hidden border-b border-border-subtle bg-background px-3 py-1.5"
+        : `fixed right-[var(--px-scanner-upload-right,1rem)] bottom-[var(--px-scanner-upload-bottom,3.75rem)] z-(--px-z-sticky) flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden transition-[transform,opacity] duration-200 ${
+          entered ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"
+        } ${
+          collapsed
+            ? "w-auto rounded-full shadow-1"
+            : "max-h-[min(60vh,calc(100vh_-_var(--px-scanner-upload-bottom,3.75rem)_-_12rem))] w-80 rounded-lg border border-border bg-card shadow-2"
+        }`}
     >
-      <div className={`flex shrink-0 items-center gap-2 ${collapsed ? "" : "justify-between px-2 pt-2"}`}>
-        {!collapsed && <ServerStatusIndicator />}
+      <div className={`flex shrink-0 items-center gap-2 ${region ? "justify-end pr-1" : collapsed ? "" : "justify-between px-2 pt-2"}`}>
+        {(!collapsed || region) && <ServerStatusIndicator />}
         <Button
           variant="outline"
           size="sm"
@@ -96,8 +99,12 @@ export function UploadProgressCard() {
           aria-expanded={!collapsed}
           aria-label={collapsed ? `展开上传（${visible.length}） · ${summary}` : undefined}
           title={collapsed ? summary : undefined}
-          className={`h-7 max-w-full px-2 text-xs ${collapsed ? "min-w-0 shrink rounded-full" : ""}`}
-          icon={collapsed ? <ChevronUp className="size-3.5" aria-hidden /> : <ChevronDown className="size-3.5" aria-hidden />}
+          className={region
+            ? "h-7 bg-card px-2 text-xs shadow-1"
+            : `h-7 max-w-full px-2 text-xs ${collapsed ? "min-w-0 shrink rounded-full" : ""}`}
+          icon={region
+            ? (collapsed ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronUp className="size-3.5" aria-hidden />)
+            : (collapsed ? <ChevronUp className="size-3.5" aria-hidden /> : <ChevronDown className="size-3.5" aria-hidden />)}
           onClick={() => setCollapsed(value => !value)}
         >
           {collapsed ? <span className="truncate tabular-nums">{summary}</span> : "收起上传"}
@@ -106,7 +113,7 @@ export function UploadProgressCard() {
       {!collapsed && (
         <>
           {(counts.error > 0 || pendingCount > 0) && (
-            <div className="flex shrink-0 flex-wrap justify-end gap-1.5 px-2 pt-2">
+            <div className={`flex shrink-0 flex-wrap justify-end gap-1.5 ${region ? "pt-1.5" : "px-2 pt-2"}`}>
               {counts.error > 0 && (
                 <Button variant="outline" size="sm" type="button" className="h-7 px-2 text-xs"
                   onClick={() => scannerUploadManager.dismissTerminalJobs("error")}>
@@ -121,14 +128,29 @@ export function UploadProgressCard() {
               )}
             </div>
           )}
-          <div role="region" aria-label="上传任务列表" tabIndex={0} className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
+          <div
+            role="region"
+            aria-label="上传任务列表"
+            tabIndex={0}
+            className={region
+              ? "grid min-h-0 flex-1 gap-2 overflow-y-auto pt-2 sm:grid-cols-2 xl:grid-cols-3"
+              : "flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2"}
+          >
             {visible.map((job) => (
               <UploadJobCard
                 key={job.id}
                 job={job}
                 conflictCards={conflictCards.get(job.id) ?? []}
                 queuedCount={snap.queuedCount}
-                onDismiss={scannerUploadManager.dismissJob}
+                onDismiss={(id) => {
+                  // 审查 P2:关闭需真正移除任务并释放页面资源,不能只从视图收起
+                  scannerUploadManager.dismissJob(id);
+                  setDismissed((prev) => {
+                    const next = new Set(prev);
+                    next.add(id);
+                    return next;
+                  });
+                }}
               />
             ))}
           </div>
@@ -136,6 +158,7 @@ export function UploadProgressCard() {
       )}
     </section>
   );
+  return region ? createPortal(panel, region) : panel;
 }
 
 function UploadJobCard({

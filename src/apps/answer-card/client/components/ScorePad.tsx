@@ -1,7 +1,6 @@
 // ScorePad —— 阅卷分数键盘（T5 v2 迁移）
 // 视觉层令牌化：按钮改用 v2 语义类（选中=品牌红实底，未选=secondary），
 // 触摸目标沿用 56px 下限（大于 --px-touch-target 44px，判分工作台刻意放大）。
-// 功能守恒：位置模式 / 枚举模式的取值、提交与自动跳转逻辑逐行保留。
 import React, { useMemo } from "react";
 import { cn } from "../lib/utils";
 
@@ -71,8 +70,8 @@ export function ScorePad({ maxScore, hasHalfPoint, currentScore, onScoreChange, 
     return arr;
   }, [usePositionMode, maxScore, hasHalfPoint]);
   const enumBottom = useMemo<ScoreButton[]>(
-    () => (hasHalfPoint && !usePositionMode ? [{ label: "0", value: 0 }, { label: "0.5", value: 0.5 }] : []),
-    [hasHalfPoint, usePositionMode]
+    () => (hasHalfPoint && !usePositionMode ? [{ label: "0", value: 0 }, { label: "0.5", value: 0.5 }].filter(btn => btn.value <= maxScore) : []),
+    [hasHalfPoint, usePositionMode, maxScore]
   );
 
   const commit = (value: number) => {
@@ -84,13 +83,13 @@ export function ScorePad({ maxScore, hasHalfPoint, currentScore, onScoreChange, 
 
   // 位置模式当前选中的各位值
   const tens = Math.floor(currentScore / 10) * 10;
-  const ones = Math.round(currentScore) - tens;
-  const half = currentScore % 1 >= 0.49 ? 0.5 : 0;
+  const ones = Math.floor(currentScore) - tens;
+  const half = hasHalfPoint && currentScore % 1 >= 0.5 ? 0.5 : 0;
 
   const isSelected = (col: number, val: number) => {
     if (!usePositionMode) return false;
     if (col === 0) return tens === val;
-    if (col === 1) return Math.round(ones) === val;
+    if (col === 1) return ones === val;
     if (col === positionColumns.length - 1) return half === val;
     return false;
   };
@@ -106,14 +105,24 @@ export function ScorePad({ maxScore, hasHalfPoint, currentScore, onScoreChange, 
     }
     // 十位 / 个位 → 仅更新预览
     if (col === 0) {
-      const frac = currentScore - Math.floor(currentScore / 10) * 10;
-      onScoreChange(Math.min(round(val + frac), maxScore));
+      onScoreChange(Math.min(val + ones + half, maxScore));
     } else {
-      const newTens = Math.floor(currentScore / 10) * 10;
-      const frac = currentScore % 1 >= 0.49 ? 0.5 : 0;
-      onScoreChange(Math.min(round(newTens + val + frac), maxScore));
+      onScoreChange(Math.min(tens + val + half, maxScore));
     }
   };
+
+  const step = hasHalfPoint ? 0.5 : 1;
+  const fullMarkButton = Math.abs(maxScore - Math.round(maxScore / step) * step) > 1e-9 && (
+    <button
+      type="button"
+      onClick={() => commit(maxScore)}
+      disabled={disabled}
+      aria-pressed={currentScore === maxScore}
+      className={padBtnClass(currentScore === maxScore, disabled)}
+    >
+      满分 {maxScore}
+    </button>
+  );
 
   if (usePositionMode) {
     return (
@@ -139,6 +148,7 @@ export function ScorePad({ maxScore, hasHalfPoint, currentScore, onScoreChange, 
             </div>
           ))}
         </div>
+        {fullMarkButton}
         <ScorePreview currentScore={currentScore} />
       </div>
     );
@@ -162,6 +172,7 @@ export function ScorePad({ maxScore, hasHalfPoint, currentScore, onScoreChange, 
             {btn.label}
           </button>
         ))}
+        {fullMarkButton}
       </div>
 
       {enumBottom.length > 0 && (
@@ -194,7 +205,7 @@ export function ScorePad({ maxScore, hasHalfPoint, currentScore, onScoreChange, 
 function ScorePreview({ currentScore }: { currentScore: number }) {
   return (
     <div className="py-2 text-center text-3xl font-medium tabular-nums text-foreground">
-      {currentScore % 1 > 0 ? currentScore.toFixed(1) : currentScore}
+      {currentScore}
       <span className="text-base text-muted-foreground"> 分</span>
     </div>
   );

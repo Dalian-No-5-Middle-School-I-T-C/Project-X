@@ -8,7 +8,7 @@ import { SERVER_URL_KEY, readServerUrl } from "./scannerMode";
 import { assertCredentialTransportAllowed } from "./remoteCredentialTransport";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
 import { applyScanStudentId, uniqueScanConflictCards } from "../../../../shared/scanPages";
-import { damagedScanUploadRecoverySessionId, forgetScanUploadRecovery, isGroupQueued, scanUploadRecoveryState, readScanUploadRecovery, rememberQueuedGroup, writeScanUploadRecovery } from "./scannerUploadLedger";
+import { damagedScanUploadRecoverySessionId, forgetScanUploadRecovery, hasCompletedScanUploadRecovery, isGroupQueued, scanUploadRecoveryState, readScanUploadRecovery, rememberQueuedGroup, writeScanUploadRecovery } from "./scannerUploadLedger";
 import type { ScanBatchFailure, ScanConflictCard, ScanBatchResponse } from "../../../../shared/scanPages";
 import type { CombinedGradingRow, CombinedRecognitionResult } from "../../../../shared/types";
 
@@ -1013,9 +1013,11 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         // 远端已按任务内的全部卷分配页槽，不能删减其中一组。
         return { ok: false, message: "这份卷与其他卷共用上传会话，请先完成或取消该上传任务，再删除本机原图" };
       }
-      // 成功提交后，完成标记接替恢复记录，关闭进度卡后也能识别已传卷。
+      // 成功提交后，完成标记接替恢复记录；若完成标记落盘失败，completed 恢复记录就是唯一的持久化回执，
+      // 强制删本机原图（DELETE 请求可能失败）前必须显式保留，避免重开后处理重复建新远端会话。
+      const hasCompletedReceipt = hasCompletedScanUploadRecovery(cardId, localSessionId, groupId);
       const forgetLedger = !matching.some(job => job.status === "done") && !isGroupQueued(cardId, localSessionId, groupId);
-      if (scanUploadRecoveryState(cardId, localSessionId, groupId) !== "none") {
+      if (!hasCompletedReceipt && scanUploadRecoveryState(cardId, localSessionId, groupId) !== "none") {
         forgetScanUploadRecovery(cardId, localSessionId, groupId);
       }
       for (const job of matching) {

@@ -112,4 +112,21 @@
 
 ---
 
-_最后更新：2026-10-05（安全整改全量复检：录入 `verify:a3` 原生旋转识别待查项）| 发现版本：v1.9.2_
+## 网阅系统（实验阶段）复审待处理项（2026-11-21）
+
+> 2026-11-21 双机全链路验收后独立代码复审记录；当前网阅仍处于实验阶段，下列条目暂不阻断主线推送，后续推进网阅转正时集中修复：
+
+| 编号 | 级别 | 问题 | 位置 | 建议修复方向 |
+|------|------|------|------|--------------|
+| REV-9 | P1 | 多小题仲裁未过滤零分副空（填空题块把题块总分挂在首空、其余副空 `score=0`）。`ReviewService.ts` 已剔除零分副空，但仲裁查询与提交仍要求全量题号，导致仅提交正分题返回 `422`，全交则会给副空写入 `max_score=0` 的 `question_scores` 脏行 | `src/server/services/ArbitrationService.ts:247`、`src/server/routes/review-arbitration.ts:105-192` | 仲裁查询与提交按 `ReviewService.ts:361-383` 同一规则剔除 `score <= 0` 的卡片题目 |
+| REV-10 | P1 | 提交评分后 `GradePanel` 以未 `await` 且无陈旧守卫的 `fetchQueue().then(setQueue)` 后台刷新队列，并立刻解除 `saving`；快速点「领取下一份」或连评下一张时，迟到的旧响应会把新领卷冲掉（`currentIndex` 越界白屏）或把刚提交卷插回队列；且 `saveSession(0, newScores)` 漏传第 3 参 `cropId` | `src/apps/answer-card/client/components/GradePanel.tsx:207-210` | 引入请求序号守卫或在切块/领卷/提交间串行刷新队列，并同步传入当前目标 `cropId` |
+| REV-11 | P1 | 含 `reviewIssue` 的切图在 `block_total` 模式下 `ScorePad` 未禁用（仍会触发草稿 `PUT`，提交却静默返回）；在 `per_question` 模式下因服务端返回空 `reviewImages`，右侧面板会误报「此面板只支持题块总分」而非展示真实 `reviewIssue` | `src/apps/answer-card/client/components/GradePanel.tsx:41,157,401-414` | 将 `Boolean(current?.reviewIssue)` 纳入禁用条件并在异常切图时优先展示 `reviewIssue` |
+| REV-12 | P2 | 仲裁落库将切图置为 `reviewed` 时未清空 `claimed_by` / `claimed_at`；若争议卷此前被某教师领取，将永久占用该教师 `countHeldPapers` 持卷上限的 1 个槽位 | `src/server/routes/review-arbitration.ts:162-174` | `UPDATE answer_block_crops` 时同步 `SET claimed_by = NULL, claimed_at = NULL` |
+| REV-13 | P2 | 多页作文聚合把 `scan_records.id`（MariaDB `INT`）直接与 `answer_block_crops.source_record_id`（`VARCHAR(64)`）比较，MariaDB 强转 `DOUBLE` 导致主键索引失效；另 `peer.student_id = alias.student_id` 会把 `student_id IS NULL` 的未匹配作文隐掉 | `src/server/services/essayReview.ts:15-18,59` | 双方言统一按同类型比较（避免隐式转 `DOUBLE`）并显式定义无学号作文切图处理口径 |
+| REV-14 | P2 | 争议仲裁弹窗报错条 `errorMsg` 渲染在 `<Dialog>` 外被遮罩层挡住；提交前未校验负数/超满分；无 Preflight 下裸 `<figure>` 继承浏览器默认 40px 左右外边距 | `src/apps/answer-card/client/components/DisputeManagePage.tsx:32,99-103,197-204` | 将报错移入 `<DialogContent>` 内，补充 `[0, maxScore]` 校验与显式 Tailwind 样式 |
+| REV-15 | P2 | 非步长整数倍满分时（如 `12.5` 步长 1 或 `12.25` 步长 0.5），`ScorePad` 的「满分 X」按钮缺少水平 padding 与整行宽度，容易撑出 `64px` 网格或文字贴边 | `src/apps/answer-card/client/components/ScorePad.tsx:115-125,151,163,175` | 为 `fullMarkButton` 补充 `px-3` 及合适列宽/整行布局 |
+| REV-16 | P2 | `ExamDetailPage` 原地切换 `examId` 时若当前停留在 `disputes` 页签而新考试无争议权限，未重置 `activeTab` 会显示空白内容区 | `src/apps/answer-card/client/components/ExamDetailPage.tsx:42,48-56,90` | 监听 `examId` 与 `canSee(activeTab)` 变化，自动回退到可用页签 |
+
+---
+
+_最后更新：2026-11-21（录入双机验收后网阅实验阶段复审待处理项 REV-9 ~ REV-16）| 发现版本：v2.7.1_

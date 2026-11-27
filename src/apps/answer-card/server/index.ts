@@ -138,7 +138,7 @@ import { optionalAuth, authMiddleware, refreshAuthenticatedUser, recheckWritePer
 import { requirePasswordChangeCompleted } from "../../../server/middleware/auth";
 import { authService } from "../../../server/services/AuthService";
 import { initPermissionCache, roleHasPermission, PERMISSIONS, ROLE_IDS } from "../../../server/auth/permissions";
-import { createDefaultCard, DEFAULT_STUDENT_INFO, generateCardId } from "../../../shared/defaultCard";
+import { createDefaultCard, DEFAULT_STUDENT_INFO, generateCardId, normalizeLayoutVersion } from "../../../shared/defaultCard";
 import { applySubjectTemplate } from "../../../shared/cardTemplates";
 import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey, normalizeObjectiveQuestions } from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
@@ -176,6 +176,8 @@ import {
   canGradeBlock, isExamSoftDeleted,
   canWriteGradingSelfSettings, GRADING_SELF_SETTING_FIELDS, requireBackgroundUploadAccess, isStudentAccount
 } from "./middleware";
+import { loadEssayReviews } from "../../../server/services/essayReview";
+import { getBlockConfig } from "../../../server/services/BlockGradingConfigService";
 import { getAssignedStudentIdSet, isClaimableForAssignedSet } from "../../../server/services/ReviewPoolService";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
@@ -306,7 +308,7 @@ function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
     }),
     paper: { size: paperSize, orientation: paperSize === "A3" ? "landscape" : "portrait" },
     studentInfo: normalizeStudentInfo(card.studentInfo, paperSize),
-    layoutVersion: card.layoutVersion === 2 ? 2 : 1,
+    layoutVersion: normalizeLayoutVersion(card.layoutVersion),
     updatedAt: new Date().toISOString()
   };
 }
@@ -2053,21 +2055,26 @@ export async function createApp(): Promise<express.Express> {
           return;
         }
         const blockId = String(cropRow.block_id ?? "");
-        if (blockId && !(await canGradeBlock(req.user, examId, blockId))) {
+        const essay = cropRow.student_id == null ? undefined :
+          (await loadEssayReviews(getMysqlDb(), examId, blockId, cropRow.student_id)).get(cropId);
+        const reviewState = essay && !essay.issue && essay.images.some(p => p.id === cropId) ? essay.unit : cropRow;
+        const arbitrating = reviewState.status === "disputed" &&
+          (await getBlockConfig(examId, blockId, "answer", 0)).arbitratorId === req.user.id;
+        if (!arbitrating && blockId && !(await canGradeBlock(req.user, examId, blockId))) {
           res.status(403).json({ message: "权限不足：你未被分配批改该题块" });
           return;
         }
         // 逐生分配下仍按可阅范围收敛图片：未开评的切片外卷子读不到原图；
         // 一旦离开首评队列（待二评/争议/已评完）本块教师都可回看，与领取/清单同一谓词
         const assignedIds = await getAssignedStudentIdSet(examId, blockId, Number(req.user.id));
-        if (!isClaimableForAssignedSet(
+        if (!arbitrating && !isClaimableForAssignedSet(
           {
             studentId: cropRow.student_id,
-            status: cropRow.status,
-            reviewRound: cropRow.review_round,
+            status: reviewState.status,
+            reviewRound: reviewState.review_round,
           },
           assignedIds
-        ) && cropRow.claimed_by !== req.user.id) {
+        ) && reviewState.claimed_by !== req.user.id) {
           res.status(403).json({ message: "权限不足：该切块不在你的阅卷范围内" });
           return;
         }

@@ -241,11 +241,7 @@ export class AnalysisRepository {
   /** 概览走内存 LRU 缓存（建议 6），写入口（改分/扫描/阈值/标注）负责失效。 */
   async getExamOverview(examId: number, classId?: number): Promise<ExamOverview> {
     const cacheKey = `overview:${examId}:${classId ?? "all"}`;
-    const cached = analysisCache.get<ExamOverview>(cacheKey);
-    if (cached) return cached;
-    const ov = await this.computeExamOverview(examId, classId);
-    analysisCache.set(cacheKey, ov);
-    return ov;
+    return analysisCache.getOrCompute(cacheKey, () => this.computeExamOverview(examId, classId));
   }
 
   private async computeExamOverview(examId: number, classId?: number): Promise<ExamOverview> {

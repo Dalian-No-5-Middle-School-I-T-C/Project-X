@@ -113,7 +113,15 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
 
   // ESC to go back
   useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onBack(); }
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) {
+        return;
+      }
+      e.preventDefault();
+      onBack();
+    }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onBack]);
@@ -518,7 +526,7 @@ function ScoresTab({
               <TableHead>班排</TableHead>
               <TableHead>班级</TableHead>
               <TableHead>姓名</TableHead>
-              <TableHead numeric className="bg-accent">总分</TableHead>
+              <TableHead numeric className="bg-accent">{rankings.totalScoreMode === "assigned" ? "赋分总分" : "原始总分"}</TableHead>
               {cols.map((col) => (
                 <FragmentCols
                   key={col}
@@ -537,7 +545,7 @@ function ScoresTab({
                 <TableCell>{row.className}</TableCell>
                 <TableCell className="font-medium">{row.studentName}</TableCell>
                 <TableCell numeric className="bg-accent font-semibold text-primary">
-                  {row.totalRawScore}
+                  {rankings.totalScoreMode === "assigned" ? row.totalAssignedScore : row.totalRawScore}
                 </TableCell>
                 {cols.map((col) => {
                   const sub = row.subjects.find((s) => s.subject === col);

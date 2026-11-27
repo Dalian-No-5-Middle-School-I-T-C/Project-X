@@ -7,6 +7,8 @@ import { createWriteStream } from "node:fs";
 import { dataDir } from "./storage";
 import { MAX_PAPER_FILE_BYTES } from "../../../shared/paperStorageLimits";
 import { answerKeyPreviewFilename } from "../../../shared/answerKeyFiles";
+import { PaperInputError } from "./paper-docx";
+import { isValidImageFile } from "./validate-upload";
 
 export const ALLOWED_EXTENSIONS = new Set([
   ".docx", ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"
@@ -51,24 +53,45 @@ export function isDocx(filename: string): boolean {
   return path.extname(filename).toLowerCase() === ".docx";
 }
 
+// Sharp has no error code for these header and pixel decoding failures.
+const invalidImageData = [
+  /^Input file (?:has corrupt header|contains unsupported image format)/,
+  /^VipsJpeg: (?:premature end of JPEG image|Corrupt JPEG data)/im,
+  /^vipspng: libpng read error/im,
+  /^webp: unable to parse image/im,
+];
+
+function rethrowImageDecodeError(error: unknown): never {
+  if (error instanceof Error && !("code" in error) && invalidImageData.some(pattern => pattern.test(error.message))) {
+    throw new PaperInputError("INVALID_PAPER_IMAGE", "图片文件损坏或不完整，请重新导出或上传。");
+  }
+  throw error;
+}
+
 /**
  * 图片压缩：限制长边 2048px，JPEG 80% 质量
  * 返回压缩后的 Buffer，控制在 ~500KB-1MB
  */
-export async function compressImage(inputPath: string): Promise<Buffer> {
+export async function compressImage(inputPath: string, { requireSinglePage = false } = {}): Promise<Buffer> {
+  if (!await isValidImageFile(inputPath, { allowBigTiff: true, propagateReadErrors: true })) {
+    throw new PaperInputError("INVALID_PAPER_IMAGE", "文件内容与支持的原卷图片格式不符");
+  }
   let image = sharp(inputPath);
-  const metadata = await image.metadata();
+  const metadata = await image.metadata().catch(rethrowImageDecodeError);
+  if (requireSinglePage && (metadata.pages ?? 1) > 1) {
+    throw new PaperInputError("MULTIPAGE_PAPER_IMAGE", "原卷图片包含多页。请逐页上传图片，或将整份原卷导出为 PDF 后上传。");
+  }
 
   if (metadata.width && metadata.width > 2048) {
     image = image.resize(2048, 2048, { fit: "inside", withoutEnlargement: true });
   }
 
-  const buf = await image.jpeg({ quality: 80 }).toBuffer();
+  const buf = await image.jpeg({ quality: 80 }).toBuffer().catch(rethrowImageDecodeError);
 
   // 如果压缩后仍然 > 10MB（极罕见），再压到 1600px
   if (buf.length > 10 * 1024 * 1024) {
     const img2 = sharp(inputPath).resize(1600, 1600, { fit: "inside", withoutEnlargement: true });
-    return img2.jpeg({ quality: 70 }).toBuffer();
+    return img2.jpeg({ quality: 70 }).toBuffer().catch(rethrowImageDecodeError);
   }
 
   return buf;
@@ -77,10 +100,13 @@ export async function compressImage(inputPath: string): Promise<Buffer> {
 /**
  * 图片 → 单页 PDF
  */
-export async function imageToPdf(inputPath: string, outputPath: string): Promise<void> {
+export async function imageToPdf(inputPath: string, outputPath: string, jpegPreview?: Buffer): Promise<void> {
   const metadata = await sharp(inputPath).metadata();
   const width = metadata.width || 2480;
   const height = metadata.height || 3508;
+  // PDFKit embeds JPEG and PNG directly. Other paper images already have a JPEG preview.
+  const source = metadata.format === "jpeg" || metadata.format === "png"
+    ? inputPath : jpegPreview ?? await sharp(inputPath).jpeg().toBuffer();
 
   // pdfkit 使用 pt (1/72 inch)，假设 72 DPI
   const pageWidth = (width / 72) * 72; // scaled to fit
@@ -103,7 +129,7 @@ export async function imageToPdf(inputPath: string, outputPath: string): Promise
     stream.on("error", fail);
     try {
       doc.pipe(stream);
-      doc.image(inputPath, 0, 0, { width: pageWidth, height: pageHeight });
+      doc.image(source, 0, 0, { width: pageWidth, height: pageHeight });
       doc.end();
     } catch (err) {
       fail(err);
@@ -141,13 +167,13 @@ export async function storePaperFile(
   }
 
   // 图片：压缩 JPEG + 生成 PDF
-  const compressed = await compressImage(sourcePath);
+  const compressed = await compressImage(sourcePath, { requireSinglePage: true });
   const jpgPath = path.join(paperDirPath, "original.jpg");
   await writeFile(jpgPath, compressed);
 
   const pdfPath = path.join(paperDirPath, "original.pdf");
   try {
-    await imageToPdf(sourcePath, pdfPath);
+    await imageToPdf(sourcePath, pdfPath, compressed);
   } catch (err) {
     await discardStoredPaths([jpgPath, pdfPath]); // 安全 R14：不留孤儿产物
     throw err;
@@ -197,10 +223,10 @@ export async function storePaperPageFile(
   sourcePath: string,
   filename: string,
   paperDirPath: string,
-  pageIndex: number
+  pageIndex: number,
+  baseName = pageIndex === 1 ? "original" : `original-${pageIndex}`
 ): Promise<StoredPaperPage> {
   const ext = path.extname(filename).toLowerCase();
-  const baseName = pageIndex === 1 ? "original" : `original-${pageIndex}`;
   const originalPath = path.join(paperDirPath, `${baseName}${ext}`);
   const relRoot = dataDir;
 
@@ -227,7 +253,7 @@ export async function storePaperPageFile(
   }
 
   // 图片：压缩 JPEG + 生成 PDF
-  const compressed = await compressImage(sourcePath);
+  const compressed = await compressImage(sourcePath, { requireSinglePage: true });
   const jpgName = `${baseName}.jpg`;
   const jpgPath = path.join(paperDirPath, jpgName);
   await writeFile(jpgPath, compressed);
@@ -235,7 +261,7 @@ export async function storePaperPageFile(
   const pdfName = `${baseName}.pdf`;
   const pdfPath = path.join(paperDirPath, pdfName);
   try {
-    await imageToPdf(sourcePath, pdfPath);
+    await imageToPdf(sourcePath, pdfPath, compressed);
   } catch (err) {
     // 安全 R14：配对 PDF 转换失败时，这一页的 jpg 与半截 pdf 都会变成没人记账的孤儿
     // （DB 里不会有这一行，预览与删除接口都找不到它们），必须在抛出前清掉。

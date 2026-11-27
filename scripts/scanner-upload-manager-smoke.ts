@@ -245,6 +245,27 @@ async function verifyForcedGroupRelease(): Promise<void> {
   const completedRecovery = manager.releaseGroupForLocalDelete("card_1", "0", "force-completed-recovery", { force: true });
   assert(completedRecovery.ok && !completedRecovery.forgetLedger, "已完成的恢复记录保护远端去重标记");
   assert(readScanUploadRecovery("card_1", "force-completed-recovery", "0")?.completed, "保留已完成的恢复记录");
+  assert(isGroupQueued("card_1", "force-completed-recovery", "0"), "保留已完成恢复记录时重开后处理仍识别为已上传");
+
+  // 真实运行路径：上传 complete 成功后 rememberQueuedGroup 写盘失败，completed 恢复记录成为唯一持久化回执；
+  // 随后强制删本机原图（若后续 DELETE 失败）不得清除该回执。
+  offline = failPages = false;
+  const origSetItem = localStorage.setItem.bind(localStorage);
+  localStorage.setItem = (key: string, value: string) => {
+    if (key.startsWith("projectx-postprocess-queued/")) throw new Error("quota exceeded");
+    origSetItem(key, value);
+  };
+  try {
+    const doneWithoutLedger = manager.startUpload(localScan("force-ledger-fail"));
+    assert((await waitTerminal(manager, doneWithoutLedger)).status === "done");
+    assert(readScanUploadRecovery("card_1", "force-ledger-fail", "0")?.completed === true, "写完成标记失败后应保留 completed 恢复记录");
+    const forcedAfterLedgerFail = manager.releaseGroupForLocalDelete("card_1", "0", "force-ledger-fail", { force: true });
+    assert(forcedAfterLedgerFail.ok && !forcedAfterLedgerFail.forgetLedger, "仅有 completed 恢复记录时强制释放不得清除完成标记");
+    assert(readScanUploadRecovery("card_1", "force-ledger-fail", "0")?.completed === true, "强制释放后 completed 恢复记录继续存活");
+    assert(isGroupQueued("card_1", "force-ledger-fail", "0"), "强制释放后重启仍能凭 completed 恢复记录防重传");
+  } finally {
+    localStorage.setItem = origSetItem;
+  }
 
   offline = true;
   const paused = manager.startUpload(localScan("force-paused"));

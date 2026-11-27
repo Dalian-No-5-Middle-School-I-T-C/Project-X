@@ -9,7 +9,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Settings2 } from "lucide-react";
 import { fetchJson } from "../auth/api";
-import type { BlockGradingConfig, ArbitratorCandidate } from "../../../../shared/types";
+import type { BlockGradingConfig, ArbitratorCandidate, ReviewBlockSummary } from "../../../../shared/types";
 import {
   Badge,
   Button,
@@ -81,33 +81,31 @@ export function GradingConfigPage({ examId }: Props) {
     setLoading(true);
     try {
       // 获取题块
-      const blockRes = await fetchJson<{ ok: boolean; data: any[] }>(
+      const { blocks } = await fetchJson<{ blocks: ReviewBlockSummary[] }>(
         `/api/review/exams/${examId}/blocks`
       );
-      if (blockRes.ok) {
-        setBlocks(blockRes.data.map((b: any) => ({ blockId: b.blockId, blockTitle: b.blockTitle || b.blockId })));
+      setBlocks(blocks.map((b) => ({ blockId: b.blockId, blockTitle: b.blockTitle || b.blockId })));
 
-        // 获取配置
-        const configRes = await fetchJson<{ ok: boolean; data: BlockGradingConfig[] }>(
-          `/api/block-grading-config/exams/${examId}`
-        );
-        if (configRes.ok) {
-          const map: Record<string, BlockGradingConfig> = {};
-          for (const c of configRes.data) map[c.blockId] = c;
-          setConfigs(map);
-          // 初始化「网阅默认」表单
-          const d = map["__default__"];
-          if (d) {
-            setDefThreshold(String(d.disputeThreshold ?? 2));
-            setDefRounding(d.rounding ?? "ceil");
-            setDefHasHalf(String(d.hasHalfPoint === 1 ? 1 : 0));
-            setDefAutoReassign(d.autoReassignNoArb !== 0);
-            setDefWorkload(String(d.workloadBalanceThreshold ?? 4));
-            setDefReviewMode(String(d.reviewMode ?? 1));
-            // PR #189 修复：把已有的 scoringMode / scoreDistribution 反映到表单
-            setDefScoringMode(d.scoringMode === "per_question" ? "per_question" : "block_total");
-            setDefScoreDistribution(d.scoreDistribution === "equal" ? "equal" : "proportional");
-          }
+      // 获取配置
+      const configRes = await fetchJson<{ ok: boolean; data: BlockGradingConfig[] }>(
+        `/api/block-grading-config/exams/${examId}`
+      );
+      if (configRes.ok) {
+        const map: Record<string, BlockGradingConfig> = {};
+        for (const c of configRes.data) map[c.blockId] = c;
+        setConfigs(map);
+        // 初始化「网阅默认」表单
+        const d = map["__default__"];
+        if (d) {
+          setDefThreshold(String(d.disputeThreshold ?? 2));
+          setDefRounding(d.rounding ?? "ceil");
+          setDefHasHalf(String(d.hasHalfPoint === 1 ? 1 : 0));
+          setDefAutoReassign(d.autoReassignNoArb !== 0);
+          setDefWorkload(String(d.workloadBalanceThreshold ?? 4));
+          setDefReviewMode(String(d.reviewMode ?? 1));
+          // PR #189 修复：把已有的 scoringMode / scoreDistribution 反映到表单
+          setDefScoringMode(d.scoringMode === "per_question" ? "per_question" : "block_total");
+          setDefScoreDistribution(d.scoreDistribution === "equal" ? "equal" : "proportional");
         }
       }
     } catch { /* silent */ }

@@ -230,7 +230,7 @@ async function startLocalServer() {
     if (msg.includes("better-sqlite3") || msg.includes("node_sqlite3") || msg.includes(".node")) {
       throw new Error(
         `后端原生模块加载失败，可能是本机架构（${process.arch}）与已编译模块不匹配。` +
-        `\n请运行 npm run rebuild:electron 重新编译原生模块后再启动。` +
+        `\n请运行 npm run native:rebuild:electron 重新编译原生模块后再启动。` +
         `\n\n技术细节：${msg}`
       );
     }

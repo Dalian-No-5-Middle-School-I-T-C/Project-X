@@ -1,10 +1,12 @@
 """Fill the application's exported PDF and rasterize 50 controlled scanned cards."""
+import argparse
 import json
+import os
 from pathlib import Path
 
 import pymupdf
 
-root = Path(__file__).resolve().parent.parent / "ignored" / "production-flow"
+root = Path(os.environ.get("PROJECTX_FLOW_ROOT", Path(__file__).resolve().parent.parent / "ignored" / "production-flow"))
 (root / "images").mkdir(parents=True, exist_ok=True)
 layout = json.loads((root / "layout.json").read_text())["pages"][0]
 source = (root / "答题卡原版.pdf").read_bytes()
@@ -21,7 +23,15 @@ def rectangle(value, inset=0):
     )
 
 
-for index, number in enumerate(range(10001, 10051), start=1):
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--first", type=int, default=10001)
+parser.add_argument("--last", type=int, default=10050)
+args = parser.parse_args()
+if not 10001 <= args.first <= args.last <= 10050:
+    parser.error("Student range must be within 10001 to 10050")
+
+for number in range(args.first, args.last + 1):
+    index = number - 10000
     filled_id = {10002: "10001", 10004: "10003", 10006: "10005", 10007: ""}.get(number, str(number))
     correct_count = index % 5
     manual_score = 10 + index % 10
@@ -57,4 +67,4 @@ for index, number in enumerate(range(10001, 10051), start=1):
     })
     doc.close()
 (root / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
-print("Generated 50 images from the application's exported PDF; 3 duplicate pairs and 1 blank ID")
+print(f"Generated {len(manifest)} images for {args.first} to {args.last}")

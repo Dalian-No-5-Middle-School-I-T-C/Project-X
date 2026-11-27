@@ -1,3 +1,4 @@
+import { reviewUnitPredicate } from "./essayReview";
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { randomDistribute } from "./RandomDistributionService";
@@ -172,7 +173,7 @@ export async function rebalanceWorkload(
   if (assignments.length < 2) return;
 
   const cropRows = await db.all(
-    "SELECT student_id, status, reviewer_id FROM answer_block_crops WHERE exam_id = ? AND block_id = ?",
+    `SELECT student_id, status, reviewer_id FROM answer_block_crops a WHERE exam_id = ? AND block_id = ? AND ${reviewUnitPredicate("a")}`,
     examId, blockId
   ) as Array<{ student_id: number | null; status: string | null; reviewer_id: number | null }>;
   const cropByStudent = new Map<number, { status: string | null; reviewerId: number | null }>();
@@ -294,7 +295,7 @@ export async function getAvailableBlocksForTeacher(
       `SELECT abc.block_id, COUNT(*) AS cnt
        FROM answer_block_crops abc
        WHERE abc.exam_id = ? AND abc.block_id IN (${placeholders})
-         AND abc.status = 'reviewed' AND abc.reviewer_id = ?
+         AND abc.status = 'reviewed' AND abc.reviewer_id = ? AND ${reviewUnitPredicate("abc")}
        GROUP BY abc.block_id`,
       examId, ...blockIds, teacherId
     ) as Array<{ block_id: string; cnt: number }>;

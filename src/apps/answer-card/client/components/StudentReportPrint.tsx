@@ -104,7 +104,7 @@ export function StudentReportPrint({
       </div>
 
       {/* 打印内容（A4） */}
-      <div className="report-print hidden" aria-hidden>
+      <div className="report-print hidden print:block" aria-hidden>
         <ReportBody {...bodyProps} />
       </div>
     </>

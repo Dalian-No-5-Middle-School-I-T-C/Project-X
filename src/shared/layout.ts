@@ -15,7 +15,7 @@ import type {
 } from "./types";
 import { formatBlankLabel } from "./blankLabels";
 import { createCardQrCode } from "./cardIdentity";
-import { DEFAULT_STUDENT_NOTES } from "./defaultCard";
+import { DEFAULT_STUDENT_NOTES, normalizeLayoutVersion } from "./defaultCard";
 import { ESSAY_ROW_GAP_MM } from "./essayGrid";
 import { compactRichTextRuns, parseRichText, sliceRichTextRuns, type RichTextRun } from "./richText";
 import { objectiveQuestionDefinitions, type ObjectiveQuestionDefinition } from "./grading";
@@ -29,7 +29,7 @@ const BOTTOM_MARGIN = 18;
 let BODY_WIDTH = PAGE_WIDTH - MARGIN_X * 2;
 const A3_PANEL_GAP = 8;
 let IS_A3 = false;
-let IS_LAYOUT_V2 = false;
+let activeLayoutVersion: AnswerCard["layoutVersion"] = 1;
 let ACTIVE_WARNINGS: string[] = [];
 const OPTIONS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
@@ -394,15 +394,8 @@ function objectiveRowsForQuestions(questions: ObjectiveQuestionDefinition[], mod
   return rows;
 }
 
-function objectivePhysicalRowsForRows(rows: ObjectiveRow[]): number {
-  return rows.reduce((sum, row) => sum + objectiveRowHeight(row), 0);
-}
-
-function objectivePhysicalRowsForQuestions(questions: ObjectiveQuestionDefinition[], mode: ObjectiveArrangementMode): number {
-  return objectivePhysicalRowsForRows(objectiveRowsForQuestions(questions, mode));
-}
-
 function objectiveRowHeight(row: ObjectiveRow): number {
+  if (activeLayoutVersion >= 3 && row.type === "wide") return objectiveQuestionRowSpan(row.question);
   if (row.type === "grid") {
     return Math.max(...row.cells.map((cell) => cell.reduce((sum, slot) => sum + slot.span, 0)));
   }
@@ -427,17 +420,26 @@ function objectivePhysicalRowOffsets(rows: ObjectiveRow[], mode: ObjectiveArrang
   return offsets;
 }
 
-function objectiveSegmentQuestionsForMaxRows(
+// V1/V2 PDFs allocated panels by row count, before measuring row gaps and tall options.
+function legacyObjectiveRowCapacity(height: number): number {
+  const firstRowHeight = OBJECTIVE_FRAME_TOP + OBJECTIVE_INNER_TOP + OBJECTIVE_SETTINGS.optionHeight + OBJECTIVE_INNER_BOTTOM;
+  return Math.max(1, Math.floor((height - firstRowHeight) / OBJECTIVE_SETTINGS.rowHeight) + 1);
+}
+
+function objectiveSegmentForAvailableHeight(
   questions: ObjectiveQuestionDefinition[],
   mode: ObjectiveArrangementMode,
-  maxRows: number
+  availableHeightMm: number
 ): ObjectiveQuestionDefinition[] {
+  const legacyRowLimit = legacyObjectiveRowCapacity(availableHeightMm);
   let segment: ObjectiveQuestionDefinition[] = [];
 
   for (const question of questions) {
     const candidate = [...segment, question];
-    const candidateRows = objectivePhysicalRowsForQuestions(candidate, mode);
-    if (candidateRows > maxRows && segment.length > 0) {
+    const exceedsPanel = activeLayoutVersion >= 3
+      ? objectiveHeightForQuestions(candidate, mode) > availableHeightMm
+      : objectiveRowsForQuestions(candidate, mode).reduce((sum, row) => sum + objectiveRowHeight(row), 0) > legacyRowLimit;
+    if (segment.length > 0 && exceedsPanel) {
       return segment;
     }
     segment = candidate;
@@ -479,12 +481,6 @@ function objectiveHeightForQuestions(questions: ObjectiveQuestionDefinition[], m
     }
   }
   return OBJECTIVE_FRAME_TOP + OBJECTIVE_INNER_TOP + contentBottom + OBJECTIVE_INNER_BOTTOM;
-}
-
-function objectiveMaxRowsForAvailableHeight(height: number): number {
-  const firstRowHeight = OBJECTIVE_FRAME_TOP + OBJECTIVE_INNER_TOP + OBJECTIVE_SETTINGS.optionHeight + OBJECTIVE_INNER_BOTTOM;
-  if (height <= firstRowHeight) return 1;
-  return Math.max(1, Math.floor((height - firstRowHeight) / OBJECTIVE_SETTINGS.rowHeight) + 1);
 }
 
 function addObjectiveSegment(
@@ -665,10 +661,10 @@ function addManualScoreCells(
   rightX: number
 ): Array<{ score: number | null; rect: Rect }> {
   const values = getScoreValues(question.score);
-  if (IS_LAYOUT_V2 && question.score <= 0) return [];
-  const step = IS_LAYOUT_V2 ? V2_SCORE_CELL_STEP : V1_SCORE_CELL_STEP;
-  const cellWidth = IS_LAYOUT_V2 ? V2_SCORE_CELL_WIDTH : V1_SCORE_CELL_WIDTH;
-  const cellHeight = IS_LAYOUT_V2 ? V2_SCORE_CELL_HEIGHT : V1_SCORE_CELL_HEIGHT;
+  if (activeLayoutVersion >= 2 && question.score <= 0) return [];
+  const step = activeLayoutVersion >= 2 ? V2_SCORE_CELL_STEP : V1_SCORE_CELL_STEP;
+  const cellWidth = activeLayoutVersion >= 2 ? V2_SCORE_CELL_WIDTH : V1_SCORE_CELL_WIDTH;
+  const cellHeight = activeLayoutVersion >= 2 ? V2_SCORE_CELL_HEIGHT : V1_SCORE_CELL_HEIGHT;
   const startX = rightX - values.length * step - 2;
   return values
     .map((score, index) => {
@@ -774,7 +770,7 @@ function blankBlockColumnCount(questions: SubjectiveQuestion[]): number {
 }
 
 function blankScoreQuestion(questions: SubjectiveQuestion[]): SubjectiveQuestion | undefined {
-  if (IS_LAYOUT_V2) {
+  if (activeLayoutVersion >= 2) {
     return questions.find((question) => question.style === "manual_score_grid" && question.score > 0);
   }
   return questions.find((question) => question.style === "manual_score_grid") ?? questions[0];
@@ -954,7 +950,7 @@ function answerBlankLinesHeight(question: SubjectiveQuestion): number {
 }
 
 function subjectiveQuestionHeight(question: SubjectiveQuestion): number {
-  const scoreHeader = !IS_LAYOUT_V2 && question.style === "manual_score_grid" ? 11 : 0;
+  const scoreHeader = activeLayoutVersion === 1 && question.style === "manual_score_grid" ? 11 : 0;
   const blanksHeight = question.kind === "blank" ? answerBlankLinesHeight(question) : 0;
   const imageHeight = (question.images ?? []).reduce((sum, image) => sum + image.heightMm + 3, 0);
   const annotationHeight = answerAnnotationHeight(question);
@@ -976,7 +972,7 @@ function fixedAnswerLinesHeight(question: SubjectiveQuestion): number {
   if (count <= 0) return 0;
   const spacing = question.lineGrid.lineSpacingMm || 8;
   const linesHeight = (count - 1) * spacing;
-  if (IS_LAYOUT_V2) {
+  if (activeLayoutVersion >= 2) {
     const hasHeader = question.style === "manual_score_grid" && question.scoreGrid?.enabled !== false;
     return (hasHeader ? 14 : 10) + linesHeight + 4;
   }
@@ -995,7 +991,7 @@ function answerAnnotationHeight(question: SubjectiveQuestion): number {
 function blankSubjectiveSegmentHeight(questions: SubjectiveQuestion[], blockTitle: string, includeScoreHeader = true): number {
   const titleH = blockTitle ? titleHeight() : 0;
   const scoreHeader = includeScoreHeader && blankScoreQuestion(questions)
-    ? (IS_LAYOUT_V2 ? V2_SCORE_HEADER_HEIGHT : V1_BLANK_SCORE_HEADER_HEIGHT)
+    ? (activeLayoutVersion >= 2 ? V2_SCORE_HEADER_HEIGHT : V1_BLANK_SCORE_HEADER_HEIGHT)
     : 0;
   const columns = blankBlockColumnCount(questions);
   const usableW = BODY_WIDTH - BLANK_BLOCK_INSET_X * 2;
@@ -1015,11 +1011,11 @@ function addSubjectiveQuestion(
 ): number {
   const questionHeight = subjectiveQuestionHeight(question);
   const titleH = blockTitle ? titleHeight() : 0;
-  const height = IS_LAYOUT_V2 ? questionHeight + titleH : questionHeight;
+  const height = activeLayoutVersion >= 2 ? questionHeight + titleH : questionHeight;
   const blockRect = rect(MARGIN_X, y, BODY_WIDTH, height);
   const questionY = y + titleH;
-  const questionRect = rect(MARGIN_X, questionY, BODY_WIDTH, IS_LAYOUT_V2 ? questionHeight : height - titleH);
-  const scoreHeaderH = IS_LAYOUT_V2 ? V2_SCORE_HEADER_HEIGHT : (question.style === "manual_score_grid" ? V1_SCORE_HEADER_HEIGHT : 0);
+  const questionRect = rect(MARGIN_X, questionY, BODY_WIDTH, activeLayoutVersion >= 2 ? questionHeight : height - titleH);
+  const scoreHeaderH = activeLayoutVersion >= 2 ? V2_SCORE_HEADER_HEIGHT : (question.style === "manual_score_grid" ? V1_SCORE_HEADER_HEIGHT : 0);
   const contentRect = rect(
     questionRect.x,
     questionRect.y + scoreHeaderH,
@@ -1034,14 +1030,14 @@ function addSubjectiveQuestion(
   const images: Array<{ assetId: string; originalName?: string; rect: Rect }> = [];
 
   if (question.style === "manual_score_grid" && question.scoreGrid?.enabled !== false) {
-    scoreCells.push(...addManualScoreCells(page, block, question, questionRect.y + (IS_LAYOUT_V2 ? 1 : 1.6), MARGIN_X + BODY_WIDTH));
+    scoreCells.push(...addManualScoreCells(page, block, question, questionRect.y + (activeLayoutVersion >= 2 ? 1 : 1.6), MARGIN_X + BODY_WIDTH));
   }
 
   // 横线上方的注记文字（问题反馈 2026-09-23 第 3 条）：
   // 解答题/作文块此前没有注记入口，这里与填空题一致地排在作答区上方，并按占用高度下移作答区。
   const annotationOffset = answerAnnotationHeight(question);
-  const hasV2ScoreHeader = IS_LAYOUT_V2 && question.style === "manual_score_grid" && scoreCells.length > 0;
-  const annotationTopY = IS_LAYOUT_V2
+  const hasV2ScoreHeader = activeLayoutVersion >= 2 && question.style === "manual_score_grid" && scoreCells.length > 0;
+  const annotationTopY = activeLayoutVersion >= 2
     ? questionRect.y + (hasV2ScoreHeader ? 14 : 10)
     : contentRect.y + 12;
   const annotationLines: Array<{ text: string; rect: Rect; runs?: RichTextRun[] }> = [];
@@ -1058,10 +1054,10 @@ function addSubjectiveQuestion(
   if (question.kind === "lined_answer" && question.lineGrid?.enabled) {
     const lineSpacing = question.lineGrid.lineSpacingMm || 8;
     const fixedCount = question.lineGrid.fixedLineCount;
-    const firstLineY = IS_LAYOUT_V2
+    const firstLineY = activeLayoutVersion >= 2
       ? questionRect.y + (hasV2ScoreHeader ? 14 : 10) + annotationOffset
       : contentRect.y + 12 + annotationOffset;
-    const lineBottom = IS_LAYOUT_V2 ? questionRect.y + questionRect.height - 4 : contentRect.y + contentRect.height - 5;
+    const lineBottom = activeLayoutVersion >= 2 ? questionRect.y + questionRect.height - 4 : contentRect.y + contentRect.height - 5;
 
     if (fixedCount && fixedCount > 0) {
       for (let i = 0; i < Math.min(fixedCount, 30); i++) {
@@ -1069,7 +1065,7 @@ function addSubjectiveQuestion(
         if (lineY <= lineBottom + 0.5) lineYs.push(round(lineY));
       }
     } else {
-      for (let lineY = firstLineY; IS_LAYOUT_V2 ? lineY <= lineBottom : lineY < lineBottom; lineY += lineSpacing) {
+      for (let lineY = firstLineY; activeLayoutVersion >= 2 ? lineY <= lineBottom : lineY < lineBottom; lineY += lineSpacing) {
         lineYs.push(round(lineY));
       }
     }
@@ -1173,7 +1169,7 @@ function addBlankSubjectiveSegment(
   const columnW = (itemAreaW - BLANK_ITEM_GAP_X * (columns - 1)) / columns;
   const scoreQuestion = includeScoreHeader ? blankScoreQuestion(questions) : undefined;
   const scoreCellsByQuestionId = new Map<string, Array<{ score: number | null; rect: Rect }>>();
-  const scoreHeader = scoreQuestion ? (IS_LAYOUT_V2 ? V2_SCORE_HEADER_HEIGHT : V1_BLANK_SCORE_HEADER_HEIGHT) : 0;
+  const scoreHeader = scoreQuestion ? (activeLayoutVersion >= 2 ? V2_SCORE_HEADER_HEIGHT : V1_BLANK_SCORE_HEADER_HEIGHT) : 0;
   const blankLabelSlotWidth = Math.max(0, ...questions.map(maxBlankLabelWidth));
   const rowHeights = blankRowHeights(questions, columns, columnW, blankLabelSlotWidth);
 
@@ -1265,7 +1261,7 @@ function nextPageY(): number {
 
 export function buildLayout(card: AnswerCard): LayoutDocument {
   IS_A3 = card.paper?.size === "A3";
-  IS_LAYOUT_V2 = card.layoutVersion === 2;
+  activeLayoutVersion = normalizeLayoutVersion(card.layoutVersion);
   PAGE_WIDTH = IS_A3 ? 420 : 210;
   PAGE_HEIGHT = 297;
   MARGIN_X = OUTER_MARGIN_X;
@@ -1314,15 +1310,13 @@ export function buildLayout(card: AnswerCard): LayoutDocument {
       let firstSegment = true;
 
       while (remaining.length > 0) {
-        let maxRows = objectiveMaxRowsForAvailableHeight(availableHeight(y));
-        const nextObjectiveRow = objectiveRowsForQuestions(remaining, arrangementMode)[0];
-        const nextRowHeight = nextObjectiveRow ? objectivePhysicalRowsForRows([nextObjectiveRow]) : 1;
-        if (page.blocks.length > 0 && nextRowHeight > maxRows) {
-          nextPanel();
-          maxRows = objectiveMaxRowsForAvailableHeight(availableHeight(y));
+        if (activeLayoutVersion >= 3) {
+          ensureSpace(objectiveHeightForQuestions([remaining[0]], arrangementMode));
+        } else if (page.blocks.length > 0) {
+          const firstRow = objectiveRowsForQuestions(remaining, arrangementMode)[0];
+          if (objectiveRowHeight(firstRow) > legacyObjectiveRowCapacity(availableHeight(y))) nextPanel();
         }
-
-        const segmentQuestions = objectiveSegmentQuestionsForMaxRows(remaining, arrangementMode, maxRows);
+        const segmentQuestions = objectiveSegmentForAvailableHeight(remaining, arrangementMode, availableHeight(y));
         const height = objectiveHeightForQuestions(segmentQuestions, arrangementMode);
 
         ensureSpace(height);
@@ -1428,7 +1422,20 @@ function layoutEssayBlock(
       rect: blockRect,
       frameRect: showFrame ? blockRect : undefined,
       essayStartCell: produced,
-      questions: [],
+      questions: [{
+        blockId: block.id,
+        questionId: question.id,
+        questionNumber: question.number,
+        score: question.score,
+        style: question.style,
+        kind: question.kind,
+        rect: blockRect,
+        contentRect: rect(MARGIN_X + panelInsetX, startY + gridTopBase, usableW, blockHeight - gridTopBase - bottomPad),
+        scoreCells: [],
+        lineYs: [],
+        blanks: [],
+        images: [],
+      }],
     });
 
     produced += rowsToDraw * columns;
@@ -1450,7 +1457,7 @@ function layoutSubjectiveBlock(
   setY: (value: number) => void,
   getY: () => number
 ): void {
-  if (IS_LAYOUT_V2) {
+  if (activeLayoutVersion >= 2) {
     for (const question of block.questions) {
       if (question.style === "manual_score_grid" && question.score <= 0) {
         ACTIVE_WARNINGS.push(`${block.title} 第 ${question.number} 题启用了分数格，但分值为 0；分数格暂不显示，请先设置分值。`);

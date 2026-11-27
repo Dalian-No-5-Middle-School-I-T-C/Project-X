@@ -1209,7 +1209,7 @@ async function main(): Promise<void> {
       "同体积的两份数据：暂存件不计入全局容量、已落盘页计入（否则并发上传会把自己算两次，把别人挤在门外）");
 
     // ── CR14：转换后按实测复测并回滚
-    const { assertWrittenPaperWithinQuota, PaperQuotaRollbackError } = await import("../src/apps/answer-card/server/paperQuota");
+    const { assertStagedPaperWithinQuota, PaperQuotaRollbackError } = await import("../src/apps/answer-card/server/paperQuota");
     const cr14Limits = {
       maxPaperPagesPerCard: 60,
       maxPaperBytesPerCard: 1024 * 1024,
@@ -1221,10 +1221,9 @@ async function main(): Promise<void> {
     const cr14ByOutput = evaluatePaperQuota(cr14EmptyCard, { pages: 1, bytes: Math.round(1.41 * 1024 * 1024) }, cr14Limits);
     check(cr14ByInput.ok === true && cr14ByOutput.ok === false && cr14ByOutput.reason === "card-bytes",
       "同一份上传：按输入 844KiB 放行、按落盘实测 1.41MiB 拒绝（放大倍数没法估，只能写完再量）");
-    const cr14Admission = await readPaperQuota(quotaDb, r10CardId);
     let cr14Rollback: unknown = null;
     try {
-      await assertWrittenPaperWithinQuota(quotaDb, r10CardId, cr14Admission,
+      await assertStagedPaperWithinQuota(quotaDb, r10CardId,
         { pages: 1, bytes: 6144 },
         { ...cr14Limits, maxPaperBytesPerCard: 4096 });
     } catch (error) { cr14Rollback = error; }
@@ -1234,7 +1233,7 @@ async function main(): Promise<void> {
       "落盘后复测越界 → 抛出带回滚原因的专属错误（路由据此撤销事务、删掉已写文件并回 413）");
     let cr14WithinQuota = true;
     try {
-      await assertWrittenPaperWithinQuota(quotaDb, r10CardId, cr14Admission, { pages: 1, bytes: 6144 }, cr14Limits);
+      await assertStagedPaperWithinQuota(quotaDb, r10CardId, { pages: 1, bytes: 6144 }, cr14Limits);
     } catch { cr14WithinQuota = false; }
     check(cr14WithinQuota, "实测仍在额度内时不触发回滚：放大是常态，不是拒绝的理由");
 

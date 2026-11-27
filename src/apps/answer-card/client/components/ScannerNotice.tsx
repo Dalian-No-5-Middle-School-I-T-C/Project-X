@@ -53,10 +53,10 @@ export function ScannerNotice() {
   return (
     <Card
       role={problem ? "alert" : "status"}
-      className={`fixed bottom-4 left-4 z-(--px-z-toast) flex w-[440px] max-w-[calc(100vw-2rem)] flex-col gap-2 border-l-4 p-3 text-sm shadow-lg ${
+      className={`fixed bottom-4 left-4 z-(--px-z-toast) flex w-[440px] max-w-[calc(100vw-2rem)] flex-col gap-2 border-l-4 bg-popover p-3 text-sm shadow-lg ${
         problem
-          ? "border-warning-border border-l-warning-foreground bg-warning-soft text-warning-foreground"
-          : "border-info-border border-l-info-foreground bg-info-soft text-info-foreground"
+          ? "border-warning-border border-l-warning-foreground text-warning-foreground"
+          : "border-info-border border-l-info-foreground text-info-foreground"
       }`}
     >
       <div className="flex items-start gap-3">
