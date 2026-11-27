@@ -564,7 +564,7 @@ export function SubjectiveEditor({
   onUpload
 }: {
   block: SubjectiveBlock;
-  layoutVersion: 1 | 2;
+  layoutVersion: AnswerCard["layoutVersion"];
   onChange: (mutator: (block: BodyBlock) => void) => void;
   onUpload: (blockId: string, questionId: string, file: File) => Promise<void>;
 }) {
@@ -628,7 +628,7 @@ export function SubjectiveEditor({
                 }
               />
             </Field>
-            {layoutVersion === 2 && (block.questions[0]?.score ?? 0) <= 0 && (
+            {layoutVersion >= 2 && (block.questions[0]?.score ?? 0) <= 0 && (
               <p className="rounded-md border border-warning-border bg-warning-soft p-2 text-xs text-warning-fg">满分为 0，暂不生成分数格。请先设置满分。</p>
             )}
           </>
@@ -662,7 +662,7 @@ export function SubjectiveEditor({
                 <Trash2 size={14} />
               </Button>
             </div>
-            {layoutVersion === 2 && !isFillBlankBlock && question.style === "manual_score_grid" && question.score <= 0 && (
+            {layoutVersion >= 2 && !isFillBlankBlock && question.style === "manual_score_grid" && question.score <= 0 && (
               <p className="rounded-md border border-warning-border bg-warning-soft p-2 text-xs text-warning-fg">分值为 0，分数格暂不显示；设置正分后会自动显示。</p>
             )}
             <div className="grid grid-cols-2 gap-2">
@@ -890,7 +890,7 @@ export function SubjectiveEditor({
                     </SelectContent>
                   </Select>
                 </Field>
-                {layoutVersion === 2 && question.kind === "lined_answer" && question.lineGrid?.enabled ? (
+                {layoutVersion >= 2 && question.kind === "lined_answer" && question.lineGrid?.enabled ? (
                   <Field label="作答行数">
                     <Input
                       type="number"
@@ -1444,7 +1444,7 @@ export function ObjectiveSvg({ block }: { block: Extract<PageRenderBlock, { type
 }
 
 export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageRenderBlock, { type: "subjective" }> }) {
-  const isV2 = card.layoutVersion === 2;
+  const isV2 = card.layoutVersion >= 2;
 
   // 作文块专用渲染
   const originalBlock = card.bodyBlocks.find(b => b.id === block.blockId);

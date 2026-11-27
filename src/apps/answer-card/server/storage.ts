@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomInt } from "node:crypto";
 import type { AnswerCard, CardSummary, LayoutDocument } from "../../../shared/types";
-import { createDefaultCard } from "../../../shared/defaultCard";
+import { createDefaultCard, normalizeLayoutVersion } from "../../../shared/defaultCard";
 import { normalizeObjectiveAnswerKey } from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
 
@@ -119,7 +119,7 @@ export async function saveCard(card: AnswerCard): Promise<AnswerCard> {
     paper: card.paper?.size === "A3"
       ? { size: "A3", orientation: "landscape" }
       : { size: "A4", orientation: "portrait" },
-    layoutVersion: card.layoutVersion === 2 ? 2 : 1,
+    layoutVersion: normalizeLayoutVersion(card.layoutVersion),
     updatedAt: new Date().toISOString()
   };
   await writeFile(cardPath(normalized.id), JSON.stringify(normalized, null, 2), "utf8");

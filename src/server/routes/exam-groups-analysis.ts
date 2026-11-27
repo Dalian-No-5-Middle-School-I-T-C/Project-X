@@ -263,9 +263,9 @@ router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (r
     const track = normalizeTrackFilter(req.query.track);
 
     const group = await db.get(`
-      SELECT name, total_score_mode, only_full_participants
+      SELECT name, total_score_mode
       FROM exam_groups WHERE id = ?
-    `, groupId) as { name: string; total_score_mode: string; only_full_participants: number } | undefined;
+    `, groupId) as { name: string; total_score_mode: string } | undefined;
     if (!group) { res.status(404).json({ message: "大考不存在" }); return; }
 
     const members = await db.all(`
@@ -276,19 +276,20 @@ router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (r
       ORDER BY egm.sort_order, egm.id
     `, groupId) as Array<{ exam_id: number; subject: string | null; assigned_formula: string | null; sort_order: number; track_type: string | null }>;
 
+    const useAssigned = group.total_score_mode === "assigned";
+    const totalScoreMode = useAssigned ? "assigned" : "raw";
     if (members.length === 0) {
-      res.json({ groupId, groupName: group.name, totalStudents: 0, displayColumns: [], rows: [] });
+      res.json({ groupId, groupName: group.name, totalScoreMode, totalStudents: 0, displayColumns: [], rows: [] });
       return;
     }
     const trackMembers = track === "all"
       ? members
       : members.filter((m) => memberMatchesTrack(m.track_type, track));
     if (trackMembers.length === 0) {
-      res.json({ groupId, groupName: group.name, totalStudents: 0, displayColumns: [], rows: [] });
+      res.json({ groupId, groupName: group.name, totalScoreMode, totalStudents: 0, displayColumns: [], rows: [] });
       return;
     }
 
-    const useAssigned = fullOnly ? group.only_full_participants : false;
     const memberIds = trackMembers.map((m) => m.exam_id);
 
     // Get all scores for all member exams（按文理过滤学生）
@@ -413,7 +414,7 @@ router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (r
           examId: m.exam_id,
           subject: m.subject || "",
           totalScore: s?.totalScore ?? 0,
-          assignedScore: s?.assignedScore ?? null,
+          assignedScore: m.assigned_formula ? s?.assignedScore ?? null : null,
           gradeRank: ranks?.gradeRank ?? 0,
           classRank: ranks?.classRank ?? 0,
           objectiveScore: s?.objectiveScore ?? 0,
@@ -486,6 +487,7 @@ router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (r
 
     res.json({
       groupId, groupName: group.name,
+      totalScoreMode: useAssigned ? "assigned" : "raw",
       totalStudents: filtered.length,
       displayColumns,
       rows: filtered

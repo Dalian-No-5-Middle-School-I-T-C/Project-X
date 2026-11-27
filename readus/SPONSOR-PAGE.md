@@ -50,7 +50,7 @@ data/sponsor/qr/
 
 ### 3.2 更新配置
 
-编辑 [`src/apps/answer-card/server/data/sponsor.json`](../src/apps/answer-card/server/data/sponsor.json)：
+源码运行时可编辑 [sponsor.json](../src/apps/answer-card/server/data/sponsor.json)。安装包部署时，将下面的内容存为数据目录下的 `sponsor/sponsor.json`，收款码图片放在同目录的 `qr/`。Ubuntu 默认配置路径为 `/var/lib/project-x/sponsor/sponsor.json`。自定义 `ANSWER_CARD_DATA_DIR` 时，`sponsor/` 与答题卡数据目录同级。升级服务时保留此配置。将配置和图片设为服务账号可读，并给该账号授予父目录的访问权限。
 
 ```json
 {

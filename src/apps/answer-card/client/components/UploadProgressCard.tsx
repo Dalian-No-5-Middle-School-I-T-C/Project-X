@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { CardCorrectionButton } from "./CardCorrectionEditor";
 // v2.5.1: 右上角下弹上传进度卡（直扫/导入共用）。
 // 数据源 scannerUploadManager 单例；成功 3 秒自动收起，失败保留并可重试。
@@ -24,7 +25,7 @@ const BORDER_BY_STATUS: Record<UploadJobSnapshot["status"], string> = {
   cancelled: "border-border-subtle",
 };
 
-export function UploadProgressCard() {
+export function UploadProgressCard({ region }: { region?: HTMLElement | null }) {
   const snap = useSyncExternalStore(scannerUploadManager.subscribe, scannerUploadManager.getState);
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   const [entered, setEntered] = useState(false);
@@ -65,16 +66,19 @@ export function UploadProgressCard() {
     return true;
   })]));
 
-  return (
-    <div
-      className={`fixed z-50 flex max-h-[calc(100vh-5rem)] w-80 flex-col gap-2 overflow-y-auto transition-all duration-200 ${
+  const panel = (
+    <section
+      aria-label="后台上传任务"
+      className={region
+        ? "flex max-h-[35dvh] flex-col gap-2 border-b border-border-subtle bg-background px-3 py-1.5"
+        : `fixed z-50 flex max-h-[calc(100vh-5rem)] w-80 flex-col gap-2 overflow-y-auto transition-all duration-200 ${
         entered ? "translate-y-0 opacity-100" : "-translate-y-2 opacity-0"
       }`}
       // 扫描工作台右侧有 340px 侧栏：进度卡贴在主区域右上角，避免盖住侧栏的
       // 「图片去向 / 开始扫描 / 导入阅卷」等按钮。没有侧栏的页面沿用 1rem。
-      style={{ top: "calc(var(--px-page-header-h) + 0.5rem)", right: "var(--px-scanner-upload-right, 1rem)" }}
+      style={region ? undefined : { top: "calc(var(--px-page-header-h) + 0.5rem)", right: "var(--px-scanner-upload-right, 1rem)" }}
     >
-      <div className="flex items-center justify-end gap-2 pr-1">
+      <div className="flex shrink-0 items-center justify-end gap-2 pr-1">
         <ServerStatusIndicator />
         <Button
           variant="outline"
@@ -82,34 +86,41 @@ export function UploadProgressCard() {
           type="button"
           className="h-7 bg-card px-2 text-xs shadow-1"
           icon={collapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+          aria-expanded={!collapsed}
           onClick={() => setCollapsed(value => !value)}
         >
           {collapsed ? `展开上传（${visible.length}）` : "收起上传"}
         </Button>
       </div>
-      {collapsed ? (
+      {collapsed && !region && (
         <div className="rounded-lg border border-info-border bg-card px-3 py-2 text-xs text-muted-foreground shadow-md">
           上传任务 <span className="font-medium tabular-nums text-foreground">{visible.length}</span> 项正在后台处理
         </div>
-      ) : visible.map((job) => (
-        <UploadJobCard
-          key={job.id}
-          job={job}
-          conflictCards={conflictCards.get(job.id) ?? []}
-          queuedCount={snap.queuedCount}
-          onDismiss={(id) => {
-            // 审查 P2:关闭需真正移除任务并释放页面资源,不能只从视图收起
-            scannerUploadManager.dismissJob(id);
-            setDismissed((prev) => {
-              const next = new Set(prev);
-              next.add(id);
-              return next;
-            });
-          }}
-        />
-      ))}
-    </div>
+      )}
+      {!collapsed && (
+        <div className={region ? "grid min-h-0 gap-2 overflow-y-auto sm:grid-cols-2 xl:grid-cols-3" : "flex flex-col gap-2"}>
+          {visible.map((job) => (
+            <UploadJobCard
+              key={job.id}
+              job={job}
+              conflictCards={conflictCards.get(job.id) ?? []}
+              queuedCount={snap.queuedCount}
+              onDismiss={(id) => {
+                // 审查 P2:关闭需真正移除任务并释放页面资源,不能只从视图收起
+                scannerUploadManager.dismissJob(id);
+                setDismissed((prev) => {
+                  const next = new Set(prev);
+                  next.add(id);
+                  return next;
+                });
+              }}
+            />
+          ))}
+        </div>
+      )}
+    </section>
   );
+  return region ? createPortal(panel, region) : panel;
 }
 
 function UploadJobCard({

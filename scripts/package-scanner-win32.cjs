@@ -298,6 +298,14 @@ async function main() {
     run("npm", ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--os=win32", "--cpu=ia32"], appDir);
     run("npm", ["install", "--no-save", "--ignore-scripts", "--no-audit", "--no-fund", "--os=win32", "--cpu=ia32", "--force", `@img/sharp-win32-ia32@${sharpVersion}`], appDir);
   }
+  const runtimeDir = path.join(root, "resources", "native", "win-ia32");
+  const ucrtFiles = fs.readdirSync(runtimeDir).filter(name => /^api-ms-win-crt-.*\.dll$/i.test(name));
+  if (ucrtFiles.length < 15) throw new Error("Missing app-local ia32 UCRT libraries");
+  for (const name of [...ucrtFiles, "ucrtbase.dll"]) {
+    const source = path.join(runtimeDir, name);
+    pe32(source);
+    fs.copyFileSync(source, path.join(nativeDir, name));
+  }
   stageSqlitePrebuild();
   stripForeignPlatformPackages();
   for (const component of nativeComponents) pe32(path.join(nativeDir, component));

@@ -1,3 +1,4 @@
+import { essayReviewIssue, loadEssayReviews, reviewUnitPredicate } from "./essayReview";
 import { databaseTimestamp } from "../db/timestamp";
 import { getMysqlDb, buildUpsertSQL } from "../db";
 import type { DbAdapter } from "../db";
@@ -8,7 +9,7 @@ import {
   listReviewBlockCrops
 } from "./AnswerBlockCropService";
 import { computeMultiReviewResult } from "./ArbitrationService";
-import { getBlockConfig } from "./BlockGradingConfigService";
+import { getBlockConfig, loadHalfPointRule } from "./BlockGradingConfigService";
 import { validateScoringModeConsistency, validateBlockTotalCoverage, type ScoringMode } from "./scoringModeValidator";
 import type {
   ReviewBlockCropItem,
@@ -93,11 +94,9 @@ export async function listReviewBlocks(
        MAX(abc.block_type) AS blockType,
        COUNT(*) AS totalCount,
        SUM(CASE WHEN COALESCE(abc.status, 'ready') IN ('ready', 'pending') THEN 1 ELSE 0 END) AS pendingCount,
-       SUM(CASE WHEN abc.status = 'reviewed' THEN 1 ELSE 0 END) AS reviewedCount,
-       COALESCE(MAX(bgc.has_half_point), 0) AS hasHalfPoint
+       SUM(CASE WHEN abc.status = 'reviewed' THEN 1 ELSE 0 END) AS reviewedCount
      FROM answer_block_crops abc
-     LEFT JOIN block_grading_config bgc ON bgc.exam_id = abc.exam_id AND bgc.block_id = abc.block_id
-     WHERE abc.exam_id = ?${blockFilter}
+     WHERE abc.exam_id = ? AND ${reviewUnitPredicate("abc")}${blockFilter}
      GROUP BY abc.block_id
      ORDER BY abc.block_id`,
     examId, ...(permittedBlockIds ?? [])
@@ -108,7 +107,6 @@ export async function listReviewBlocks(
     totalCount: number;
     pendingCount: number;
     reviewedCount: number;
-    hasHalfPoint: number;
   }>;
 
   if (rows.length === 0) return [];
@@ -118,6 +116,7 @@ export async function listReviewBlocks(
   // （ERROR 1054 Unknown column 'abc.exam_id'），而 SQLite 又不要求派生表别名，
   // 两方言的写法无法统一；改为独立查询按 (block_id, question_number) 聚合后在内存合并。
   const maxScoreByBlock = await loadBlockMaxScores(examId, db);
+  const hasHalfPoint = await loadHalfPointRule(examId, db);
 
   return rows.map((row) => ({
     blockId: row.blockId,
@@ -126,7 +125,7 @@ export async function listReviewBlocks(
     totalCount: Number(row.totalCount),
     pendingCount: Number(row.pendingCount),
     reviewedCount: Number(row.reviewedCount),
-    hasHalfPoint: Number(row.hasHalfPoint ?? 0),
+    hasHalfPoint: hasHalfPoint(row.blockId),
     maxScore: maxScoreByBlock.get(row.blockId) ?? 0
   }));
 }
@@ -202,38 +201,83 @@ export function splitBlockTotal(
   distribution: "proportional" | "equal"
 ): Map<number, number> {
   const result = new Map<number, number>();
-  const nums = items.map((it) => it.questionNumber);
+  const nums = items.map((it) => it.questionNumber).sort((a, b) => a - b);
   if (nums.length === 0) return result;
 
-  const sumMax = nums.reduce((acc, q) => acc + (maxScoreByQuestion.get(q) ?? 0), 0);
-  const raw = nums.map((q) => {
+  const maxima = nums.map(q => maxScoreByQuestion.get(q) ?? 0);
+  const sumMax = maxima.reduce((sum, max) => sum + max, 0);
+  if (Math.abs(blockTotal - sumMax) <= 1e-9) {
+    return new Map(nums.map((q, i) => [q, maxima[i]]));
+  }
+  const raw = maxima.map(max => {
     if (distribution === "equal") {
       return blockTotal / nums.length;
     }
-    const max = maxScoreByQuestion.get(q) ?? 0;
     const denom = maxBlockScore > 0 ? maxBlockScore : sumMax || 1;
     return (blockTotal * max) / denom;
   });
 
-  // 先按 step 取整并 clamp 到 [0, max]
-  const rounded = raw.map((r, i) => {
-    const max = maxScoreByQuestion.get(nums[i]) ?? 0;
-    return Math.max(0, Math.min(Math.round(r / step) * step, max));
-  });
+  // 先在各题完整步长内分配，避免被小数满分截断后合计多出半步。
+  const stepMaxima = maxima.map(max => Math.floor(max / step) * step);
+  const rounded = raw.map((r, i) => Math.max(0, Math.min(Math.round(r / step) * step, stepMaxima[i])));
 
   // 修正取整漂移，使合计精确等于题块总分（从末题向前吸收余量）
-  let residual =
-    Math.round((blockTotal - rounded.reduce((a, b) => a + b, 0)) / step) * step;
-  for (let i = nums.length - 1; i >= 0 && Math.abs(residual) > 1e-9; i--) {
-    const before = rounded[i];
-    const max = maxScoreByQuestion.get(nums[i]) ?? 0;
-    const next = Math.max(0, Math.min(before + residual, max));
-    residual -= next - before;
+  let residual = roundScore(blockTotal - rounded.reduce((a, b) => a + b, 0));
+  for (let i = nums.length - 1; i >= 0 && residual !== 0; i--) {
+    const next = Math.max(0, Math.min(rounded[i] + residual, stepMaxima[i]));
+    residual = roundScore(residual - (next - rounded[i]));
     rounded[i] = next;
   }
 
-  nums.forEach((q, i) => result.set(q, rounded[i]));
+  const scores = residual > 0 ? splitAboveStepMaxima(maxima, step, blockTotal) : rounded;
+  nums.forEach((q, i) => result.set(q, scores[i]));
   return result;
+}
+
+/** 完整步长已用完。从全满分往下扣，每题可不扣，或扣满分的小数尾差加若干完整步长。 */
+function splitAboveStepMaxima(maxima: number[], step: number, total: number): number[] {
+  // 成绩合计保留三位小数。只搜索「满分合计 − 提交分」，其上界是题数 × 步长，与卷面总分无关。
+  const scale = 1000;
+  const stepUnits = step * scale;
+  const maxUnits = maxima.map(max => Math.round(max * scale));
+  const tails = maxUnits.map(max => max % stepUnits);
+  let unit = stepUnits;
+  for (let tail of tails) {
+    while (tail) [unit, tail] = [tail, unit % tail];
+  }
+  const deficit = (maxUnits.reduce((sum, max) => sum + max, 0) - Math.round(total * scale)) / unit;
+  const unreachable = () => new ReviewValidationError(`题块总分无法按 ${step} 分步长和各题满分拆分，请调整给分`);
+  if (!Number.isInteger(deficit) || deficit < 0) throw unreachable();
+  const stride = stepUnits / unit;
+  const questionAt = new Int32Array(deficit + 1);
+  const previous = new Int32Array(deficit + 1);
+  const nearest = new Int32Array(stride);
+  questionAt[0] = -1;
+  for (let i = 0; i < maxima.length && !questionAt[deficit]; i++) {
+    const tail = tails[i] / unit;
+    const maxDeduction = maxUnits[i] / unit;
+    nearest.fill(-1);
+    for (let p = 0; p + tail <= deficit; p++) {
+      const residue = p % stride;
+      // 同余类中最近的旧状态即可判断能否在本题满分内扣到目标。跳过本轮新状态，每题只用一次。
+      if (questionAt[p] && questionAt[p] !== i + 1) nearest[residue] = p;
+      const from = nearest[residue];
+      const amount = p + tail;
+      if (!questionAt[amount] && from >= 0 && amount - from <= maxDeduction) {
+        questionAt[amount] = i + 1;
+        previous[amount] = from;
+      }
+    }
+  }
+  if (!questionAt[deficit]) throw unreachable();
+  const scores = [...maxima];
+  for (let d = deficit; d > 0; d = previous[d]) {
+    const i = questionAt[d] - 1;
+    scores[i] = (maxUnits[i] - (d - previous[d]) * unit) / scale;
+  }
+  const allocated = scores.reduce((sum, score) => sum + score, 0);
+  if (Math.abs(allocated - total) > 1e-9 || scores.some((score, i) => score > maxima[i])) throw unreachable();
+  return scores;
 }
 
 /** `answer_block_crops.score_breakdown` 的单条评阅记录（落库结构，与 demo/reviewDemo.ts 保持一致） */
@@ -266,6 +310,10 @@ function latestVotesByReviewer(breakdown: ReviewBreakdownEntry[]): ReviewBreakdo
     .sort((a, b) => (firstSeen.get(a.reviewerId) ?? 0) - (firstSeen.get(b.reviewerId) ?? 0));
 }
 
+function isOnScoreStep(score: number, step: number): boolean {
+  return Math.abs(score - Math.round(score / step) * step) <= 1e-9;
+}
+
 export async function submitReviewCropScores(params: {
   examId: number;
   cropId: string;
@@ -295,7 +343,7 @@ export async function submitReviewCropScores(params: {
   const exam = await db.get("SELECT card_id FROM exams WHERE id = ?", params.examId) as { card_id: string | null } | undefined;
   if (!exam?.card_id) throw new Error("考试未关联答题卡");
 
-  const cardRepo = new CardRepository();
+  const cardRepo = new CardRepository(db);
   const card = await cardRepo.findById(exam.card_id);
   if (!card) throw new Error("答题卡不存在");
 
@@ -356,8 +404,14 @@ export async function submitReviewCropScores(params: {
     maxBlockScore = Array.from(maxScoreByQuestion.values()).reduce((a, b) => a + b, 0);
   }
 
+  if (targetBlock?.type === "subjective" && targetBlock.blockKind === "essay"
+    && (scores.length !== 1 || Number(scores[0].questionNumber) !== Number(targetBlock.questions[0]?.number)
+      || scores[0].scoreType !== "subjective")) {
+    throw new ReviewValidationError("请为作文题提交一个主观题分数");
+  }
   const config = await getBlockConfig(params.examId, crop.block_id ?? "", blockType, maxBlockScore, db);
   const reviewMode = config.reviewMode;
+  const step = config.hasHalfPoint ? 0.5 : 1;
   const scoringMode: ScoringMode = config.scoringMode === "per_question" ? "per_question" : "block_total";
 
   // 入参校验：逐条检查 scores 的结构和数值合法性
@@ -384,6 +438,10 @@ export async function submitReviewCropScores(params: {
       if (score < 0 || score > max) {
         throw new ReviewValidationError(`题号 ${qNum} 的分数 ${score} 超出有效范围 [0, ${max}]`);
       }
+      // A question with a fractional maximum can always receive its full mark.
+      if (score !== max && !isOnScoreStep(score, step)) {
+        throw new ReviewValidationError(`第 ${qNum} 题得分须为 ${step} 分的整数倍或该题满分 ${max}`);
+      }
     }
   }
 
@@ -399,7 +457,6 @@ export async function submitReviewCropScores(params: {
   // ── 题块总分模式（#187）与逐题模式（#186）兼容 ──
   // 优先采用题块总分：前端只提交一个合计分，后端按比例拆分到各小题并写入正确的逐题满分。
   // 未提交题块总分时（如 OnlineReviewPanel 逐题输入），按逐题校验的严格模式处理。
-  const step = config.hasHalfPoint ? 0.5 : 1;
   const distribution = config.scoreDistribution === "equal" ? "equal" : "proportional";
   // 评分模式双向校验（PR #189 修复：原实现只校验 per_question 单方向，
   // 导致 block_total + 仅逐题分数也能通过，scoringMode 形同虚设）
@@ -407,25 +464,26 @@ export async function submitReviewCropScores(params: {
   const blockTotalScoreNum = params.blockTotalScore == null ? Number.NaN : Number(params.blockTotalScore);
   const hasBlockTotalScore = Number.isFinite(blockTotalScoreNum);
   const consistency = validateScoringModeConsistency(scoringMode, hasBlockTotalScore);
-  if (!consistency.ok) throw new Error(consistency.error);
+  if (!consistency.ok) throw new ReviewValidationError(consistency.error);
   const submittedScores: Array<{ questionNumber: number; scoreType: string; score: number; maxScore: number }> =
     params.blockTotalScore != null
       ? (() => {
           const total = Number(params.blockTotalScore);
-          if (!Number.isFinite(total) || total < -1e-9) throw new Error("题块总分无效");
+          if (!Number.isFinite(total) || total < -1e-9) throw new ReviewValidationError("题块总分无效");
           if (total > maxBlockScore + 1e-6) {
-            throw new Error(`题块总分不能超过本题块满分 ${maxBlockScore}`);
+            throw new ReviewValidationError(`题块总分不能超过本题块满分 ${maxBlockScore}`);
           }
-          if (Math.abs(total - Math.round(total / step) * step) > 1e-9) {
-            throw new Error(`题块总分必须是 ${step} 分的整数倍`);
+          const isFullMark = Math.abs(total - maxBlockScore) <= 1e-9;
+          if (!isFullMark && !isOnScoreStep(total, step)) {
+            throw new ReviewValidationError(`题块总分必须是 ${step} 分的整数倍或题块满分 ${maxBlockScore}`);
           }
           // 题号集合校验：题块总分代表整个题块，提交项必须恰好覆盖本题块的权威小题，
           // 且每题只允许出现一次（否则 totalScore 虚高且 scoreBreakdown 内部不一致）。
           const authoritativeNums = Array.from(maxScoreByQuestion.keys());
           const coverage = validateBlockTotalCoverage(authoritativeNums, scores);
-          if (!coverage.ok) throw new Error(coverage.error);
+          if (!coverage.ok) throw new ReviewValidationError(coverage.error);
           const split = splitBlockTotal(
-            Math.round(total * 100) / 100,
+            isFullMark ? maxBlockScore : roundScore(total),
             scores,
             maxScoreByQuestion,
             maxBlockScore,
@@ -443,7 +501,7 @@ export async function submitReviewCropScores(params: {
           const authoritative = maxScoreByQuestion.get(item.questionNumber);
           // #186 严格校验：逐题模式若显式携带 maxScore，必须与权威逐题满分一致
           if (item.maxScore != null && authoritative != null && Math.abs(item.maxScore - authoritative) > 1e-6) {
-            throw new Error(`第${item.questionNumber}题满分应为 ${authoritative}，提交值为 ${item.maxScore}`);
+            throw new ReviewValidationError(`第${item.questionNumber}题满分应为 ${authoritative}，提交值为 ${item.maxScore}`);
           }
           const maxScore = item.maxScore ?? authoritative ?? item.score;
           return {
@@ -462,6 +520,13 @@ export async function submitReviewCropScores(params: {
 
   // P0-2: 争议检测 + 状态更新全部在事务内执行
   await db.transaction(async (tx) => {
+    if (targetBlock?.type === "subjective" && targetBlock.blockKind === "essay") {
+      await tx.run("UPDATE exams SET id=id WHERE id=?", params.examId);
+      const essays = await loadEssayReviews(tx, params.examId, targetBlockId, crop.student_id!);
+      const unit = essays.get(params.cropId);
+      const issue = unit ? essayReviewIssue(unit, params.cropId) : "作文切图归属已变更，请重新领取";
+      if (issue) throw new ReviewValidationError(issue);
+    }
     // 评分历史必须在事务内读取和追加；事务外快照会在并发提交时覆盖另一位教师的记录。
     const freshCrop = await tx.get(
       "SELECT review_round, score_breakdown, status, claimed_by FROM answer_block_crops WHERE id = ?",
@@ -479,7 +544,7 @@ export async function submitReviewCropScores(params: {
     if (reviewerIds.has(params.userId) && freshCrop.status !== "disputed") {
       throw new Error("您已对该题块评分，请勿重复提交");
     }
-    if (config.arbitratorId != null && config.arbitratorId === params.userId) throw new Error("您是该题块的仲裁人，不能参与初评");
+    if (config.arbitratorId != null && config.arbitratorId === params.userId) throw new ReviewValidationError("您是该题块的仲裁人，不能参与初评");
     if (config.arbitratorId != null && reviewerIds.has(config.arbitratorId)) throw new Error("该题块的仲裁人已参与评分，需要更换仲裁人");
 
     // 争议卷（含自动改派/回退给原老师）允许追加复评以打破僵局；
@@ -512,7 +577,6 @@ export async function submitReviewCropScores(params: {
       disputed = disputeResult.disputed;
       disputeReason = disputeResult.reason;
       if (!disputed) {
-        finalScore = disputeResult.finalScore;
         const resolvedQuestionScores: Array<{ item: typeof submittedScores[number]; score: number }> = [];
         for (const item of submittedScores) {
           const values = effectiveVotes.map((round) => round.questionScores?.[String(item.questionNumber)]).filter((v): v is number => typeof v === "number");
@@ -521,18 +585,16 @@ export async function submitReviewCropScores(params: {
           if (resolved.disputed || resolved.finalScore == null) {
             disputed = true;
             disputeReason = `第${item.questionNumber}题${resolved.reason}`;
-            finalScore = null;
             break;
           }
-          resolvedQuestionScores.push({ item, score: resolved.finalScore });
+          resolvedQuestionScores.push({ item, score: Math.min(resolved.finalScore, item.maxScore) });
         }
         // Do not persist a partial set if a later question is disputed.
         if (!disputed) {
+          finalScore = roundScore(resolvedQuestionScores.reduce((sum, question) => sum + question.score, 0));
           for (const resolved of resolvedQuestionScores) {
             await tx.run(upsertSQL, params.examId, crop.student_id, resolved.item.questionNumber, null, crop.block_id, resolved.score, resolved.item.maxScore, resolved.item.scoreType, 1, params.userId, now);
           }
-        }
-        if (!disputed) {
           totalScore = await recomputeStudentTotals(tx, params.examId, crop.student_id!);
           // 评审 P1：仅当本轮评阅写下正式分数并重算总分时才视为成绩变更 →
           // 同一事务内按管理员策略处理公布状态
@@ -729,7 +791,7 @@ export async function getReviewTrace(
     FROM answer_block_crops abc
     JOIN users u ON u.id = abc.student_id
     LEFT JOIN users arb ON arb.id = abc.final_score_by
-    WHERE abc.exam_id = ?
+    WHERE abc.exam_id = ? AND (${reviewUnitPredicate("abc")} OR abc.review_round > 0)
   `;
   const params: unknown[] = [examId];
 

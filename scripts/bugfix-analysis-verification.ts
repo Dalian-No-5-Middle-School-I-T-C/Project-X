@@ -65,6 +65,33 @@ db.prepare("INSERT INTO exam_group_members (group_id, exam_id, sort_order) VALUE
 
 const repo = new AnalysisRepository();
 
+// Hold a real overview after it has read the previous threshold.
+let started!: () => void;
+let resume!: () => void;
+const reading = new Promise<void>(resolve => { started = resolve; });
+const released = new Promise<void>(resolve => { resume = resolve; });
+class DelayedOverview extends AnalysisRepository {
+  override async getClassScoreSummaries(examId: number) {
+    const result = await super.getClassScoreSummaries(examId);
+    started();
+    await released;
+    return result;
+  }
+}
+const earlier = new DelayedOverview().getExamOverview(e1);
+await reading;
+db.prepare("INSERT OR REPLACE INTO system_settings (`key`, value) VALUES ('analysis_pass_rate', '0.8')").run();
+invalidateAnalysisThresholdsCache();
+analysisCache.clear();
+const updated = await repo.getExamOverview(e1);
+resume();
+const stale = await earlier;
+ok(stale.passScore === 60 && updated.passScore === 80 && (await repo.getExamOverview(e1)).passScore === 80,
+  "旧概览请求晚到，后续读取保留新及格线");
+db.prepare("DELETE FROM system_settings WHERE `key` = 'analysis_pass_rate'").run();
+invalidateAnalysisThresholdsCache();
+analysisCache.clear();
+
 // ═══ Bug 1: 大考参与口径 ═══
 console.log("\n== Bug 1: 大考参与口径（only_full_participants / total_score_mode）==");
 

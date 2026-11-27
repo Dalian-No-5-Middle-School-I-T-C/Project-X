@@ -12,6 +12,7 @@
  * 缓存值必须是纯 JSON 可序列化对象，绝不能缓存带可变引用的内容。
  */
 export class AnalysisCache {
+  private generation = 0;
   private limit: number;
   private map: Map<string, { value: unknown; ts: number }>;
 
@@ -41,8 +42,18 @@ export class AnalysisCache {
     }
   }
 
+  async getOrCompute<T>(key: string, compute: () => Promise<T>): Promise<T> {
+    const cached = this.get<T>(key);
+    if (cached !== undefined) return cached;
+    const generation = this.generation;
+    const value = await compute();
+    if (generation === this.generation) this.set(key, value);
+    return value;
+  }
+
   /** 精确失效：某场考试相关的所有缓存条目。 */
   invalidateExam(examId: number): void {
+    this.generation++;
     const prefix = `:${examId}:`;
     for (const key of this.map.keys()) {
       if (key.includes(prefix)) this.map.delete(key);
@@ -50,6 +61,7 @@ export class AnalysisCache {
   }
 
   clear(): void {
+    this.generation++;
     this.map.clear();
   }
 

@@ -190,6 +190,15 @@ const VIEW_FLAG_LABELS: Record<ViewPermissionFlag, string> = {
   can_view_students: "学生名单"
 };
 
+function teacherViewGrants(db: DbAdapter, teacherId: number, flag: ViewPermissionFlag) {
+  // 保留题块行，使仅配置题块的教师与无矩阵的教师可区分；整卷查看需单独的维度授权。
+  return db.all<{ grade_id: number | null; subject: string | null; class_id: number | null; flag: number }>(
+    `SELECT grade_id, subject, class_id, CASE WHEN block_id IS NULL THEN ${flag} ELSE 0 END AS flag
+     FROM teacher_permissions WHERE teacher_id = ?`,
+    teacherId
+  );
+}
+
 /**
  * #246 权限矩阵查看标志校验：判断教师在某考试上是否拥有指定查看权限。
  * - admin / grade_leader 特权放行；
@@ -209,16 +218,7 @@ export async function hasViewPermission(
   if (!teacherId) return false;
   const db = getMysqlDb();
   if (!(await hasTable(db, "teacher_permissions"))) return true;
-  const rows = await db.all<{
-    grade_id: number | null;
-    subject: string | null;
-    class_id: number | null;
-    flag: number;
-  }>(
-    `SELECT grade_id, subject, class_id, ${flag} AS flag FROM teacher_permissions
-     WHERE teacher_id = ? AND block_id IS NULL`,
-    teacherId
-  );
+  const rows = await teacherViewGrants(db, teacherId, flag);
   if (rows.length === 0) return true; // 未配置矩阵 → 兼容放行
   const exam = await db.get<{ grade_id: number | null; subject: string | null; class_id: number | null }>(
     "SELECT grade_id, subject, class_id FROM exams WHERE id = ?",
@@ -284,16 +284,7 @@ export async function hasClassViewPermission(
   if (!teacherId) return false;
   const db = getMysqlDb();
   if (!(await hasTable(db, "teacher_permissions"))) return true;
-  const rows = await db.all<{
-    grade_id: number | null;
-    subject: string | null;
-    class_id: number | null;
-    flag: number;
-  }>(
-    `SELECT grade_id, subject, class_id, ${flag} AS flag FROM teacher_permissions
-     WHERE teacher_id = ? AND block_id IS NULL`,
-    teacherId
-  );
+  const rows = await teacherViewGrants(db, teacherId, flag);
   if (rows.length === 0) return true; // 未配置矩阵 → 兼容放行
   const cls = await db.get<{ grade_id: number | null }>("SELECT grade_id FROM classes WHERE id = ?", classId);
   if (!cls) return false;
@@ -324,16 +315,7 @@ export async function hasGroupViewPermission(
   if (!teacherId) return false;
   const db = getMysqlDb();
   if (!(await hasTable(db, "teacher_permissions"))) return true;
-  const rows = await db.all<{
-    grade_id: number | null;
-    subject: string | null;
-    class_id: number | null;
-    flag: number;
-  }>(
-    `SELECT grade_id, subject, class_id, ${flag} AS flag FROM teacher_permissions
-     WHERE teacher_id = ? AND block_id IS NULL`,
-    teacherId
-  );
+  const rows = await teacherViewGrants(db, teacherId, flag);
   if (rows.length === 0) return true; // 未配置矩阵 → 兼容放行
   const exams = await db.all<{ grade_id: number | null; subject: string | null; class_id: number | null }>(
     `SELECT e.grade_id, e.subject, e.class_id FROM exam_group_members egm
@@ -403,16 +385,7 @@ export async function filterExamIdsByViewPermission(
   if (unique.length === 0) return all;
   const db = getMysqlDb();
   if (!(await hasTable(db, "teacher_permissions"))) return all;
-  const rows = await db.all<{
-    grade_id: number | null;
-    subject: string | null;
-    class_id: number | null;
-    flag: number;
-  }>(
-    `SELECT grade_id, subject, class_id, ${flag} AS flag FROM teacher_permissions
-     WHERE teacher_id = ? AND block_id IS NULL`,
-    teacherId
-  );
+  const rows = await teacherViewGrants(db, teacherId, flag);
   if (rows.length === 0) return all;
   const placeholders = unique.map(() => "?").join(",");
   const exams = await db.all<{ id: number; grade_id: number | null; subject: string | null; class_id: number | null }>(

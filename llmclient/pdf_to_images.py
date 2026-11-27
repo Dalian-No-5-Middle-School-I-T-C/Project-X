@@ -30,6 +30,7 @@ PyMuPDF 解析的是**教师从外部拿到的任意 PDF**（扫描件、别人�
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import os
 import subprocess
@@ -91,6 +92,10 @@ class PdfRenderTimeoutError(PdfRenderError):
     """渲染超过墙钟预算，子进程已被终止。"""
 
 
+class PaperImageByteLimitError(PdfRenderError):
+    """直传原卷的所有页图合计超过字节预算。"""
+
+
 def _repo_root() -> str:
     """`llmclient/` 的父目录：子进程要靠它 `import llmclient.*`。"""
     return str(Path(__file__).resolve().parent.parent)
@@ -104,7 +109,7 @@ def _subprocess_env() -> dict[str, str]:
     return env
 
 
-def _render_params(max_pages: int) -> dict[str, int]:
+def _render_params(max_pages: int, max_output_bytes: int) -> dict[str, int]:
     return {
         "long_edge": LONG_EDGE,
         "jpeg_quality": JPEG_QUALITY,
@@ -112,16 +117,16 @@ def _render_params(max_pages: int) -> dict[str, int]:
         "min_dpi": MIN_DPI,
         "max_pages": max_pages,
         "max_page_pixels": PDF_MAX_PAGE_PIXELS,
-        "max_total_bytes": PDF_MAX_TOTAL_IMAGE_BYTES,
+        "max_total_bytes": max_output_bytes,
         "max_memory_mib": PDF_MAX_CHILD_MEMORY_MIB,
         # CPU 上限比墙钟略宽，避免正常长任务先被 SIGXCPU 掐断
         "cpu_seconds": PDF_RENDER_TIMEOUT_SEC + 5,
     }
 
 
-def _run_render_subprocess(pdf_bytes: bytes, max_pages: int) -> list[dict[str, str]]:
+def _run_render_subprocess(pdf_bytes: bytes, max_pages: int, max_output_bytes: int) -> list[dict[str, str]]:
     payload = json.dumps(
-        {"pdf_b64": base64.b64encode(pdf_bytes).decode(), "params": _render_params(max_pages)}
+        {"pdf_b64": base64.b64encode(pdf_bytes).decode(), "params": _render_params(max_pages, max_output_bytes)}
     ).encode("utf-8")
     try:
         completed = subprocess.run(  # noqa: S603 - 解释器自身、参数固定、无 shell
@@ -176,10 +181,14 @@ def _run_render_subprocess(pdf_bytes: bytes, max_pages: int) -> list[dict[str, s
     message = str(result.get("message") or "PDF 渲染失败")
     if result.get("kind") == "page-limit":
         raise PdfPageLimitError(message)
+    if result.get("kind") == "byte-limit":
+        raise PaperImageByteLimitError(message)
     raise PdfRenderError(message)
 
 
-def pdf_bytes_to_images(pdf_bytes: bytes, max_pages: int = MAX_AI_PAGES) -> list[dict[str, str]]:
+def pdf_bytes_to_images(
+    pdf_bytes: bytes, max_pages: int = MAX_AI_PAGES, *, max_output_bytes: int | None = None
+) -> list[dict[str, str]]:
     """把一份 PDF 渲染成压缩 JPEG 页图（base64），每页长边 <= 2048。
 
     渲染在带资源预算的子进程内完成；失败时抛 ``PdfRenderError`` / ``PdfRenderTimeoutError``，
@@ -193,22 +202,50 @@ def pdf_bytes_to_images(pdf_bytes: bytes, max_pages: int = MAX_AI_PAGES) -> list
     max_input = PDF_MAX_TOTAL_IMAGE_BYTES
     if len(pdf_bytes) > max_input:
         raise PdfRenderError(f"PDF 体积 {len(pdf_bytes)} 字节超过预算 {max_input}")
-    return _run_render_subprocess(pdf_bytes, max_pages)
+    budget = max_input if max_output_bytes is None else min(max_input, max_output_bytes)
+    if budget < 1:
+        raise PaperImageByteLimitError("原卷页图累计大小已达直传上限，请拆分后分析")
+    return _run_render_subprocess(pdf_bytes, max_pages, budget)
+
+
+def _image_size(image: dict[str, str], remaining_bytes: int) -> int:
+    encoded = image.get("base64")
+    if not isinstance(encoded, str) or not encoded:
+        raise PdfRenderError("原卷图片内容为空或格式不正确")
+    # Avoid allocating a decoded copy of an image larger than the remaining budget.
+    if len(encoded) <= 4 * ((remaining_bytes + 2) // 3):
+        try:
+            size = len(base64.b64decode(encoded, validate=True))
+        except (binascii.Error, ValueError) as exc:
+            raise PdfRenderError("原卷图片的 base64 编码不正确") from exc
+        if size <= remaining_bytes:
+            return size
+    raise PaperImageByteLimitError("原卷页图累计大小超过直传上限，请拆分后分析")
 
 
 def normalize_direct_files(files: list[dict[str, str]], max_pages: int = MAX_AI_PAGES) -> list[dict[str, str]]:
     """直传前归一化：PDF 转压缩页图，图片原样保留。"""
     out: list[dict[str, str]] = []
-    pdf_pages_used = 0
+    image_count = sum((f.get("mimeType") or "").lower() != "application/pdf" for f in files)
+    remaining_pages = max_pages - image_count
+    if remaining_pages < 0:
+        raise PdfPageLimitError(f"原卷图片超过多模态直传的 {max_pages} 页上限")
+    remaining_bytes = PDF_MAX_TOTAL_IMAGE_BYTES
+    for image in files:
+        if (image.get("mimeType") or "").lower() != "application/pdf":
+            remaining_bytes -= _image_size(image, remaining_bytes)
     for f in files:
         mime = (f.get("mimeType") or "").lower()
         if mime == "application/pdf":
             page_images = pdf_bytes_to_images(
                 base64.b64decode(f["base64"]),
-                max_pages=max_pages - pdf_pages_used,
+                max_pages=remaining_pages,
+                max_output_bytes=remaining_bytes,
             )
+            for image in page_images:
+                remaining_bytes -= _image_size(image, remaining_bytes)
             out.extend(page_images)
-            pdf_pages_used += len(page_images)
+            remaining_pages -= len(page_images)
         else:
             out.append(f)
     return out

@@ -139,6 +139,7 @@ import {
   optionLabelsForQuestion
 } from "../../../shared/grading";
 import {
+  subjectiveBlockTotalScore,
   validateCardScores
 } from "../../../shared/cardScoreValidation";
 import { buildLayout } from "../../../shared/layout";
@@ -503,16 +504,16 @@ function App() {
   }, [card]);
 
   // v1.9.4: 拉取全局原卷标志（认证即可读），驱动导出拦截/自动弹窗/侧边栏高亮
-  const refreshGlobalPaper = useCallback(() => {
-    return fetchJson<{ ok: boolean; data: { requireOriginalPaper: number; highlightMissingPaper: number } }>(
+  useEffect(() => {
+    if (!user?.id || user.passwordChangeRequired) return;
+    let active = true;
+    void fetchJson<{ ok: boolean; data: { requireOriginalPaper: number; highlightMissingPaper: number } }>(
       "/api/system-settings/public"
-    )
-      .then((r) => {
-        if (r?.ok && r.data) setGlobalPaper(r.data);
-      })
-      .catch(() => {});
-  }, []);
-  useEffect(() => { void refreshGlobalPaper(); }, [refreshGlobalPaper]);
+    ).then((result) => {
+      if (active && result.ok && result.data) setGlobalPaper(result.data);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [user?.id, user?.passwordChangeRequired]);
 
   useEffect(() => {
     if (!user) return;
@@ -668,7 +669,7 @@ function App() {
   // 全局 ESC 返回上一级 (v1.4.7)
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || e.defaultPrevented) return;
       // 检查是否有输入框聚焦，跳过（让用户正常退出输入）
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
@@ -1226,7 +1227,7 @@ function App() {
         }
         const prefix = toChineseBlockIndex(index + 1);
         const count = sub.questions.length;
-        const total = sub.questions.reduce((sum, q) => sum + (q.score || 0), 0);
+        const total = subjectiveBlockTotalScore(sub);
         block.title = buildAutoBlockTitle(prefix, typeName, count, total);
       }
       index++;

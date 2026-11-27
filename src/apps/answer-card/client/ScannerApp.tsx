@@ -28,7 +28,7 @@ import {
 
 type Page = "select" | "workspace" | "postprocess";
 
-function ScannerAppInner() {
+function ScannerAppInner({ onUploadRegion }: { onUploadRegion: (node: HTMLDivElement | null) => void }) {
   const { user, loading, patchUserLocal, refreshUser } = useAuth();
   // 皮肤偏好回写（R49）：与 web 端共用同一套「成功更新权威快照 / 失败以服务端为准」的实现。
   const writeSkinPreference = useSkinPreferenceWriter();
@@ -191,6 +191,7 @@ function ScannerAppInner() {
   if (page === "postprocess" && selectedCardId && postSessions.length) {
     return (
       <ScannerPostprocessPage
+        onUploadRegion={onUploadRegion}
         cardId={selectedCardId}
         cardTitle={selectedCardTitle}
         sessions={postSessions}
@@ -344,10 +345,11 @@ function ScannerAppInner() {
 
 /** v2.5.1: 对外入口 = 原双屏容器 + 全局上传进度卡（右上角下弹） */
 export function ScannerApp() {
+  const [uploadRegion, setUploadRegion] = useState<HTMLDivElement | null>(null);
   return (
     <>
-      <ScannerAppInner />
-      <UploadProgressCard />
+      <ScannerAppInner onUploadRegion={setUploadRegion} />
+      <UploadProgressCard region={uploadRegion} />
     </>
   );
 }

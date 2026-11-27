@@ -269,6 +269,35 @@ try {
     assert.equal(workbook.SheetNames[0], "总览");
     const exportedRows = XLSX.utils.sheet_to_json<any>(workbook.Sheets[workbook.SheetNames[0]]);
     assert.equal(exportedRows.find(row => row["姓名"] === "原班B")?.["班级"], promoted.name);
+    // Raw and assigned scores select different leaders, even when everyone attends.
+    const scaled = await exam("赋分排名"), ordinary = await exam("原始分排名");
+    await db.run("UPDATE exams SET assigned_formula = 'linear' WHERE id = ?", scaled);
+    for (const [sid, raw, assigned] of [[a, 80, 85], [b, 79, 95]]) {
+      await score(scaled, sid, raw);
+      await score(ordinary, sid, 70);
+      await db.run("UPDATE student_scores SET assigned_score = ? WHERE exam_id = ? AND student_id = ?", assigned, scaled, sid);
+    }
+    const rankGroup = await group([scaled, ordinary]);
+    for (const mode of ["assigned", "raw"]) {
+      await db.run("UPDATE exam_groups SET total_score_mode = ?, only_full_participants = ? WHERE id = ?", mode, mode === "raw" ? 1 : 0, rankGroup);
+      for (const full of [0, 1]) {
+        const response = await fetch(`${base}/groups/${rankGroup}/rankings?fullOnly=${full}`);
+        assert.equal(response.status, 200);
+        const { rows } = await response.json();
+        assert.deepEqual(rows.map((r: any) => [r.studentId, r.totalGradeRank]),
+          mode === "assigned" ? [[b, 1], [a, 2]] : [[a, 1], [b, 2]], `${mode}, fullOnly=${full}`);
+      }
+    }
+    // Empty group early-return paths must also normalize NULL/raw/assigned totalScoreMode.
+    const emptyGroup = await group([]);
+    await db.run("UPDATE exam_groups SET total_score_mode = NULL WHERE id = ?", emptyGroup);
+    const emptyNullRes = await fetch(`${base}/groups/${emptyGroup}/rankings`);
+    assert.equal(emptyNullRes.status, 200);
+    assert.equal((await emptyNullRes.json()).totalScoreMode, "raw", "空大考组 total_score_mode=NULL 必须归一为 raw");
+    await db.run("UPDATE exam_groups SET total_score_mode = 'assigned' WHERE id = ?", emptyGroup);
+    const emptyAssignedRes = await fetch(`${base}/groups/${emptyGroup}/rankings`);
+    assert.equal(emptyAssignedRes.status, 200);
+    assert.equal((await emptyAssignedRes.json()).totalScoreMode, "assigned", "空大考组 total_score_mode=assigned 保持 assigned");
     const hiddenExam = await exam("未参加的考试");
     await score(hiddenExam, c, 99);
     const mixedGroup = await group([e1, hiddenExam]);

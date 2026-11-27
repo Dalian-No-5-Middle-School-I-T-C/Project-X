@@ -1,5 +1,11 @@
 import type { AnswerCard, StudentInfoSettings } from "./types";
 
+export const CURRENT_LAYOUT_VERSION = 3;
+
+export function normalizeLayoutVersion(version: unknown): AnswerCard["layoutVersion"] {
+  return version === 2 || version === 3 ? version : 1;
+}
+
 export const DEFAULT_STUDENT_NOTES = [
   "1. 答题前请将姓名、班级、准考证号等填写清楚。",
   "2. 客观题必须使用2B铅笔填涂，修改时用橡皮擦干净。",
@@ -51,7 +57,7 @@ export function createDefaultCard(id: string, subject?: string, paperSize: "A4" 
     },
     bodyBlocks: [],
     sided: "single",
-    layoutVersion: 2,
+    layoutVersion: CURRENT_LAYOUT_VERSION,
     updatedAt: now
   };
 }

@@ -69,6 +69,11 @@ function blankScoreQuestion(questions: SubjectiveQuestion[]): SubjectiveQuestion
   return questions.find((question) => question.style === "manual_score_grid") ?? questions[0];
 }
 
+export function subjectiveBlockTotalScore(block: SubjectiveBlock): number {
+  if (isFillBlankBlock(block)) return numericScore(blankScoreQuestion(block.questions)?.score);
+  return block.questions.reduce((sum, question) => sum + numericScore(question.score), 0);
+}
+
 function blankCount(question: SubjectiveQuestion): number {
   if (question.blanks?.items?.length) return question.blanks.items.length;
   return Math.max(1, question.blanks?.count ?? 1);
@@ -168,10 +173,9 @@ export function validateCardScores(card: AnswerCard): CardScoreValidationResult 
   let subjectiveScore = 0;
   for (const block of card.bodyBlocks) {
     if (block.type !== "subjective") continue;
+    const score = subjectiveBlockTotalScore(block);
+    subjectiveScore += score;
     if (isFillBlankBlock(block)) {
-      const scoreQuestion = blankScoreQuestion(block.questions);
-      const score = numericScore(scoreQuestion?.score);
-      subjectiveScore += score;
       const totalBlankCount = block.questions.reduce((sum, question) => sum + blankCount(question), 0);
       if (totalBlankCount >= MANY_BLANKS_THRESHOLD && score <= LOW_SCORE_LIMIT) {
         issues.push({
@@ -185,7 +189,6 @@ export function validateCardScores(card: AnswerCard): CardScoreValidationResult 
 
     for (const question of block.questions) {
       const score = numericScore(question.score);
-      subjectiveScore += score;
       if (score <= LOW_SCORE_LIMIT) {
         issues.push({
           kind: "answer",

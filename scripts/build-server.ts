@@ -1,6 +1,8 @@
 import { build } from "esbuild";
+import { copyOcrModels } from "../src/apps/answer-card/server/ocr-models";
 import { copyFile, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { collectBuildInfo, writeBuildInfoFile } from "./lib/build-info";
 
 await build({
@@ -16,6 +18,9 @@ await build({
 });
 
 await mkdir("dist/server", { recursive: true });
+await copyOcrModels("dist/server/ocr-models");
+const require = createRequire(import.meta.url);
+await copyFile(require.resolve("tesseract.js/LICENSE.md"), "dist/server/ocr-models/LICENSE-Apache-2.0.txt");
 await copyFile("src/server/db/schema.sql", "dist/server/schema.sql");
 await copyFile("src/server/db/schema.mariadb.sql", "dist/server/schema.mariadb.sql");
 

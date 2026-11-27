@@ -23,6 +23,10 @@ const MAGIC_BYTES: Array<{ signature: Buffer; label: string }> = [
 ];
 
 const MAX_HEADER_BYTES = 12;
+const BIG_TIFF_HEADERS = [
+  Buffer.from([0x49, 0x49, 0x2b, 0x00, 0x08, 0x00, 0x00, 0x00]),
+  Buffer.from([0x4d, 0x4d, 0x00, 0x2b, 0x00, 0x08, 0x00, 0x00]),
+];
 
 /** 允许落盘并对外提供的图片扩展名（预览按扩展名推导 Content-Type）。 */
 export const IMAGE_EXTENSIONS: readonly string[] = [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"];
@@ -103,18 +107,18 @@ export function rejectReasonForImportedAsset(filename: string, buffer: Buffer): 
 }
 
 /** Reads the first N bytes of a file and checks magic signatures. */
-export async function isValidImageFile(filePath: string): Promise<boolean> {
+export async function isValidImageFile(filePath: string, { allowBigTiff = false, propagateReadErrors = false } = {}): Promise<boolean> {
   let fd;
   try {
     fd = await open(filePath, "r");
     const buf = Buffer.alloc(MAX_HEADER_BYTES);
     const { bytesRead } = await fd.read(buf, 0, MAX_HEADER_BYTES, 0);
-    // 与内存态共用同一判定：RIFF 容器还必须带 WEBP 标识，
-    // 否则 AVI/WAV 改名 .webp 会被当作图片送进原生识别器。
-    // 与内存态共用同一判定：RIFF 容器还必须带 WEBP 标识，
-    // 否则 AVI/WAV 改名 .webp 会被当作图片送进原生识别器。
-    return isValidImageBuffer(buf.subarray(0, bytesRead));
-  } catch {
+    const header = buf.subarray(0, bytesRead);
+    return isValidImageBuffer(header) || (allowBigTiff && BIG_TIFF_HEADERS.some(
+      signature => header.subarray(0, signature.length).equals(signature)
+    ));
+  } catch (error) {
+    if (propagateReadErrors) throw error;
     return false;
   } finally {
     if (fd) await fd.close();

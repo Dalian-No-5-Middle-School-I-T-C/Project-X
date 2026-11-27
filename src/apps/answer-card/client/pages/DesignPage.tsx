@@ -20,6 +20,7 @@ import {
 import { Group, Panel as ResizePanel, Separator, useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { useWorkspace } from "../WorkspaceContext";
 import type { ObjectiveBlock, SubjectiveBlock } from "../../../../shared/types";
+import { CURRENT_LAYOUT_VERSION } from "../../../../shared/defaultCard";
 import type { AnswerCard, LayoutDocument } from "../../../../shared/types";
 import { fetchJson } from "../auth/api";
 import { cn } from "../lib/utils";
@@ -472,7 +473,7 @@ export function DesignPage() {
                       ) : (
                         <SubjectiveEditor
                           block={selectedBlock as SubjectiveBlock}
-                          layoutVersion={(card.layoutVersion ?? 1) as 1 | 2}
+                          layoutVersion={card.layoutVersion ?? 1}
                           onChange={(mutator) => updateBlock(selectedBlock.id, mutator)}
                           onUpload={uploadImage}
                         />
@@ -580,17 +581,17 @@ function BasicInfoPanel({
             </SelectContent>
           </Select>
         </Field>
-        {card.layoutVersion !== 2 && (
+        {(card.layoutVersion ?? 1) < CURRENT_LAYOUT_VERSION && (
           <div className="rounded-md border border-info-border bg-info-soft p-2.5 text-xs text-info-fg">
             <strong className="block text-sm font-semibold">当前使用兼容排版</strong>
-            <p className="mt-1">已打印的旧答题卡仍按原坐标识别。升级后会使用更紧凑的分数区和更大的作答空间。</p>
+            <p className="mt-1">本卡沿用原印刷坐标。新版按客观题的实际高度分页，升级后请重新打印答题卡。</p>
             <Button
               variant="outline"
               size="sm"
               className="mt-2"
               onClick={() => {
                 if (confirm("升级后，已经打印的旧答题卡不能再按新坐标识别。确认升级并立即重排吗？")) {
-                  updateCard((d) => void (d.layoutVersion = 2));
+                  updateCard((d) => void (d.layoutVersion = CURRENT_LAYOUT_VERSION));
                 }
               }}
             >

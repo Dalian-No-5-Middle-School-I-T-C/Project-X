@@ -61,8 +61,10 @@ export const DEFAULT_DISCRIMINATION_BANDS: ThresholdBand[] = [
 ];
 
 let cache: AnalysisThresholds | null = null;
+let settingsVersion = 0;
 
 export function invalidateAnalysisThresholdsCache(): void {
+  settingsVersion++;
   cache = null;
   bandsCache = null;
 }
@@ -88,6 +90,7 @@ function parseBands(raw: string | null | undefined, fallback: ThresholdBand[]): 
 
 export async function getDifficultyDiscriminationBands(): Promise<DifficultyDiscriminationBands> {
   if (bandsCache) return bandsCache;
+  const version = settingsVersion;
   const db = getMysqlDb();
   let rows: Array<{ key: string; value: string }> = [];
   try {
@@ -101,11 +104,12 @@ export async function getDifficultyDiscriminationBands(): Promise<DifficultyDisc
   }
   const map: Record<string, string> = {};
   for (const r of rows) map[r.key] = r.value;
-  bandsCache = {
+  const bands = {
     difficulty: parseBands(map[ANALYSIS_SETTING_KEYS.difficultyBands], DEFAULT_DIFFICULTY_BANDS),
     discrimination: parseBands(map[ANALYSIS_SETTING_KEYS.discriminationBands], DEFAULT_DISCRIMINATION_BANDS)
   };
-  return bandsCache;
+  if (version === settingsVersion) bandsCache = bands;
+  return bands;
 }
 
 function clamp(v: number, min: number, max: number, fallback: number): number {
@@ -133,6 +137,7 @@ export function parseErrorTiers(raw: string | null | undefined): [number, number
 
 export async function getAnalysisThresholds(): Promise<AnalysisThresholds> {
   if (cache) return cache;
+  const version = settingsVersion;
   const db = getMysqlDb();
   let rows: Array<{ key: string; value: string }> = [];
   try {
@@ -151,14 +156,15 @@ export async function getAnalysisThresholds(): Promise<AnalysisThresholds> {
   const map: Record<string, string> = {};
   for (const r of rows) map[r.key] = r.value;
   const d = DEFAULT_ANALYSIS_THRESHOLDS;
-  cache = {
+  const thresholds: AnalysisThresholds = {
     passRate: clamp(Number(map[ANALYSIS_SETTING_KEYS.passRate]), 0.01, 1, d.passRate),
     excellentRate: clamp(Number(map[ANALYSIS_SETTING_KEYS.excellentRate]), 0.01, 1, d.excellentRate),
     segmentSize: Math.round(clamp(Number(map[ANALYSIS_SETTING_KEYS.segmentSize]), 1, 100, d.segmentSize)),
     errorTiers: parseErrorTiers(map[ANALYSIS_SETTING_KEYS.errorTiers]),
     subjectiveLowScoreRatio: clamp(Number(map[ANALYSIS_SETTING_KEYS.subjectiveLowScoreRatio]), 0.01, 1, d.subjectiveLowScoreRatio)
   };
-  return cache;
+  if (version === settingsVersion) cache = thresholds;
+  return thresholds;
 }
 
 /**

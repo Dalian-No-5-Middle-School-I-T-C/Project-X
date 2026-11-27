@@ -23,6 +23,7 @@ import { clearPostprocessView, readPostprocessView, writePostprocessView } from 
 type View = "results" | "correction" | "queue";
 
 export interface ScannerPostprocessPageProps {
+  onUploadRegion?: (node: HTMLDivElement | null) => void;
   cardId: string;
   cardTitle: string;
   sessions: Array<{ sessionId: string; pageCount: number }>;
@@ -33,7 +34,7 @@ export interface ScannerPostprocessPageProps {
   userId?: number | null;
 }
 
-export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, onContinueScan, userId }: ScannerPostprocessPageProps) {
+export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, onContinueScan, userId, onUploadRegion }: ScannerPostprocessPageProps) {
   const [view, setView] = useState<View>("results");
   const [localCard, setLocalCard] = useState<AnswerCard | null>(null);
   const [remoteCard, setRemoteCard] = useState<AnswerCard | null>(null);
@@ -498,7 +499,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
 
   return (
     <main className="flex h-[100dvh] min-w-0 flex-col overflow-hidden bg-background">
-      <header className="flex h-page-header shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-5">
+      <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border-subtle bg-card px-3 py-2 sm:h-page-header sm:flex-nowrap sm:gap-3 sm:px-5 sm:py-0">
         <Button variant="ghost" size="icon-sm" onClick={() => void leavePage()} aria-label="返回扫描"><ArrowLeft size={18} /></Button>
         <div className="flex min-w-0 flex-1 flex-col">
           <strong className="truncate text-base font-semibold">{cardTitle} · 扫描后处理</strong>
@@ -507,6 +508,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           </span>
         </div>
         <SegmentedControl
+          className="order-last w-full justify-center sm:order-none sm:w-auto"
           aria-label="后处理视图"
           value={view}
           onValueChange={handleViewChange}
@@ -526,6 +528,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           </Button>
         )}
       </header>
+      <div ref={onUploadRegion} className="shrink-0" />
       {resumedFromCrash && (
         <div role="status" className="flex items-center gap-2 border-b border-info-border bg-info-soft px-5 py-2 text-sm text-info-fg">
           已恢复上次停留的卷；本机草稿可用时会恢复未保存的订正，请核对后保存。

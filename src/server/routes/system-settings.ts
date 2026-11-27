@@ -9,6 +9,8 @@ import { authMiddleware } from "../middleware/auth";
 import { requirePermissionCompat } from "../../apps/answer-card/server/middleware";
 import { PERMISSIONS } from "../auth/permissions";
 import { getMysqlDb, buildUpsertSQL } from "../db";
+import { analysisCache } from "../services/analysisCache";
+import { ANALYSIS_SETTING_KEYS, invalidateAnalysisThresholdsCache } from "../services/analysisConfig";
 
 const router = Router();
 
@@ -92,6 +94,10 @@ router.put(
           await tx.run(upsertSQL, key, String(value), databaseTimestamp());
         }
       });
+      if (Object.values(ANALYSIS_SETTING_KEYS).some(key => Object.hasOwn(updates, key))) {
+        invalidateAnalysisThresholdsCache();
+        analysisCache.clear();
+      }
 
       res.json({ ok: true, message: `已更新 ${entries.length} 项全局设置` });
     } catch (err: any) {
