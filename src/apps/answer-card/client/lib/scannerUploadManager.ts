@@ -8,7 +8,7 @@ import { SERVER_URL_KEY, readServerUrl } from "./scannerMode";
 import { assertCredentialTransportAllowed } from "./remoteCredentialTransport";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
 import { applyScanStudentId, uniqueScanConflictCards } from "../../../../shared/scanPages";
-import { damagedScanUploadRecoverySessionId, forgetScanUploadRecovery, scanUploadRecoveryState, readScanUploadRecovery, rememberQueuedGroup, writeScanUploadRecovery } from "./scannerUploadLedger";
+import { damagedScanUploadRecoverySessionId, forgetScanUploadRecovery, hasCompletedScanUploadRecovery, isGroupQueued, scanUploadRecoveryState, readScanUploadRecovery, rememberQueuedGroup, writeScanUploadRecovery } from "./scannerUploadLedger";
 import type { ScanBatchFailure, ScanConflictCard, ScanBatchResponse } from "../../../../shared/scanPages";
 import type { CombinedGradingRow, CombinedRecognitionResult } from "../../../../shared/types";
 
@@ -161,8 +161,10 @@ interface JobRecord {
   /** 快照：创建时的远端地址与 Key，后续 page/complete 始终发往同一服务器，避免切服后把 A 的 session 发往 B */
   remoteBase: string;
   apiKey: string | null;
-  /** 用户取消标志：暂停/队列中任务被取消后置真，使挂起的 runWithRetry 原地退出 */
+  /** 取消后，挂起的上传在恢复时退出，后续响应不再写入恢复记录。 */
   cancelled: boolean;
+  /** 取消任务时立刻中断在途请求与退避等待，避免卡住串行队列。 */
+  abortController: AbortController;
   failures?: ScanBatchFailure[];
   /** 非终态提示：相关联的冲突（如重复学号撤出），不影响任务继续上传 */
   notice?: string;
@@ -262,11 +264,40 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
   const pageTimeoutMs = deps.pageTimeoutMs ?? 120_000;
   const genId = deps.genId ?? defaultGenId;
 
+  function linkedRequestSignal(j: JobRecord, upstream?: AbortSignal | null): { signal: AbortSignal; cleanup: () => void } {
+    if (!upstream) return { signal: j.abortController.signal, cleanup: () => {} };
+    const merged = new AbortController();
+    const forward = () => merged.abort();
+    if (j.abortController.signal.aborted || upstream.aborted) {
+      merged.abort();
+      return { signal: merged.signal, cleanup: () => {} };
+    }
+    j.abortController.signal.addEventListener("abort", forward, { once: true });
+    upstream.addEventListener("abort", forward, { once: true });
+    return {
+      signal: merged.signal,
+      cleanup: () => {
+        j.abortController.signal.removeEventListener("abort", forward);
+        upstream.removeEventListener("abort", forward);
+      },
+    };
+  }
+
   function jobFetch(j: JobRecord): (url: string, init?: RequestInit) => Promise<Response> {
-    // 注入的 mock（冒烟测试）直接使用，不走快照
-    if (baseRemoteFetch !== remoteScannerFetch) return baseRemoteFetch;
+    // 注入的 mock（冒烟测试）仍绑定任务取消信号，让强制取消可立刻中断在途请求。
+    if (baseRemoteFetch !== remoteScannerFetch || !j.remoteBase) {
+      return (url: string, init?: RequestInit) => {
+        if (j.cancelled) return Promise.reject(cancelledError(j));
+        const { signal, cleanup } = linkedRequestSignal(j, init?.signal);
+        try {
+          return baseRemoteFetch(url, { ...init, signal }).finally(cleanup);
+        } catch (error) {
+          cleanup();
+          return Promise.reject(error);
+        }
+      };
+    }
     // 快照：用创建时的 base/key，避免切服后把 A 的 session 发往 B
-    if (!j.remoteBase) return baseRemoteFetch;
     return (url: string, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
       const sendsCredential = Boolean(j.apiKey) || headers.has("X-Api-Key") || headers.has("Authorization");
@@ -283,7 +314,11 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       if (j.apiKey && !headers.has("X-Api-Key")) headers.set("X-Api-Key", j.apiKey);
       const resolved = /^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `${j.remoteBase}${url.startsWith("/") ? url : `/${url}`}`;
       // 与 remoteScannerFetch 同一口径：先装好编码限制，再创建远端请求。
-      return ensureScannerRemoteGate().then(() => fetch(resolved, { ...init, headers }));
+      return ensureScannerRemoteGate().then(() => {
+        if (j.cancelled) throw cancelledError(j);
+        const { signal, cleanup } = linkedRequestSignal(j, init?.signal);
+        return fetch(resolved, { ...init, headers, signal }).finally(cleanup);
+      });
     };
   }
 
@@ -314,6 +349,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
   }
 
   function persistRecovery(job: JobRecord, completed = false): void {
+    if (job.cancelled) return;
     const groupId = recoveryGroup(job);
     if (groupId === null || !job.remoteSessionId) return;
     writeScanUploadRecovery(job.cardId, job.localSessionId!, groupId, {
@@ -423,14 +459,16 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     });
   }
 
+  function wakePausedJob(j: JobRecord): void {
+    const waiter = j.pauseWaiter;
+    j.pauseWaiter = null;
+    waiter?.();
+  }
+
 /** 网络/探活变化时由接线层调用：放行满足恢复条件的暂停任务（孤悬任务维持暂停） */
   function notifyNetworkChanged(): void {
     for (const j of jobs) {
-      if (j.status === "paused" && !shouldPauseNow(j)) {
-        const w = j.pauseWaiter;
-        j.pauseWaiter = null;
-        w?.();
-      }
+      if (j.status === "paused" && !shouldPauseNow(j)) wakePausedJob(j);
     }
   }
 
@@ -521,15 +559,19 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
 
   async function prepareUploadPage(j: JobRecord, page: PageRecord): Promise<void> {
     const blobData = await page.input.getBlob();
+    if (j.cancelled) return;
     // Linux receives recognition data; the Windows client owns the native recognizer.
     const recordId = page.input.recordId;
     const payloadUrl = j.kind === "scan" && recordId
       ? `/api/scanner/record/${encodeURIComponent(recordId)}/upload-payload` : page.input.uploadPayloadUrl;
     const cached = payloadUrl ? await tryReuseScanUploadPayload(payloadUrl, j.cardVersion) : null;
+    if (j.cancelled) return;
     const recognition = cached ?? await recognizeFreshPage(j, page, blobData);
+    if (j.cancelled) return;
     // Versioned upload-payload may embed a correction snapshot, but teachers can still save
     // newer edits after the job was queued — always re-read the persisted correction document.
     const savedCorrection = await page.input.getCorrection?.();
+    if (j.cancelled) return;
     if (savedCorrection) {
       recognition.questions = savedCorrection.questions;
       recognition.subjectiveQuestions = savedCorrection.subjectiveQuestions;
@@ -543,6 +585,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       });
       if (!response.ok) throw await httpError(response);
       const record = await response.json() as { student_id?: string | null };
+      if (j.cancelled) return;
       // A later side with no stored ID must be checked against its anchor using its own OCR.
       historicalId = record.student_id || (page.anchor ? undefined : page.input.fallbackStudentId);
     }
@@ -593,9 +636,11 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       body: form,
       signal: timeoutSignal(pageTimeoutMs),
     });
+    if (j.cancelled) return;
     if (!res.ok) throw await httpError(res);
     if (page.prepared!.cropForm) {
       const { fileName } = await res.json() as { fileName?: string };
+      if (j.cancelled) return;
       if (fileName) page.prepared!.cropForm.set("imageReceipt", fileName);
     }
     page.imageUploaded = true;
@@ -608,8 +653,10 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       const cropResponse = await fetcher(`/api/scanner/upload/sessions/${j.remoteSessionId}/pages/${page.token}/crops`, {
         method: "POST", body: cropForm, signal: timeoutSignal(pageTimeoutMs),
       });
+      if (j.cancelled) return;
       if (!cropResponse.ok) {
         const error = await httpError(cropResponse);
+        if (j.cancelled) return;
         if (error.status === 409 && error.code === "SCAN_IMAGE_REPLACED") {
           page.imageUploaded = false;
           page.prepared = undefined;
@@ -631,8 +678,10 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       body: JSON.stringify({ cardVersion: j.cardVersion }),
       signal: timeoutSignal(pageTimeoutMs),
     });
+    if (j.cancelled) return;
     if (!res.ok) {
       const body = await res.clone().json().catch(() => ({}));
+      if (j.cancelled) return;
       if (Array.isArray(body.failures)) {
         j.failures = body.failures;
         j.reviewCards = pendingReviewCards(j.remoteSessionId!, body);
@@ -655,9 +704,10 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       }
       throw await httpError(res);
     }
+    const body = await res.json().catch(() => ({}));
+    if (j.cancelled) return;
     j.failures = undefined;
     j.notice = undefined;
-    const body = await res.json().catch(() => ({}));
     j.reviewCards = body.reviewCards;
   }
 
@@ -669,16 +719,16 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
    *   转入暂停（保留重试机会），否则上抛；
    * - 恢复后从当前操作原地继续（resumePhase 由调用方维护）。
    */
-  /** 用户取消后让挂起的死跑退出：抛出可识别的取消错误 */
   function cancelledError(j: JobRecord): Error {
-    return Object.assign(new Error(`上传任务 ${j.id} 已取消`), { isJobCancelled: true });
+    return new Error(`上传任务 ${j.id} 已取消`);
   }
 
   async function runWithRetry<T>(j: JobRecord, phaseLabel: string, fn: () => Promise<T>): Promise<T> {
     let tries = 0;
     for (;;) {
-if (j.cancelled) throw cancelledError(j);
+      if (j.cancelled) throw cancelledError(j);
       if (shouldPauseNow(j)) {
+        const paused = waitForResume(j);
         setStatus(
           j,
           "paused",
@@ -686,7 +736,7 @@ if (j.cancelled) throw cancelledError(j);
             ? `${phaseLabel}暂停：服务器已切换，原任务需取消后重新上传`
             : `${phaseLabel}中断：已断线，网络恢复后将自动续传`,
         );
-        await waitForResume(j);
+        await paused;
         if (j.cancelled) throw cancelledError(j);
         setStatus(j, j.resumePhase, `网络已恢复，继续${phaseLabel}`);
         continue;
@@ -700,15 +750,25 @@ if (j.cancelled) throw cancelledError(j);
         if (tries > AUTO_RETRY_EXTRA) {
           if (shouldPauseNow(j)) {
             tries = 0; // 暂停后恢复重新给满重试预算
+            const paused = waitForResume(j);
             setStatus(j, "paused", `${phaseLabel}失败：${friendlyErr(err)}，已断线等待恢复…`);
-            await waitForResume(j);
+            await paused;
             if (j.cancelled) throw cancelledError(j);
             setStatus(j, j.resumePhase, `网络已恢复，继续${phaseLabel}`);
             continue;
           }
           throw err;
         }
-        await sleep(RETRY_BACKOFF_MS[Math.min(tries - 1, RETRY_BACKOFF_MS.length - 1)]);
+        const backoffMs = RETRY_BACKOFF_MS[Math.min(tries - 1, RETRY_BACKOFF_MS.length - 1)];
+        await new Promise<void>((resolve) => {
+          if (j.cancelled || j.abortController.signal.aborted) { resolve(); return; }
+          const onAbort = () => resolve();
+          j.abortController.signal.addEventListener("abort", onAbort, { once: true });
+          void sleep(backoffMs).then(() => {
+            j.abortController.signal.removeEventListener("abort", onAbort);
+            resolve();
+          });
+        });
       }
     }
   }
@@ -720,6 +780,7 @@ if (j.cancelled) throw cancelledError(j);
       setStatus(j, "creating", "正在创建上传会话…");
       try {
         const { sessionId, tokens } = await runWithRetry(j, "创建会话", () => createSession(j));
+        if (j.cancelled) return;
         j.remoteSessionId = sessionId;
         rememberSessionVersion(j, sessionId);
         j.pages.forEach((p, i) => {
@@ -728,7 +789,7 @@ if (j.cancelled) throw cancelledError(j);
         // Save the remote identity before sending pages. Closing a failed card can then restore this same session.
         persistRecovery(j);
       } catch (err) {
-        if ((err as { isJobCancelled?: boolean }).isJobCancelled) return;
+        if (j.cancelled) return;
         setStatus(j, "error", `创建会话失败：${friendlyErr(err)}`);
         return;
       }
@@ -747,6 +808,7 @@ if (j.cancelled) throw cancelledError(j);
           });
           if (!response.ok) throw await httpError(response);
           const batch = await response.json() as ScanBatchResponse;
+          if (j.cancelled) return;
           const completed = j.pages.filter(page => page.done);
           const groups = [...batch.results.map(result => ({ ...result, saved: result.saved })),
             ...batch.failures.map(failure => ({ ...failure, saved: false })),
@@ -763,14 +825,16 @@ if (j.cancelled) throw cancelledError(j);
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ groupId, studentId: j.pendingStudentId }), signal: timeoutSignal(pageTimeoutMs),
             });
+            if (j.cancelled) return;
             if (!corrected.ok) throw await httpError(corrected);
           }
           for (const page of completed) page.studentId = { status: "ok", value: j.pendingStudentId! };
         });
+        if (j.cancelled) return;
         j.pendingStudentId = undefined;
         persistRecovery(j);
       } catch (error) {
-        if ((error as { isJobCancelled?: boolean }).isJobCancelled) return;
+        if (j.cancelled) return;
         // Keep a failed-page marker so correction can be retried with another ID.
         for (const page of j.pages) if (!page.done) page.failed = true;
         setStatus(j, "error", `订正已上传面失败：${friendlyErr(error)}`);
@@ -782,6 +846,7 @@ if (j.cancelled) throw cancelledError(j);
     j.resumePhase = "uploading";
     let lastErrMsg = "";
     for (const page of j.pages) {
+      if (j.cancelled) return;
       if (page.done || page.failed) continue;
       setStatus(j, "uploading", `正在上传第 ${j.pages.indexOf(page) + 1}/${j.pages.length} 面（第 ${page.input.pageNum} 张${page.input.side === "front" ? "正面" : "背面"}）`);
       try {
@@ -790,18 +855,20 @@ if (j.cancelled) throw cancelledError(j);
         if (!page.prepared) await runWithRetry(j, "准备识别结果", () => prepareUploadPage(j, page));
         if (!page.imageUploaded) await runWithRetry(j, "上传原图", () => uploadPageImage(j, page));
         await runWithRetry(j, "上传切图", () => uploadPageCrops(j, page));
+        if (j.cancelled) return;
         page.done = true;
         persistRecovery(j);
         releasePage(page);
         notify();
       } catch (err) {
-        if ((err as { isJobCancelled?: boolean }).isJobCancelled) return;
+        if (j.cancelled) return;
         page.failed = true;
         lastErrMsg = friendlyErr(err);
         notify();
       }
     }
 
+    if (j.cancelled) return;
     const failedPages = j.pages.filter((p) => p.failed);
     if (failedPages.length > 0) {
       const nums = failedPages.map(p => `第 ${p.input.pageNum} 张${p.input.side === "front" ? "正面" : "背面"}`).join("、");
@@ -823,6 +890,7 @@ if (j.cancelled) throw cancelledError(j);
       // A restart after complete succeeds must retry only complete, never overwrite completed pages.
       persistRecovery(j);
       await runWithRetry(j, "提交会话", () => completeSession(j));
+      if (j.cancelled) return;
       persistRecovery(j, true);
       const groupId = recoveryGroup(j);
       if (groupId !== null && rememberQueuedGroup(j.cardId, j.localSessionId!, groupId)) {
@@ -831,7 +899,7 @@ if (j.cancelled) throw cancelledError(j);
       for (const p of j.pages) releasePage(p);
       setStatus(j, "done", `上传完成，${j.pages.length} 页已提交到服务器`);
     } catch (err) {
-      if ((err as { isJobCancelled?: boolean }).isJobCancelled) return;
+      if (j.cancelled) return;
       for (const p of j.pages) {
         if (p.done && !p.failed) releasePage(p);
       }
@@ -852,7 +920,7 @@ if (j.cancelled) throw cancelledError(j);
           await runJob(next);
         } catch (err) {
           // 兜底：runJob 内部异常不应卡死队列
-          if ((err as { isJobCancelled?: boolean }).isJobCancelled) continue;
+          if (next.cancelled) continue;
           if (next.status !== "done" && next.status !== "error" && next.status !== "cancelled") {
             next.status = "error";
             next.message = `上传任务异常中断：${err instanceof Error ? err.message : String(err)}`;
@@ -935,7 +1003,7 @@ if (j.cancelled) throw cancelledError(j);
 
   /**
    * 教师已按提示到服务器核对过原会话（那一卷没有已保存的成绩）后，清掉损坏的恢复记录。
-   * 这是唯一能解开 `recovery-damaged` 的入口：它删掉的可能是「已入库」的唯一线索，
+   * 清掉的记录可能是「已入库」的唯一线索，
    * 所以只在该状态下开放，且由调用方在核对后显式确认。
    */
   function discardDamagedRecovery(cardId: string, groupId: string, localSessionId: string): { ok: true; remoteSessionId: string | null } | { ok: false; message: string } {
@@ -974,13 +1042,49 @@ if (j.cancelled) throw cancelledError(j);
     return recovery && !recovery.completed ? "这份卷尚未上传完成，请恢复上传后再删除本机原图" : null;
   }
 
-  function releaseGroupForLocalDelete(cardId: string, groupId: string, localSessionId: string):
+  function releaseGroupForLocalDelete(
+    cardId: string, groupId: string, localSessionId: string, { force = false }: { force?: boolean } = {},
+  ):
     { ok: true; forgetLedger: boolean } | { ok: false; message: string } {
+    const matching = scanGroupJobs(cardId, groupId, localSessionId);
+    if (force) {
+      const isMixed = (job: JobRecord) => job.pages.some(page => page.input.groupId !== groupId);
+      if (matching.some(job => isMixed(job) && job.status !== "done" && job.status !== "cancelled"
+        && (job.status === "creating" || job.remoteSessionId !== null))) {
+        // 远端已按任务内的全部卷分配页槽，不能删减其中一组。
+        return { ok: false, message: "这份卷与其他卷共用上传会话，请先完成或取消该上传任务，再删除本机原图" };
+      }
+      // 成功提交后，完成标记接替恢复记录；若完成标记落盘失败，completed 恢复记录就是唯一的持久化回执，
+      // 强制删本机原图（DELETE 请求可能失败）前必须显式保留，避免重开后处理重复建新远端会话。
+      const hasCompletedReceipt = hasCompletedScanUploadRecovery(cardId, localSessionId, groupId);
+      const forgetLedger = !matching.some(job => job.status === "done") && !isGroupQueued(cardId, localSessionId, groupId);
+      if (!hasCompletedReceipt && scanUploadRecoveryState(cardId, localSessionId, groupId) !== "none") {
+        forgetScanUploadRecovery(cardId, localSessionId, groupId);
+      }
+      for (const job of matching) {
+        if (isMixed(job)) {
+          if (job.status === "done") continue;
+          job.pages = job.pages.filter(page => {
+            if (page.input.groupId !== groupId) return true;
+            releasePage(page);
+            return false;
+          });
+          continue;
+        }
+        if (job.status === "done" && job.reviewCards?.length) continue;
+        job.cancelled = true;
+        job.abortController.abort();
+        removeJob(job);
+        wakePausedJob(job);
+      }
+      if (matching.length > 0) notify();
+      return { ok: true, forgetLedger };
+    }
     const message = localGroupDeleteBlock(cardId, groupId, localSessionId);
     if (message) return { ok: false, message };
-    const matching = scanGroupJobs(cardId, groupId, localSessionId);
     // 已经建出远端会话或已经传完的，留下入队标记，避免删掉本机图后再开一份回执。
-    const forgetLedger = !matching.some(job => job.status === "done" || job.remoteSessionId != null);
+    const forgetLedger = !matching.some(job => job.status === "done" || job.remoteSessionId != null)
+      && !isGroupQueued(cardId, localSessionId, groupId);
     for (const job of matching) {
       if (job.status === "queued") cancelJob(job.id);
       else if (job.status === "error" || job.status === "cancelled") dismissJob(job.id);
@@ -1037,6 +1141,7 @@ if (j.cancelled) throw cancelledError(j);
       remoteBase: readRemoteBase(),
       apiKey: getStoredApiKey(),
       cancelled: false,
+      abortController: new AbortController(),
     };
     restoreRecovery(job);
     jobs.push(job);
@@ -1070,41 +1175,44 @@ if (j.cancelled) throw cancelledError(j);
   /** 手动触发暂停任务的立即重试（若仍断线会再次进入暂停，作为反馈） */
   function retryPaused(jobId: string): void {
     const j = jobs.find((x) => x.id === jobId);
-    if (!j || j.status !== "paused") return;
-    const w = j.pauseWaiter;
-    j.pauseWaiter = null;
-    w?.();
+    if (j?.status === "paused") wakePausedJob(j);
   }
 
-  /**
-   * 取消任务（队列中或已暂停）：
-   * - 队列中：直接从数组移除；
-   * - 已暂停：置 cancelled 并唤醒挂起的 runWithRetry 使其原地退出，同时解除串行泵占用；
-   * - 其余状态（mid-flight / done / error）不允许取消，避免打断在途上传或已完成结果。
-   */
-  function cancelJob(jobId: string): void {
-    const idx = jobs.findIndex((x) => x.id === jobId);
-    if (idx < 0) return;
-    const j = jobs[idx];
+  function removeJob(job: JobRecord): void {
+    for (const page of job.pages) releasePage(page);
+    jobs.splice(jobs.indexOf(job), 1);
+  }
+
+  function cancelPendingJob(j: JobRecord): void {
+    j.cancelled = true;
+    j.abortController.abort();
     if (j.status === "queued") {
-      for (const p of j.pages) releasePage(p);
-      jobs.splice(idx, 1);
-      notify();
+      removeJob(j);
       return;
     }
-    if (j.status === "paused") {
-      j.cancelled = true;
-      // 全部页面释放（含未上传页）：getBlob 闭包持有 File/Blob，ia32 内存有限，
-      // 取消后不得再被任务引用（审查 P2：此前只释放已完成页）
-      for (const p of j.pages) releasePage(p);
-      const w = j.pauseWaiter;
-      j.pauseWaiter = null;
-      j.status = "cancelled";
-      j.message = "任务已取消";
-      w?.();
+    for (const page of j.pages) releasePage(page);
+    j.status = "cancelled";
+    j.message = "任务已取消";
+    wakePausedJob(j);
+  }
+
+  /** 取消排队任务和已暂停的任务。暂停任务显示取消结果，挂起的上传随即退出。 */
+  function cancelJob(jobId: string): void {
+    const job = jobs.find(j => j.id === jobId);
+    if (job && (job.status === "queued" || job.status === "paused")) {
+      cancelPendingJob(job);
       notify();
-      return;
     }
+  }
+
+  function cancelPendingJobs(): void {
+    const pending = jobs.filter(job => job.status === "queued" || job.status === "paused");
+    for (const job of pending) cancelPendingJob(job);
+    if (pending.length > 0) notify();
+  }
+
+  function isTerminal(job: JobRecord): boolean {
+    return job.status === "cancelled" || job.status === "done" || job.status === "error";
   }
 
   /**
@@ -1112,16 +1220,17 @@ if (j.cancelled) throw cancelledError(j);
    * 供进度卡「关闭」按钮调用——取消后的卡片不再悬浮到重启（审查 P2）。
    */
   function dismissJob(jobId: string): boolean {
-    const idx = jobs.findIndex((x) => x.id === jobId);
-    if (idx < 0) return false;
-    const j = jobs[idx];
-    if (j.status !== "cancelled" && j.status !== "done" && j.status !== "error") {
-      return false;
-    }
-    for (const p of j.pages) releasePage(p);
-    jobs.splice(idx, 1);
+    const job = jobs.find(j => j.id === jobId);
+    if (!job || !isTerminal(job)) return false;
+    removeJob(job);
     notify();
     return true;
+  }
+
+  function dismissTerminalJobs(scope: "all" | "error" = "all"): void {
+    const terminal = jobs.filter(job => scope === "error" ? job.status === "error" : isTerminal(job));
+    for (const job of terminal) removeJob(job);
+    if (terminal.length > 0) notify();
   }
 
   function subscribe(listener: () => void): () => void {
@@ -1151,7 +1260,7 @@ if (j.cancelled) throw cancelledError(j);
       });
       if (!response.ok) throw await httpError(response);
       const body = await response.json() as ScanBatchResponse;
-      if (revision !== job.resultRevision) return;
+      if (!jobs.includes(job) || revision !== job.resultRevision) return;
       job.results = body;
       if (job.trackResults) {
         job.resultRows = body.results.flatMap(result => result.pages.flatMap(page =>
@@ -1238,7 +1347,9 @@ if (j.cancelled) throw cancelledError(j);
     retryFailed,
     retryPaused,
     cancelJob,
+    cancelPendingJobs,
     dismissJob,
+    dismissTerminalJobs,
     notifyNetworkChanged,
     subscribe,
     getState,

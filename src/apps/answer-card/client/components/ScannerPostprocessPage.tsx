@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ArrowLeft, Play } from "lucide-react";
-import { Badge, Button, SegmentedControl, Spinner, notify } from "./ui/v2";
+import { Badge, Button, EmptyState, SegmentedControl, Spinner, notify } from "./ui/v2";
 import { authFetch } from "../auth/api";
 import { fetchCardDetailSynced } from "../lib/scannerSync";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
@@ -18,7 +18,7 @@ import { PostprocessResultsView } from "./scanner-postprocess/PostprocessResults
 import { PostprocessCorrectionView } from "./scanner-postprocess/PostprocessCorrectionView";
 import { PostprocessQueueView, type ScanMeta } from "./scanner-postprocess/PostprocessQueueView";
 import { getScannerMode, isRemoteServerConfigured } from "../lib/scannerMode";
-import { clearPostprocessView, readPostprocessView, writePostprocessView } from "../lib/postprocessResume";
+import { clearPostprocessView, readPostprocessView, writePostprocessView, type PostprocessSessionRef } from "../lib/postprocessResume";
 
 type View = "results" | "correction" | "queue";
 
@@ -26,7 +26,8 @@ export interface ScannerPostprocessPageProps {
   onUploadRegion?: (node: HTMLDivElement | null) => void;
   cardId: string;
   cardTitle: string;
-  sessions: Array<{ sessionId: string; pageCount: number }>;
+  sessions: PostprocessSessionRef[];
+  onSessionsEmptied?: (sessionIds: ReadonlySet<string>) => void;
   onBack: () => void;
   /** 同一答题卡继续扫下一批：回到工作台并自动开扫，新批次累加到本页。 */
   onContinueScan?: () => void;
@@ -34,7 +35,7 @@ export interface ScannerPostprocessPageProps {
   userId?: number | null;
 }
 
-export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, onContinueScan, userId, onUploadRegion }: ScannerPostprocessPageProps) {
+export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onSessionsEmptied, onBack, onContinueScan, userId, onUploadRegion }: ScannerPostprocessPageProps) {
   const [view, setView] = useState<View>("results");
   const [localCard, setLocalCard] = useState<AnswerCard | null>(null);
   const [remoteCard, setRemoteCard] = useState<AnswerCard | null>(null);
@@ -64,6 +65,11 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   const abnormalSeen = useRef<Set<string>>(readIdSet(abnormalKey));
   /** 完成名单持久化；未完成上传由 manager 恢复原远端会话。 */
   const queuedByPage = useRef<Set<string>>(readQueuedGroups(cardId));
+  const deletingGroups = useRef(new Set<string>());
+  /** 本页已由用户强制取消上传的组：即使删除请求失败触发二次 reload，也不再自动重新入队。 */
+  const suppressedAutoUpload = useRef(new Set<string>());
+  useEffect(() => { suppressedAutoUpload.current.clear(); }, [cardId]);
+  const reloadRevision = useRef(0);
   /** 崩溃重载后只恢复一次上次停留的组，避免用户返回结果页又被弹回去。 */
   const resumeAppliedRef = useRef(false);
   /** setView 还没提交时，结果页的清理不能先把刚读到的崩溃标记清掉。 */
@@ -75,13 +81,15 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   const isRemoteUploadOn = useCallback(() => getScannerMode() === "remote" && isRemoteServerConfigured(), []);
 
   /** 返回本轮拉到的快照：补传判定必须用重拉后的数据，闭包里的旧 batches 会漏掉刚处理好的组 */
-  const reload = useCallback(async (): Promise<{
+  const reload = useCallback(async (skipSessions?: ReadonlySet<string>): Promise<{
     batches: Record<string, ScanBatchResponse>;
     metas: Record<string, SessionMeta>;
     card: AnswerCard | null;
     waitingSessions: string[];
     confirmed: boolean;
   }> => {
+    const revision = ++reloadRevision.current;
+    const unconfirmed = { batches: {}, metas: {}, card: null, waitingSessions: [], confirmed: false };
     setLoading(true);
     setError("");
     try {
@@ -93,6 +101,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
       const nextMetas: Record<string, SessionMeta> = {};
       const stillRunning: string[] = [];
       for (const { sessionId } of sessions) {
+        if (skipSessions?.has(sessionId)) continue;
         try {
           const batch = omitPreviewDiscardedGroups(await channel.results(sessionId), discarded, sessionId);
           nextBatches[sessionId] = batch;
@@ -104,6 +113,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           throw e;
         }
       }
+      if (revision !== reloadRevision.current) return unconfirmed;
       setWaitingSessions(stillRunning);
       if (stillRunning.length > 0) {
         // 批次不完整时先不展示（组会缺卷）：把卡挂上，渲染等待界面并在收尾后重拉。
@@ -128,7 +138,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
       // 老师中止的批次只允许显式「保存成绩」，不跟着首传自动补传。
       const uploadable = Object.fromEntries(Object.entries(nextBatches)
         .filter(([sid]) => nextMetas[sid]?.status !== "cancelled"));
-      const queuedNow = ensureFirstUploads(cardId, display.id, uploadable, nextMetas, isRemoteUploadOn(), queuedByPage.current);
+      const queuedNow = ensureFirstUploads(cardId, display.id, uploadable, nextMetas, isRemoteUploadOn(), queuedByPage.current, deletingGroups.current, suppressedAutoUpload.current);
       if (queuedNow > 0) notify.info(queuedNow === 1 ? "已加入上传队列，图片后台续传" : `已加入上传队列（${queuedNow} 份），图片后台续传`);
       setLocalCard(loaded.local);
       setRemoteCard(loaded.remote);
@@ -137,18 +147,22 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
       const scanList = await authFetch(`/api/scanner/card/${cardId}/scans`);
       if (scanList.ok) {
         const rows = (await scanList.json()) as Array<{ recordId: string; createdAt: string; scanQuality: number | null }>;
-        setScans(rows.map(row => ({ recordId: row.recordId, createdAt: row.createdAt, scanQuality: row.scanQuality })));
+        if (revision === reloadRevision.current) {
+          setScans(rows.map(row => ({ recordId: row.recordId, createdAt: row.createdAt, scanQuality: row.scanQuality })));
+        }
       }
-      return { batches: nextBatches, metas: nextMetas, card: display, waitingSessions: [], confirmed: true };
+      return revision === reloadRevision.current
+        ? { batches: nextBatches, metas: nextMetas, card: display, waitingSessions: [], confirmed: true }
+        : unconfirmed;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "加载失败");
-      return { batches: {}, metas: {}, card: null, waitingSessions: [], confirmed: false };
+      if (revision === reloadRevision.current) setError(e instanceof Error ? e.message : "加载失败");
+      return unconfirmed;
     } finally {
-      setLoading(false);
+      if (revision === reloadRevision.current) setLoading(false);
     }
   }, [cardId, sessions, channel, abnormalKey, isRemoteUploadOn]);
 
-  useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => { if (sessions.length) void reload(); }, [reload, sessions.length]);
 
   // 等待中的会话：桥接进程还在送纸 / 识别时没人会来叫醒本页，定时重拉直到服务端收尾。
   // 一次 503 / 网络失败后 waitingSessions 与 reload 引用都不变，必须自己再排下一轮，
@@ -364,53 +378,70 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   }
 
   async function handleDelete(targets: Array<{ sessionId: string; groupIds: string[] }>, force: boolean) {
-    if (!targets.length) { notify.error("没有选中的卷子"); return; }
+    if (!targets.some(target => target.groupIds.length)) throw new Error("没有选中的卷子");
     const uploadCardId = card?.id ?? cardId;
-    for (const target of targets) {
-      for (const groupId of target.groupIds) {
-        const message = scannerUploadManager.localGroupDeleteBlock(uploadCardId, groupId, target.sessionId);
-        if (message) { notify.error(message); return; }
-      }
+    if (!force) {
+      const uploadBlocked = targets.reduce((count, { sessionId, groupIds }) => count + groupIds.filter(groupId =>
+        scannerUploadManager.localGroupDeleteBlock(uploadCardId, groupId, sessionId) !== null,
+      ).length, 0);
+      if (uploadBlocked) throw uploadDeleteBlocked(uploadBlocked);
     }
-    for (const target of targets) {
-      for (const groupId of target.groupIds) {
-        const gate = scannerUploadManager.releaseGroupForLocalDelete(uploadCardId, groupId, target.sessionId);
-        if (!gate.ok) { notify.error(gate.message); return; }
-        if (gate.forgetLedger) {
-          forgetQueuedGroup(cardId, target.sessionId, groupId);
-          queuedByPage.current.delete(`${target.sessionId}/${groupId}`);
-        }
-      }
-    }
+
+    const keys = targets.flatMap(({ sessionId, groupIds }) => groupIds.map(groupId => `${sessionId}/${groupId}`));
+    keys.forEach(key => deletingGroups.current.add(key));
     let deleted = 0;
-    let finished = false;
-    const blocked: string[] = [];
+    const changedBatches: Record<string, ScanBatchResponse> = {};
+    const emptiedSessions = new Set<string>();
     const previewOnly = isRemoteUploadOn();
-    // 逐会话下发：groupId 只在单个 session 内有意义，混在一起删会删掉另一批的同名组。
-    // 先不带 force 问一遍服务端，遇到拦截就停下（本会话一枚页面都不删），让老师看清代价再重来。
     try {
-      for (const target of targets) {
-        const res = await channel.request(channel.deleteGroupsUrl(target.sessionId), {
-          method: "DELETE", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ groupIds: target.groupIds, force, ...(previewOnly ? { previewOnly: true } : {}) }),
-        });
-        const data = await res.json();
-        if (res.status === 409) {
-          blocked.push(...(data.blocked as string[] ?? []).map((groupId: string) => {
-            const group = groups.find(entry => entry.sessionId === target.sessionId && entry.groupId === groupId);
-            return group?.studentId ?? `组 ${groupId}`;
-          }));
-          break;
+      // 分批释放与删除：前一批请求失败时，后续批次的上传保持原状态。
+      for (const { sessionId, groupIds } of targets) {
+        if (!groupIds.length) continue;
+        for (const groupId of groupIds) {
+          const gate = scannerUploadManager.releaseGroupForLocalDelete(uploadCardId, groupId, sessionId, { force });
+          if (!gate.ok) {
+            if (!force) throw uploadDeleteBlocked(1);
+            throw new Error(gate.message);
+          }
+          if (gate.forgetLedger) {
+            forgetQueuedGroup(cardId, sessionId, groupId);
+            queuedByPage.current.delete(`${sessionId}/${groupId}`);
+            if (force) suppressedAutoUpload.current.add(`${sessionId}/${groupId}`);
+          }
         }
-        if (!res.ok) throw new Error(data.message || "删除失败");
-        deleted += data.deletedGroups ?? target.groupIds.length;
+        const res = await channel.request(channel.deleteGroupsUrl(sessionId), {
+          method: "DELETE", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ groupIds, force, ...(previewOnly ? { previewOnly: true } : {}) }),
+        });
+        const data = await res.json() as ScanBatchResponse & { blocked?: string[]; message?: string; deletedGroups?: number };
+        if (res.status === 409 && data.blocked?.length) {
+          const blocked = data.blocked.map(groupId => {
+            const group = groups.find(entry => entry.sessionId === sessionId && entry.groupId === groupId);
+            return group?.studentId ?? `组 ${groupId}`;
+          });
+          throw Object.assign(new Error("所选卷中有已保存或待处理的记录，不能直接删除"), { blocked });
+        }
+        if (!res.ok) throw new Error(data.message || `删除失败（HTTP ${res.status}）`);
+        deleted += data.deletedGroups ?? groupIds.length;
+        changedBatches[sessionId] = data;
+        if (!data.results.length && !data.failures.length && !data.reviewCards?.length) emptiedSessions.add(sessionId);
       }
-      if (blocked.length) throw Object.assign(new Error("所选卷中有已保存或待处理的记录，不能直接删除"), { blocked });
       notify.success(`已删除 ${deleted} 组扫描记录`);
-      finished = true;
     } finally {
-      // 前面的会话可能已经删掉，后面的 409 不能让界面还停在旧列表上。
-      if (finished || deleted > 0) await reload();
+      // 即使后续批次删除失败或刷新出错，已成功删除的卷也要马上从选择列表移除。
+      if (Object.keys(changedBatches).length) {
+        const discarded = readPreviewDiscards(cardId);
+        setBatches(current => ({ ...current, ...Object.fromEntries(Object.entries(changedBatches)
+          .map(([sid, batch]) => [sid, omitPreviewDiscardedGroups(batch, discarded, sid)])) }));
+        if (sessions.some(({ sessionId }) => !emptiedSessions.has(sessionId))) await reload(emptiedSessions);
+        else ++reloadRevision.current;
+      }
+      keys.forEach(key => deletingGroups.current.delete(key));
+      if (emptiedSessions.size) {
+        if (resumeTarget && emptiedSessions.has(resumeTarget.sessionId)) clearPostprocessView(cardId, userId);
+        setActive(current => current && emptiedSessions.has(current.sessionId) ? null : current);
+        onSessionsEmptied?.(emptiedSessions);
+      }
     }
   }
 
@@ -420,6 +451,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
    */
   async function syncAfterFix(sessionId: string, groupId: string) {
     const key = `${sessionId}/${groupId}`;
+    suppressedAutoUpload.current.delete(key);
     const wasAbnormal = abnormalSeen.current.has(key);
     const alreadyQueued = queuedByPage.current.has(key) || isGroupQueued(cardId, sessionId, groupId)
       || scannerUploadManager.hasGroupUpload(cardId, groupId, sessionId);
@@ -463,6 +495,24 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
     }
   }
 
+  function continueScan() {
+    // 主动去扫下一批时清掉停留位置，避免新批次完成后跳回旧卷。
+    clearPostprocessView(cardId, userId);
+    onContinueScan?.();
+  }
+
+  if (sessions.length === 0) return (
+    <main className="flex h-[100dvh] flex-col bg-background">
+      <header className="flex h-page-header shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-5">
+        <Button variant="ghost" size="icon-sm" onClick={onBack} aria-label="返回扫描"><ArrowLeft size={18} /></Button>
+        <strong className="truncate text-base font-semibold">{cardTitle} · 扫描后处理</strong>
+      </header>
+      <EmptyState className="flex-1" title="本机扫描记录已清空" action={<>
+        <Button variant="outline" onClick={onBack}>返回工作台</Button>
+        {onContinueScan && <Button icon={<Play size={15} />} onClick={continueScan}>继续扫描</Button>}
+      </>} />
+    </main>
+  );
   if (loading && !card) return <div className="flex h-[100dvh] items-center justify-center bg-background"><Spinner size={24} /></div>;
   if (waitingSessions.length > 0) {
     return (
@@ -519,11 +569,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           ]}
         />
         {onContinueScan && (
-          <Button variant="primary" size="sm" icon={<Play size={15} />} onClick={() => {
-            // 主动去扫下一批不是闪退。留下的停留位置会在新批次完成后被当成恢复入口，跳回旧卷。
-            clearPostprocessView(cardId, userId);
-            onContinueScan?.();
-          }}>
+          <Button variant="primary" size="sm" icon={<Play size={15} />} onClick={continueScan}>
             继续扫描
           </Button>
         )}
@@ -613,6 +659,10 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   );
 }
 
+function uploadDeleteBlocked(count: number): Error & { uploadBlocked: number } {
+  return Object.assign(new Error("所选卷尚未上传完成或上传记录异常，请到扫描结果确认删除。"), { uploadBlocked: count });
+}
+
 function isRemoteNotFound(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const row = error as { remoteNotFound?: boolean; status?: number };
@@ -681,12 +731,16 @@ function ensureFirstUploads(
   metas: Record<string, SessionMeta>,
   remote: boolean,
   queued: Set<string>,
+  deleting: ReadonlySet<string>,
+  suppressed: ReadonlySet<string> = new Set(),
 ): number {
   if (!remote) return 0;
   let count = 0;
   let missingVersion = false;
   for (const [sessionId, batch] of Object.entries(batches)) {
     for (const result of batch.results) {
+      const key = `${sessionId}/${result.groupId}`;
+      if (deleting.has(key) || suppressed.has(key)) continue;
       const outcome = queueCleanGroup(cardId, uploadCardId, sessionId, metas[sessionId], result, queued);
       if (outcome === "queued") count += 1;
       if (outcome === "missing-version") missingVersion = true;

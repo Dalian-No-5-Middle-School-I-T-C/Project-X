@@ -1,13 +1,16 @@
 /** 后处理页「多选删除」端点与 examId 读取的隔离回归。
  * 默认临时 SQLite；SCANNER_POSTPROCESS_MARIADB=1 时须指向全新的 projectx_scanner_postprocess_* 库。 */
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, mkdir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import express from "express";
+import sharp from "sharp";
 import { createDefaultCard } from "../src/shared/defaultCard";
 import { buildLayout } from "../src/shared/layout";
 import type { ScanBatchResponse } from "../src/shared/scanPages";
 
+const originalCwd = process.cwd();
 await mkdir("data", { recursive: true });
 const root = await mkdtemp(path.resolve("data/scanner-postprocess-"));
 process.env.ANSWER_CARD_DATA_DIR = path.join(root, "cards");
@@ -54,10 +57,19 @@ for (const studentNumber of studentNumbers) {
 
 const session = await store.createSession(card.id, "postprocess");
 await db.run("UPDATE twain_scan_sessions SET card_version = ?, version_source = 'upload' WHERE id = ?", cardVersion, session.id);
+const scanDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "scans", card.id);
+await mkdir(scanDir, { recursive: true });
+const jpeg = await sharp({ create: { width: 1, height: 1, channels: 3, background: "#fff" } }).jpeg().toBuffer();
+function originalFile(sessionId: string, sheet: number, dir = scanDir) {
+  return path.join(dir, `session_${sessionId}_${String(sheet).padStart(4, "0")}_front.jpg`);
+}
 const recordIds: string[] = [];
+const originalPaths: string[] = [];
 for (const [index, studentNumber] of studentNumbers.entries()) {
+  const imagePath = originalFile(session.id, index + 1);
+  await writeFile(imagePath, jpeg);
   const record = await store.createScanRecord({ sessionId: session.id, cardId: card.id, pageNum: index + 1,
-    imagePath: path.join(root, `page_${index}.png`) });
+    imagePath });
   await db.run("UPDATE twain_scan_records SET identity_json = ? WHERE id = ?",
     JSON.stringify({ status: "verified", code: "QR_VERIFIED", cardId: card.id, pageNumber: 1 }), record.id);
   await store.updateScanOcrResult(record.id, studentNumber, 1, "done");
@@ -65,6 +77,7 @@ for (const [index, studentNumber] of studentNumbers.entries()) {
     objectiveJson: JSON.stringify([{ questionNumber: 1, selectedOptions: ["A"], confidence: 1 }]),
     subjectiveJson: "[]", gradeStatus: "done" });
   recordIds.push(record.id);
+  originalPaths.push(imagePath);
 }
 // 订正页与识别结果都挂在扫描记录上，删除必须一并清掉
 await db.run("INSERT INTO scan_correction_pages (source_type, source_id, card_version, layout_json, recognition_json, revision) VALUES (?,?,?,?,?,0)",
@@ -73,7 +86,7 @@ await store.updateSessionStatus(session.id, "completed");
 
 const app = express();
 app.use(express.json());
-app.use("/api/scanner", createScannerRouter(false));
+app.use("/api/scanner", createScannerRouter());
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => res.status(500).json({ message: err.message }));
 const server = app.listen(0, "127.0.0.1");
 await new Promise<void>(resolve => server.once("listening", resolve));
@@ -111,6 +124,8 @@ try {
   assert.equal(routine.status, 200, JSON.stringify(routine.body));
   assert.equal(routine.body.deletedGroups, 1);
   assert.equal(await recordCount(), 1, "pending 回执组可直接删除本机页面");
+  assert(!existsSync(originalPaths[1]), "本机页面删除后清理对应原图");
+  assert(existsSync(originalPaths[0]), "保留组的原图应保持可用");
 
   // 已定论回执（saved/held/conflict/roster）必须 force，否则 409 点名冲突组
   await db.run("UPDATE scanner_submissions SET state = 'saved' WHERE session_id = ? AND group_id = '0'", session.id);
@@ -118,6 +133,7 @@ try {
   assert.equal(blocked.status, 409);
   assert.deepEqual(blocked.body.blocked, ["0"]);
   assert.equal(await recordCount(), 1, "拦截时不得留下半删状态");
+  assert(existsSync(originalPaths[0]), "回执拦截时保留原图");
 
   // force 放行：只删本机页面与派生数据，回执保留
   const forced = await del({ groupIds: ["0"], force: true });
@@ -126,6 +142,7 @@ try {
   assert.deepEqual(forced.body.missingGroups, []);
   assert.equal((forced.body as unknown as ScanBatchResponse).results.length, 0);
   assert.equal(await recordCount(), 0);
+  assert(!existsSync(originalPaths[0]), "强制删除成功后清理本机原图");
   assert.equal((await db.all("SELECT source_id FROM scan_correction_pages WHERE source_id = ?", recordIds[0])).length, 0);
   assert.equal((await db.all("SELECT id FROM twain_recognition_results WHERE scan_record_id = ?", recordIds[0])).length, 0);
   assert.equal((await db.all("SELECT group_id FROM scanner_submissions WHERE session_id = ? AND group_id = '0'", session.id)).length, 1,
@@ -181,12 +198,55 @@ try {
     { studentNumber: "92013", confidence: 1 },
     { studentNumber: "92014", confidence: 1 },
   ]);
+  const previewImage = originalFile(previewSession.id, 2);
+  await writeFile(previewImage, jpeg);
+  await db.run("UPDATE twain_scan_records SET image_path = ? WHERE session_id = ? AND page_num = 2", previewImage, previewSession.id);
   const previewDeleted = await del({ groupIds: ["1"], previewOnly: true }, `${base}/api/scanner/session/${previewSession.id}/groups`);
   assert.equal(previewDeleted.status, 200, JSON.stringify(previewDeleted.body));
   assert.equal(previewDeleted.body.deletedGroups, 1);
+  assert(!existsSync(previewImage), "远程上传模式的本机 DELETE 也会清理本机原图");
   assert.equal(Number((await db.get<{ n: number }>("SELECT COUNT(*) AS n FROM scanner_submissions WHERE session_id = ?", previewSession.id))!.n), 0,
     "previewOnly 删除不得给留下的组写回执");
   assert.equal(Number((await db.get<{ n: number }>("SELECT COUNT(*) AS n FROM twain_scan_records WHERE session_id = ?", previewSession.id))!.n), 1);
+
+  const guarded = await store.createSession(card.id, "image-cleanup-boundary");
+  const sharedImage = originalFile(guarded.id, 1);
+  const uploadDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "scanner-uploads");
+  const uploadImage = originalFile(guarded.id, 2, uploadDir);
+  await mkdir(uploadDir, { recursive: true });
+  await writeFile(sharedImage, jpeg);
+  await writeFile(uploadImage, jpeg);
+  await store.createScanRecord({ sessionId: guarded.id, cardId: card.id, pageNum: 1, imagePath: sharedImage });
+  await store.createScanRecord({ sessionId: guarded.id, cardId: card.id, pageNum: 2, imagePath: uploadImage });
+  await store.createScanRecord({ sessionId: versionSession.id, cardId: card.id, pageNum: 1, imagePath: sharedImage });
+  await store.updateSessionStatus(guarded.id, "completed");
+  const guardedUrl = `${base}/api/scanner/session/${guarded.id}/groups`;
+  const guardedDeleted = await del({ groupIds: ["0", "1"], force: true, previewOnly: true }, guardedUrl);
+  assert.equal(guardedDeleted.status, 200, JSON.stringify(guardedDeleted.body));
+  assert.equal(guardedDeleted.body.deletedGroups, 2);
+  assert(existsSync(sharedImage), "其他会话引用同一原图时应保留文件");
+  assert(existsSync(uploadImage), "本机删除不得清理远端上传目录");
+
+  const relocatedDir = `${scanDir}-original`;
+  const outsideDir = path.join(root, "outside-scans");
+  const outsideImage = originalFile(guarded.id, 3, outsideDir);
+  await mkdir(outsideDir);
+  await writeFile(outsideImage, jpeg);
+  await store.createScanRecord({ sessionId: guarded.id, cardId: card.id, pageNum: 3, imagePath: originalFile(guarded.id, 3) });
+  await rename(scanDir, relocatedDir);
+  try {
+    await symlink(outsideDir, scanDir, process.platform === "win32" ? "junction" : "dir");
+    try {
+      const linked = await del({ groupIds: ["2"], force: true, previewOnly: true }, guardedUrl);
+      assert.equal(linked.status, 200, JSON.stringify(linked.body));
+      assert.equal(linked.body.deletedGroups, 1);
+      assert(existsSync(outsideImage), "扫描目录经链接指向外部文件时，不得清理目标原图");
+    } finally {
+      await unlink(scanDir);
+    }
+  } finally {
+    await rename(relocatedDir, scanDir);
+  }
 
   // 本机删除后仍 validate：留下的组得到 pending 回执，这是本地判分常态。
   const validateSession = await seedPapers("validate-delete", [
@@ -276,4 +336,6 @@ try {
   await new Promise<void>(resolve => server.close(() => resolve()));
   resetAdapter();
   closeDatabase();
+  process.chdir(originalCwd);
+  await rm(root, { recursive: true, force: true });
 }

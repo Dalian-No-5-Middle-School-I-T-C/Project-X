@@ -126,13 +126,6 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
     setStatus("");
   }, [shouldAutoStart]);
 
-  // 右上角上传进度卡避开 340px 侧栏，别盖住「图片去向 / 开始扫描 / 导入阅卷」。
-  useEffect(() => {
-    const root = document.documentElement;
-    root.style.setProperty("--px-scanner-upload-right", "356px");
-    return () => { root.style.removeProperty("--px-scanner-upload-right"); };
-  }, []);
-
   function addGradingFiles(files: FileList | null) {
     if (!files) return;
     const nextFiles = Array.from(files).filter(isImageFile);

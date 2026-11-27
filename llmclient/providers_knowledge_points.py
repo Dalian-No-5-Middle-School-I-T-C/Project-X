@@ -11,13 +11,11 @@ import json
 import logging
 from typing import Any
 
-from openai import OpenAI
-
-from llmclient.config import ModelConfig, env_value
+from llmclient.config import ModelConfig
 from llmclient.pdf_to_images import normalize_direct_files
-from llmclient.providers import validate_base_url
+from llmclient.providers_paper import paper_provider_credentials, request_gemini_json, request_openai_json
 from llmclient.prompts.knowledge_points import build_knowledge_points_prompt
-from llmclient.usage import gemini_usage, openai_usage, usage_dict
+from llmclient.usage import usage_dict
 
 KP_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -113,21 +111,10 @@ def run_direct_multimodal(
     # PDF 原卷先转压缩页图（OpenAI 兼容接口不接受 PDF data URL）
     files = normalize_direct_files(files)
 
-    if provider_override:
-        api_key = provider_override.get("api_key") or env_value("OPENAI_API_KEY")
-        base_url = validate_base_url(provider_override.get("base_url", "").rstrip("/") or None)
-    elif model.provider == "gemini":
-        api_key = env_value("GEMINI_API_KEY")
-        base_url = None
-    elif model.provider == "deepseek":
-        api_key = env_value("DEEPSEEK_API_KEY")
-        base_url = "https://api.deepseek.com"
-    else:
-        api_key = env_value("OPENAI_API_KEY")
-        base_url = validate_base_url(env_value("OPENAI_BASE_URL") or None)
-
+    api_key, base_url = paper_provider_credentials(model, provider_override)
     if model.provider == "gemini":
-        return _run_gemini_direct(model, api_key, files, subject, question_range, extra_notes, answer_card_json=answer_card_json)
+        return _run_gemini_direct(model, api_key, files, subject, question_range, extra_notes,
+                                  answer_card_json=answer_card_json, base_url=base_url)
 
     return _run_openai_direct(model, api_key, base_url, files, subject, question_range, extra_notes, answer_card_json=answer_card_json)
 
@@ -142,39 +129,15 @@ def run_text_only(
     provider_override: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """纯文本模式 (DeepSeek / 兜底)."""
-    if provider_override:
-        api_key = provider_override.get("api_key") or env_value("OPENAI_API_KEY")
-        base_url = validate_base_url(provider_override.get("base_url", "").rstrip("/") or None)
-    elif model.provider == "deepseek":
-        api_key = env_value("DEEPSEEK_API_KEY")
-        base_url = "https://api.deepseek.com"
+    api_key, base_url = paper_provider_credentials(model, provider_override)
+    prompt = _build_system_prompt(
+        subject, question_range, extra_notes, ocr_mode=True, answer_card_json=answer_card_json,
+    )
+    if model.provider == "gemini":
+        text, usage = request_gemini_json(model, api_key, prompt, paper_text, [], base_url)
     else:
-        api_key = env_value("OPENAI_API_KEY")
-        base_url = validate_base_url(env_value("OPENAI_BASE_URL") or None)
-
-    system_prompt = _build_system_prompt(
-        subject,
-        question_range,
-        extra_notes,
-        ocr_mode=True,
-        answer_card_json=answer_card_json,
-    )
-
-    client = OpenAI(api_key=api_key, base_url=base_url)
-    response = client.chat.completions.create(
-        model=model.id,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": paper_text},
-        ],
-        response_format={"type": "json_object"},
-        max_tokens=4096,
-        temperature=0.3,
-    )
-
-    content = response.choices[0].message.content or "{}"
-    parsed = _parse_knowledge_points(content)
-    return {**parsed, "usage": usage_dict(openai_usage(response))}
+        text, usage = request_openai_json(model, api_key, base_url, prompt, paper_text, [], 4096)
+    return {**_parse_knowledge_points(text), "usage": usage_dict(usage)}
 
 
 def _run_gemini_direct(
@@ -185,46 +148,11 @@ def _run_gemini_direct(
     question_range: str,
     extra_notes: str,
     answer_card_json: str = "",
+    base_url: str | None = None,
 ) -> dict[str, Any]:
-    """Gemini multimodal direct analysis."""
-    from google import genai
-    from google.genai import types
-
-    system_prompt = _build_system_prompt(subject, question_range, extra_notes, answer_card_json=answer_card_json)
-
-    client = genai.Client(api_key=api_key)
-    config = types.GenerateContentConfig(
-        system_instruction=system_prompt,
-        response_mime_type="application/json",
-    )
-
-    parts: list[Any] = []
-    for f in files:
-        parts.append(types.Part.from_bytes(
-            data=f["base64"],
-            mime_type=f["mimeType"],
-        ))
-
-    contents = [
-        types.Content(role="user", parts=parts),
-    ]
-
-    response = client.models.generate_content(
-        model=model.id,
-        contents=contents,
-        config=config,
-    )
-
-    text = ""
-    for candidate in getattr(response, "candidates", None) or []:
-        content = getattr(candidate, "content", None)
-        for part in getattr(content, "parts", None) or []:
-            t = getattr(part, "text", None)
-            if t:
-                text += t
-
-    parsed = _parse_knowledge_points(text)
-    return {**parsed, "usage": usage_dict(gemini_usage(response))}
+    prompt = _build_system_prompt(subject, question_range, extra_notes, answer_card_json=answer_card_json)
+    text, usage = request_gemini_json(model, api_key, prompt, "请分析试卷图片中的每道题，输出知识点 JSON。", files, base_url)
+    return {**_parse_knowledge_points(text), "usage": usage_dict(usage)}
 
 
 def _run_openai_direct(
@@ -237,31 +165,8 @@ def _run_openai_direct(
     extra_notes: str,
     answer_card_json: str = "",
 ) -> dict[str, Any]:
-    """OpenAI/GPT multimodal direct analysis."""
-    system_prompt = _build_system_prompt(subject, question_range, extra_notes, answer_card_json=answer_card_json)
-
-    client = OpenAI(api_key=api_key, base_url=base_url)
-
-    image_contents: list[dict[str, Any]] = [
-        {"type": "text", "text": "请分析试卷图片中的每道题，输出知识点JSON。"}
-    ]
-    for f in files:
-        image_contents.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:{f['mimeType']};base64,{f['base64']}"}
-        })
-
-    response = client.chat.completions.create(
-        model=model.id,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": image_contents},
-        ],
-        response_format={"type": "json_object"},
-        max_tokens=4096,
-        temperature=0.3,
+    prompt = _build_system_prompt(subject, question_range, extra_notes, answer_card_json=answer_card_json)
+    text, usage = request_openai_json(
+        model, api_key, base_url, prompt, "请分析试卷图片中的每道题，输出知识点 JSON。", files, 4096,
     )
-
-    content = response.choices[0].message.content or "{}"
-    parsed = _parse_knowledge_points(content)
-    return {**parsed, "usage": usage_dict(openai_usage(response))}
+    return {**_parse_knowledge_points(text), "usage": usage_dict(usage)}

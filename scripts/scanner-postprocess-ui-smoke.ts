@@ -10,16 +10,18 @@ import { correctionCells, correctionState, recognizedCells, type CorrectionDocum
 import type { StartUploadInput } from "../src/apps/answer-card/client/lib/scannerUploadManager";
 import type { ScanBatchResponse } from "../src/shared/scanPages";
 
-const dom = new JSDOM('<div id="root"></div>', { url: "https://scanner.test" });
+const dom = new JSDOM('<div id="root"></div>', { url: "https://scanner.test", pretendToBeVisual: true });
 const globals = new Map<string, PropertyDescriptor | undefined>();
 function install(name: string, value: unknown) {
   globals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
   Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
 }
-for (const name of ["window", "document", "navigator", "localStorage", "HTMLElement", "HTMLFormElement", "HTMLInputElement", "HTMLSelectElement", "HTMLButtonElement", "DocumentFragment", "Element", "Node", "NodeFilter", "Event", "CustomEvent", "MutationObserver", "getComputedStyle", "Blob"]) {
+for (const name of ["window", "document", "navigator", "localStorage", "sessionStorage", "HTMLElement", "HTMLFormElement", "HTMLInputElement", "HTMLSelectElement", "HTMLButtonElement", "DocumentFragment", "Element", "Node", "NodeFilter", "Event", "CustomEvent", "MutationObserver", "getComputedStyle", "Blob"]) {
   install(name, name === "window" ? dom.window : (dom.window as unknown as Record<string, unknown>)[name]);
 }
 install("IS_REACT_ACT_ENVIRONMENT", true);
+install("requestAnimationFrame", dom.window.requestAnimationFrame.bind(dom.window));
+install("cancelAnimationFrame", dom.window.cancelAnimationFrame.bind(dom.window));
 install("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
 // jsdom 没有滚动布局，scrollIntoView 在真实浏览器/Electron 里恒存在，这里只补空实现
 dom.window.Element.prototype.scrollIntoView = function scrollIntoView() {};
@@ -74,6 +76,10 @@ let deleteBlockedOnce = false;
 /** 剧本：下一轮「非 force → 409 → force」里让 force 请求返回 500，用来检查失败提示会不会被确认框挡住。 */
 let failForceDeleteOnce = false;
 let duplicateKept = false;
+const feedbackFirst = "scan-feedback-first";
+const feedbackSecond = "scan-feedback-second";
+const feedbackBatches = new Map<string, ScanBatchResponse>();
+let failSecondFeedbackDelete = true;
 const groupTwoResult = {
   groupId: "1", studentId: "10002", totalScore: 10, maxScore: 10, objectiveScore: 10, objectiveMaxScore: 10,
   subjectiveScore: 0, subjectiveMaxScore: 0, needsReviewCount: 0, pageCount: 1, saved: false,
@@ -104,6 +110,8 @@ const participantUrls: string[] = [];
 const searchUrls: string[] = [];
 /** 第二批会话：groupId 与第一批重号，用来钉住「删除必须按会话下发」 */
 const batchFor = (sessionId: string): ScanBatchResponse => {
+  const feedback = feedbackBatches.get(sessionId);
+  if (feedback) return feedback;
   const first = batch();
   if (sessionId === "scan-cancelled") {
     return {
@@ -160,6 +168,10 @@ let flakyCalls = 0;
 install("fetch", async (input: unknown, init?: RequestInit) => {
   const url = String(input);
   const method = init?.method ?? "GET";
+  if (url.endsWith("/api/auth/me")) return Response.json({ id: 27, role_name: "teacher", name: "测试教师", permissions: [] });
+  if (url.endsWith("/api/app/health")) return Response.json({ ok: true, capabilities: { scannerClientApi: true } });
+  if (url.endsWith("/api/cards?limit=500")) return Response.json([card]);
+  if (url.endsWith("/api/exam-groups")) return Response.json([]);
   if (hideCard && (url.includes("/sync/cards/") || url.includes("/api/cards/"))) {
     return Response.json({ message: "答题卡不存在" }, { status: 404 });
   }
@@ -230,6 +242,17 @@ install("fetch", async (input: unknown, init?: RequestInit) => {
   if (url.endsWith("/groups") && method === "DELETE") {
     const body = JSON.parse(String(init?.body)) as { groupIds: string[]; force?: boolean };
     deletes.push({ url, body });
+    const sessionId = url.match(/\/session\/([^/]+)\/groups$/)?.[1] ?? "";
+    const feedback = feedbackBatches.get(sessionId);
+    if (feedback) {
+      if (sessionId === feedbackSecond && failSecondFeedbackDelete) {
+        failSecondFeedbackDelete = false;
+        return Response.json({ message: "请等待扫描结束" }, { status: 409 });
+      }
+      const remaining = { ...feedback, results: feedback.results.filter(result => !body.groupIds.includes(result.groupId)) };
+      feedbackBatches.set(sessionId, remaining);
+      return Response.json({ ...remaining, deletedGroups: feedback.results.length - remaining.results.length });
+    }
     if (!body.force && !deleteBlockedOnce) {
       deleteBlockedOnce = true;
       return Response.json({ message: "所选卷包含已上传或待确认的回执", blocked: body.groupIds }, { status: 409 });
@@ -272,6 +295,7 @@ let root4: ReturnType<typeof createRoot> | null = null;
 let root5: ReturnType<typeof createRoot> | null = null;
 let root6: ReturnType<typeof createRoot> | null = null;
 let root7: ReturnType<typeof createRoot> | null = null;
+let appRoot: ReturnType<typeof createRoot> | null = null;
 async function settle(ms = 12) { await act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); }); }
 async function clickNode(node: Element) {
   await act(async () => {
@@ -341,6 +365,28 @@ try {
   assert.match(saveCalls[0], /POST .*\/session\/scan-1\/results$/, "入库打到本会话的 results 端点");
   assert.deepEqual(saveBodies[0], { groupIds: ["0", "2"] }, "存疑卷与正常卷一起入库；没有学号的失败组不跟着 POST");
 
+  await clickText("选择");
+  await clickText("全选（3）");
+  assert.equal(document.querySelectorAll('[aria-label^="选择 "][aria-pressed="true"]').length, 3);
+  await clickText("取消全选");
+  assert.equal(document.querySelectorAll('[aria-label^="选择 "][aria-pressed="true"]').length, 0);
+  await clickText("正常 1");
+  await clickText("全选当前结果（1）");
+  assert.equal(document.querySelector('[aria-label="选择 10003"]')?.getAttribute("aria-pressed"), "true");
+  assert.match(text(), /删除选中（1）/);
+  await clickText("全部 3");
+  await clickText("列表");
+  const selectHeader = () => document.querySelector('thead [role="checkbox"][aria-label="全选当前结果"]');
+  assert.equal(selectHeader()?.getAttribute("aria-checked"), "mixed");
+  await clickNode(selectHeader()!);
+  assert.equal(selectHeader()?.getAttribute("aria-checked"), "true");
+  assert.equal(document.querySelectorAll('tbody [role="checkbox"][aria-checked="true"]').length, 3);
+  await clickNode(selectHeader()!);
+  assert.equal(selectHeader()?.getAttribute("aria-checked"), "false");
+  assert.equal(document.querySelectorAll('tbody [role="checkbox"][aria-checked="true"]').length, 0);
+  await clickText("方块");
+  await clickText("选择");
+
   // ── 多选删除：无 force → 服务端 409 → 代价文案 → 二次确认带 force ──
   await clickText("选择");
   await clickSelector('[aria-label="选择 组 1"]');
@@ -366,6 +412,7 @@ try {
   await settle();
   assert(!document.querySelector('[role="alertdialog"][data-state="open"]'), "强制删除失败后确认框必须关闭");
   assert.match(text(), /服务端删除失败（HTTP 500）/, "失败原因要显示在当前视图，不能躲在确认框背后");
+  assert.equal(document.querySelector('[aria-label="选择 组 1"]')?.getAttribute("aria-pressed"), "true", "删除失败保留勾选");
   assert.equal(failForceDeleteOnce, false, "500 剧本只触发一次");
   await clickText("选择");
 
@@ -1191,11 +1238,95 @@ try {
   assert.match(lookupUrls[1] ?? "", new RegExp(encodeURIComponent("李四")));
   await act(async () => { lookupRoot.unmount(); });
 
+  const { ScannerApp } = await import("../src/apps/answer-card/client/ScannerApp");
+  const { AuthProvider } = await import("../src/apps/answer-card/client/auth/AuthContext");
+  const { serverStatus } = await import("../src/apps/answer-card/client/lib/remoteServerStatus");
+  const { readScanUploadRecovery, writeScanUploadRecovery } = await import("../src/apps/answer-card/client/lib/scannerUploadLedger");
+  const { readActivePostprocess, readPostprocessSessions, writeActivePostprocess, writePostprocessSessions } = await import("../src/apps/answer-card/client/lib/postprocessResume");
+  localStorage.setItem("projectx_scanner_mode", "remote");
+  await act(async () => { serverStatus.refresh(); });
+  feedbackBatches.set(feedbackFirst, { results: batch().results.slice(0, 2), failures: [] });
+  feedbackBatches.set(feedbackSecond, { results: [{ ...groupTwoResult, studentId: "20002" }], failures: [] });
+  writeActivePostprocess(card.id, card.title, 27);
+  writePostprocessSessions(card.id, [{ sessionId: feedbackFirst, pageCount: 2 }, { sessionId: feedbackSecond, pageCount: 1 }], 27);
+  let feedbackJobId = "";
+  await act(async () => {
+    feedbackJobId = realStartUpload({
+      kind: "scan", cardId: card.id, cardVersion: "", name: "失败卷", localSessionId: feedbackFirst,
+      pages: [{ pageNum: 1, side: "front", recordId: "rec-1", groupId: "0", layoutPage: 1, getBlob: async () => new Blob(["original"]) }],
+    });
+  });
+  assert.equal(scannerUploadManager.getState().jobs.find(job => job.id === feedbackJobId)?.status, "error");
+  writeScanUploadRecovery(card.id, feedbackFirst, "0", {
+    remoteBase: "https://remote.test", remoteSessionId: "old-remote-feedback", cardVersion: scanVersion,
+    completed: false, dpi: 300, paperSize: "A4", identityMode: "strict",
+    pages: [{ pageNum: 1, side: "front", recordId: "rec-1", layoutPage: 1, token: "feedback-token", done: false }],
+  });
+  const appHost = document.createElement("div");
+  document.body.appendChild(appHost);
+  appRoot = createRoot(appHost);
+  const appText = () => appHost.textContent ?? "";
+  const appButton = (label: string) => [...appHost.querySelectorAll("button")].find(el => el.textContent?.trim() === label);
+  const clickApp = async (label: string) => {
+    const button = appButton(label);
+    assert(button, `Missing scanner app button: ${label}`);
+    await clickNode(button);
+  };
+  const clickDeleteDialog = async (label: string) => {
+    const button = [...document.querySelectorAll('[role="alertdialog"] button')].find(el => el.textContent?.trim() === label);
+    assert(button, `Missing delete dialog button: ${label}`);
+    await clickNode(button);
+  };
+  await act(async () => {
+    appRoot!.render(createElement(TooltipProvider, null, createElement(AuthProvider, null, createElement(ScannerApp))));
+  });
+  await settle();
+  assert.match(appText(), /已扫 3 组/, "登录后能恢复两个待处理批次");
+  const feedbackDeletesBefore = deletes.length;
+  await clickApp("选择");
+  await clickApp("全选（3）");
+  await clickApp("删除选中（3）");
+  await clickDeleteDialog("删除");
+  assert.equal(deletes.length, feedbackDeletesBefore, "有未完成上传时要先确认，所有批次都应等待");
+  assert.equal(appButton("选择")?.getAttribute("aria-pressed"), "true");
+  assert.equal(appHost.querySelectorAll('[aria-label^="选择 "][aria-pressed="true"]').length, 3);
+  assert.match(document.querySelector('[role="alertdialog"]')?.textContent ?? "", /1 张卷尚未上传完成或上传记录异常/);
+  assert.ok(readScanUploadRecovery(card.id, feedbackFirst, "0"), "确认前保留续传记录");
+
+  await clickDeleteDialog("知晓代价，仍删除");
+  await settle();
+  const attempted = deletes.slice(feedbackDeletesBefore);
+  assert.equal(attempted.length, 2, "确认后按扫描批次发出本地删除请求");
+  assert.match(attempted[0].url, new RegExp(`/session/${feedbackFirst}/groups$`));
+  assert.deepEqual(attempted[0].body, { groupIds: ["0", "2"], force: true, previewOnly: true });
+  assert.equal(attempted[1].body.force, true);
+  assert(!scannerUploadManager.getState().jobs.some(job => job.id === feedbackJobId), "强制删除移除这张卷的真实上传任务");
+  assert.equal(readScanUploadRecovery(card.id, feedbackFirst, "0"), null, "强制删除经过实际上传管理器清理恢复记录");
+  assert.match(appText(), /请等待扫描结束/, "没有 blocked 列表的 409 同样显示真实错误");
+  assert.equal(appButton("选择")?.getAttribute("aria-pressed"), "true");
+  assert.ok(appButton("删除选中（1）"), "前一批删除成功后只保留失败批次中的勾选");
+  assert.deepEqual(readPostprocessSessions(card.id, 27).map(session => session.sessionId), [feedbackSecond]);
+
+  await clickApp("删除选中（1）");
+  await clickDeleteDialog("删除");
+  await settle();
+  assert.match(appText(), /本机扫描记录已清空/);
+  assert.ok(appButton("继续扫描"), "最后一批清空后提供继续扫描入口");
+  assert.deepEqual(readPostprocessSessions(card.id, 27), []);
+  assert.equal(readActivePostprocess(27), null);
+  await clickApp("返回工作台");
+  await settle();
+  assert.ok(appButton("开始扫描"), "清空后可返回同一张卡的工作台");
+  assert.doesNotMatch(appText(), /查看扫描后处理/, "工作台没有旧批次入口");
+  await act(async () => { appRoot?.unmount(); });
+  appRoot = null;
+  appHost.remove();
+
   console.log("PASS scanner-postprocess-ui-smoke");
 } catch (error) {
   failure = error;
 } finally {
-  await act(async () => { root.unmount(); root2?.unmount(); root3?.unmount(); root4?.unmount(); root5?.unmount(); root6?.unmount(); root7?.unmount(); });
+  await act(async () => { root.unmount(); root2?.unmount(); root3?.unmount(); root4?.unmount(); root5?.unmount(); root6?.unmount(); root7?.unmount(); appRoot?.unmount(); });
   notify.info = realNotifyInfo;
   scannerUploadManager.startUpload = realStartUpload;
   // 不关掉 jsdom 的 window，其定时器与观察者会让进程一直挂着

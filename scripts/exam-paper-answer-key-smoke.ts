@@ -29,6 +29,7 @@ import AdmZip from "adm-zip";
 import sharp from "sharp";
 import PDFDocument from "pdfkit";
 import { ZipFile } from "yauzl";
+import { verifyPaperUploadPanel } from "./paper-upload-panel-regression";
 
 // 先在一个带 remote config.yml 的目录里确认配置能被读到，再切到干净临时目录。
 // detectDialect 在导入数据库模块时就会看 cwd；漏掉这次 chdir 会连上业务库并可能轮换 admin 口令。
@@ -54,6 +55,7 @@ process.env.PROJECTX_TOKEN_DIR = path.join(tmpDir, "tokens");
 // 原卷/答案页文件也写进临时目录，避免污染仓库 data/
 process.env.ANSWER_CARD_DATA_DIR = path.join(tmpDir, "data");
 process.env.PROJECTX_PAPER_MAX_BYTES_PER_CARD_MIB = "1";
+process.env.LLMCLIENT_AUTOSTART = "false";
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("PROJECTX_MARIADB_") || key.startsWith("PROJECTX_MYSQL_")) delete process.env[key];
 }
@@ -203,14 +205,16 @@ async function verifyPaperAnalysis(base: string, cardId: string, token: string, 
       images.push(await sharp({ create: { width: 30, height: 20, channels: 3, background: { r: n * 20, g: 30, b: 60 } } }).png().toBuffer());
     }
     await upload(images, "png", false);
-    await db.run("UPDATE ai_providers SET provider_type = 'openai' WHERE id = ?", provider.lastInsertRowid);
+    await db.run("UPDATE ai_providers SET provider_type = 'openai', models = ? WHERE id = ?",
+      JSON.stringify(["gpt-4o"]), provider.lastInsertRowid);
     const direct = await analyze();
     const actual = received.at(-1)?.files ?? [];
     const originals = [sixPages, shortPage, ...images.map((_, i) => readFileSync(path.join(dir, `original-${i + 3}.jpg`)))];
     ok(direct.status === 200 && actual.length === originals.length &&
       originals.every((file, i) => actual[i].base64 === file.toString("base64") && actual[i].mimeType === (i < 2 ? "application/pdf" : "image/jpeg")),
       "直传按数字页序提交两份独立 PDF 和第 3 至 10 页图片，每页仅发送一次");
-    await db.run("UPDATE ai_providers SET provider_type = 'deepseek' WHERE id = ?", provider.lastInsertRowid);
+    await db.run("UPDATE ai_providers SET provider_type = 'deepseek', models = ? WHERE id = ?",
+      JSON.stringify(["text"]), provider.lastInsertRowid);
 
     await upload([shortPage], "pdf");
     const single = await analyze();
@@ -243,7 +247,156 @@ async function verifyPaperAnalysis(base: string, cardId: string, token: string, 
   }
 }
 
+async function verifyAnswerKeyAi(base: string, examId: number, token: string, png: Buffer, docx: Buffer) {
+  const { getMysqlDb } = await import("../src/server/db/mysql");
+  const { reserveAiCall } = await import("../src/server/services/aiQuota");
+  const { finalizeAiRun } = await import("../src/server/services/aiTelemetry");
+  const { MAX_AI_ACTIVE_JOBS_PER_USER } = await import("../src/shared/aiQuotaLimits");
+  const db = getMysqlDb();
+  const admin = await db.get<{ id: number }>("SELECT id FROM users WHERE username = 'admin'");
+  if (!admin) throw new Error("缺少测试管理员");
+
+  type ModelRequest = {
+    providerId: number; model: string; mode: string; paperText?: string;
+    providerOverride?: { api_key?: string };
+    files?: { mimeType: string; base64: string }[];
+  };
+  const requests: ModelRequest[] = [];
+  let fail = false;
+  const apiKey = "answer-ocr-regression-key";
+  const sidecar = createServer(async (req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url === "/health") {
+      res.end(JSON.stringify({ internalAuthConfigured: true, defaultModel: "deepseek-v4-flash", models: [
+        { id: "deepseek-v4-flash", provider: "deepseek", available: true, vision: false },
+        { id: "gemini-3.1-flash-lite", provider: "gemini", available: true, vision: true },
+      ] }));
+      return;
+    }
+    if (req.url !== "/analysis/answer-key-ocr" || req.headers.authorization !== `Bearer ${apiKey}`) {
+      res.writeHead(401).end("{}");
+      return;
+    }
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    if (fail) {
+      res.writeHead(503).end("{}");
+      return;
+    }
+    res.end(JSON.stringify({
+      answers: [{ questionNumber: 12, answerText: "  x=3.14\n (1) 1:2  " }, { questionNumber: 1, answerText: "AC" }],
+      usage: { tokensIn: 15, tokensOut: 27 },
+    }));
+  });
+  await new Promise<void>((resolve, reject) => {
+    sidecar.once("error", reject);
+    sidecar.listen(0, "127.0.0.1", resolve);
+  });
+  const previousUrl = process.env.LLMCLIENT_URL;
+  const previousKey = process.env.LLMCLIENT_INTERNAL_API_KEY;
+  process.env.LLMCLIENT_URL = `http://127.0.0.1:${(sidecar.address() as { port: number }).port}`;
+  process.env.LLMCLIENT_INTERNAL_API_KEY = apiKey;
+  const api = `/api/exams/${examId}/answer-key/pages`;
+  const upload = (file: Buffer, ext: string) => {
+    const body = new FormData();
+    body.append("files", new Blob([new Uint8Array(file)]), `答案.${ext}`);
+    return jsonFetch(base, api, { method: "POST", body }, token);
+  };
+  const retry = (page: number) => jsonFetch(base, `${api}/${page}/ocr`, { method: "POST" }, token);
+  const expected = [{ questionNumber: 1, answerText: "AC" }, { questionNumber: 12, answerText: "x=3.14 (1) 1:2" }];
+  try {
+    const vision = await upload(png, "png");
+    const first = vision.body?.ocr?.[0];
+    ok(vision.status === 200 && first?.pageIndex === 1 && first.recognized === true && first.engine === "ai-vision" &&
+      JSON.stringify(first.drafts) === JSON.stringify(expected) && requests[0]?.providerId === 0 &&
+      requests[0].model === "gemini-3.1-flash-lite" && requests[0].mode === "direct" &&
+      requests[0].files?.[0]?.mimeType === "image/jpeg", "默认上传把预览图交给可用视觉模型并返回结构化草稿");
+
+    const manual = await retry(1);
+    ok(manual.status === 200 && manual.body.pageIndex === 1 && manual.body.engine === "ai-vision" &&
+      JSON.stringify(manual.body.drafts) === JSON.stringify(expected), "重新识别使用相同的视觉模型流程");
+
+    const scanned = await paperPdfFixture([png]);
+    const pdf = await upload(scanned, "pdf");
+    const pdfInput = requests.at(-1);
+    ok(pdf.status === 200 && pdf.body.ocr?.[0]?.engine === "ai-vision" &&
+      pdfInput?.files?.[0]?.mimeType === "application/pdf" &&
+      Buffer.from(pdfInput.files[0].base64, "base64").equals(scanned), "无文字层 PDF 按原始字节提交给边车渲染");
+
+    const text = await upload(await paperPdfFixture(["1. A\n2. C"]), "pdf");
+    ok(text.status === 200 && text.body.ocr?.[0]?.engine === "ai-text" &&
+      requests.at(-1)?.paperText === "1. A\n2. C" && requests.at(-1)?.model === "deepseek-v4-flash",
+    "带文字层 PDF 保留换行并优先使用配置的文本模型");
+
+    const document = await upload(docx, "docx");
+    ok(document.status === 200 && document.body.ocr?.[0]?.engine === "ai-text" &&
+      requests.at(-1)?.paperText?.includes("练习题") && !requests.at(-1)?.files,
+    "DOCX 由 Mammoth 提取文字并交给模型");
+
+    fail = true;
+    const local = await retry(1);
+    const localUpload = await upload(png, "png");
+    const offline = [local.body, localUpload.body.ocr?.[0]];
+    ok(local.status === 200 && localUpload.status === 200 && offline.every(result =>
+      result?.engine === "local-ocr" && result.warning &&
+      result.drafts?.map((d: { answerText: string }) => d.answerText).join("") === "BACDB"),
+    "边车返回 503 时，重新识别与上传均通过实际离线 Tesseract 生成草稿");
+    const pdfOffline = await retry(2);
+    ok(pdfOffline.status === 422 && pdfOffline.body.code === "PDF_PAGE_NO_TEXT" &&
+      pdfOffline.body.message.includes("原文件直发"), "扫描 PDF 无可用视觉结果时提示可选的处理方式");
+
+    const runs = await db.all<{ success: number | null; tokens_in: number | null }>(
+      "SELECT success, tokens_in FROM ai_analysis_runs WHERE feature = ? ORDER BY id", "answer_key_ocr"
+    );
+    ok(runs.length === 8 && runs.slice(0, 5).every(run => run.success === 1 && run.tokens_in === 15) &&
+      runs.slice(5).every(run => run.success === 0), "成功请求结算用量，边车失败释放全部在途占位");
+
+    const reservations: number[] = [];
+    try {
+      for (let i = 0; i < MAX_AI_ACTIVE_JOBS_PER_USER; i++) {
+        reservations.push(await reserveAiCall(db, admin.id, { feature: "quota_fixture", stage: "request" }));
+      }
+      const count = requests.length;
+      const quota = await retry(1);
+      ok(quota.status === 200 && quota.body.engine === "local-ocr" && quota.body.warning?.includes("配额") &&
+        quota.body.drafts?.length === 5 && requests.length === count, "AI 配额满时直接使用本地识别");
+    } finally {
+      for (const id of reservations) await finalizeAiRun(id, { success: true });
+    }
+
+    fail = false;
+    const providers = await Promise.all([
+      db.run("INSERT INTO ai_providers (user_id, name, provider_type, api_key, models, is_system) VALUES (?, ?, ?, ?, ?, 1)",
+        admin.id, "系统文本模型", "deepseek", "text-fixture-key", JSON.stringify(["deepseek-chat"])),
+      db.run("INSERT INTO ai_providers (user_id, name, provider_type, api_key, models, is_system) VALUES (?, ?, ?, ?, ?, 0)",
+        admin.id, "个人视觉模型", "openai", "vision-fixture-key", JSON.stringify(["text", { id: "qwen2.5-vl" }])),
+    ]);
+    try {
+      const personal = await retry(1);
+      const request = requests.at(-1);
+      ok(personal.status === 200 && personal.body.engine === "ai-vision" &&
+        request?.providerId === providers[1].lastInsertRowid &&
+        request.model === "qwen2.5-vl" && request.providerOverride?.api_key === "vision-fixture-key",
+      "系统只有文本模型时，图片选用当前用户配置中的视觉型号");
+    } finally {
+      for (const provider of providers) await db.run("DELETE FROM ai_providers WHERE id = ?", provider.lastInsertRowid);
+    }
+  } finally {
+    if (previousUrl === undefined) delete process.env.LLMCLIENT_URL;
+    else process.env.LLMCLIENT_URL = previousUrl;
+    if (previousKey === undefined) delete process.env.LLMCLIENT_INTERNAL_API_KEY;
+    else process.env.LLMCLIENT_INTERNAL_API_KEY = previousKey;
+    sidecar.closeAllConnections();
+    await new Promise<void>(resolve => sidecar.close(() => resolve()));
+  }
+}
+
 async function main() {
+  section("解析、图片、PDF 和原卷弹窗回归");
+  const { verifyPaperOcrInputs } = await import("./paper-ocr-regressions");
+  await verifyPaperOcrInputs(tmpDir, ok);
+  await verifyPaperUploadPanel(ok);
   console.log(`临时库: ${process.env.PROJECTX_DB_PATH}`);
   const { detectDialect } = await import("../src/server/db/mysql");
   if (detectDialect() !== "sqlite") {
@@ -784,6 +937,7 @@ async function main() {
   section("D. OCR 文本解析");
   const ocrExamId = insertExam("图片答案草稿", 1);
   const answerPng = await scanImage("1-5 BACDB").png().toBuffer();
+  await verifyAnswerKeyAi(base, insertExam("视觉与文本答案草稿", 1), adminToken, answerPng, docx);
   const answerImage = new FormData();
   answerImage.append("files", new Blob([answerPng], { type: "image/png" }), "答案.png");
   const recognized = await jsonFetch(base, `/api/exams/${ocrExamId}/answer-key/pages`, {

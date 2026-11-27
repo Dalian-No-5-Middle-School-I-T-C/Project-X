@@ -509,6 +509,11 @@ jobs:
       - name: LLM usage accounting regression
         run: python llmclient/scripts/verify_llm_usage.py
 
+      - name: Paper analysis endpoint regressions
+        run: |
+          python llmclient/scripts/verify_direct_context.py
+          python llmclient/scripts/verify_answer_key_ocr.py
+
   build:
     name: Build
     runs-on: ubuntu-latest

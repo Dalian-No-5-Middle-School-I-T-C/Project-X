@@ -1,26 +1,15 @@
-/**
- * 模型视觉能力判定（纯函数）。
- *
- * 用于「原卷知识点分析」选择直传图片还是先本地提取文字：
- * - gemini / openai 视为多模态（历史行为）；
- * - deepseek 仅模型 ID 含 vision 的型号（如 deepseek-v4-flash-vision-exp）支持图像。
- */
+/** Use the model ID when a provider exposes both vision and text models. */
 export function isVisionProvider(
   providerType: string | null | undefined,
   model: string | null | undefined
 ): boolean {
-  const p = (providerType ?? "").toLowerCase();
-  if (p === "gemini" || p === "openai") return true;
-  if (p === "deepseek") {
-    return (model ?? "").toLowerCase().includes("vision");
-  }
-  return false;
+  const id = model?.trim().toLowerCase();
+  if (!id) return /^(gemini|openai)$/i.test(providerType ?? "");
+  if (/(?:^|[/:])deepseek-(?:chat|reasoner)(?:$|[-:@])/.test(id)) return false;
+  return /(?:^|[^a-z0-9])(?:vl\d*|vision|4o|gpt-(?:4o?|[5-9])(?=$|[.\-:/])|gemini|glm-[4-9](?:\.\d+)?v|claude-(?:(?:sonnet|opus|haiku)-)?[3-9])/.test(id)
+    || /qwen\d*(?:\.\d+)?-?vl/.test(id);
 }
 
-/**
- * 知识点分析请求模式（纯函数）：多模态模型直传图片，其余先本地提取文字。
- * 请求体与响应中的 mode 必须同源，避免发送与回报不一致。
- */
 export function resolveKnowledgePointMode(isMultimodal: boolean): "text" | "direct" {
   return isMultimodal ? "direct" : "text";
 }

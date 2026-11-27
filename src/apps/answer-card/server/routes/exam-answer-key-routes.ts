@@ -34,8 +34,9 @@ import { MAX_FILE_SIZE, storeAnswerKeyPageFile, validatePaperFile } from "../pap
 import { PaperInputError } from "../paper-docx";
 // 安全（R14）：滞留临时件的兜底清理
 import { purgeStaleTmpUploads } from "../paperQuota";
-import { readOcrInput, recognizePaperPage } from "../paper-ocr";
-import { MAX_ANSWER_TEXT_LENGTH, MAX_QUESTION_NUMBER, parseAnswerKeyText } from "../answer-key-ocr";
+import { readOcrInput } from "../paper-ocr";
+import { recognizeAnswerKeyInput, type AnswerRecognition } from "../answer-key-recognition";
+import { MAX_ANSWER_TEXT_LENGTH, MAX_QUESTION_NUMBER } from "../answer-key-ocr";
 import { normalizeAnswerKeyMode } from "../../../../shared/answerKeyMode";
 import { requireExamAccess } from "../middleware";
 import { refreshAuthenticatedUser, recheckWritePermission } from "../../../../server/middleware/auth";
@@ -103,7 +104,6 @@ function normalizePageIndex(value: unknown, max = 9999): number | null {
   return n;
 }
 
-/** OCR：按扩展名选择提取器（图片→tesseract，PDF→文字层，DOCX→mammoth） */
 type OcrPage = { id: number; pageIndex: number; filename: string };
 type AnswerUpload = {
   examId: number;
@@ -123,21 +123,22 @@ function changedOcrPage(): PaperInputError {
   return new PaperInputError("ANSWER_PAGE_CHANGED", "答案页已删除或替换，请重新选择页面。", 409);
 }
 
-function recognizeAnswerPage(examId: number, page: OcrPage) {
-  return recognizePaperPage(() => withAnswerCardDataMutationLock(async () => {
+async function recognizeAnswerPage(examId: number, page: OcrPage, userId?: number): Promise<AnswerRecognition> {
+  const input = await withAnswerCardDataMutationLock(async () => {
     const current = await loadOcrPage(examId, page.pageIndex);
     if (current?.id !== page.id) throw changedOcrPage();
     const file = resolveAnswerKeyPreviewFile(examId, page.pageIndex, current.filename);
     if (!file) throw new PaperInputError("ANSWER_PAGE_MISSING", "答案页文件不存在。", 404);
     return readOcrInput(file.filePath);
-  }));
+  });
+  return recognizeAnswerKeyInput(input, userId);
 }
 
-function draftPayload(text: string | null) {
-  const drafts = text ? parseAnswerKeyText(text) : [];
+function failedRecognition(error: unknown): AnswerRecognition & { error: string } {
   return {
-    recognized: Boolean(text),
-    drafts: drafts.map((d) => ({ questionNumber: d.questionNumber, answerText: d.answerText })),
+    recognized: false,
+    drafts: [],
+    error: error instanceof PaperInputError ? error.message : "OCR 识别失败",
   };
 }
 
@@ -394,14 +395,14 @@ export function examAnswerKeyRoutes(): Router {
     const batch: AnswerUpload | undefined = res.locals.answerUpload;
     if (!batch || requestDisconnected(req, res)) return;
     const { examId, uploaded, failed, runOcr } = batch;
-    const results = new Map<number, ReturnType<typeof draftPayload> & { error?: string }>();
+    const results = new Map<number, AnswerRecognition & { error?: string }>();
     if (runOcr) {
       for (const page of uploaded) {
         if (requestDisconnected(req, res)) return;
         try {
-          results.set(page.id, draftPayload(await recognizeAnswerPage(examId, page)));
+          results.set(page.id, await recognizeAnswerPage(examId, page, req.user?.id));
         } catch (error) {
-          results.set(page.id, { ...draftPayload(null), error: error instanceof Error ? error.message : "OCR 失败" });
+          results.set(page.id, failedRecognition(error));
         }
       }
     }
@@ -417,7 +418,7 @@ export function examAnswerKeyRoutes(): Router {
         pages: uploaded.map(({ pageIndex, filename }) => ({ pageIndex, filename })),
         count: uploaded.length,
         ocr: runOcr ? uploaded.map(({ id, pageIndex }) => ({
-          pageIndex, ...(currentIds?.has(id) ? results.get(id) : { ...draftPayload(null), error: changedOcrPage().message }),
+          pageIndex, ...(currentIds?.has(id) ? results.get(id) : failedRecognition(changedOcrPage())),
         })) : null,
         answerPages, ...(failed.length ? { failed } : {}),
       });
@@ -434,14 +435,14 @@ export function examAnswerKeyRoutes(): Router {
 
       const page = await loadOcrPage(examId, pageIndex);
       if (!page) { res.status(404).json({ message: "答案页不存在" }); return; }
-      const text = await recognizeAnswerPage(examId, page);
+      const result = await recognizeAnswerPage(examId, page, req.user?.id);
       await withAnswerCardDataMutationLock(async () => {
         if ((await loadOcrPage(examId, pageIndex))?.id !== page.id) throw changedOcrPage();
-        res.json({ pageIndex, ...draftPayload(text) });
+        res.json({ pageIndex, ...result });
       });
     } catch (err: any) {
       if (err instanceof PaperInputError) {
-        res.status(err.status).json({ code: err.code, message: err.message });
+        res.status(err.status).json({ pageIndex: Number(req.params.pageIndex), ...failedRecognition(err), code: err.code, message: err.message });
         return;
       }
       console.error("[answer-key] ocr failed:", err);
