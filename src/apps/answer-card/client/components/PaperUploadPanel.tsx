@@ -116,6 +116,7 @@ export function PaperUploadPanel({ cardId, open, onClose, onUploaded }: Props) {
       if (!signal.aborted && sessionRef.current === session) setLoading(false);
     });
     return () => {
+      sessionRef.current += 1;
       controller.abort();
       analyzeAbortRef.current?.abort();
       analyzeAbortRef.current = null;

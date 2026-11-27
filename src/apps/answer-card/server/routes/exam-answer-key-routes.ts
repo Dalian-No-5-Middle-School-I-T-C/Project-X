@@ -34,7 +34,7 @@ import { MAX_FILE_SIZE, storeAnswerKeyPageFile, validatePaperFile } from "../pap
 import { PaperInputError } from "../paper-docx";
 // 安全（R14）：滞留临时件的兜底清理
 import { purgeStaleTmpUploads } from "../paperQuota";
-import { readOcrInput, withOcrCapacity } from "../paper-ocr";
+import { readOcrInput } from "../paper-ocr";
 import { recognizeAnswerKeyInput, type AnswerRecognition } from "../answer-key-recognition";
 import { MAX_ANSWER_TEXT_LENGTH, MAX_QUESTION_NUMBER } from "../answer-key-ocr";
 import { normalizeAnswerKeyMode } from "../../../../shared/answerKeyMode";

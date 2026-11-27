@@ -21,7 +21,7 @@ export type AnswerKeyDraft = {
 const FULLWIDTH_DIGITS = /[０-９]/g;
 const OPTION = /^[A-K]+$/i;
 const SECTION_HEADING_PREFIX = /^(?:[一二三四五六七八九十]+[、.．]\s*)?(?:参考答案|答案解析|[单双多]?选题|选择题|填空题|解答题|主观题|判断题|计算题)(?:\s*[：:]\s*|$)/;
-const STANDALONE_SECTION_HEADING = /^[一二三四五六七八九十]+[、.．]\s*$/;
+const CHINESE_SECTION_HEADING = /^[一二三四五六七八九十]+[、.．]/;
 const RANGE_HEAD = /(?:^|[\s,，;；])([0-9]{1,3})\s*[-—–~～至]\s*([0-9]{1,3})\s*[:：]?\s*/g;
 const NUMBERED_HEAD = /^(?:第\s*(\d+)\s*题\s*[:：、.．]?|(\d+)\s*(?:[.．:：](?!\d)|[、)）]))\s*/;
 const INLINE_NUMBERED_HEAD = /\s+(?:第\s*(\d+)\s*题\s*[:：、.．]?\s*|(\d+)(?:\.(?!\d)\s+|[．、](?!\d)\s*))/g;
@@ -123,7 +123,7 @@ export function parseAnswerKeyText(text: string): AnswerKeyDraft[] {
       finishQuestion();
       line = line.slice(headingMatch[0].length).trim();
       if (!line) continue;
-    } else if (STANDALONE_SECTION_HEADING.test(line) || /^[一二三四五六七八九十]+[、.．]\s*\S+$/.test(line)) {
+    } else if (CHINESE_SECTION_HEADING.test(line)) {
       finishQuestion();
       continue;
     }

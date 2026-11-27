@@ -80,6 +80,7 @@ export async function verifyPaperOcrInputs(dir: string, ok: Check): Promise<void
     "1. a 2. b",
     "3. 叶绿体 4. 线粒体",
     "5. 共 2、3 两项符合要求",
+    "二、解答题 （共 60 分）",
     "选择题：6-8 ABD",
     "参考答案：9. C 10. D",
     "填空题：11. 3.14 12. 5",
