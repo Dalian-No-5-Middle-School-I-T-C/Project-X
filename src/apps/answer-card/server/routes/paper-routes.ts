@@ -38,12 +38,12 @@ import { CardRepository } from "../../../../server/repositories/CardRepository";
 import { KnowledgePointRepository } from "../../../../server/repositories/KnowledgePointRepository";
 import type { Request, Response } from "express";
 import { readdir } from "node:fs/promises";
-import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "../llm-client";
+import { fetchLlmClient } from "../llm-client";
+import { getKnowledgePointProvider } from "../paper-ai-provider";
 import { finalizeAiRun } from "../../../../server/services/aiTelemetry";
 // 安全（R11）：AI 计费与并发配额（占位与判定原子完成）；安全（R25）：对外错误摘要脱敏
 import { AiQuotaError, reserveAiCall } from "../../../../server/services/aiQuota";
 import { sanitizeOpsMessage } from "../../../../server/lib/opsErrorMessage";
-import { decryptField } from "../../../../server/lib/field-crypto";
 import { isVisionProvider } from "../llm-capabilities";
 import { buildObjectiveContext } from "../objective-context";
 
@@ -54,19 +54,6 @@ function decodeMultipartFilename(name: string): string {
     return name;
   } catch { return name; }
 }
-
-type AiProviderRow = {
-  id: number;
-  user_id?: number;
-  name: string;
-  provider_type: string;
-  base_url: string;
-  api_key: string;
-  models: string | null;
-  is_active: number;
-  sort_order: number;
-  is_system?: number;
-};
 
 /** multer 的暂存目录在 storage 里定义：容量扫描要把这棵子树整棵排除，两边必须指向同一个路径。 */
 const paperUpload = multer({
@@ -83,71 +70,6 @@ const paperUpload = multer({
     }
   },
 });
-
-function firstConfiguredModel(models: string | null | undefined): string | undefined {
-  if (!models) return undefined;
-  try {
-    const parsed = JSON.parse(models);
-    if (Array.isArray(parsed)) {
-      const first = parsed[0];
-      if (typeof first === "string") return first;
-      if (first && typeof first === "object" && typeof first.id === "string") return first.id;
-    }
-  } catch {
-    return undefined;
-  }
-  return undefined;
-}
-
-async function getKnowledgePointProvider(db: ReturnType<typeof getMysqlDb>, userId?: number): Promise<{
-  providerId: number;
-  providerType: string;
-  model?: string;
-  providerOverride?: Record<string, string>;
-} | null> {
-  const systemProvider = await db.get<AiProviderRow>(
-    "SELECT * FROM ai_providers WHERE is_system = 1 AND is_active = 1 ORDER BY sort_order, id LIMIT 1"
-  );
-  const provider = systemProvider ?? (userId
-    ? await db.get<AiProviderRow>(
-      "SELECT * FROM ai_providers WHERE user_id = ? AND is_active = 1 ORDER BY sort_order, id LIMIT 1",
-      userId
-    )
-    : null);
-
-  if (provider) {
-    return {
-      providerId: provider.id,
-      providerType: provider.provider_type,
-      model: firstConfiguredModel(provider.models),
-      providerOverride: {
-        provider_type: provider.provider_type,
-        base_url: provider.base_url || "",
-        // api_key 已加密存储（F-7），透传前解密
-        api_key: decryptField(provider.api_key) ?? "",
-      },
-    };
-  }
-
-  const response = await fetch(llmClientUrl("/health"), {
-    method: "GET",
-    headers: llmClientHeaders(),
-    signal: AbortSignal.timeout(2500),
-  });
-  if (!response.ok) return null;
-  const status = await response.json() as {
-    defaultModel?: string;
-    models?: Array<{ id: string; provider: string; available: boolean }>;
-  };
-  const model = status.models?.find((item) => item.id === status.defaultModel)
-    ?? status.models?.find((item) => item.available);
-  if (!model?.available) return null;
-  return {
-    providerId: 0,
-    providerType: model.provider,
-    model: model.id,
-  };
-}
 
 async function readKnowledgePointResponse(resp: globalThis.Response): Promise<any[]> {
   const data = await resp.json().catch(() => ({} as any));
@@ -624,7 +546,7 @@ export function paperRoutes(): Router {
           ...input, providerId: provider.providerId, model: provider.model, providerOverride: provider.providerOverride,
           subject, questionRange: range, extraNotes: notes, answerCardJson,
         }),
-      }, 60_000, { runId, provider: "llmclient", model: provider.model ?? null, stage: "knowledge_points" });
+      }, 180_000, { runId, provider: "llmclient", model: provider.model ?? null, stage: "knowledge_points" });
       const knowledgePoints = await readKnowledgePointResponse(resp);
 
       await finalizeAiRun(runId, { success: true });

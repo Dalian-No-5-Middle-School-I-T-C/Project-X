@@ -62,7 +62,22 @@ type OcrPageResult = {
   recognized?: boolean;
   drafts?: Array<{ questionNumber: number; answerText: string }>;
   error?: string;
+  engine?: "ai-vision" | "ai-text" | "local-ocr";
+  warning?: string;
 };
+
+const OCR_ENGINE_LABELS = {
+  "ai-vision": "AI 视觉识别",
+  "ai-text": "AI 文本提取",
+  "local-ocr": "本地 OCR 或文字提取",
+};
+
+function ocrStatus(page: OcrPageResult): string {
+  const count = page.drafts?.length ?? 0;
+  const engine = page.engine ? `（${OCR_ENGINE_LABELS[page.engine]}）` : "";
+  const result = count ? `识别出 ${count} 题` : "未识别出答案，可重新识别或手动录入";
+  return `第 ${page.pageIndex} 页${engine}：${result}${page.warning ? `。${page.warning}` : ""}`;
+}
 
 interface Props {
   examId: number;
@@ -97,6 +112,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [panelError, setPanelError] = useState<string | null>(null);
+  const [recognitionStatus, setRecognitionStatus] = useState<string[]>([]);
   const [showPaper, setShowPaper] = useState(false);
   const [toggleBusy, setToggleBusy] = useState(false);
   const [mode, setMode] = useState<AnswerKeyMode>(ANSWER_KEY_MODE_TEXT);
@@ -127,6 +143,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
   useEffect(() => {
     if (!open) return;
     setPanelError(null);
+    setRecognitionStatus([]);
     void load();
   }, [open, load]);
 
@@ -189,6 +206,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
     if (files.length === 0 || uploading) return;
     setUploading(true);
     setPanelError(null);
+    setRecognitionStatus([]);
     try {
       const formData = new FormData();
       for (const file of files) formData.append("files", file);
@@ -205,9 +223,10 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
       const drafts = merged.flatMap((item) => item.drafts ?? []);
       if (drafts.length > 0) setRows((cur) => mergeDrafts(cur, drafts));
       const failed = (body.failed as Array<{ filename: string; error: string }> | undefined) ?? [];
-      if (failed.length > 0) setPanelError(`部分文件未入库：${failed.map((f) => `${f.filename}（${f.error}）`).join("；")}`);
-      const ocrErrors = merged.filter((item) => item.error).map((item) => `第 ${item.pageIndex} 页：${item.error}`);
-      if (ocrErrors.length > 0) setPanelError(ocrErrors.join("；"));
+      const errors = failed.map((f) => `${f.filename}未入库：${f.error}`);
+      errors.push(...merged.filter(item => item.error).map(item => `第 ${item.pageIndex} 页：${item.error}`));
+      if (errors.length) setPanelError(errors.join("；"));
+      setRecognitionStatus(merged.filter(item => !item.error).map(ocrStatus));
     } catch (err) {
       setPanelError(err instanceof Error ? err.message : "答案上传失败");
     } finally {
@@ -219,16 +238,15 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
     if (ocrBusyPage !== null) return;
     setOcrBusyPage(pageIndex);
     setPanelError(null);
+    setRecognitionStatus([]);
     try {
       const res = await authFetch(`/api/exams/${examId}/answer-key/pages/${pageIndex}/ocr`, { method: "POST" });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body?.message || "OCR 识别失败");
-      const drafts = (body.drafts as Array<{ questionNumber: number; answerText: string }> | undefined) ?? [];
-      if (drafts.length === 0) {
-        setPanelError(`第 ${pageIndex} 页未识别出答案，请手动录入`);
-        return;
-      }
-      setRows((cur) => mergeDrafts(cur, drafts));
+      const result = body as OcrPageResult;
+      const drafts = result.drafts ?? [];
+      if (drafts.length) setRows((cur) => mergeDrafts(cur, drafts));
+      setRecognitionStatus([ocrStatus({ ...result, pageIndex })]);
     } catch (err) {
       setPanelError(err instanceof Error ? err.message : "OCR 识别失败");
     } finally {
@@ -439,10 +457,17 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
                   maxSize={50 * 1024 * 1024}
                   multiple
                   onFiles={(files) => void handleFiles(files)}
-                  disabled={uploading}
-                  label={uploading ? "上传中…" : "拖拽答案文件到此处，或点击选择（可多选多页）"}
+                  disabled={uploading || ocrBusyPage !== null}
+                  label={uploading
+                    ? (withOcr && mode === ANSWER_KEY_MODE_TEXT ? "正在上传并识别答案…" : "上传中…")
+                    : "拖拽答案文件到此处，或点击选择（可多选多页）"}
                   sublabel="DOCX / PDF / 图片，最大 50MB"
                 />
+                {recognitionStatus.length > 0 && (
+                  <div role="status" className="flex flex-col gap-1 text-sm text-muted-foreground">
+                    {recognitionStatus.map(message => <p key={message} className="m-0">{message}</p>)}
+                  </div>
+                )}
                 {(data?.answerPages.length ?? 0) > 0 && (
                   <div className="flex flex-col gap-2">
                     {data?.answerPages.map((page) => (
@@ -467,7 +492,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
                               variant="ghost"
                               icon={<RefreshCw />}
                               loading={ocrBusyPage === page.pageIndex}
-                              disabled={ocrBusyPage !== null}
+                              disabled={uploading || ocrBusyPage !== null}
                               onClick={() => void reocrPage(page.pageIndex)}
                             >
                               重新识别

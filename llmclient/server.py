@@ -45,6 +45,7 @@ def clip_answer_card_json(raw: str, char_limit: int = 8000) -> str:
 
 from llmclient.config import (
     MODEL_CATALOG,
+    ModelConfig,
     configured_models,
     default_db_path,
     default_model_id,
@@ -55,7 +56,9 @@ from llmclient.config import (
     mariadb_configured,
 )
 from llmclient.providers import run_analysis
-from llmclient.schemas import AnalysisRunRequest, AnalysisRunResponse
+from llmclient.schemas import AnalysisRunRequest, AnalysisRunResponse, AnswerKeyOcrRequest
+from llmclient.pdf_to_images import PaperImageByteLimitError, PdfPageLimitError, PdfRenderError, PdfRenderTimeoutError
+from llmclient.providers_answer_key import run_answer_key_ocr
 from llmclient.providers_knowledge_points import (
     run_direct_multimodal,
     run_text_only,
@@ -179,6 +182,49 @@ def analysis_run(request: AnalysisRunRequest, _: None = Depends(require_internal
         raise HTTPException(status_code=502, detail="analysis failed; see server logs") from exc
 
 
+def paper_analysis_model(model_id: str | None, provider_override: dict[str, str] | None) -> ModelConfig:
+    model_id = model_id or default_model_id()
+    if provider_override and provider_override.get("api_key"):
+        provider_type = provider_override.get("provider_type") or "openai"
+        if provider_type not in {"gemini", "deepseek", "openai"}:
+            provider_type = "openai"
+        return ModelConfig(
+            id=model_id, provider=provider_type, label=f"{provider_type}/{model_id}", key_env="", thinking=False,
+        )
+    model = find_model(model_id)
+    if model is None:
+        raise HTTPException(status_code=400, detail="Unknown paper analysis model")
+    return model
+
+
+@app.post("/analysis/answer-key-ocr")
+def answer_key_ocr(request: AnswerKeyOcrRequest, _: None = Depends(require_internal_key)) -> dict:
+    if request.mode == "direct" and not request.files:
+        raise HTTPException(status_code=400, detail="files required for direct mode")
+    if request.mode == "text" and not request.paperText.strip():
+        raise HTTPException(status_code=400, detail="paperText required for text mode")
+    if request.mode == "text" and len(request.paperText) > 32_000:
+        raise HTTPException(status_code=413, detail="答案分析最多支持 32000 个字符，请拆分后分析。")
+    provider_override = request.providerOverride.model_dump() if request.providerOverride else None
+    model = paper_analysis_model(request.model, provider_override)
+    try:
+        return run_answer_key_ocr(
+            model,
+            request.paperText if request.mode == "text" else "",
+            [file.model_dump() for file in request.files] if request.mode == "direct" else [],
+            provider_override,
+        )
+    except PdfRenderTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except (PdfPageLimitError, PaperImageByteLimitError) as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except PdfRenderError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("answer-key OCR failed for model %s", model.id)
+        raise HTTPException(status_code=502, detail="Answer key OCR failed; see server logs") from exc
+
+
 @app.post("/analysis/knowledge-points")
 def knowledge_points(
     request: dict,
@@ -198,39 +244,11 @@ def knowledge_points(
     paper_text = request.get("paperText", "")
     answer_card_json = clip_answer_card_json(request.get("answerCardJson") or "")
     provider_override = request.get("providerOverride")
-    model_id = request.get("model") or default_model_id()
-
-    if provider_override and provider_override.get("api_key"):
-        from llmclient.config import ModelConfig
-
-        provider_type = provider_override.get("provider_type") or "openai"
-        if provider_type not in {"gemini", "deepseek", "openai"}:
-            provider_type = "openai"
-        model = ModelConfig(
-            id=model_id,
-            provider=provider_type,
-            label=f"{provider_type}/{model_id}",
-            key_env="",
-            thinking=False,
-        )
-    else:
-        model = find_model(model_id) or MODEL_CATALOG[0]
-
-    # Get primary provider
-    provider_id = request.get("providerId")
-    if not provider_id:
+    if request.get("providerId") is None:
         raise HTTPException(status_code=400, detail="providerId required")
+    model = paper_analysis_model(request.get("model"), provider_override)
 
-    # TODO: Read provider from ai_providers table via DB
-    # For now, use env defaults based on mode
     if mode == "direct":
-        from llmclient.pdf_to_images import (  # 延迟导入：与其它 llmclient 依赖同一风格
-            PaperImageByteLimitError,
-            PdfPageLimitError,
-            PdfRenderError,
-            PdfRenderTimeoutError,
-        )
-
         try:
             result = run_direct_multimodal(
                 model=model,
