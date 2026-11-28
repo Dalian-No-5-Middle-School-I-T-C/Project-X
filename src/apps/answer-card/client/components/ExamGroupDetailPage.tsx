@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, ArrowLeft, BarChart3, ClipboardList, Download, FileText, Layers } from "lucide-react";
+import { Activity, ArrowLeft, BarChart3, ClipboardList, Download, FileText, Layers, Pencil } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { useAuth } from "../auth/AuthContext";
 import type {
   GroupOverview, GroupRankingResponse, GroupSubjectSummary,
-  GroupMetrics, GroupQuestionAnalysisResponse, GroupClassComparisonResponse
+  GroupMetrics, GroupQuestionAnalysisResponse, GroupClassComparisonResponse, ExamGroupDetail
 } from "../../../../shared/types";
 import { AnalysisQuestions } from "./AnalysisQuestions";
 import { AnalysisOverall } from "./AnalysisOverall";
 import { AnalysisAiPanel } from "./AnalysisAiPanel";
+import { CreateExamGroupModal } from "./CreateExamGroupModal";
 import { QuestionStudentScoresModal } from "./QuestionStudentScoresModal";
 import { useBands, DifficultyBadge, DiscriminationBadge } from "./MetricBadge";
 import {
@@ -38,6 +39,7 @@ import {
   TabsContent,
   TabsList,
   TabsTrigger,
+  notify,
   type SegmentedItem,
 } from "./ui/v2";
 
@@ -106,6 +108,7 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
   const [trackFilter, setTrackFilter] = useState<TrackFilter>("all");
   const [loading, setLoading] = useState(true);
   const [drill, setDrill] = useState<{ examId: number; questionNumber: string; maxScore: number } | null>(null);
+  const [editingGroup, setEditingGroup] = useState<ExamGroupDetail | null>(null);
 
   useEffect(() => {
     fetchJson<ClassOption[]>("/api/classes").then(setClasses).catch(() => setClasses([]));
@@ -185,6 +188,14 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
     }
   }
 
+  async function openEditor() {
+    try {
+      setEditingGroup(await fetchJson<ExamGroupDetail>(`/api/exam-groups/${groupId}`));
+    } catch {
+      notify.error("加载大考信息失败，请稍后重试");
+    }
+  }
+
   const subjectList = useMemo(() => (overview?.subjects ?? []).map((s) => s.subject), [overview]);
   const metricsByExam = useMemo(
     () => new Map((metrics?.subjects ?? []).map((s) => [s.examId, s])),
@@ -240,11 +251,18 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
             {trackFilter !== "all" && ` · ${trackFilter === "arts" ? "文科" : "理科"}`}
           </div>
         </div>
-        {isTeacher && onExport && (
-          <Button variant="primary" size="sm" icon={<Download />} onClick={onExport}>
-            导出大考
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          {isTeacher && (
+            <Button variant="outline" size="sm" icon={<Pencil />} onClick={() => void openEditor()}>
+              编辑大考
+            </Button>
+          )}
+          {isTeacher && onExport && (
+            <Button variant="primary" size="sm" icon={<Download />} onClick={onExport}>
+              导出大考
+            </Button>
+          )}
+        </div>
       </header>
 
       <Tabs
@@ -327,6 +345,20 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
           </TabsContent>
         </div>
       </Tabs>
+
+      {editingGroup && (
+        <CreateExamGroupModal
+          existingGroup={editingGroup}
+          existingMembers={editingGroup.members}
+          onClose={() => setEditingGroup(null)}
+          onCreated={() => {
+            setEditingGroup(null);
+            void loadOverview();
+            void loadMetrics();
+            void loadRankings();
+          }}
+        />
+      )}
 
       {drill && (
         <QuestionStudentScoresModal

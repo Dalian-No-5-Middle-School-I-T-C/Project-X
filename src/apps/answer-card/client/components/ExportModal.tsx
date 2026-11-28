@@ -13,6 +13,7 @@ import { cn } from "../lib/utils";
 import {
   Button,
   Checkbox,
+  ConfirmDialog,
   Dialog,
   DialogBody,
   DialogContent,
@@ -111,6 +112,8 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
   const [activeTemplate, setActiveTemplate] = useState<number | null>(null);
   const [previewRows, setPreviewRows] = useState<Record<string, unknown>[]>([]);
   const [exporting, setExporting] = useState(false);
+  const [deleteSlot, setDeleteSlot] = useState<number | null>(null);
+  const [templateBusy, setTemplateBusy] = useState(false);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
@@ -185,7 +188,10 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
       body: JSON.stringify({ name, columns: selected, sideTableN: sideN, gapCols })
     }).then(() => {
       fetchJson<Template[]>("/api/export/templates").then(setTemplates).catch(() => {});
-    }).catch(() => {});
+      notify.success(`模板${slot}已保存`);
+    }).catch((err) => {
+      notify.error(err instanceof Error ? err.message : "模板保存失败");
+    });
   }
 
   function loadTemplate(t: Template) {
@@ -196,11 +202,22 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
     setTemplateNames({ ...templateNames, [t.slot]: t.name });
   }
 
-  function deleteTemplate(slot: number) {
-    fetchJson(`/api/export/templates/${slot}`, { method: "DELETE" })
-      .then(() => { fetchJson<Template[]>("/api/export/templates").then(setTemplates).catch(() => {}); })
-      .catch(() => {});
-    if (activeTemplate === slot) setActiveTemplate(null);
+  async function confirmDeleteTemplate() {
+    if (deleteSlot == null || templateBusy) return;
+    const slot = deleteSlot;
+    setTemplateBusy(true);
+    try {
+      await fetchJson(`/api/export/templates/${slot}`, { method: "DELETE" });
+      if (activeTemplate === slot) setActiveTemplate(null);
+      const next = await fetchJson<Template[]>("/api/export/templates");
+      setTemplates(next);
+      setDeleteSlot(null);
+      notify.success(`模板${slot}已删除`);
+    } catch (err) {
+      notify.error(err instanceof Error ? err.message : "模板删除失败");
+    } finally {
+      setTemplateBusy(false);
+    }
   }
 
   async function doExport() {
@@ -227,6 +244,13 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
 
   function colLabel(id: string) { return COLUMN_DEFS.find((c) => c.id === id)?.label ?? id; }
   function colValue(colId: string, row: Record<string, unknown>): string | number {
+    if (colId === "needsReview") return row.needsReview === true ? "是" : "";
+    if (colId === "rankChange") {
+      const change = row.rankChange;
+      if (change == null) return "—";
+      const n = Number(change);
+      return n > 0 ? `↑+${n}` : n < 0 ? `↓${n}` : "0";
+    }
     const map: Record<string, string> = { studentNumber: "studentNumber", studentName: "studentName", className: "className", totalScore: "totalScore", assignedScore: "assignedScore", objectiveScore: "objectiveScore", subjectiveScore: "subjectiveScore", gradeRank: "gradeRank", classRank: "classRank", displayValue: "displayValue" };
     const key = map[colId];
     if (!key) return "—";
@@ -238,6 +262,7 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
   const overA4 = totalWidth > A4_MAX_CHARS;
 
   return (
+    <>
     <Dialog
       open
       onOpenChange={(next) => {
@@ -427,7 +452,7 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
                 checked={sideN > 0}
                 onCheckedChange={(v) => setSideN(v === true ? 10 : 0)}
               />
-              附加年级排名参照表（同 Sheet 右侧）
+              附加{classId ? "本班" : "年级"}排名参照表（同 Sheet 右侧）
             </label>
             {sideN > 0 && (
               <div className="flex flex-wrap items-center gap-4 pl-6">
@@ -513,7 +538,7 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
                         className="text-destructive-fg hover:text-destructive-fg"
                         onClick={(e) => {
                           e.stopPropagation();
-                          deleteTemplate(slot);
+                          setDeleteSlot(slot);
                         }}
                       >
                         <Trash2 className="size-3" />
@@ -542,5 +567,15 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+    <ConfirmDialog
+      open={deleteSlot !== null}
+      onOpenChange={(open) => { if (!open && !templateBusy) setDeleteSlot(null); }}
+      title={`删除模板${deleteSlot ?? ""}`}
+      description="删除后该槽位的列排列与侧表设置将无法恢复。"
+      confirmLabel="删除模板"
+      loading={templateBusy}
+      onConfirm={() => void confirmDeleteTemplate()}
+    />
+    </>
   );
 }

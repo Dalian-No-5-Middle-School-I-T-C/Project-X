@@ -468,6 +468,7 @@ export function DesignPage() {
                       {selectedBlock.type === "objective" ? (
                         <ObjectiveEditor
                           block={selectedBlock as ObjectiveBlock}
+                          card={card}
                           onChange={(mutator) => updateBlock(selectedBlock.id, mutator)}
                         />
                       ) : (

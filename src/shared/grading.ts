@@ -98,6 +98,36 @@ export function objectiveBlockTotalScore(block: ObjectiveBlock): number {
   return Math.round(sum * 100) / 100;
 }
 
+/** 客观题人工改分的合法候选值：步进值始终不超过满分，并保留满分。 */
+export function objectiveScoreCandidates(
+  maxScore: number,
+  step: number,
+  mode: ObjectiveMode = "multiple"
+): number[] {
+  const max = Number.isFinite(maxScore) ? Math.max(0, maxScore) : 0;
+  if (max === 0) return [0];
+  if (mode === "single") return [0, max];
+  const interval = Number.isFinite(step) && step > 0 ? step : max;
+  const values = new Set<number>([0]);
+  for (let index = 1; index * interval < max; index += 1) {
+    values.add(Math.round(index * interval * 1000) / 1000);
+  }
+  values.add(Math.round(max * 1000) / 1000);
+  return [...values].sort((left, right) => left - right);
+}
+
+/** 后端与前端共用同一合法分值规则，避免界面可选但接口拒绝。 */
+export function isLegalObjectiveScore(
+  score: number,
+  maxScore: number,
+  step: number,
+  mode: ObjectiveMode = "multiple"
+): boolean {
+  if (!Number.isFinite(score)) return false;
+  return objectiveScoreCandidates(maxScore, step, mode)
+    .some((candidate) => Math.abs(candidate - score) < 1e-9);
+}
+
 export function findObjectiveQuestion(
   card: AnswerCard,
   questionNumber: number

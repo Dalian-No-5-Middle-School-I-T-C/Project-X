@@ -232,7 +232,42 @@ export function buildPostprocessGroups(response: ScanBatchResponse, sessionId: s
   return [...byKey.values()].sort((a, b) => Number(a.groupId) - Number(b.groupId));
 }
 
-/** 一组多异常 = 多条队列项；顺序 duplicate → student_id → missing_page → low_confidence → other，组内按 groupId 数值序。 */
+/** 组编号按数值排序；非数字编号（测试/历史数据）退回字符串序，避免 NaN 把顺序打乱。 */
+export function compareGroupId(left: string, right: string): number {
+  const a = Number(left);
+  const b = Number(right);
+  if (Number.isFinite(a) && Number.isFinite(b) && a !== b) return a - b;
+  return left.localeCompare(right, undefined, { numeric: true });
+}
+
+export interface PostprocessSessionSection {
+  sessionId: string;
+  groups: PostprocessGroup[];
+}
+
+/**
+ * 结果页按扫描批次归组：批次顺序取会话列表的输入顺序（先扫的在前），
+ * 同一批次内按组编号（纸张顺序）排列。跨批次交错会跟桌上实体答卷对不上。
+ */
+export function groupPostprocessBySession(
+  groups: ReadonlyArray<PostprocessGroup>,
+  sessionOrder: ReadonlyArray<string> = [],
+): PostprocessSessionSection[] {
+  const order = new Map<string, number>();
+  for (const sessionId of sessionOrder) if (!order.has(sessionId)) order.set(sessionId, order.size);
+  const sections = new Map<string, PostprocessGroup[]>();
+  for (const group of groups) {
+    const list = sections.get(group.sessionId) ?? [];
+    list.push(group);
+    sections.set(group.sessionId, list);
+  }
+  for (const [sessionId] of sections) if (!order.has(sessionId)) order.set(sessionId, order.size);
+  return [...sections.entries()]
+    .sort((left, right) => order.get(left[0])! - order.get(right[0])!)
+    .map(([sessionId, list]) => ({ sessionId, groups: [...list].sort((a, b) => compareGroupId(a.groupId, b.groupId)) }));
+}
+
+/** 多批交错时保留会话（批次）输入顺序，同一批次内按 groupId 数值序；组内仍按异常类型顺序。 */
 export function buildPostprocessQueue(groups: ReadonlyArray<PostprocessGroup>): PostprocessQueueItem[] {
   const items: PostprocessQueueItem[] = [];
   for (const group of groups) {
@@ -253,7 +288,10 @@ export function buildPostprocessQueue(groups: ReadonlyArray<PostprocessGroup>): 
     }
   }
   const rank = new Map(POSTPROCESS_ISSUE_ORDER.map((kind, index) => [kind, index]));
-  return items.sort((a, b) => rank.get(a.kind)! - rank.get(b.kind)! || Number(a.groupId) - Number(b.groupId));
+  const sessionOrder = new Map<string, number>();
+  for (const group of groups) if (!sessionOrder.has(group.sessionId)) sessionOrder.set(group.sessionId, sessionOrder.size);
+  return items.sort((a, b) => sessionOrder.get(a.sessionId)! - sessionOrder.get(b.sessionId)!
+    || compareGroupId(a.groupId, b.groupId) || rank.get(a.kind)! - rank.get(b.kind)!);
 }
 
 function queueLabel(kind: PostprocessIssueKind, group: PostprocessGroup): string {

@@ -7,7 +7,7 @@ export async function persistScannerResultToMainDb(
     cardId: string,
     result: CombinedStudentResult,
     requireExam = false,
-    context?: { db: DbAdapter; examId: number; rosterApproval?: boolean }
+    context?: { db: DbAdapter; examId: number; rosterApproval?: boolean; actorId?: number | null }
   ): Promise<number> {
     if (!result.studentId || result.studentId === "未识别") { if (requireExam) throw new Error("学号未识别，成绩未入库"); return 0; }
 
@@ -69,7 +69,7 @@ export async function persistScannerResultToMainDb(
         // Whether this write also withdraws publication is decided by the
         // administrator policy (auto_unpublish_on_score_change), but it must
         // commit or roll back together with the score changes below.
-        await markScoreMutated(tx, exam.id, null, "scanner_save");
+        await markScoreMutated(tx, exam.id, context?.actorId ?? null, "scanner_save");
         const obj = roundScore(result.objectiveScore);
         const subj = roundScore(result.subjectiveScore);
         const total = roundScore(result.totalScore);

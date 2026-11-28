@@ -3,6 +3,8 @@ export function scanCorrectionSchema(dialect: "sqlite" | "mariadb"): string {
     source_type VARCHAR(32) NOT NULL,
     source_id VARCHAR(128) NOT NULL,
     card_version VARCHAR(24) NOT NULL,
+    layout_fingerprint VARCHAR(24),
+    grading_version VARCHAR(24),
     layout_json ${dialect === "sqlite" ? "TEXT" : "LONGTEXT"} NOT NULL,
     recognition_json ${dialect === "sqlite" ? "TEXT" : "LONGTEXT"} NOT NULL,
     revision BIGINT NOT NULL DEFAULT 0,

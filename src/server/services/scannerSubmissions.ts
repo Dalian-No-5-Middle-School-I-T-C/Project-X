@@ -2,13 +2,15 @@ import { resolveScannerExam } from "./scannerExam";
 import { getMysqlDb, buildUpsertSQL, type DbAdapter } from "../db";
 import type { AnswerCard } from "../../shared/types";
 import type { CombinedStudentResult } from "../../shared/grading";
+import { gradeCombinedRecognition } from "../../shared/grading";
+import { gradingVersion, layoutFingerprint } from "../../shared/cardVersion";
 import type { ScanBatchResponse, ScanConflictCard, ScanBatchPage } from "../../shared/scanPages";
 import { validateSessionGroupStructure, collectSessionResults, gradeSessionGroup, groupSessionPages, legacySessionBlockReason } from "../../apps/answer-card/server/scanner/session-results";
-import { listScanRecordsGroupedByStudent, type ScanRecordWithResult, type StudentGradingResultRow } from "../../apps/answer-card/server/database/scan-store";
+import { listScanRecordsGroupedByStudent, upsertStudentGradingResult, type ScanRecordWithResult, type StudentGradingResultRow } from "../../apps/answer-card/server/database/scan-store";
 import { persistScannerResultToMainDb } from "./scannerResultPersistence";
-import { recomputeExamRankings } from "./rankingUpdate";
+import { recomputeExamRankings, roundScore } from "./rankingUpdate";
 import { analysisCache } from "./analysisCache";
-import { assertCorrectionPageProvenance } from "./scanCorrectionProvenance";
+import { assertCorrectionPageProvenance, upgradeSessionLayoutVersions } from "./scanCorrectionProvenance";
 import { ensureExamParticipants, isExamParticipant } from "./examParticipants";
 import { databaseTimestamp } from "../db/timestamp";
 import { markScoreMutated } from "./examPublishEvents";
@@ -320,6 +322,173 @@ export async function recoverScannerSubmissionSnapshot(examId: number, sessionId
     analysisCache.invalidateExam(examId);
     await recomputeExamRankings(db, examId);
     return { ok: true };
+  });
+}
+
+export type ScannerRegradeItemResult = {
+  groupId: string;
+  ok: boolean;
+  status?: "regraded" | "unchanged";
+  saved?: boolean;
+  totalScore?: number;
+  message?: string;
+};
+
+type StoredQuestionScore = {
+  question_number: number | string;
+  score_type: string;
+  score: number | null;
+  selected_options: string | null;
+  manually_modified: number | null;
+};
+
+/** Keep teacher/online-review marks authoritative while applying current answer keys and rules. */
+async function preserveReviewedScannerScores(tx: DbAdapter, examId: number, studentId: number,
+  result: CombinedStudentResult): Promise<CombinedStudentResult> {
+  const stored = await tx.all<StoredQuestionScore>(
+    "SELECT question_number,score_type,score,selected_options,manually_modified FROM question_scores WHERE exam_id=? AND student_id=?",
+    examId, studentId,
+  );
+  const objectiveQuestions = result.objectiveQuestions.map(question => {
+    const prior = stored.find(row => row.score_type === "objective" && String(row.question_number) === String(question.questionNumber));
+    if (!prior || !Number(prior.manually_modified ?? 0)) return question;
+    let selectedOptions = question.selectedOptions;
+    try {
+      const parsed = prior.selected_options ? JSON.parse(prior.selected_options) : null;
+      if (Array.isArray(parsed) && parsed.every(value => typeof value === "string")) selectedOptions = parsed;
+    } catch { /* retain the recognized options if an old manual row is malformed */ }
+    return { ...question, score: Number(prior.score ?? 0), selectedOptions };
+  });
+  const subjectiveQuestions = result.subjectiveQuestions.map(question => {
+    const prior = stored.find(row => row.score_type === "subjective" && String(row.question_number) === String(question.questionNumber));
+    // Subjective scores may come from red-pen recognition, online review or arbitration;
+    // an answer-key regrade must not replace any of them with a fresh zero.
+    return prior && prior.score !== null ? { ...question, score: Number(prior.score) } : question;
+  });
+  const objectiveScore = roundScore(objectiveQuestions.reduce((sum, question) => sum + question.score, 0));
+  const subjectiveScore = roundScore(subjectiveQuestions.reduce((sum, question) => sum + question.score, 0));
+  return {
+    ...result, objectiveQuestions, subjectiveQuestions,
+    objectiveScore, subjectiveScore, totalScore: roundScore(objectiveScore + subjectiveScore),
+  };
+}
+
+/**
+ * Regrade selected complete papers from their stored OMR. This never invokes OCR.
+ * Saved receipts are updated atomically with scores, audit, publication policy,
+ * rankings and assigned scores; a repeated identical request performs no score write.
+ */
+export async function regradeScannerGroups(card: AnswerCard, sessionId: string, groupIds: readonly string[],
+  actorId: number | null = null): Promise<{ ok: boolean; results: ScannerRegradeItemResult[] }> {
+  return enqueueScannerSubmission(async () => {
+    const db = getMysqlDb();
+    const session = await db.get<{ card_id: string; status: string }>(
+      "SELECT card_id,status FROM twain_scan_sessions WHERE id=?", sessionId);
+    if (!session || session.card_id !== card.id) throw new Error("原扫描会话与答题卡不匹配");
+    if (session.status === "scanning") throw new Error("扫描会话仍在进行，请完成后再重判");
+    // A legacy mixed fingerprint is never trusted as geometry. Upgrade only after
+    // all stored layout/image/recognition evidence has been verified.
+    await db.transaction(tx => upgradeSessionLayoutVersions(tx, card, sessionId));
+    const records = (await listScanRecordsGroupedByStudent(sessionId, undefined, db)).flatMap(group => group.records);
+    const { groups, pageCount } = groupSessionPages(card, records);
+    const legacyBlock = legacySessionBlockReason({ pageCount, sided: card.sided, records, groups });
+    const studentGroups = new Map<string, number>();
+    for (const [, rows] of groups) {
+      const numbers = new Set(rows.map(row => row.record.student_id).filter((id): id is string => Boolean(id)));
+      for (const number of numbers) studentGroups.set(number, (studentGroups.get(number) ?? 0) + 1);
+    }
+    const results: ScannerRegradeItemResult[] = [];
+    for (const groupId of [...new Set(groupIds)]) {
+      try {
+        const rows = groups.get(groupId);
+        if (!rows) throw new Error("答题卡分组不存在");
+        if (legacyBlock) throw new Error(legacyBlock);
+        validateSessionGroupStructure(card, rows, pageCount);
+        const numbers = [...new Set(rows.map(row => row.record.student_id).filter((id): id is string => Boolean(id)))];
+        if (numbers.length !== 1 || !numbers[0]) throw new Error("未识别到唯一学号，请先订正后重判");
+        if ((studentGroups.get(numbers[0]) ?? 0) > 1) throw new Error("同一学号出现多份答题卡，请先处理重复卷");
+        const studentNumber = numbers[0];
+        const resolved = await resolveScannerExam(card.id, sessionId, db);
+        const outcome = await db.transaction(async tx => {
+          if (resolved.exam) await lockExam(tx, resolved.exam.id);
+          await upgradeSessionLayoutVersions(tx, card, sessionId);
+          for (const { record } of rows) {
+            await assertCorrectionPageProvenance(tx, card, record.id);
+            await tx.run("UPDATE scan_correction_pages SET grading_version=? WHERE source_type='twain_scan_record' AND source_id=?",
+              gradingVersion(card), record.id);
+          }
+          const computed = gradeSessionGroup(card, rows, studentNumber);
+          let result = computed, saved = false, changed = true;
+          const receipt = resolved.exam ? await tx.get<Receipt>(
+            "SELECT * FROM scanner_submissions WHERE exam_id=? AND session_id=? AND group_id=? AND state='saved'",
+            resolved.exam.id, sessionId, groupId) : undefined;
+          if (receipt) {
+            const related = await tx.all<{ group_id: string }>(
+              "SELECT group_id FROM scanner_submissions WHERE exam_id=? AND student_number=? AND state NOT IN ('superseded','discarded')",
+              resolved.exam!.id, studentNumber);
+            if (related.length !== 1) throw new Error("重复学号：所有相关答题卡需订正后重新保存");
+            const user = await tx.get<{ id: number }>("SELECT id FROM users WHERE student_number=?", studentNumber);
+            const priorScore = user ? await tx.get<Record<string, unknown>>(
+              "SELECT * FROM student_scores WHERE exam_id=? AND student_id=?", resolved.exam!.id, user.id) : null;
+            if (!user || !priorScore) throw new Error("扫描成绩回执缺少正式成绩，无法重判");
+            result = await preserveReviewedScannerScores(tx, resolved.exam!.id, user.id, computed);
+            changed = receipt.result_json !== JSON.stringify(result);
+            if (changed) {
+              await persistScannerResultToMainDb(card.id, result, true, {
+                db: tx, examId: resolved.exam!.id, actorId,
+              });
+              await tx.run(
+                "INSERT INTO answer_overrides (exam_id,card_id,question_number,score_type,override_type,old_value,new_value,created_by,created_at) VALUES (?,?,NULL,'objective','regrade',?,?,?,?)",
+                resolved.exam!.id, card.id,
+                JSON.stringify({ sessionId, groupId, studentNumber, totalScore: priorScore.total_score,
+                  objectiveScore: priorScore.objective_score, subjectiveScore: priorScore.subjective_score }),
+                JSON.stringify({ sessionId, groupId, studentNumber, totalScore: result.totalScore,
+                  objectiveScore: result.objectiveScore, subjectiveScore: result.subjectiveScore,
+                  gradingVersion: gradingVersion(card) }), actorId, databaseTimestamp(),
+              );
+              const recalc = await recomputeExamRankings(tx, resolved.exam!.id);
+              if (!recalc.assignedScoresRecalculated) throw new Error(`赋分重算失败，重判未保存：${recalc.assignedScoreError}`);
+            }
+            await tx.run("UPDATE scanner_submissions SET result_json=? WHERE exam_id=? AND session_id=? AND group_id=?",
+              JSON.stringify(result), resolved.exam!.id, sessionId, groupId);
+            saved = true;
+          } else {
+            const cached = await tx.get<StudentGradingResultRow>(
+              "SELECT * FROM twain_student_grading_results WHERE session_id=? AND student_id=?", sessionId, studentNumber);
+            changed = !cached || cached.objective_json !== JSON.stringify(result.objectiveQuestions)
+              || cached.subjective_json !== JSON.stringify(result.subjectiveQuestions)
+              || Number(cached.total_score) !== result.totalScore || Number(cached.max_score) !== result.totalMaxScore
+              || Number(cached.page_count) !== result.pageCount;
+          }
+          // Refresh per-page consumers without touching the recognized answers or invoking OMR.
+          for (const { record } of rows) {
+            const recognition = {
+              status: "ok" as const,
+              studentId: { status: "ok" as const, value: studentNumber },
+              questions: JSON.parse(record.recognition!.objective_json ?? "[]"),
+              subjectiveQuestions: JSON.parse(record.recognition!.subjective_json ?? "[]"),
+            };
+            const pageGrade = gradeCombinedRecognition(card, record.image_path, recognition);
+            await tx.run("UPDATE twain_recognition_results SET total_score=?,max_score=?,grade_status='done' WHERE scan_record_id=?",
+              pageGrade.totalScore, pageGrade.totalMaxScore, record.id);
+          }
+          if (changed || receipt) await upsertStudentGradingResult({
+            sessionId, studentId: studentNumber,
+            objectiveJson: JSON.stringify(result.objectiveQuestions),
+            subjectiveJson: JSON.stringify(result.subjectiveQuestions),
+            totalScore: result.totalScore, maxScore: result.totalMaxScore, pageCount: result.pageCount,
+          }, tx);
+          await tx.run("UPDATE twain_scan_sessions SET grading_version=? WHERE id=?", gradingVersion(card), sessionId);
+          return { changed, saved, result };
+        });
+        if (outcome.saved) analysisCache.invalidateExam(resolved.exam!.id);
+        results.push({ groupId, ok: true, status: outcome.changed ? "regraded" : "unchanged",
+          saved: outcome.saved, totalScore: outcome.result.totalScore });
+      } catch (error) {
+        results.push({ groupId, ok: false, message: error instanceof Error ? error.message : "重判失败" });
+      }
+    }
+    return { ok: results.every(result => result.ok), results };
   });
 }
 

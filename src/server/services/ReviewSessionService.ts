@@ -50,7 +50,7 @@ export async function saveSession(
   blockId: string,
   currentIndex: number,
   positionJson: Record<string, unknown> | null,
-  draftScores: Record<number, number> | null,
+  draftScores: ReviewSession["draftScores"],
   db: DbAdapter = getMysqlDb()
 ): Promise<void> {
   const now = databaseTimestamp();

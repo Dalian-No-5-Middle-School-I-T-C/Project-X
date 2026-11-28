@@ -34,6 +34,7 @@ export interface UserListItem {
   role_name?: string;
   role_display_name?: string;
   student_number: string | null;
+  track?: string | null;
   subject: string | null;
   teacher_role?: string | null;
   initial_password: string | null;
@@ -156,6 +157,8 @@ export interface TeacherRecord {
   role_display_name?: string;
   subject: string | null;
   teacher_role?: string | null;
+  is_active?: number;
+  initial_password?: string | null;
   email: string | null;
   phone: string | null;
   created_at: string;
@@ -189,7 +192,41 @@ export interface StudentWithClass {
   joined_at: string;
 }
 
+export interface CsvRowError {
+  row: string[];
+  rowNumber: number;
+  message: string;
+}
+
+export interface CreatedStudentAccount {
+  id: number;
+  username: string;
+  name: string;
+  studentNumber: string;
+  initialPassword: string;
+  rowNumber: number;
+}
+
 export interface CsvImportResult {
-  students: { created: number; skipped: number; errors: Array<{ row: string[]; message: string }> };
-  teachers: { created: number; skipped: number; errors: Array<{ row: string[]; message: string }> };
+  students: {
+    created: number;
+    linked: number;
+    skipped: number;
+    errors: CsvRowError[];
+    createdAccounts?: CreatedStudentAccount[];
+  };
+  teachers: {
+    created: number;
+    skipped: number;
+    errors: CsvRowError[];
+    createdAccounts?: Array<{ id: number; username: string; name: string; initialPassword: string; rowNumber: number }>;
+  };
+}
+
+export interface StudentImportResult {
+  created: number;
+  skipped: number;
+  errors: Array<{ row: { username: string; name: string; student_number: string; track?: string | null; rowNumber?: number }; rowNumber: number; message: string }>;
+  createdIds: number[];
+  createdAccounts?: CreatedStudentAccount[];
 }

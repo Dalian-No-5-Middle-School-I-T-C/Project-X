@@ -454,6 +454,22 @@ export type AnswerBlockCrop = {
   claimCount?: number;
   /** 已完成的评分轮数（0=尚待首评）。双评/三评的复核轮次据此判定，见 #312 CR1 */
   reviewRound?: number;
+  /** 服务端权威逐题满分契约；仅包含满分大于 0、可实际评分的小题 */
+  questionMaxScores?: Record<string, number>;
+  /** 当前已落库的逐题得分（尚未正式落库时缺省） */
+  questionScores?: Record<string, number>;
+  /** 追加式评分历史，保留同一评阅人的改票前版本 */
+  scoreBreakdown?: ReviewScoreBreakdownEntry[];
+  reviewedAt?: string | null;
+  finalScore?: number | null;
+  /** 仅当最后一票属于当前阅卷人且仍处于限时改票窗口时提供 */
+  amendmentDeadline?: string | null;
+};
+
+/** 服务端生成的权威逐题满分契约 */
+export type ReviewQuestionContract = {
+  questionNumber: number;
+  maxScore: number;
 };
 
 /** 网上阅卷题块汇总 */
@@ -468,6 +484,8 @@ export type ReviewBlockSummary = {
   hasHalfPoint: number;
   /** 本题块满分（逐题 max_score 求和，v1.9.4 打分面板用） */
   maxScore: number;
+  /** 权威逐题满分；前端逐题录入不得再根据图片或题号自行推断 */
+  questions: ReviewQuestionContract[];
 };
 
 /** 网上阅卷队列项（含学生姓名） */
@@ -495,6 +513,12 @@ export type ReviewPoolSummary = {
   pendingCount: number;
   /** 当前用户已领取数 */
   myClaimedCount: number;
+  /** 当前题块持有量上限（特权阅卷人由路由豁免） */
+  claimLimit: number;
+  /** 当前教师跨考试/题块的持有量 */
+  heldTotalCount: number;
+  /** 服务器综合池中数量、题块上限和全局上限给出的可否继续领取 */
+  canClaimMore: boolean;
   assignments: Array<{
     teacherId: number;
     teacherName?: string;
@@ -508,6 +532,14 @@ export type ReviewPoolSummary = {
 export type ReviewPoolEntry = ReviewBlockCropItem & {
   claimedByName?: string | null;
   claimCount: number;
+};
+
+export type ReviewScoreBreakdownEntry = {
+  round: number;
+  reviewerId: number;
+  score: number;
+  reviewedAt: string;
+  questionScores?: Record<string, number>;
 };
 
 export type ReviewSubmitScoreInput = {
@@ -532,6 +564,20 @@ export type ReviewSubmitResult = {
   /** 赋分是否成功重算（排名成功但赋分失败时区分上报） */
   assignedScoresRecalculated?: boolean;
   assignedScoreError?: string;
+  /** 改票成功后新的限时截止时间（ISO） */
+  amendmentDeadline?: string;
+};
+
+/** 最近已批记录（本人最后一票）——限时改票面板与回看共用 */
+export type RecentReviewedCrop = ReviewBlockCropItem & {
+  /** 本人最后一次提交的选票 */
+  myLastVote: ReviewScoreBreakdownEntry;
+  /** 提交时版本号，改票必须原样回传，防止覆盖他人更新 */
+  expectedVersion: string;
+  /** 限时改票截止时间（ISO）；已过期时为过去时间 */
+  amendmentDeadline: string;
+  /** 当前是否仍可改票（本人最后一票、未过窗口、卷仍在已批状态） */
+  canAmend: boolean;
 };
 
 export type SubjectiveQuestionGradeStatus = "ok" | "invalid" | "missing_score_grid";
@@ -1671,6 +1717,8 @@ export interface BlockGradingConfig {
   scoringMode: string;
   /** 题块总分拆分策略：proportional=按小题满分比例，equal=均分 */
   scoreDistribution: string;
+  /** 仲裁人姓名（服务端联表返回，仅用于展示；未指定仲裁人时为空） */
+  arbitratorName?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -1697,7 +1745,8 @@ export interface ReviewSession {
   blockId: string;
   currentIndex: number;
   positionJson: Record<string, unknown> | null;
-  draftScores: Record<number, number> | null;
+  /** 题块总分草稿为数字；逐题模式以 cropId -> questionNumber -> 原始输入字符串保存 */
+  draftScores: Record<string, number | string | Record<string, string>> | null;
   updatedAt: string;
 }
 
@@ -1900,6 +1949,16 @@ export interface TeacherBlockAssignment {
   remainingForMe: number;
   isSelected: boolean;
   questions: Array<{ number: number; score: number }>;
+  /** assigned=按逐生分配统计进度；pool=无逐生分配，按试卷池剩余可领份数统计 */
+  assignMode?: "assigned" | "pool";
+  /** 是否允许进入阅卷（特权阅卷人始终可处理任意题块） */
+  canEnter?: boolean;
+  /** 试卷池中当前可领取份数（自由领卷模式） */
+  claimableCount?: number;
+  /** 本人当前已领取未提交份数 */
+  heldCount?: number;
+  /** 当前身份是否不受题块范围与配额限制（管理员 / 学年主任） */
+  privileged?: boolean;
 }
 
 /** 首页仪表盘数据 */

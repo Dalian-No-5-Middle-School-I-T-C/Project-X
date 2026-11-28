@@ -1,6 +1,6 @@
 import { runServiceTask } from "../../../../server/lib/serviceTasks";
 import { scanCorrectionRouter } from "../../../../server/routes/scan-correction";
-import { processScannerSession, discardScannerGroup, listActiveReceiptGroups, writeScannerSession } from "../../../../server/services/scannerSubmissions";
+import { processScannerSession, discardScannerGroup, listActiveReceiptGroups, regradeScannerGroups, writeScannerSession } from "../../../../server/services/scannerSubmissions";
 import { scannerLegacyRecoveryRouter } from "../../../../server/routes/scanner-legacy-recovery";
 import {
   filterRecognitionJson,
@@ -61,6 +61,14 @@ function parseSaveGroupIds(body: unknown): ReadonlySet<string> | null | "invalid
   const raw = (body as { groupIds?: unknown }).groupIds;
   if (!Array.isArray(raw) || raw.some(id => typeof id !== "string" || id.length === 0)) return "invalid";
   return new Set(raw);
+}
+
+function parseRegradeGroupIds(body: unknown): string[] | "invalid" {
+  if (!body || typeof body !== "object" || !("groupIds" in body)) return "invalid";
+  const raw = (body as { groupIds?: unknown }).groupIds;
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 100
+    || raw.some(id => typeof id !== "string" || !/^(0|[1-9][0-9]*)$/.test(id) || !Number.isSafeInteger(Number(id)))) return "invalid";
+  return [...new Set(raw)];
 }
 
 /** 等纸空闲超时的合法区间：下限 2s（慢于此值几乎必然截断正常进纸），上限 2min。 */
@@ -681,6 +689,83 @@ export function createScannerRouter(twainEnabled = true): Router {
     );
     res.json(warnings?.length ? { ...result, warnings } : result);
   }
+
+  // Regrade stored OMR under the current answer key/rules. No native recognizer is invoked.
+  router.post("/session/:sessionId/regrade", async (req, res, next) => {
+    try {
+      const groupIds = parseRegradeGroupIds(req.body);
+      if (groupIds === "invalid") { res.status(400).json({ message: "groupIds 必须是 1–100 个不重复的分组编号" }); return; }
+      const sessionId = safeId(req.params.sessionId);
+      await enqueuePersist(async () => {
+        const session = await getSession(sessionId);
+        if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
+        if (!await sessionReadyForResults(sessionId, session.status)) { res.status(409).json({ message: "请等待扫描和识别全部完成" }); return; }
+        const card = await findCardForLayout(session.card_id);
+        if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+        try {
+          res.json(await regradeScannerGroups(card, sessionId, groupIds, req.user?.id ?? null));
+        } catch (error) {
+          res.status(409).json({ message: error instanceof Error ? error.message : "无法重判，请重新识别" });
+        }
+      });
+    } catch (error) { next(error); }
+  });
+
+  // Batch retry regrades ordinary papers without OCR and re-recognizes only failed papers.
+  router.post("/session/:sessionId/retry/batch", async (req, res, next) => {
+    try {
+      if (!twainEnabled) { res.status(409).json({ message: "请在 Windows 扫描端重新识别" }); return; }
+      const groupIds = parseRegradeGroupIds(req.body);
+      if (groupIds === "invalid") { res.status(400).json({ message: "groupIds 必须是 1–100 个不重复的分组编号" }); return; }
+      const sessionId = safeId(req.params.sessionId);
+      await enqueuePersist(async () => {
+        const session = await getSession(sessionId);
+        if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
+        if (!await sessionReadyForResults(sessionId, session.status)) { res.status(409).json({ message: "请等待扫描和识别全部完成" }); return; }
+        const card = await findCardForLayout(session.card_id);
+        if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+        const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(group => group.records);
+        const groups = groupSessionPages(card, records).groups;
+        const preview = await processScannerSession(card, sessionId);
+        const previewOnly = (req.body ?? {}).previewOnly === true;
+        const retryWarnings: string[] = [];
+        const results: Array<{ groupId: string; ok: boolean; status: string; saved?: boolean; totalScore?: number; repeatedOcr?: boolean; message?: string }> = [];
+        for (const groupId of groupIds) {
+          const rows = groups.get(groupId);
+          if (!rows) { results.push({ groupId, ok: false, status: "failed", message: "答题卡分组不存在" }); continue; }
+          const valid = preview.results.find(result => result.groupId === groupId);
+          const failure = preview.failures.find(result => result.groupId === groupId);
+          const recognitionFailed = !valid && (failure?.stage === "recognition"
+            || rows.some(row => ["failed", "pending", "processing"].includes(row.record.ocr_status)));
+          if (!recognitionFailed) {
+            const regrade = await regradeScannerGroups(card, sessionId, [groupId], req.user?.id ?? null);
+            const item = regrade.results[0];
+            results.push({ groupId, ok: item?.ok ?? false, status: item?.status ?? "failed",
+              saved: item?.saved, totalScore: item?.totalScore, repeatedOcr: false, message: item?.message });
+            continue;
+          }
+          try {
+            await runOcrOnSession(sessionId, session.card_id, event => {
+              emitProgress(sessionId, event);
+              const message = event.type === "warning" ? event.message?.trim() : "";
+              if (message && !retryWarnings.includes(message)) retryWarnings.push(message);
+            }, { recordIds: new Set(rows.map(row => row.record.id)) });
+            await flushSessionWarnings(sessionId);
+            const refreshed = await processScannerSession(card, sessionId, previewOnly ? "preview" : "validate", undefined, new Set([groupId]));
+            const result = refreshed.results.find(item => item.groupId === groupId);
+            const problem = refreshed.failures.find(item => item.groupId === groupId);
+            results.push({ groupId, ok: Boolean(result), status: result ? "recognized" : "failed",
+              saved: result?.saved, totalScore: result?.totalScore, repeatedOcr: true,
+              message: result ? undefined : problem?.message ?? "重新识别后仍无法判分" });
+          } catch (error) {
+            results.push({ groupId, ok: false, status: "failed", repeatedOcr: true,
+              message: error instanceof Error ? error.message : "重新识别失败" });
+          }
+        }
+        res.json({ ok: results.every(result => result.ok), results, ...(retryWarnings.length ? { warnings: retryWarnings } : {}) });
+      });
+    } catch (error) { next(error); }
+  });
 
   router.post("/session/:sessionId/retry", async (req, res, next) => {
     try {

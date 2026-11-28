@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, Link, Plus, RefreshCw, Search, Unlink, Upload, X } from "lucide-react";
+import { Download, KeyRound, Link, Plus, RefreshCw, Search, Unlink, Upload, X } from "lucide-react";
 import { fetchJson, authFetch } from "../auth/api";
 import { TEACHER_ROLE_LABELS } from "../auth/types";
-import type { GradeRecord, ClassRecord, TeacherRecord, TeachersListResponse } from "../auth/types";
+import type { CsvImportResult, GradeRecord, ClassRecord, TeacherRecord, TeachersListResponse } from "../auth/types";
+import { csvCell } from "../../../../shared/csv";
 import { cn } from "../lib/utils";
 import {
   Button,
@@ -19,6 +20,8 @@ import {
   DialogTitle,
   DialogBody,
   DialogFooter,
+  Pagination,
+  ConfirmDialog,
 } from "./ui/v2";
 import { ImportModal } from "./ImportModal";
 import { TEACHER_SUBJECTS } from "../../../../shared/subjects";
@@ -30,12 +33,20 @@ export function TeacherManagement() {
   const [teachers, setTeachers] = useState<TeacherRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [keyword, setKeyword] = useState("");
+  const [debouncedKeyword, setDebouncedKeyword] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [activeFilter, setActiveFilter] = useState<"all" | "active" | "inactive">("all");
+  const [listBusy, setListBusy] = useState(false);
+  const listRequestRef = useRef(0);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [teacherDetail, setTeacherDetail] = useState<TeacherRecord | null>(null);
   const [detailError, setDetailError] = useState("");
   const [detailRevision, setDetailRevision] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [accountMessage, setAccountMessage] = useState("");
+  const [disableTarget, setDisableTarget] = useState<TeacherRecord | null>(null);
 
   // 详情编辑
   const [editName, setEditName] = useState("");
@@ -62,21 +73,29 @@ export function TeacherManagement() {
   const selected = teacherDetail?.id === selectedId ? teacherDetail : null;
 
   const loadTeachers = useCallback(async () => {
-    setBusy(true);
+    const requestId = ++listRequestRef.current;
+    setListBusy(true);
+    setError("");
     try {
-      const qs = keyword ? `?keyword=${encodeURIComponent(keyword)}` : "";
-      const data = await fetchJson<TeachersListResponse>(`/api/teachers${qs}`);
+      const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+      if (debouncedKeyword.trim()) params.set("keyword", debouncedKeyword.trim());
+      if (activeFilter !== "all") params.set("isActive", activeFilter === "active" ? "1" : "0");
+      const data = await fetchJson<TeachersListResponse>(`/api/teachers?${params.toString()}`);
+      if (requestId !== listRequestRef.current) return;
+      if (data.teachers.length === 0 && page > 1) {
+        setPage((current) => Math.max(1, current - 1));
+        return;
+      }
       setTeachers(data.teachers);
       setTotal(data.total);
-      // 保持选中或默认第一个
-      setSelectedId((current) => data.teachers.some((t) => t.id === current)
+      setSelectedId((current) => data.teachers.some((teacher) => teacher.id === current)
         ? current : (data.teachers[0]?.id ?? null));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载教师失败");
+      if (requestId === listRequestRef.current) setError(err instanceof Error ? err.message : "加载教师失败");
     } finally {
-      setBusy(false);
+      if (requestId === listRequestRef.current) setListBusy(false);
     }
-  }, [keyword]);
+  }, [activeFilter, debouncedKeyword, page, pageSize]);
 
   const loadGrades = useCallback(async () => {
     try {
@@ -101,6 +120,14 @@ export function TeacherManagement() {
       setClassesGradeId(gradeId);
     }
   }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedKeyword(keyword);
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [keyword]);
 
   useEffect(() => { void loadTeachers(); }, [loadTeachers]);
   useEffect(() => { void loadGrades(); }, [loadGrades]);
@@ -135,6 +162,49 @@ export function TeacherManagement() {
   async function handleRefresh() {
     await loadTeachers();
     setDetailRevision((revision) => revision + 1);
+  }
+
+  async function handleResetPassword() {
+    if (!selected || busy) return;
+    setBusy(true);
+    setError("");
+    setAccountMessage("");
+    try {
+      const result = await fetchJson<{ initialPassword?: string; message: string }>(`/api/users/${selected.id}/reset-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      setAccountMessage(result.initialPassword ? `${selected.name} 的一次性初始密码：${result.initialPassword}` : result.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "重置密码失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSetActive(teacher: TeacherRecord, active: boolean) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    setAccountMessage("");
+    try {
+      if (active) {
+        await fetchJson(`/api/users/${teacher.id}/reactivate`, { method: "POST" });
+        setAccountMessage(`已启用教师 ${teacher.name}`);
+      } else {
+        await fetchJson(`/api/users/${teacher.id}`, { method: "DELETE" });
+        setAccountMessage(`已停用教师 ${teacher.name}`);
+      }
+      setDisableTarget(null);
+      if (teachers.length === 1 && page > 1) setPage((current) => current - 1);
+      else await loadTeachers();
+      setDetailRevision((revision) => revision + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "账号状态更新失败");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleSave() {
@@ -193,13 +263,15 @@ export function TeacherManagement() {
     }
   }
 
-  async function handleImport(csvText: string) {
-    await fetchJson("/api/users/import-csv", {
+  async function handleImport(csvText: string): Promise<CsvImportResult> {
+    const result = await fetchJson<CsvImportResult>("/api/users/import-csv", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ csvText })
     });
+    setPage(1);
     await loadTeachers();
+    return result;
   }
 
   function handleExport() {
@@ -226,16 +298,23 @@ export function TeacherManagement() {
     setBusy(true);
     setError("");
     try {
-      // 使用 csv 导入接口创建一个教师
-      const csvText = `科目,姓名\n${newTeacherSubject.trim()},${newTeacherName.trim()}`;
-      await fetchJson("/api/users/import-csv", {
+      // 使用 CSV 导入接口创建一个教师，并展示服务器返回的一次性初始密码。
+      const csvText = `科目,姓名\n${csvCell(newTeacherSubject.trim())},${csvCell(newTeacherName.trim())}`;
+      const result = await fetchJson<CsvImportResult>("/api/users/import-csv", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ csvText })
       });
+      const account = result.teachers.createdAccounts?.[0];
+      if (!account) {
+        setError(result.teachers.errors[0]?.message ?? "创建失败");
+        return;
+      }
+      setAccountMessage(`${account.name} 的账号：${account.username}，一次性初始密码：${account.initialPassword}`);
       setShowCreateModal(false);
       setNewTeacherName("");
       setNewTeacherSubject("");
+      setPage(1);
       await loadTeachers();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建失败");
@@ -293,21 +372,32 @@ export function TeacherManagement() {
       </header>
 
       {error && <p className="text-sm text-destructive-fg">{error}</p>}
+      {accountMessage && <p role="status" className="rounded-md border border-border-subtle bg-muted/30 px-3 py-2 text-sm text-foreground">{accountMessage}</p>}
 
       <div className="grid grid-cols-[220px_1fr] gap-4">
         {/* 左侧：教师列表 */}
         <section className="flex min-h-0 flex-col gap-2 rounded-lg border border-border-subtle bg-card p-3">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Input
               value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && void loadTeachers()}
+              onChange={(event) => setKeyword(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  setDebouncedKeyword(keyword);
+                  setPage(1);
+                }
+              }}
               placeholder="搜索教师..."
-              disabled={busy}
+              aria-label="搜索教师"
             />
-            <Button variant="outline" size="icon-sm" onClick={() => void loadTeachers()} disabled={busy} aria-label="搜索">
-              <Search size={14} />
-            </Button>
+            <Select value={activeFilter} onValueChange={(value) => { setActiveFilter(value as typeof activeFilter); setPage(1); }}>
+              <SelectTrigger className="w-28" aria-label="在职状态筛选"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部状态</SelectItem>
+                <SelectItem value="active">在职</SelectItem>
+                <SelectItem value="inactive">已停用</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div className="flex min-h-0 flex-col gap-1 overflow-auto max-h-[calc(100vh-260px)]">
             {teachers.map((t) => (
@@ -324,7 +414,7 @@ export function TeacherManagement() {
               >
                 <span className="text-sm font-medium text-foreground">{t.name}</span>
                 <small className="text-xs text-muted-foreground">
-                  {t.subject || "未设科目"}{t.teacher_role ? ` · ${TEACHER_ROLE_LABELS[t.teacher_role] ?? t.teacher_role}` : ""}
+                  {t.subject || "未设科目"}{t.teacher_role ? ` · ${TEACHER_ROLE_LABELS[t.teacher_role] ?? t.teacher_role}` : ""}{t.is_active === 0 ? " · 已停用" : ""}
                 </small>
               </button>
             ))}
@@ -332,7 +422,14 @@ export function TeacherManagement() {
               <p className="px-2 py-1 text-sm text-muted-foreground">{keyword ? "无匹配教师" : "暂无教师"}</p>
             )}
           </div>
-          <p className="px-2 text-xs text-muted-foreground">共 {total} 名教师</p>
+          <Pagination
+            total={total}
+            page={page}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            pageSizeOptions={[10, 20, 50, 100]}
+            onPageSizeChange={(size) => { setPageSize(size); setPage(1); }}
+          />
         </section>
 
         {/* 右侧：详情面板 */}
@@ -380,16 +477,22 @@ export function TeacherManagement() {
                     </SelectContent>
                   </Select>
                 </Field>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button variant="primary" size="sm" onClick={handleSave} disabled={busy}>保存</Button>
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => { setEditName(selected.name); setEditSubject(selected.subject ?? ""); }}
+                    onClick={() => { setEditName(selected.name); setEditSubject(selected.subject ?? ""); setEditTeacherRole(selected.teacher_role ?? ""); }}
                     disabled={busy}
                   >
                     重置
                   </Button>
+                  <Button variant="outline" size="sm" icon={<KeyRound size={14} />} onClick={() => void handleResetPassword()} disabled={busy}>重置密码</Button>
+                  {selected.is_active === 0 ? (
+                    <Button variant="outline" size="sm" onClick={() => void handleSetActive(selected, true)} disabled={busy}>启用账号</Button>
+                  ) : (
+                    <Button variant="outline" size="sm" className="text-destructive-fg" onClick={() => setDisableTarget(selected)} disabled={busy}>停用账号</Button>
+                  )}
                 </div>
 
                 {/* 关联班级 */}

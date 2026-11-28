@@ -1426,6 +1426,17 @@ MIGRATIONS.push({ version: 71, name: "invalidate-unverified-crop-revisions", up(
   db.exec("UPDATE answer_block_crops SET correction_revision = NULL WHERE correction_revision IS NOT NULL");
 } });
 
+// v72: 几何与判分版本分离。历史混合 card_version 原样保留，新列不回填，
+// 防止把答案也混入的旧哈希误认为可验证的版面哈希。
+MIGRATIONS.push({ version: 72, name: "scanner-layout-grading-versions", up(db) {
+  db.transaction(() => {
+    addColumnIfMissing(db, "twain_scan_sessions", "layout_fingerprint", "VARCHAR(24)");
+    addColumnIfMissing(db, "twain_scan_sessions", "grading_version", "VARCHAR(24)");
+    addColumnIfMissing(db, "scan_correction_pages", "layout_fingerprint", "VARCHAR(24)");
+    addColumnIfMissing(db, "scan_correction_pages", "grading_version", "VARCHAR(24)");
+  })();
+} });
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

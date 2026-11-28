@@ -17,6 +17,10 @@ export interface ScanSession {
   status: "pending" | "scanning" | "completed" | "cancelled" | "error";
   error_msg: string | null;
   warnings_json?: string | null;
+  card_version?: string | null;
+  layout_fingerprint?: string | null;
+  grading_version?: string | null;
+  version_source?: string;
   created_at: string;
   updated_at: string;
 }
@@ -117,6 +121,42 @@ export async function rememberSessionCardVersion(id: string, version: string): P
      SET card_version = ?, updated_at = CURRENT_TIMESTAMP
      WHERE id = ? AND (card_version IS NULL OR card_version = '')`,
     version, id,
+  );
+}
+
+/** Record the geometry actually recognized and the grading semantics used for it. */
+export async function rememberSessionVersions(
+  id: string,
+  versions: { cardVersion: string; layoutFingerprint: string; gradingVersion: string },
+): Promise<void> {
+  await db().run(
+    `UPDATE twain_scan_sessions
+     SET card_version = ?, layout_fingerprint = ?, grading_version = ?, version_source = 'upload', updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND (card_version IS NULL OR card_version = '')`,
+    versions.cardVersion, versions.layoutFingerprint, versions.gradingVersion, id,
+  );
+}
+
+export async function updateSessionGradingVersion(id: string, version: string): Promise<void> {
+  await db().run(
+    "UPDATE twain_scan_sessions SET grading_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    version, id,
+  );
+}
+
+/** Explicit OCR/retry may upgrade historical geometry, while retaining the original mixed provenance. */
+export async function recordSessionRecognitionVersions(
+  id: string,
+  versions: { cardVersion: string; layoutFingerprint: string; gradingVersion: string },
+): Promise<void> {
+  await db().run(
+    `UPDATE twain_scan_sessions
+     SET card_version = COALESCE(NULLIF(card_version, ''), ?),
+         layout_fingerprint = ?, grading_version = ?,
+         version_source = CASE WHEN card_version IS NULL OR card_version = '' THEN 'upload' ELSE 'layout_verified' END,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+    versions.cardVersion, versions.layoutFingerprint, versions.gradingVersion, id,
   );
 }
 
@@ -326,8 +366,7 @@ export async function upsertStudentGradingResult(params: {
   totalScore?: number | null;
   maxScore?: number | null;
   pageCount?: number;
-}): Promise<void> {
-  const d = db();
+}, d: DbAdapter = db()): Promise<void> {
   const sql = buildUpsertSQL(d.dialect, "twain_student_grading_results", SGR_UPSERT_COLS, SGR_CONFLICT_COLS, SGR_UPDATE_COLS);
   await d.run(sql,
     params.sessionId, params.studentId,

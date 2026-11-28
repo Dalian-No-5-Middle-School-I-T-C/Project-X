@@ -61,15 +61,26 @@ export async function recomputeExamRankings(db: DbAdapter, examId: number): Prom
     (row, rank) => ranks.set(row.id, rank)
   );
 
+  // 单条 CASE WHEN 批量更新，避免每名学生一次 UPDATE；两方言均支持绑定参数。
+  const rankCases: string[] = [];
+  const percentileCases: string[] = [];
+  const params: unknown[] = [];
+  const ids: number[] = [];
   for (const student of allStudents) {
     const rank = ranks.get(student.id) ?? 1;
-    await db.run(
-      "UPDATE student_scores SET `rank` = ?, percentile = ? WHERE id = ?",
-      rank,
-      rankPercentile(rank, n),
-      student.id
-    );
+    rankCases.push("WHEN ? THEN ?");
+    percentileCases.push("WHEN ? THEN ?");
+    params.push(student.id, rank, student.id, rankPercentile(rank, n));
+    ids.push(student.id);
   }
+  params.push(...ids);
+  await db.run(
+    `UPDATE student_scores
+     SET \`rank\` = CASE id ${rankCases.join(" ")} ELSE \`rank\` END,
+         percentile = CASE id ${percentileCases.join(" ")} ELSE percentile END
+     WHERE id IN (${ids.map(() => "?").join(",")})`,
+    ...params
+  );
 
   let assignedScoresRecalculated = true;
   let assignedScoreError: string | undefined;
@@ -83,4 +94,63 @@ export async function recomputeExamRankings(db: DbAdapter, examId: number): Prom
   }
   analysisCache.invalidateExam(examId);
   return { rankingsRecalculated: true, assignedScoresRecalculated, assignedScoreError };
+}
+
+type RankingWaiter = {
+  request: number;
+  resolve: (result: RankingRecalcResult) => void;
+  reject: (error: unknown) => void;
+};
+
+type RankingQueueState = {
+  requested: number;
+  completed: number;
+  running: boolean;
+  waiters: RankingWaiter[];
+};
+
+const rankingQueues = new Map<number, RankingQueueState>();
+
+/**
+ * 按考试合并在途排名重算。请求落在同一次查询期间时只追加一次后续重算，
+ * 每个调用方都等到覆盖自己提交序号的那一轮完成，避免复用旧 Promise 漏掉新分数。
+ */
+export function recomputeExamRankingsCoalesced(db: DbAdapter, examId: number): Promise<RankingRecalcResult> {
+  let state = rankingQueues.get(examId);
+  if (!state) {
+    state = { requested: 0, completed: 0, running: false, waiters: [] };
+    rankingQueues.set(examId, state);
+  }
+  state.requested += 1;
+  const request = state.requested;
+  const result = new Promise<RankingRecalcResult>((resolve, reject) => {
+    state!.waiters.push({ request, resolve, reject });
+  });
+  if (!state.running) {
+    state.running = true;
+    void drainRankingQueue(state, db, examId);
+  }
+  return result;
+}
+
+async function drainRankingQueue(state: RankingQueueState, db: DbAdapter, examId: number): Promise<void> {
+  while (state.requested > state.completed) {
+    const target = state.requested;
+    let result: RankingRecalcResult | undefined;
+    let failure: unknown;
+    try {
+      result = await recomputeExamRankings(db, examId);
+    } catch (error) {
+      failure = error;
+    }
+    state.completed = target;
+    const ready = state.waiters.filter((waiter) => waiter.request <= target);
+    state.waiters = state.waiters.filter((waiter) => waiter.request > target);
+    for (const waiter of ready) {
+      if (result) waiter.resolve(result);
+      else waiter.reject(failure);
+    }
+  }
+  state.running = false;
+  if (state.waiters.length === 0) rankingQueues.delete(examId);
 }

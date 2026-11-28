@@ -52,7 +52,7 @@ async function loginAdmin(base: string, initial: string): Promise<string> {
 async function main() {
   console.log(`临时库: ${process.env.PROJECTX_DB_PATH}`);
   const { ensureExamParticipants } = await import("../src/server/services/examParticipants");
-  const { initializeDatabase, ensureDefaultAdmin, getDatabase, closeDatabase, getMysqlDb } = await import("../src/server/db/index");
+  const { initializeDatabase, ensureDefaultAdmin, getDatabase, closeDatabase, getMysqlDb, hashPassword } = await import("../src/server/db/index");
   const { createApp } = await import("../src/apps/answer-card/server/index");
 
   initializeDatabase();
@@ -206,6 +206,74 @@ async function main() {
     const inRoster = await isExamParticipant(dbAdapter, examId, sids["30001"]);
     const outRoster = await isExamParticipant(dbAdapter, examId, sids["30005"]);
     ok(inRoster === true && outRoster === false, `T9 应考学生可入 / 外班 C 被拦 (in=${inRoster}, out=${outRoster})`);
+  }
+
+  // ── T10: 批量撤回写入状态与审计，重复请求不重复审计 ──
+  {
+    const firstId = createExamDirect("IN-T10-批量撤回一", { classId: classA });
+    const secondId = createExamDirect("IN-T10-批量撤回二", { classId: classB });
+    insertScore(firstId, sids["30001"]);
+    insertScore(secondId, sids["30003"]);
+    ok((await publish(base, headers, firstId)).status === 200, "T10a 第一场公布成功");
+    ok((await publish(base, headers, secondId)).status === 200, "T10b 第二场公布成功");
+    const response = await fetch(`${base}/api/exams/unpublish-batch`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ examIds: [firstId, secondId, firstId], reason: "批量撤回验证" }),
+    });
+    const result = await response.json();
+    const states = db.prepare("SELECT id, score_published FROM exams WHERE id IN (?, ?) ORDER BY id").all(firstId, secondId) as Array<{ id: number; score_published: number }>;
+    const audits = db.prepare("SELECT COUNT(*) AS count FROM exam_publish_events WHERE exam_id IN (?, ?) AND action = 'unpublish' AND reason = '批量撤回验证'").get(firstId, secondId) as { count: number };
+    ok(response.status === 200 && result.unpublishedCount === 2, `T10c 批量撤回两场 (status=${response.status}, count=${result.unpublishedCount})`);
+    ok(states.length === 2 && states.every((item) => item.score_published === 2), "T10d 两场成绩对学生立即不可见");
+    ok(Number(audits.count) === 2, `T10e 两场各写入一条撤回审计 (实际 ${audits.count})`);
+
+    const repeated = await fetch(`${base}/api/exams/unpublish-batch`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ examIds: [firstId, secondId], reason: "批量撤回验证" }),
+    });
+    const repeatedBody = await repeated.json();
+    const repeatedAudits = db.prepare("SELECT COUNT(*) AS count FROM exam_publish_events WHERE exam_id IN (?, ?) AND action = 'unpublish' AND reason = '批量撤回验证'").get(firstId, secondId) as { count: number };
+    ok(repeated.status === 200 && repeatedBody.unpublishedCount === 0 && Number(repeatedAudits.count) === 2, "T10f 重复撤回跳过已撤回考试且不重复审计");
+
+    const missing = await fetch(`${base}/api/exams/unpublish-batch`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ examIds: [firstId, 999999999] }),
+    });
+    ok(missing.status === 400, `T10g 包含不存在考试时整体拒绝 (实际 ${missing.status})`);
+    const unchanged = db.prepare("SELECT score_published FROM exams WHERE id = ?").get(firstId) as { score_published: number };
+    ok(unchanged.score_published === 2, "T10h 失败请求未产生部分撤回");
+
+    const teacherPassword = "IntegrityTeacher-2026!";
+    const teacherId = Number(db.prepare(
+      "INSERT INTO users (username, password_hash, name, role_id, teacher_role, subject, is_active, password_change_required) VALUES (?, ?, ?, 2, 'subject_teacher', '数学', 1, 0)"
+    ).run("integ-teacher", await hashPassword(teacherPassword), "完整性测试教师").lastInsertRowid);
+    db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject, is_head_teacher) VALUES (?, ?, '数学', 0)").run(teacherId, classA);
+    const teacherLogin = await fetch(`${base}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier: "integ-teacher", password: teacherPassword }),
+    });
+    const teacherBody = await teacherLogin.json();
+    const teacherHeaders = { Authorization: `Bearer ${teacherBody.token}` };
+    ok(teacherLogin.status === 200 && Boolean(teacherBody.token), "T10i 学科教师登录成功");
+    await publish(base, headers, firstId);
+    const denied = await fetch(`${base}/api/exams/unpublish-batch`, {
+      method: "POST",
+      headers: { ...teacherHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ examIds: [firstId, secondId] }),
+    });
+    const afterDenied = db.prepare("SELECT score_published FROM exams WHERE id = ?").get(firstId) as { score_published: number };
+    ok(denied.status === 403 && afterDenied.score_published === 1, `T10j 越权批次整体拒绝且未撤回本班考试 (status=${denied.status})`);
+    const allowed = await fetch(`${base}/api/exams/unpublish-batch`, {
+      method: "POST",
+      headers: { ...teacherHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ examIds: [firstId] }),
+    });
+    const afterAllowed = db.prepare("SELECT score_published FROM exams WHERE id = ?").get(firstId) as { score_published: number };
+    ok(allowed.status === 200 && afterAllowed.score_published === 2, `T10k 本班考试可批量撤回 (status=${allowed.status})`);
   }
 
   await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -44,6 +44,8 @@ export type GroupUploadBlock = "in-flight" | "partial-pages" | "completion-pendi
 type UploadRecognition = CombinedRecognitionResult & {
   cropImages?: Array<Record<string, unknown> & { dataBase64: string }>;
   cardVersion?: string;
+  layoutFingerprint?: string;
+  gradingVersion?: string;
   correctionRevision?: number;
 };
 
@@ -76,6 +78,9 @@ export interface StartUploadInput {
    * 读不到本机卡就传空串，任务会直接失败而不是不带版本上传。
    */
   cardVersion: string;
+  /** 几何版式与判分版本分别上报；旧混合 cardVersion 继续用于兼容旧服务端。 */
+  layoutFingerprint?: string;
+  gradingVersion?: string;
   name: string;
   dpi?: number;
   paperSize?: string;
@@ -147,6 +152,8 @@ interface JobRecord {
   examId?: number | null;
   /** 安全 R35：随会话创建上报的卡版本指纹，服务端据此拒绝旧版本上传 */
   cardVersion: string;
+  layoutFingerprint?: string;
+  gradingVersion?: string;
   dpi: number;
   paperSize: string;
   identityMode: "strict" | "legacy";
@@ -163,6 +170,7 @@ interface JobRecord {
   apiKey: string | null;
   /** 用户取消标志：暂停/队列中任务被取消后置真，使挂起的 runWithRetry 原地退出 */
   cancelled: boolean;
+  abortController: AbortController | null;
   failures?: ScanBatchFailure[];
   /** 非终态提示：相关联的冲突（如重复学号撤出），不影响任务继续上传 */
   notice?: string;
@@ -262,6 +270,19 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
   const pageTimeoutMs = deps.pageTimeoutMs ?? 120_000;
   const genId = deps.genId ?? defaultGenId;
 
+  /** 同时遵守单次请求超时与用户取消；Safari 15 没有 AbortSignal.any。 */
+  function requestSignal(job: JobRecord): AbortSignal {
+    const controller = new AbortController();
+    const timeout = timeoutSignal(pageTimeoutMs);
+    const abort = () => controller.abort();
+    if (timeout.aborted || job.abortController?.signal.aborted) controller.abort();
+    else {
+      timeout.addEventListener("abort", abort, { once: true });
+      job.abortController?.signal.addEventListener("abort", abort, { once: true });
+    }
+    return controller.signal;
+  }
+
   function jobFetch(j: JobRecord): (url: string, init?: RequestInit) => Promise<Response> {
     // 注入的 mock（冒烟测试）直接使用，不走快照
     if (baseRemoteFetch !== remoteScannerFetch) return baseRemoteFetch;
@@ -290,12 +311,24 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
   const jobs: JobRecord[] = [];
   // Keep small version receipts after a completed task releases its image data.
   const sessionVersions = new Map<string, string>();
+  const sessionLayouts = new Map<string, string>();
+  const sessionGradingVersions = new Map<string, string>();
   const versionKey = (job: JobRecord, sessionId: string) => JSON.stringify([job.remoteBase, job.cardId, sessionId]);
   function rememberSessionVersion(job: JobRecord, sessionId: string): void {
     const key = versionKey(job, sessionId);
     sessionVersions.set(key, job.cardVersion);
     try { localStorage.setItem(`projectx_scanner_session_version/${key}`, job.cardVersion); }
     catch { /* In-memory receipts still work when browser storage is unavailable. */ }
+    if (job.layoutFingerprint) {
+      sessionLayouts.set(key, job.layoutFingerprint);
+      try { localStorage.setItem(`projectx_scanner_session_layout/${key}`, job.layoutFingerprint); }
+      catch { /* In-memory receipts still work when browser storage is unavailable. */ }
+    }
+    if (job.gradingVersion) {
+      sessionGradingVersions.set(key, job.gradingVersion);
+      try { localStorage.setItem(`projectx_scanner_session_grading/${key}`, job.gradingVersion); }
+      catch { /* In-memory receipts still work when browser storage is unavailable. */ }
+    }
   }
   function rememberedSessionVersion(job: JobRecord, sessionId: string): string | undefined {
     const key = versionKey(job, sessionId);
@@ -303,6 +336,24 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     if (cached) return cached;
     try {
       const saved = localStorage.getItem(`projectx_scanner_session_version/${key}`);
+      return saved && /^[0-9a-f]{24}$/i.test(saved) ? saved : undefined;
+    } catch { return undefined; }
+  }
+  function rememberedSessionLayout(job: JobRecord, sessionId: string): string | undefined {
+    const key = versionKey(job, sessionId);
+    const cached = sessionLayouts.get(key);
+    if (cached) return cached;
+    try {
+      const saved = localStorage.getItem(`projectx_scanner_session_layout/${key}`);
+      return saved && /^[0-9a-f]{24}$/i.test(saved) ? saved : undefined;
+    } catch { return undefined; }
+  }
+  function rememberedSessionGrading(job: JobRecord, sessionId: string): string | undefined {
+    const key = versionKey(job, sessionId);
+    const cached = sessionGradingVersions.get(key);
+    if (cached) return cached;
+    try {
+      const saved = localStorage.getItem(`projectx_scanner_session_grading/${key}`);
       return saved && /^[0-9a-f]{24}$/i.test(saved) ? saved : undefined;
     } catch { return undefined; }
   }
@@ -448,13 +499,15 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       body: JSON.stringify({
         cardId: j.cardId,
         cardVersion: j.cardVersion,
+        ...(j.layoutFingerprint ? { layoutFingerprint: j.layoutFingerprint } : {}),
+        ...(j.gradingVersion ? { gradingVersion: j.gradingVersion } : {}),
         name: j.name,
         dpi: j.dpi,
         paperSize: j.paperSize,
         identityMode: j.identityMode,
         pageCount: j.pages.length,
       }),
-      signal: timeoutSignal(pageTimeoutMs),
+      signal: requestSignal(j),
     });
     if (!res.ok) throw await httpError(res);
     const data = (await res.json()) as { sessionId: string; uploadTokens: string[] };
@@ -469,11 +522,12 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
    * 401/403 与版本冲突仍向上抛出，不能静默吞掉。
    */
   async function tryReuseScanUploadPayload(
+    j: JobRecord,
     payloadUrl: string,
     cardVersion: string,
   ): Promise<UploadRecognition | null> {
     try {
-      const cached = await (deps.localFetch ?? authFetch)(payloadUrl, { signal: timeoutSignal(pageTimeoutMs) });
+      const cached = await (deps.localFetch ?? authFetch)(payloadUrl, { signal: requestSignal(j) });
       if (cached.ok) {
         let result: UploadRecognition;
         try {
@@ -506,7 +560,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     localForm.append("identityMode", j.identityMode);
     localForm.append("cardVersion", j.cardVersion);
     const recognized = await (deps.localFetch ?? authFetch)(`/api/cards/${encodeURIComponent(j.cardId)}/recognition`, {
-      method: "POST", body: localForm, signal: timeoutSignal(pageTimeoutMs),
+      method: "POST", body: localForm, signal: requestSignal(j),
     });
     if (!recognized.ok) {
       const error = await httpError(recognized);
@@ -525,7 +579,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     const recordId = page.input.recordId;
     const payloadUrl = j.kind === "scan" && recordId
       ? `/api/scanner/record/${encodeURIComponent(recordId)}/upload-payload` : page.input.uploadPayloadUrl;
-    const cached = payloadUrl ? await tryReuseScanUploadPayload(payloadUrl, j.cardVersion) : null;
+    const cached = payloadUrl ? await tryReuseScanUploadPayload(j, payloadUrl, j.cardVersion) : null;
     const recognition = cached ?? await recognizeFreshPage(j, page, blobData);
     // Versioned upload-payload may embed a correction snapshot, but teachers can still save
     // newer edits after the job was queued — always re-read the persisted correction document.
@@ -539,7 +593,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     let historicalId: string | undefined;
     if (!cached && !savedCorrection && !page.input.studentId && page.input.fallbackStudentId && recordId) {
       const response = await (deps.localFetch ?? authFetch)(`/api/scanner/record/${encodeURIComponent(recordId)}`, {
-        signal: timeoutSignal(pageTimeoutMs),
+        signal: requestSignal(j),
       });
       if (!response.ok) throw await httpError(response);
       const record = await response.json() as { student_id?: string | null };
@@ -591,7 +645,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     const res = await fetcher(`/api/scanner/upload/sessions/${j.remoteSessionId}/pages`, {
       method: "POST",
       body: form,
-      signal: timeoutSignal(pageTimeoutMs),
+      signal: requestSignal(j),
     });
     if (!res.ok) throw await httpError(res);
     if (page.prepared!.cropForm) {
@@ -606,7 +660,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     if (cropForm) {
       const fetcher = jobFetch(j);
       const cropResponse = await fetcher(`/api/scanner/upload/sessions/${j.remoteSessionId}/pages/${page.token}/crops`, {
-        method: "POST", body: cropForm, signal: timeoutSignal(pageTimeoutMs),
+        method: "POST", body: cropForm, signal: requestSignal(j),
       });
       if (!cropResponse.ok) {
         const error = await httpError(cropResponse);
@@ -629,7 +683,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       // 这一批就不能入库（服务端返回 409 CARD_VERSION_MISMATCH）。
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ cardVersion: j.cardVersion }),
-      signal: timeoutSignal(pageTimeoutMs),
+      signal: requestSignal(j),
     });
     if (!res.ok) {
       const body = await res.clone().json().catch(() => ({}));
@@ -743,7 +797,7 @@ if (j.cancelled) throw cancelledError(j);
         await runWithRetry(j, "订正学号", async () => {
           const fetcher = jobFetch(j);
           const response = await fetcher(`/api/scanner/upload/sessions/${j.remoteSessionId}/results`, {
-            signal: timeoutSignal(pageTimeoutMs),
+            signal: requestSignal(j),
           });
           if (!response.ok) throw await httpError(response);
           const batch = await response.json() as ScanBatchResponse;
@@ -761,7 +815,7 @@ if (j.cancelled) throw cancelledError(j);
           for (const groupId of targets.keys()) {
             const corrected = await fetcher(`/api/scanner/upload/sessions/${j.remoteSessionId}/correct`, {
               method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ groupId, studentId: j.pendingStudentId }), signal: timeoutSignal(pageTimeoutMs),
+              body: JSON.stringify({ groupId, studentId: j.pendingStudentId }), signal: requestSignal(j),
             });
             if (!corrected.ok) throw await httpError(corrected);
           }
@@ -1033,6 +1087,7 @@ if (j.cancelled) throw cancelledError(j);
       trackResults: input.trackResults,
       message: "",
       createdAt: Date.now(),
+      abortController: null,
       pauseWaiter: null,
       remoteBase: readRemoteBase(),
       apiKey: getStoredApiKey(),
@@ -1147,7 +1202,7 @@ if (j.cancelled) throw cancelledError(j);
       && j.remoteSessionId && sessions.has(j.remoteSessionId) && (j.status === "done" || j.status === "error")).map(async job => {
       const revision = job.resultRevision = (job.resultRevision ?? 0) + 1;
       const response = await jobFetch(job)(`/api/scanner/upload/sessions/${job.remoteSessionId}/results`, {
-        signal: timeoutSignal(pageTimeoutMs),
+        signal: requestSignal(job),
       });
       if (!response.ok) throw await httpError(response);
       const body = await response.json() as ScanBatchResponse;
@@ -1205,7 +1260,7 @@ if (j.cancelled) throw cancelledError(j);
       for (const job of jobs) if (job.remoteBase === source.remoteBase && job.cardId === source.cardId) job.resultRevision = (job.resultRevision ?? 0) + 1;
       return jobFetch(owner ?? source)(`/api/scanner/upload/sessions/${encodeURIComponent(sessionId)}/complete`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...(version ? { cardVersion: version } : {}), ...(groupId !== undefined ? { groupId } : {}) }), signal: timeoutSignal(pageTimeoutMs),
+        body: JSON.stringify({ ...(version ? { cardVersion: version } : {}), ...(groupId !== undefined ? { groupId } : {}) }), signal: requestSignal(owner ?? source),
       });
     },
     requestJob: (id: string, url: string, init?: RequestInit) => {

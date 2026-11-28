@@ -125,16 +125,23 @@ router.post(
       if (!teacherCounts || typeof teacherCounts !== "object") {
         return res.status(400).json({ ok: false, error: "teacherCounts 必填，格式: {teacherId: count}" });
       }
+      const mode = req.body?.mode === "append" ? "append" : "replace";
+      const split = req.body?.split === "equal" ? "equal" : "random";
       const db = getMysqlDb();
 
       const map = new Map<number, number>();
       for (const [key, val] of Object.entries(teacherCounts)) {
         const teacherId = Number(key);
         const count = Number(val);
-        if (!Number.isInteger(teacherId) || teacherId <= 0 || !Number.isInteger(count) || count <= 0) {
+        // 均分模式忽略份数，允许 0；随机模式必须给出正整数。
+        if (!Number.isInteger(teacherId) || teacherId <= 0 || !Number.isInteger(count) || count < 0
+          || (split === "random" && count <= 0)) {
           return res.status(400).json({ ok: false, error: `无效的分配参数: ${key}=${val}` });
         }
         map.set(teacherId, count);
+      }
+      if (map.size === 0) {
+        return res.status(400).json({ ok: false, error: "请至少选择一位阅卷教师" });
       }
       // 校验教师存在且为教师角色（防止外键 500 / 误把学生 ID 当作阅卷教师）
       const teacherIds = Array.from(map.keys());
@@ -159,7 +166,14 @@ router.post(
       }
 
       const userId = (req as any).user?.id;
-      const assignments = await createAssignments(examId, String(req.params.blockId ?? ""), map, userId);
+      const assignments = await createAssignments(
+        examId,
+        String(req.params.blockId ?? ""),
+        map,
+        userId,
+        undefined,
+        { mode, split }
+      );
       res.json({ ok: true, data: assignments });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err.message });

@@ -146,6 +146,7 @@ export {
   type DataTableProps,
   type ColumnDef,
   type SortingState,
+  type PaginationState,
 } from "./data-table";
 export {
   DataCard,

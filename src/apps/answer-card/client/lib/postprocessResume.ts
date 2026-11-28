@@ -8,7 +8,7 @@
 const SESSIONS_PREFIX = "projectx-postprocess-sessions/v1";
 const ACTIVE_KEY = "projectx-postprocess-active/v1";
 const VIEW_PREFIX = "projectx-postprocess-view/v1";
-const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const ROTATION_PREFIX = "projectx-postprocess-rotation/v1";
 
 export interface PostprocessSessionRef { sessionId: string; pageCount: number; }
 export interface PostprocessViewState {
@@ -47,7 +47,9 @@ function writeJson(key: string, value: unknown): boolean {
 
 export function readPostprocessSessions(cardId: string, userId?: number | null): PostprocessSessionRef[] {
   const saved = readJson<{ at?: number; userId?: unknown; sessions?: unknown }>(sessionsKey(cardId, userId));
-  if (!saved || typeof saved.at !== "number" || Date.now() - saved.at > MAX_AGE_MS || !Array.isArray(saved.sessions)) return [];
+  // 会话是否存在交给后端历史会话接口核对，这里不再按本机写入时间静默丢弃。
+  // 现场反馈周五扫完周一打开就没有入口，24 小时不是业务事实。
+  if (!saved || !Array.isArray(saved.sessions)) return [];
   if (userId != null && saved.userId !== userId) return [];
   return saved.sessions.filter((item): item is PostprocessSessionRef => Boolean(item)
     && typeof (item as PostprocessSessionRef).sessionId === "string"
@@ -88,8 +90,8 @@ function activeKey(userId?: number | null): string {
 
 export function readActivePostprocess(userId?: number | null): { cardId: string; cardTitle: string; userId: number | null; at: number } | null {
   const saved = readJson<{ cardId?: unknown; cardTitle?: unknown; userId?: unknown; at?: unknown }>(activeKey(userId));
-  if (!saved || typeof saved.cardId !== "string" || typeof saved.at !== "number"
-    || Date.now() - saved.at > MAX_AGE_MS) return null;
+  // 是否还值得恢复由后端会话列表判断，本机标记不按时间过期。
+  if (!saved || typeof saved.cardId !== "string" || typeof saved.at !== "number") return null;
   if (userId != null && saved.userId !== userId) return null;
   return {
     cardId: saved.cardId,
@@ -111,7 +113,8 @@ export function clearActivePostprocess(userId?: number | null): void {
 /** 多人共用一台扫描机时，停留视图也按账号存：别人打开同一张卡不会把「停在哪」改掉。 */
 export function readPostprocessView(cardId: string, userId?: number | null): PostprocessViewState | null {
   const saved = readJson<PostprocessViewState & { at?: number }>(viewKey(cardId, userId));
-  if (!saved || typeof saved.at !== "number" || Date.now() - saved.at > MAX_AGE_MS) return null;
+  // 停留位置在组被删除后自然失效，其余情况下一直有效。
+  if (!saved) return null;
   if (saved.view !== "results" && saved.view !== "correction" && saved.view !== "queue") return null;
   if (typeof saved.sessionId !== "string" || typeof saved.groupId !== "string") return null;
   return {
@@ -133,4 +136,22 @@ export function clearPostprocessView(cardId: string, userId?: number | null): vo
 
 function viewKey(cardId: string, userId?: number | null): string {
   return `${VIEW_PREFIX}/${typeof userId === "number" ? userId : "anon"}/${encodeURIComponent(cardId)}`;
+}
+
+export type CardImageRotation = 0 | 90 | 180 | 270;
+
+/** 横向扫描件的显示旋转按「账号 + 卡」记住：同一张卡切到下一份不再回到 0°。 */
+export function readPostprocessRotation(cardId: string, userId?: number | null): CardImageRotation {
+  const saved = readJson<{ rotation?: unknown; userId?: unknown }>(rotationKey(cardId, userId));
+  if (!saved || (userId != null && saved.userId !== userId)) return 0;
+  return saved.rotation === 90 || saved.rotation === 180 || saved.rotation === 270 ? saved.rotation : 0;
+}
+
+export function writePostprocessRotation(cardId: string, rotation: CardImageRotation, userId?: number | null): void {
+  if (!cardId) return;
+  writeJson(rotationKey(cardId, userId), { rotation, userId: typeof userId === "number" ? userId : null });
+}
+
+function rotationKey(cardId: string, userId?: number | null): string {
+  return `${ROTATION_PREFIX}/${typeof userId === "number" ? userId : "anon"}/${encodeURIComponent(cardId)}`;
 }

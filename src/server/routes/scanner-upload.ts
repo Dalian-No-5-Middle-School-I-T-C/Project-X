@@ -16,7 +16,7 @@ import { gradeCombinedRecognition, gradeSessionStudentResults } from "../../shar
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { parseIdentityMode } from "../../shared/cardIdentity";
-import { cardFingerprint, parseCardVersion } from "../../shared/cardVersion";
+import { cardFingerprint, gradingVersion, layoutFingerprint, parseCardVersion } from "../../shared/cardVersion";
 import { buildLayout } from "../../shared/layout";
 import { mapScanPageToLayout } from "../../shared/scanPages";
 import {
@@ -52,7 +52,9 @@ import type { DbAdapter } from "../db/mysql";
 import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
 import { groupSessionPages } from "../../apps/answer-card/server/scanner/session-results";
 import { scannerLegacyRecoveryRouter } from "./scanner-legacy-recovery";
-import { listScanRecordsGroupedByStudent, upsertRecognitionResult } from "../../apps/answer-card/server/database/scan-store";
+import { recoveredPage } from "../services/scanCorrectionRecovery";
+import { upgradeSessionLayoutVersions, verifySessionLayoutEvidence } from "../services/scanCorrectionProvenance";
+import { listScanRecordsGroupedByStudent, updateSessionGradingVersion, upsertRecognitionResult } from "../../apps/answer-card/server/database/scan-store";
 
 const geometrySchema = z.object({
   imageWidth: z.number().int().positive().max(100000), imageHeight: z.number().int().positive().max(100000),
@@ -274,6 +276,7 @@ function scannerUploadDir(): string {
 async function cardVersionProblem(
   cardId: string,
   rawVersion: unknown,
+  rawLayoutVersion?: unknown,
 ): Promise<{ status: number; code: string; message: string } | null> {
   const version = parseCardVersion(rawVersion);
   if (!version) {
@@ -287,17 +290,56 @@ async function cardVersionProblem(
   if (!card) {
     return { status: 404, code: "CARD_NOT_FOUND", message: "答题卡不存在或已删除，无法核验版本" };
   }
-  const serverVersion = cardFingerprint(card);
-  if (serverVersion !== version) {
-    return {
-      status: 409,
-      code: "CARD_VERSION_MISMATCH",
-      message:
-        `答题卡已在服务器更新（服务器版本 ${serverVersion.slice(0, 12)}，扫描端版本 ${version.slice(0, 12)}）：` +
-        "按旧版卡识别判分的结果不能入库，请重新同步答题卡后重扫或重新上传",
-    };
+  if (rawLayoutVersion !== undefined) {
+    const geometry = parseCardVersion(rawLayoutVersion);
+    if (!geometry) return { status: 400, code: "LAYOUT_FINGERPRINT_REQUIRED", message: "layoutFingerprint 格式无效" };
+    if (geometry !== layoutFingerprint(card)) {
+      return { status: 409, code: "CARD_VERSION_MISMATCH", message: "答题卡版式已在服务器更新，请同步后重新识别，无需重新扫描" };
+    }
   }
+  // Legacy clients only send the mixed fingerprint. A mismatch may be grading-only;
+  // creation records provenance and page/complete evidence verifies geometry before scores.
   return null;
+}
+
+function assertUploadedRecognitionLayout(
+  card: import("../../shared/types").AnswerCard,
+  recognition: z.infer<typeof recognitionSchema>,
+  layoutPage: number,
+  identityMode: "strict" | "legacy",
+  image: { width: number; height: number },
+): void {
+  const layout = buildLayout(card).pages.find((page) => page.pageNumber === layoutPage);
+  if (!layout) throw new Error("识别页码与当前答题卡版式不一致");
+  if (!recognition.geometry) return;
+  recoveredPage(card, {
+    sourceType: "twain_scan_record", sourceId: "", revision: 0, layout, recognition,
+    selected: [], invalid: [], imageUrl: "", recovery: { fingerprint: "", identityMode, dpi: 300 },
+  }, recognition);
+  if (recognition.geometry.imageWidth !== image.width || recognition.geometry.imageHeight !== image.height) {
+    throw new Error("识别坐标与原图尺寸不一致");
+  }
+}
+
+function assertUploadedCropLayout(
+  card: import("../../shared/types").AnswerCard,
+  manifest: Array<z.infer<typeof cropManifestSchema>>,
+): void {
+  const pages = new Map(buildLayout(card).pages.map((page) => [page.pageNumber, page]));
+  for (const crop of manifest) {
+    const page = pages.get(crop.pageNumber);
+    const blocks = page?.blocks.filter((block) => {
+      if (block.type === "objective") return (block.items ?? []).length > 0;
+      if (block.type === "subjective") return (block.questions ?? []).some((question) => question.questionNumber !== "");
+      return false;
+    }) ?? [];
+    const block = blocks[crop.segmentIndex - 1];
+    const expected = block && ("frameRect" in block && block.frameRect ? block.frameRect : block.rect);
+    if (!expected || Math.abs(expected.x - crop.rect.x) > 0.05 || Math.abs(expected.y - crop.rect.y) > 0.05
+      || Math.abs(expected.width - crop.rect.width) > 0.05 || Math.abs(expected.height - crop.rect.height) > 0.05) {
+      throw new Error("切块坐标与当前答题卡版式不一致，请重新识别，无需重新扫描");
+    }
+  }
 }
 
 router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
@@ -322,7 +364,7 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
     // 放在版本核验之前还有第二层作用：越权调用方不会从 409 文案里读到服务器侧的版本指纹。
     if (!(await enforceScannerCardScope(req, res, String(cardId)))) return;
     // 安全 R35：会话都不给建，旧版本的页自然一张也传不上来
-    const versionProblem = await cardVersionProblem(String(cardId), req.body?.cardVersion);
+    const versionProblem = await cardVersionProblem(String(cardId), req.body?.cardVersion, req.body?.layoutFingerprint);
     if (versionProblem) {
       console.warn(
         `[scanner-upload] 会话创建被拒（${versionProblem.code}）cardId=${cardId} ` +
@@ -334,6 +376,13 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
 
     const sessionId = `scan_${genId()}`;
     const db = await getMysqlDb();
+    const card = await new CardRepository().findById(String(cardId));
+    if (!card) { res.status(404).json({ code: "CARD_NOT_FOUND", message: "答题卡不存在或已删除" }); return; }
+    const suppliedLayout = parseCardVersion(req.body?.layoutFingerprint)
+      ?? (parseCardVersion(req.body?.cardVersion) === layoutFingerprint(card) ? layoutFingerprint(card) : null);
+    const sessionLayout = suppliedLayout;
+    const sessionGrading = suppliedLayout ? gradingVersion(card) : null;
+    const versionSource = "upload";
 
     // 给每页生成上传 token（简单防篡改）
     const uploadTokens: string[] = [];
@@ -343,8 +392,8 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
     // 客户端后续 complete 会因页数为 0 而卡死。
     await enqueueScannerSubmission(() => db.transaction(async (tx) => {
       await tx.run(
-        `INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, page_count, identity_mode, card_version, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading')`,
+        `INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, page_count, identity_mode, card_version, layout_fingerprint, grading_version, version_source, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading')`,
         sessionId,
         String(cardId),
         name || `扫描_${new Date().toISOString().slice(0, 10)}`,
@@ -356,6 +405,9 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
         requestedPages,
         parseIdentityMode(req.body?.identityMode),
         parseCardVersion(req.body?.cardVersion),
+        sessionLayout,
+        sessionGrading,
+        versionSource,
       );
       for (let i = 0; i < requestedPages; i++) {
         await tx.run(
@@ -382,6 +434,7 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
 router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload.single("image"), async (req: Request, res: Response) => {
   let stagedImage: string | undefined;
   let committedImage = false;
+  let imageMetadata: { width: number; height: number } | undefined;
   try {
     const { sessionId } = req.params;
     const token = (req.body?.token ?? req.query?.token) as string;
@@ -416,7 +469,7 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
         pageUploadOverwriteGates(db, String(sessionId), token, res));
       if (!gated) return;
 
-      try { await assertScanImageDimensions(image.buffer); }
+      try { imageMetadata = await assertScanImageDimensions(image.buffer); }
       catch (error) {
         res.status(error instanceof ScanImageBudgetError ? error.status : 400).json({
           code: error instanceof ScanImageBudgetError ? error.code : "SCAN_IMAGE_INVALID",
@@ -457,6 +510,16 @@ router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload
           retiredCropPaths = (await invalidateScanRecognitionInTransaction(db, String(sessionId), token)).retiredCropPaths;
           await db.run("UPDATE twain_scan_records SET ocr_status = 'failed', ocr_error = ? WHERE id = ?", "页面未通过二维码身份校验", token);
           res.status(409).json({ message: "页面未通过二维码身份校验，请在 Windows 扫描端重新识别" }); return;
+        }
+
+        if (recognition) {
+          try {
+            assertUploadedRecognitionLayout(card, recognition, mapped.layoutPage, session.identity_mode as "strict" | "legacy", imageMetadata!);
+          } catch (error) {
+            retiredCropPaths = (await invalidateScanRecognitionInTransaction(db, String(sessionId), token)).retiredCropPaths;
+            await db.run("UPDATE twain_scan_records SET ocr_status = 'failed', ocr_error = ? WHERE id = ?", error instanceof Error ? error.message : "识别坐标与当前版式不一致", token);
+            res.status(409).json({ code: "SCAN_LAYOUT_MISMATCH", message: error instanceof Error ? error.message : "识别坐标与当前版式不一致，请重新识别，无需重新扫描" }); return;
+          }
         }
 
         // The immutable file is ready; publish its path only inside this transaction.
@@ -586,6 +649,12 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, cropUploadBu
         return await runScannerSessionTransaction(sessionId, async db => {
           const again = await cropUploadOverwriteGates(db, sessionId, recordId, res, req.body?.imageReceipt);
           if (!again) return;
+          const card = await new CardRepository(db).findById(again.record.card_id);
+          if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+          try { assertUploadedCropLayout(card, manifest); }
+          catch (error) {
+            res.status(409).json({ code: "SCAN_LAYOUT_MISMATCH", message: error instanceof Error ? error.message : "切块坐标与当前版式不一致" }); return;
+          }
 
           // Older clients can submit review images, but only paired images qualify for OCR reuse.
           const correctionRevision = req.body?.imageReceipt
@@ -772,36 +841,49 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     const saveGroupId = selected.data;
     const db = await getMysqlDb();
 
-    const session = await db.get<{ id: string; card_id: string; page_count: number; status: string; card_version: string | null; version_source: string }>(
-      "SELECT id, card_id, page_count, status, card_version, version_source FROM twain_scan_sessions WHERE id = ?",
+    const session = await db.get<{ id: string; card_id: string; page_count: number; status: string; card_version: string | null; layout_fingerprint: string | null; grading_version: string | null; version_source: string }>(
+      "SELECT id, card_id, page_count, status, card_version, layout_fingerprint, grading_version, version_source FROM twain_scan_sessions WHERE id = ?",
       sessionId
     );
     if (!session) {
       res.status(404).json({ message: "会话不存在" });
       return;
     }
-
-    // 安全 R35：扫描到入库之间可能隔了几十分钟，服务器上的卡在这期间被改过就不能再入库。
-    // Only a fingerprint recorded before recognition establishes provenance.
-    // A request cannot retroactively certify an unknown historical session.
-    if (!session.card_version || session.version_source === "legacy_verified") {
-      res.status(409).json({ code: "SESSION_CARD_VERSION_UNKNOWN", message: "原扫描会话缺少可验证的答题卡版本，请同步答题卡后重新识别并创建上传会话" });
-      return;
+    const card = await new CardRepository().findById(session.card_id);
+    if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+    const requestedCardVersion = req.body?.cardVersion === undefined ? null : parseCardVersion(req.body.cardVersion);
+    if (req.body?.cardVersion !== undefined && !requestedCardVersion) {
+      res.status(400).json({ code: "CARD_VERSION_REQUIRED", message: "cardVersion 格式无效" }); return;
     }
-    const version = req.body?.cardVersion === undefined ? session.card_version : req.body.cardVersion;
-    const versionProblem = await cardVersionProblem(session.card_id, version);
-    if (versionProblem) {
-      console.warn(
-        `[scanner-upload] 会话完成被拒（${versionProblem.code}）session=${sessionId} cardId=${session.card_id} ` +
-          `clientVersion=${parseCardVersion(req.body?.cardVersion) ?? "none"}`,
-      );
-      res.status(versionProblem.status).json({ code: versionProblem.code, message: versionProblem.message });
-      return;
+    const requestedLayout = req.body?.layoutFingerprint === undefined ? null : parseCardVersion(req.body.layoutFingerprint);
+    if (req.body?.layoutFingerprint !== undefined && !requestedLayout) {
+      res.status(400).json({ code: "LAYOUT_FINGERPRINT_REQUIRED", message: "layoutFingerprint 格式无效" }); return;
     }
-
-    if (session.card_version && parseCardVersion(version) !== session.card_version) {
-      res.status(409).json({ code: "SESSION_CARD_VERSION_MISMATCH", message: "提交版本与原扫描会话不一致，请核对原会话答题卡版本" }); return;
+    const geometry = layoutFingerprint(card);
+    if (requestedLayout && requestedLayout !== geometry) {
+      res.status(409).json({ code: "CARD_VERSION_MISMATCH", message: "答题卡版式已在服务器更新，请重新识别，无需重新扫描" }); return;
     }
+    if (session.layout_fingerprint && session.layout_fingerprint !== geometry) {
+      res.status(409).json({ code: "SESSION_CARD_VERSION_MISMATCH", message: "原扫描会话版式与当前答题卡不一致，请重新识别，无需重新扫描" }); return;
+    }
+    if (requestedCardVersion && requestedCardVersion !== session.card_version && requestedCardVersion !== cardFingerprint(card)) {
+      res.status(409).json({ code: "CARD_VERSION_MISMATCH", message: "答题卡版本与扫描会话不一致，请同步答题卡后重试" }); return;
+    }
+    if (!session.layout_fingerprint) {
+      const historicalUnknown = ["legacy", "legacy_verified"].includes(session.version_source) && !requestedLayout;
+      if (historicalUnknown) {
+        res.status(409).json({ code: "SESSION_CARD_VERSION_UNKNOWN", message: "原扫描会话缺少可验证的答题卡版式，请显式重识别；无需重新扫描" });
+        return;
+      }
+      try {
+        await enqueueScannerSubmission(() => upgradeSessionLayoutVersions(db, card, String(sessionId)));
+      } catch (error) {
+        console.warn(`[scanner-upload] 会话版式核验失败 session=${sessionId}`, error);
+        res.status(409).json({ code: "SESSION_CARD_VERSION_UNKNOWN", message: error instanceof Error ? error.message : "原卷缺少可验证的版式，请重新识别，无需重新扫描" });
+        return;
+      }
+    }
+    await enqueueScannerSubmission(() => updateSessionGradingVersion(String(sessionId), gradingVersion(card)));
 
     const uploaded = await db.get<{ cnt: number }>(
       "SELECT COUNT(*) as cnt FROM twain_scan_records WHERE session_id = ? AND ocr_status IN ('uploaded', 'completed')",
@@ -815,8 +897,6 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     const uploadedCount = Number(uploaded?.cnt ?? 0);
     const totalCount = Number(total?.cnt ?? 0);
 
-    const card = await new CardRepository().findById(session.card_id);
-    if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
     const records = (await listScanRecordsGroupedByStudent(String(sessionId))).flatMap(group => group.records);
     const selectedGroup = saveGroupId === undefined ? undefined : groupSessionPages(card, records).groups.get(saveGroupId);
     if (saveGroupId !== undefined && !selectedGroup) {

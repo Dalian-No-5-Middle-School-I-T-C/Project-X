@@ -58,6 +58,11 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   const [waitingAttempt, setWaitingAttempt] = useState(0);
   const [stoppingWait, setStoppingWait] = useState(false);
   const [resumedFromCrash, setResumedFromCrash] = useState(false);
+  const [removedSessions, setRemovedSessions] = useState<Set<string>>(() => new Set());
+  const activeSessions = useMemo(
+    () => sessions.filter(session => !removedSessions.has(session.sessionId)),
+    [sessions, removedSessions],
+  );
   /** 本页见过的异常组（sid/gid）：失败卷与冲突副本还没建过回执，订正后允许补传一次。
    *  识别成功的卷（含存疑卷）已在 reload 的首传里排队，不再建第二份回执。 */
   const abnormalKey = `projectx-postprocess-abnormal/${cardId}`;
@@ -92,7 +97,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
       const nextBatches: Record<string, ScanBatchResponse> = {};
       const nextMetas: Record<string, SessionMeta> = {};
       const stillRunning: string[] = [];
-      for (const { sessionId } of sessions) {
+      for (const { sessionId } of activeSessions) {
         try {
           const batch = omitPreviewDiscardedGroups(await channel.results(sessionId), discarded, sessionId);
           nextBatches[sessionId] = batch;
@@ -146,7 +151,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
     } finally {
       setLoading(false);
     }
-  }, [cardId, sessions, channel, abnormalKey, isRemoteUploadOn]);
+  }, [cardId, activeSessions, channel, abnormalKey, isRemoteUploadOn]);
 
   useEffect(() => { void reload(); }, [reload]);
 
@@ -206,7 +211,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
     const localPageCount = localCard ? buildLayout(localCard).pages.length : 0;
     const remotePageCount = remoteCard ? buildLayout(remoteCard).pages.length : 0;
     const map: Record<string, { pageCount: number; layoutStale: boolean }> = {};
-    for (const { sessionId } of sessions) {
+    for (const { sessionId } of activeSessions) {
       map[sessionId] = matchingLayoutPageCount({
         cardVersion: metas[sessionId]?.cardVersion ?? null,
         localFingerprint, localPageCount, remoteFingerprint, remotePageCount,
@@ -214,16 +219,16 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
       });
     }
     return map;
-  }, [sessions, batches, metas, localCard, remoteCard]);
+  }, [activeSessions, batches, metas, localCard, remoteCard]);
   const layoutStale = Object.values(sessionLayouts).some(entry => entry.layoutStale);
   const groups = useMemo(() => {
     if (!card) return [];
-    return sessions.flatMap(({ sessionId }) => buildPostprocessGroups(
+    return activeSessions.flatMap(({ sessionId }) => buildPostprocessGroups(
       batches[sessionId] ?? { results: [], failures: [] },
       sessionId,
       sessionLayouts[sessionId]?.pageCount ?? 0,
     ));
-  }, [batches, sessions, sessionLayouts, card]);
+  }, [batches, activeSessions, sessionLayouts, card]);
   const queue = useMemo(() => buildPostprocessQueue(groups), [groups]);
 
   const handleQueueCurrent = useCallback((sessionId: string, groupId: string, itemId?: string) => {
@@ -286,7 +291,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
   }, [view]);
   const issueGroups = useMemo(() => new Set(queue.map(item => `${item.sessionId}/${item.groupId}`)).size, [queue]);
   const uploaded = useMemo(() => Object.values(batches).flatMap(b => b.results).filter(r => r.saved).length, [batches]);
-  const remoteCancelledUploadCount = useMemo(() => sessions.reduce((count, { sessionId }) => {
+  const remoteCancelledUploadCount = useMemo(() => activeSessions.reduce((count, { sessionId }) => {
     if (metas[sessionId]?.status !== "cancelled") return count;
     const uploadCardId = card?.id ?? cardId;
     return count + (batches[sessionId]?.results ?? [])
@@ -298,7 +303,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
           && !isGroupQueued(cardId, sessionId, result.groupId)
           && !scannerUploadManager.hasGroupUpload(uploadCardId, result.groupId, sessionId);
       }).length;
-  }, 0), [batches, card?.id, cardId, metas, queueRevision, sessions]);
+  }, 0), [batches, card?.id, cardId, metas, queueRevision, activeSessions]);
 
   /**
    * 仅本地模式的「保存成绩入库」：扫描完成后本页会自动接管工作台视图，
@@ -310,7 +315,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
     try {
       let failures = 0;
       let savedGroups = 0;
-      for (const { sessionId } of sessions) {
+      for (const { sessionId } of activeSessions) {
         // 存疑卷一起提交（issue #352）：低置信度只作为复核标记，不拦入库。
         // failures 里的那些没有学号或没有完整页，本来就不在 results 里，跟着提交只会写出无主成绩。
         const groupIds = (batches[sessionId]?.results ?? [])
@@ -341,7 +346,7 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
       const uploadCardId = card?.id ?? cardId;
       let queued = 0;
       let missingVersion = false;
-      for (const { sessionId } of sessions) {
+      for (const { sessionId } of activeSessions) {
         if (metas[sessionId]?.status !== "cancelled") continue;
         for (const result of batches[sessionId]?.results ?? []) {
           if (result.saved || result.needsReviewCount > 0) continue;
@@ -412,6 +417,17 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
       // 前面的会话可能已经删掉，后面的 409 不能让界面还停在旧列表上。
       if (finished || deleted > 0) await reload();
     }
+  }
+
+  async function handleDeleteSession(sessionId: string) {
+    if ((batches[sessionId]?.results.length ?? 0) > 0) {
+      throw new Error("该批次仍保留答卷，不能直接清理会话");
+    }
+    const response = await channel.request(`/api/scanner/scan/${sessionId}`, { method: "DELETE" });
+    const data = await response.json().catch(() => ({} as { message?: string }));
+    if (!response.ok) throw new Error(data.message || "清理空会话失败");
+    setRemovedSessions(previous => new Set(previous).add(sessionId));
+    notify.success("空扫描批次已清理");
   }
 
   /**
@@ -549,7 +565,9 @@ export function ScannerPostprocessPage({ cardId, cardTitle, sessions, onBack, on
         <PostprocessResultsView
           groups={groups}
           channel={channel}
+          sessions={activeSessions}
           onDelete={handleDelete}
+          onDeleteSession={handleDeleteSession}
           onSaveAll={isRemoteUploadOn()
             ? (remoteCancelledUploadCount > 0 ? saveAllRemote : undefined)
             : saveAllLocal}

@@ -21,13 +21,23 @@ function stripHash<T extends { password_hash?: string }>(user: T): Omit<T, "pass
   return rest;
 }
 
-/** GET /api/teachers — 教师列表 */
+/** GET /api/teachers — 教师列表，默认包含停用教师，可按在职状态筛选。 */
 router.get("/", async (req: Request, res: Response) => {
-  const page = req.query.page ? Number(req.query.page) : 1;
-  const pageSize = req.query.pageSize ? Number(req.query.pageSize) : 50;
-  const keyword = typeof req.query.keyword === "string" ? req.query.keyword : undefined;
+  const page = req.query.page === undefined ? 1 : Number(req.query.page);
+  const pageSize = req.query.pageSize === undefined ? 50 : Number(req.query.pageSize);
+  if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 500) {
+    res.status(400).json({ message: "分页参数不合法，page 从 1 开始，pageSize 为 1–500" });
+    return;
+  }
+  const keyword = typeof req.query.keyword === "string" ? req.query.keyword.trim().slice(0, 100) : undefined;
+  const rawStatus = typeof req.query.isActive === "string" ? req.query.isActive : undefined;
+  if (rawStatus !== undefined && !["0", "1", "true", "false"].includes(rawStatus)) {
+    res.status(400).json({ message: "isActive 仅支持 0、1、true 或 false" });
+    return;
+  }
+  const isActive = rawStatus === undefined ? undefined : rawStatus === "1" || rawStatus === "true";
 
-  const { teachers, total } = await userRepo.listTeachers({ keyword, page, pageSize });
+  const { teachers, total } = await userRepo.listTeachers({ keyword, page, pageSize, isActive });
   res.json({ teachers: teachers.map(stripHash), total, page, pageSize });
 });
 

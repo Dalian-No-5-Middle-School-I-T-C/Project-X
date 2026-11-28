@@ -33,6 +33,7 @@ import {
 import {
   Badge,
   Button,
+  Checkbox,
   Field,
   Input,
   Panel,
@@ -42,7 +43,10 @@ import {
   SelectTrigger,
   SelectContent,
   SelectItem,
+  ConfirmDialog,
 } from "../components/ui/v2";
+import { ObjectiveAnswerBatchInput } from "../components/ObjectiveAnswerBatchInput";
+export { ObjectiveAnswerBatchInput } from "../components/ObjectiveAnswerBatchInput";
 import { apiUrl, authFetch, fetchJson, mediaUrl, urlWithToken } from "../auth/api";
 import { cn } from "../lib/utils";
 import type {
@@ -54,6 +58,7 @@ import type {
   ObjectiveBlock,
   ObjectiveMode,
   ObjectiveOptionLayout,
+  ObjectiveScoringRule,
   PageRenderBlock,
   SubjectiveBlock,
   SubjectiveKind,
@@ -83,6 +88,7 @@ import {
   defaultEssayBlock,
   defaultObjective,
   defaultSubjective,
+  defaultSubjectiveQuestion,
   findNextQuestionNumber,
   heightForAnswerLines,
   kindLabels,
@@ -97,13 +103,93 @@ import {
   PREVIEW_MIN_PERCENT,
   PREVIEW_SETTINGS_KEY
 } from "../cardModel";
+import {
+  applyObjectiveAnswerPreview,
+  applyObjectiveMultipleScoringRule,
+  findQuestionNumberConflicts,
+  shiftObjectiveQuestionStart,
+} from "../../../../shared/objectiveAnswerInput";
 
-export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange: (mutator: (block: BodyBlock) => void) => void }) {
+export type DesignerChangeOptions = { mergeKey?: string };
+
+function QuestionNumberInput({ value, onCommit, validate }: {
+  value: number;
+  onCommit: (value: number) => void;
+  validate: (value: number) => string | null;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { setDraft(String(value)); setError(null); }, [value]);
+  const commit = () => {
+    const next = Number(draft);
+    const message = !/^\d+$/.test(draft.trim()) || !Number.isInteger(next) ? "请输入正整数" : validate(next);
+    if (message) { setError(message); return; }
+    setError(null);
+    setDraft(String(next));
+    if (next !== value) onCommit(next);
+  };
+  return (
+    <div className="flex flex-col gap-1">
+      <Input
+        type="number" min={1} max={200} value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") { event.preventDefault(); commit(); event.currentTarget.blur(); }
+          if (event.key === "Escape") { setDraft(String(value)); setError(null); event.currentTarget.blur(); }
+        }}
+      />
+      {error && <span className="text-xs text-destructive-fg" role="alert">{error}</span>}
+    </div>
+  );
+}
+
+export function ObjectiveEditor({ block, card, onChange }: {
+  block: ObjectiveBlock;
+  card: AnswerCard;
+  onChange: (mutator: (block: BodyBlock) => void, options?: DesignerChangeOptions) => void;
+}) {
   const questions = objectiveQuestionNumbers(block);
   const questionConfigs = objectiveQuestionDefinitions(block);
   const answerKey = normalizeObjectiveAnswerKey(block);
   const missingAnswerCount = questions.filter((questionNumber) => !answerKey[questionNumber]?.length).length;
   const [showPerQuestion, setShowPerQuestion] = useState(false);  // v1.4.7: 默认折叠每题配置
+  const answerListRef = useRef<HTMLDivElement>(null);
+  const [focusQuestionNumber, setFocusQuestionNumber] = useState<number | null>(null);
+  useEffect(() => {
+    if (focusQuestionNumber === null) return;
+    const target = answerListRef.current?.querySelector<HTMLButtonElement>(`[data-answer-question="${focusQuestionNumber}"] button`);
+    target?.scrollIntoView({ block: "nearest" });
+    target?.focus();
+    setFocusQuestionNumber(null);
+  }, [focusQuestionNumber, questionConfigs.length]);
+
+  function moveQuestionFocus(current: number, delta: -1 | 1) {
+    const index = questions.indexOf(current);
+    if (index < 0) return;
+    const next = questions[Math.max(0, Math.min(questions.length - 1, index + delta))];
+    if (next !== undefined && next !== current) setFocusQuestionNumber(next);
+  }
+
+  function clearAnswer(questionNumber: number) {
+    onChange((draft) => {
+      const objective = draft as ObjectiveBlock;
+      objective.questions = normalizeObjectiveQuestions(objective);
+      const config = objective.questions.find((item) => item.questionNumber === questionNumber);
+      if (config) delete config.answerKey;
+      if (objective.answerKey) delete objective.answerKey[questionNumber];
+      objective.answerKey = normalizeObjectiveAnswerKey(objective);
+    });
+  }
+
+  const multipleRule: ObjectiveScoringRule = questionConfigs.find((question) => question.mode !== "single")?.scoringRule
+    ?? (block.multipleScoring
+      ? { type: "per_selected_count", partialScores: { ...block.multipleScoring.partialScores }, wrongOrExtraScore: block.multipleScoring.wrongOrExtraScore ?? 0 }
+      : { type: "per_selected_count", partialScores: {}, wrongOrExtraScore: 0 });
+
+  function updateBlockRule(mutator: (rule: ObjectiveScoringRule) => ObjectiveScoringRule, mergeKey: string) {
+    onChange((draft) => applyObjectiveMultipleScoringRule(draft as ObjectiveBlock, mutator(multipleRule)), { mergeKey });
+  }
 
   function toggleAnswer(questionNumber: number, option: string) {
     onChange((draft) => {
@@ -128,7 +214,7 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
     });
   }
 
-  function updateQuestionConfig(questionNumber: number, mutator: (question: NonNullable<ObjectiveBlock["questions"]>[number]) => void) {
+  function updateQuestionConfig(questionNumber: number, mutator: (question: NonNullable<ObjectiveBlock["questions"]>[number]) => void, options?: DesignerChangeOptions) {
     onChange((draft) => {
       const objective = draft as ObjectiveBlock;
       objective.questions = normalizeObjectiveQuestions(objective);
@@ -142,7 +228,7 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
       const first = objective.questions[0];
       objective.questionStart = first?.questionNumber ?? objective.questionStart;
       objective.questionCount = objective.questions.length;
-    });
+    }, options);
   }
 
   function defaultQuestionScoringRule() {
@@ -224,18 +310,24 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
         />
       </Field>
 
+      <ObjectiveAnswerBatchInput
+        block={block}
+        onApply={(preview) => onChange((draft) => { applyObjectiveAnswerPreview(draft as ObjectiveBlock, preview); })}
+      />
+
       <Panel className="gap-2 p-3">
         <div className="flex items-center justify-between text-xs">
           <strong>标准答案</strong>
           <span className="text-muted-foreground">{missingAnswerCount === 0 ? "已全部配置" : `${missingAnswerCount} 题未配置`}</span>
         </div>
-        <div className="flex flex-col gap-1.5">
-          {questions.map((questionNumber) => (
-            <div className="grid grid-cols-[22px_1fr] items-center gap-2" key={questionNumber}>
+        <div className="flex flex-col gap-1.5" ref={answerListRef}>
+          {questions.map((questionNumber, questionIndex) => (
+            <div className="grid grid-cols-[22px_1fr] items-center gap-2" key={questionIndex} data-answer-question={questionNumber}>
               <span className="text-center text-xs font-semibold tabular-nums text-foreground">{questionNumber}</span>
               <div className="flex flex-wrap gap-1">
                 {optionLabelsForQuestion(block, questionNumber).map((option) => {
                   const active = answerKey[questionNumber]?.includes(option) ?? false;
+                  const questionMode = questionConfigs.find((item) => item.questionNumber === questionNumber)?.mode ?? block.mode;
                   return (
                     <Button
                       key={option}
@@ -244,6 +336,35 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
                       size="icon-sm"
                       aria-label={`第 ${questionNumber} 题 ${option} 选项`}
                       onClick={() => toggleAnswer(questionNumber, option)}
+                      onKeyDown={(event) => {
+                        if (event.altKey || event.ctrlKey || event.metaKey) return;
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          moveQuestionFocus(questionNumber, event.shiftKey ? -1 : 1);
+                          return;
+                        }
+                        if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+                          event.preventDefault();
+                          moveQuestionFocus(questionNumber, 1);
+                          return;
+                        }
+                        if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+                          event.preventDefault();
+                          moveQuestionFocus(questionNumber, -1);
+                          return;
+                        }
+                        if (event.key === "Backspace" || event.key === "Delete") {
+                          event.preventDefault();
+                          clearAnswer(questionNumber);
+                          return;
+                        }
+                        const key = event.key.toUpperCase();
+                        if (key.length === 1 && optionLabelsForQuestion(block, questionNumber).includes(key)) {
+                          event.preventDefault();
+                          toggleAnswer(questionNumber, key);
+                          if (questionMode === "single") moveQuestionFocus(questionNumber, 1);
+                        }
+                      }}
                       className="text-xs"
                     >
                       {option}
@@ -254,21 +375,22 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
             </div>
           ))}
         </div>
+        <p className="m-0 text-xs text-muted-foreground">
+          键盘录入：聚焦任一选项后直接按 A-H 选择，单选题自动跳到下一题；Enter / ↓ 下一题，Shift+Enter / ↑ 上一题，Backspace 清空本题。
+        </p>
       </Panel>
 
       <div className="grid grid-cols-2 gap-3">
         <Field label="起始题号">
-          <Input
-            type="number"
-            min={1}
+          <QuestionNumberInput
             value={block.questionStart}
-            onChange={(event) =>
-              onChange((draft) => {
-                const objective = draft as ObjectiveBlock;
-                objective.questionStart = Number(event.target.value);
-                objective.answerKey = normalizeObjectiveAnswerKey(objective);
-              })
-            }
+            validate={(next) => {
+              if (next < 1 || next > 200) return "题号须在 1-200 之间";
+              const numbers = Array.from({ length: block.questionCount }, (_, index) => next + index);
+              const conflicts = findQuestionNumberConflicts(card, block.id, numbers);
+              return conflicts.length > 0 ? `与整卡其他题号冲突：${conflicts.join("、")}` : null;
+            }}
+            onCommit={(next) => onChange((draft) => { shiftObjectiveQuestionStart(draft as ObjectiveBlock, next); })}
           />
         </Field>
         <Field label="题目数">
@@ -309,6 +431,22 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
             }
           />
         </Field>
+        <Button
+          type="button" variant="outline" size="sm"
+          onClick={() => {
+            const next = Math.max(...questions, 0) + 1;
+            onChange((draft) => {
+              const objective = draft as ObjectiveBlock;
+              objective.questions = normalizeObjectiveQuestions(objective);
+              objective.questions.push({ questionNumber: next, mode: objective.mode, optionCount: objective.optionCount, score: objective.scorePerQuestion });
+              objective.questionCount = objective.questions.length;
+              objective.answerKey = normalizeObjectiveAnswerKey(objective);
+            });
+            setFocusQuestionNumber(next);
+          }}
+        >
+          <Plus size={14} /> 添加一题
+        </Button>
       </div>
 
       <div className="grid grid-cols-2 gap-3">
@@ -376,36 +514,95 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
         </Field>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="少选1项得分">
-          <Input
-            type="number"
-            step={0.5}
-            value={block.multipleScoring?.partialScores[1] ?? 0}
-            onChange={(event) =>
-              onChange((draft) => {
-                const objective = draft as ObjectiveBlock;
-                objective.multipleScoring ??= { partialScores: {}, wrongOrExtraScore: 0 };
-                objective.multipleScoring.partialScores[1] = Number(event.target.value);
-              })
-            }
-          />
-        </Field>
-        <Field label="多选/错选得分">
-          <Input
-            type="number"
-            step={0.5}
-            value={block.multipleScoring?.wrongOrExtraScore ?? 0}
-            onChange={(event) =>
-              onChange((draft) => {
-                const objective = draft as ObjectiveBlock;
-                objective.multipleScoring ??= { partialScores: {}, wrongOrExtraScore: 0 };
-                objective.multipleScoring.wrongOrExtraScore = Number(event.target.value);
-              })
-            }
-          />
-        </Field>
-      </div>
+      {block.mode !== "single" && (
+        <Panel className="flex flex-col gap-2 p-3">
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="少选计分方式">
+              <Select
+                value={multipleRule.type}
+                onValueChange={(value) => updateBlockRule((rule) => {
+                  const common = { wrongOrExtraScore: rule.wrongOrExtraScore ?? 0, allowWrongOptions: rule.allowWrongOptions === true };
+                  if (value === "fixed_partial") return { type: "fixed_partial", partialScore: 0, ...common };
+                  if (value === "by_correct_count") return { type: "by_correct_count", partialScoresByCorrectCount: {}, ...common };
+                  return { type: "per_selected_count", partialScores: rule.type === "per_selected_count" ? rule.partialScores : {}, ...common };
+                }, `objective-${block.id}-rule-type`)}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="per_selected_count">按选对项数给分</SelectItem>
+                  <SelectItem value="by_correct_count">按正确答案数量给分</SelectItem>
+                  <SelectItem value="fixed_partial">少选固定分</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="错选/多选/不选得分">
+              <Input
+                type="number" step={0.5} value={multipleRule.wrongOrExtraScore ?? 0}
+                onChange={(event) => updateBlockRule((rule) => ({ ...rule, wrongOrExtraScore: Number(event.target.value) }), `objective-${block.id}-wrong-score`)}
+              />
+            </Field>
+          </div>
+          {multipleRule.type === "fixed_partial" && (
+            <Field label="少选固定得分">
+              <Input
+                type="number" step={0.5} value={multipleRule.partialScore}
+                onChange={(event) => updateBlockRule((rule) => ({ ...rule, type: "fixed_partial", partialScore: Number(event.target.value) }), `objective-${block.id}-fixed-partial`)}
+              />
+            </Field>
+          )}
+          {multipleRule.type === "per_selected_count" && (
+            <div className="grid grid-cols-3 gap-2">
+              {Array.from({ length: Math.min(3, Math.max(0, block.optionCount - 1)) }, (_, index) => index + 1).map((count) => (
+                <Field key={count} label={`少选 ${count} 项`}>
+                  <Input
+                    type="number" step={0.5} value={multipleRule.type === "per_selected_count" ? multipleRule.partialScores[count] ?? 0 : 0}
+                    onChange={(event) => updateBlockRule((rule) => ({
+                      ...rule, type: "per_selected_count",
+                      partialScores: { ...(rule.type === "per_selected_count" ? rule.partialScores : {}), [count]: Number(event.target.value) }
+                    }), `objective-${block.id}-partial-${count}`)}
+                  />
+                </Field>
+              ))}
+            </div>
+          )}
+          {multipleRule.type === "by_correct_count" && (
+            <div className="flex max-h-52 flex-col gap-2 overflow-auto">
+              {Array.from({ length: Math.max(0, block.optionCount - 1) }, (_, index) => index + 2).map((correctCount) => (
+                <div key={correctCount} className="grid grid-cols-[84px_1fr] items-center gap-2">
+                  <span className="text-xs text-secondary-foreground">{correctCount} 个答案</span>
+                  <div className="grid grid-cols-3 gap-2">
+                    {Array.from({ length: correctCount - 1 }, (_, index) => index + 1).map((selectedCount) => (
+                      <Field key={selectedCount} label={`${selectedCount} 项对`}>
+                        <Input
+                          type="number" step={0.5}
+                          value={multipleRule.type === "by_correct_count" ? multipleRule.partialScoresByCorrectCount[correctCount]?.[selectedCount] ?? 0 : 0}
+                          onChange={(event) => updateBlockRule((rule) => ({
+                            ...rule, type: "by_correct_count",
+                            partialScoresByCorrectCount: {
+                              ...(rule.type === "by_correct_count" ? rule.partialScoresByCorrectCount : {}),
+                              [correctCount]: {
+                                ...(rule.type === "by_correct_count" ? rule.partialScoresByCorrectCount[correctCount] : {}),
+                                [selectedCount]: Number(event.target.value)
+                              }
+                            }
+                          }), `objective-${block.id}-by-correct-${correctCount}-${selectedCount}`)}
+                        />
+                      </Field>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <label className="flex items-center gap-2 text-xs text-secondary-foreground">
+            <Checkbox
+              checked={multipleRule.allowWrongOptions === true}
+              onCheckedChange={(checked) => updateBlockRule((rule) => ({ ...rule, allowWrongOptions: checked === true }), `objective-${block.id}-allow-wrong`)}
+            />
+            错选但未超过正确答案数时，只按选对项给分
+          </label>
+        </Panel>
+      )}
 
       <Button variant="ghost" size="sm" onClick={() => setShowPerQuestion(!showPerQuestion)}>
         {showPerQuestion ? "▲ 收起每题配置" : "▼ 展开每题配置"}
@@ -418,12 +615,21 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
             <span className="text-muted-foreground">可混排单选、多选、不定项</span>
           </div>
           <div className="flex flex-col gap-3">
-            {questionConfigs.map((question) => (
-              <Panel key={question.questionNumber} className="gap-2 p-3">
+            {questionConfigs.map((question, questionIndex) => (
+              <Panel key={questionIndex} className="gap-2 p-3">
                 <div className="text-xs font-semibold text-foreground">第 {question.questionNumber} 题</div>
                 <div className="grid grid-cols-3 gap-2">
                   <Field label="题号">
-                    <Input type="number" min={1} value={question.questionNumber} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.questionNumber = Number(event.target.value)))} />
+                    <QuestionNumberInput
+                      value={question.questionNumber}
+                      validate={(next) => {
+                        if (next < 1 || next > 200) return "题号须在 1-200 之间";
+                        if (questionConfigs.some((item, index) => index !== questionIndex && item.questionNumber === next)) return "与本题块其他题号重复";
+                        const conflicts = findQuestionNumberConflicts(card, block.id, [next]);
+                        return conflicts.length > 0 ? `与整卡其他题号冲突：${conflicts.join("、")}` : null;
+                      }}
+                      onCommit={(next) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.questionNumber = next))}
+                    />
                   </Field>
                   <Field label="题型">
                     <Select value={question.mode} onValueChange={(value) => updateQuestionConfig(question.questionNumber, (draft) => { draft.mode = value as ObjectiveMode; if (draft.mode === "single") draft.scoringRule = undefined; })}>
@@ -487,10 +693,9 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
                       </div>
                     )}
                     <label className="flex items-center gap-2 text-xs text-secondary-foreground">
-                      <input
-                        type="checkbox"
+                      <Checkbox
                         checked={(scoringRuleFor(question) as any).allowWrongOptions === true}
-                        onChange={(event) => updateAllowWrongOptions(question.questionNumber, event.target.checked)}
+                        onCheckedChange={(checked) => updateAllowWrongOptions(question.questionNumber, checked === true)}
                       />
                       错选但未超过正确答案数时，只按选对项给分
                     </label>
@@ -565,18 +770,19 @@ export function SubjectiveEditor({
 }: {
   block: SubjectiveBlock;
   layoutVersion: AnswerCard["layoutVersion"];
-  onChange: (mutator: (block: BodyBlock) => void) => void;
+  onChange: (mutator: (block: BodyBlock) => void, options?: DesignerChangeOptions) => void;
   onUpload: (blockId: string, questionId: string, file: File) => Promise<void>;
 }) {
   const isFillBlankBlock = subjectiveBlockKind(block) === "fill_blank";
   const isEssayBlock = subjectiveBlockKind(block) === "essay";
+  const [removal, setRemoval] = useState<{ kind: "question" | "blank" | "image"; questionId: string; index?: number } | null>(null);
 
-  function updateQuestion(questionId: string, mutator: (question: SubjectiveQuestion) => void) {
+  function updateQuestion(questionId: string, mutator: (question: SubjectiveQuestion) => void, options?: DesignerChangeOptions) {
     onChange((draft) => {
       if (draft.type !== "subjective") return;
       const question = draft.questions.find((item) => item.id === questionId);
       if (question) mutator(question);
-    });
+    }, options);
   }
 
   function updateAnswerBlankItems(questionId: string, mutator: (items: BlankItem[]) => BlankItem[]) {
@@ -646,18 +852,9 @@ export function SubjectiveEditor({
                 size="icon-sm"
                 aria-label="删除小题"
                 className="text-destructive-fg hover:bg-destructive-soft"
-                onClick={() =>
-                  onChange((draft) => {
-                    if (draft.type !== "subjective") return;
-                    const isScoreQuestion = isFillBlankBlock && draft.questions[0]?.id === question.id;
-                    const blockScore = draft.questions[0]?.score ?? 0;
-                    draft.questions = draft.questions.filter((item) => item.id !== question.id);
-                    if (isScoreQuestion && draft.questions[0]) {
-                      draft.questions[0].score = blockScore;
-                      draft.questions[0].style = "manual_score_grid";
-                    }
-                  })
-                }
+                disabled={block.questions.length <= 1}
+                title={block.questions.length <= 1 ? "至少保留一个主观题小题" : undefined}
+                onClick={() => setRemoval({ kind: "question", questionId: question.id })}
               >
                 <Trash2 size={14} />
               </Button>
@@ -966,7 +1163,8 @@ export function SubjectiveEditor({
                       size="icon-sm"
                       aria-label="删除这个空"
                       className="text-destructive-fg hover:bg-destructive-soft"
-                      onClick={() => updateAnswerBlankItems(question.id, (items) => (items.length > 1 ? items.filter((_, index) => index !== blankIndex) : items))}
+                      disabled={answerBlankItems(question).length <= 1}
+                      onClick={() => setRemoval({ kind: "blank", questionId: question.id, index: blankIndex })}
                     >
                       <Trash2 size={14} />
                     </Button>
@@ -1143,11 +1341,23 @@ export function SubjectiveEditor({
                     <Input type="number" min={10} value={image.heightMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].heightMm = Number(event.target.value))))} className="w-20" />
                     <Button variant="ghost" size="icon-sm" aria-label="上移" disabled={index === 0} onClick={() => updateQuestion(question.id, (draft) => { const arr = draft.images ?? []; if (index>0) { const t=arr[index-1]; arr[index-1]=arr[index]; arr[index]=t; } })}><ArrowUp size={14} /></Button>
                     <Button variant="ghost" size="icon-sm" aria-label="下移" disabled={index === (question.images?.length ?? 0)-1} onClick={() => updateQuestion(question.id, (draft) => { const arr = draft.images ?? []; if (index < arr.length-1) { const t=arr[index+1]; arr[index+1]=arr[index]; arr[index]=t; } })}><ArrowDown size={14} /></Button>
-                    <Button variant="ghost" size="icon-sm" aria-label="删除图片" className="text-destructive-fg hover:bg-destructive-soft" onClick={() => updateQuestion(question.id, (draft) => void (draft.images = (draft.images ?? []).filter((_, i) => i !== index)))}><Trash2 size={14} /></Button>
+                    <Button variant="ghost" size="icon-sm" aria-label="删除图片" className="text-destructive-fg hover:bg-destructive-soft" onClick={() => setRemoval({ kind: "image", questionId: question.id, index })}><Trash2 size={14} /></Button>
                   </div>
                 ))}
           </Panel>
         ))}
+        {!isFillBlankBlock && !isEssayBlock && (
+          <Button variant="outline" size="sm" onClick={() =>
+            onChange((draft) => {
+              if (draft.type !== "subjective") return;
+              const next = Math.max(0, ...draft.questions.map((item) => numericQuestionValue(item.number))) + 1;
+              const source = draft.questions[draft.questions.length - 1];
+              draft.questions.push(defaultSubjectiveQuestion(next, source));
+            })
+          }>
+            <Plus size={14} /> 添加解答题小题
+          </Button>
+        )}
         {isFillBlankBlock && (
           <Button variant="outline" size="sm" onClick={() =>
             onChange((draft) => {
@@ -1161,6 +1371,14 @@ export function SubjectiveEditor({
         )}
         {isEssayBlock && (
           <div className="flex flex-col gap-2">
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="首题题号">
+                <Input value={block.questions[0]?.number ?? ""} onChange={(event) => updateQuestion(block.questions[0].id, (draft) => void (draft.number = event.target.value), { mergeKey: `essay-${block.id}-number` })} />
+              </Field>
+              <Field label="作文满分">
+                <Input type="number" min={0} step={0.5} value={block.questions[0]?.score ?? 0} onChange={(event) => updateQuestion(block.questions[0].id, (draft) => void (draft.score = Number(event.target.value)), { mergeKey: `essay-${block.id}-score` })} />
+              </Field>
+            </div>
             <Field label="目标字数">
               <Input
                 type="number"
@@ -1243,6 +1461,34 @@ export function SubjectiveEditor({
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={removal !== null}
+        onOpenChange={(open) => { if (!open) setRemoval(null); }}
+        title={removal?.kind === "question" ? "删除主观题小题" : removal?.kind === "blank" ? "删除空位" : "删除插图"}
+        description="删除后会进入未保存草稿，可使用撤销恢复。确认删除吗？"
+        confirmLabel="删除"
+        tone="danger"
+        onConfirm={() => {
+          if (!removal) return;
+          if (removal.kind === "question") {
+            onChange((draft) => {
+              if (draft.type !== "subjective" || draft.questions.length <= 1) return;
+              const isScoreQuestion = isFillBlankBlock && draft.questions[0]?.id === removal.questionId;
+              const blockScore = draft.questions[0]?.score ?? 0;
+              draft.questions = draft.questions.filter((item) => item.id !== removal.questionId);
+              if (isScoreQuestion && draft.questions[0]) {
+                draft.questions[0].score = blockScore;
+                draft.questions[0].style = "manual_score_grid";
+              }
+            });
+          } else if (removal.kind === "blank") {
+            updateAnswerBlankItems(removal.questionId, (items) => items.length > 1 ? items.filter((_, index) => index !== removal.index) : items);
+          } else {
+            updateQuestion(removal.questionId, (draft) => void (draft.images = (draft.images ?? []).filter((_, index) => index !== removal.index)));
+          }
+          setRemoval(null);
+        }}
+      />
     </>
   );}
 

@@ -313,7 +313,7 @@ function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
   };
 }
 
-function toCardSummary(row: { id: string; title: string; updated_at?: string; updatedAt?: string; subject?: string; subject_label?: string; exam_date?: string }): CardSummary {
+function toCardSummary(row: { id: string; title: string; updated_at?: string | null; updatedAt?: string | null; subject?: string | null; subject_label?: string | null; exam_date?: string | null }): CardSummary {
   return {
     id: row.id,
     title: row.title || "未命名答题卡",
@@ -3159,6 +3159,68 @@ export async function createApp(): Promise<express.Express> {
         );
       });
       res.json({ ok: true, scorePublished: 2 });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/exams/unpublish-batch", requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
+    try {
+      const body = (req.body ?? {}) as { examIds?: unknown; reason?: unknown };
+      const rawIds = Array.isArray(body.examIds) ? body.examIds : [];
+      const examIds = [...new Set(rawIds.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+      if (examIds.length === 0) {
+        res.status(400).json({ message: "examIds 必须为非空数字数组" });
+        return;
+      }
+      if (examIds.length > PUBLISH_BATCH_MAX_EXAMS) {
+        res.status(400).json({ message: `一次最多批量撤回 ${PUBLISH_BATCH_MAX_EXAMS} 场考试（当前 ${examIds.length} 场），请分批操作` });
+        return;
+      }
+      const reason = typeof body.reason === "string" ? body.reason.trim().slice(0, 500) : "";
+      const visibleIds = await getVisibleExamIds(req.user);
+      const denied = visibleIds === null ? [] : examIds.filter((id) => !visibleIds.includes(id));
+      if (denied.length > 0) {
+        res.status(403).json({ message: `以下考试超出你的数据权限范围，无法撤回: ${denied.join(", ")}` });
+        return;
+      }
+      for (const examId of examIds) {
+        if (await isExamSoftDeleted(examId)) {
+          res.status(400).json({ message: "部分考试不存在" });
+          return;
+        }
+      }
+      const db = getMysqlDb();
+      const existing = await db.all(
+        `SELECT id, score_published FROM exams WHERE id IN (${examIds.map(() => "?").join(",")})`,
+        ...examIds
+      ) as Array<{ id: number; score_published?: number }>;
+      if (existing.length !== examIds.length) {
+        res.status(400).json({ message: "部分考试不存在" });
+        return;
+      }
+      const toUnpublish = existing.filter((item) => item.score_published === 1).map((item) => item.id);
+      await db.transaction(async (tx) => {
+        for (const examId of toUnpublish) {
+          const result = await tx.run(
+            "UPDATE exams SET score_published = 2, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND score_published = 1",
+            examId
+          );
+          if (result.changes !== 1) {
+            throw Object.assign(new Error(`考试 ${examId} 状态已变更，撤回失败，请刷新后重试`), { status: 409, code: ApiError.INVALID_VALUE });
+          }
+          await tx.run(
+            "INSERT INTO exam_publish_events (exam_id, action, actor_id, reason) VALUES (?, 'unpublish', ?, ?)",
+            examId, req.user?.id ?? null, reason || null
+          );
+        }
+      });
+      res.json({
+        ok: true,
+        unpublishedCount: toUnpublish.length,
+        skippedCount: examIds.length - toUnpublish.length,
+        scorePublished: 2,
+      });
     } catch (error) {
       next(error);
     }

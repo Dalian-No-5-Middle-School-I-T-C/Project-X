@@ -1,17 +1,165 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Printer, X } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { formatScore } from "../util/format";
 import { examPairInTrend, scoreRateChange } from "../../../../shared/scoreProgress";
 import type { StudentTrendPoint } from "../../../../shared/types";
+import { Button, Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Spinner } from "./ui/v2";
 
 interface WeakRow { point_text: string; question_numbers: string; rate: number }
 
-/**
- * 建议 13：学生个人成绩报告单（家长会/学生手册场景）。
- * 单页 A4 内容：总分与排名、客观/主观得分、薄弱知识点、相对上次进退。
- * 打印走浏览器 printToPDF 等价通道（window.print，可另存为 PDF），零新依赖。
- */
+export interface StudentReportTarget {
+  examId: number;
+  examName: string;
+  studentId: number;
+  studentName: string;
+  studentNumber: string;
+  totalScore: number;
+  objectiveScore: number;
+  subjectiveScore: number;
+}
+
+interface LoadedReport {
+  target: StudentReportTarget;
+  trend: StudentTrendPoint[];
+  weak: WeakRow[];
+}
+
+interface ReportBodyProps {
+  examName: string; studentName: string; studentNumber: string;
+  totalScore: number; objectiveScore: number; subjectiveScore: number;
+  current: StudentTrendPoint | null;
+  previousName: string | null;
+  scoreChange: number | null;
+  scoreRateDelta: number | null;
+  rankChange: number | null;
+  weakRows: WeakRow[];
+}
+
+function reportBodyProps({ target, trend, weak }: LoadedReport): ReportBodyProps {
+  // 报告单必须描述所选场次，不能误用趋势中更晚的考试。
+  const pair = examPairInTrend(trend, target.examId);
+  const current = pair?.current ?? null;
+  const previous = pair?.previous ?? null;
+  const scoreChange = current && previous ? Math.round((current.totalScore - previous.totalScore) * 10) / 10 : null;
+  const scoreRateDelta = scoreRateChange(current?.scoreRate, previous?.scoreRate);
+  const rankChange = current && previous && previous.rank > 0 ? previous.rank - current.rank : null;
+  return {
+    examName: target.examName,
+    studentName: target.studentName,
+    studentNumber: target.studentNumber,
+    totalScore: target.totalScore,
+    objectiveScore: target.objectiveScore,
+    subjectiveScore: target.subjectiveScore,
+    current,
+    previousName: previous?.examName ?? null,
+    scoreChange,
+    scoreRateDelta,
+    rankChange,
+    weakRows: weak.slice(0, 8),
+  };
+}
+
+/** 限制到四个在途报告，全部读完后一次性挂载多个打印页。 */
+function useStudentReports(targets: StudentReportTarget[]) {
+  const [reports, setReports] = useState<LoadedReport[]>([]);
+  const [completed, setCompleted] = useState(0);
+  const request = useRef(0);
+  const targetKey = useMemo(() => JSON.stringify(targets), [targets]);
+
+  useEffect(() => {
+    const seq = ++request.current;
+    const controller = new AbortController();
+    const loaded: LoadedReport[] = new Array(targets.length);
+    let next = 0;
+    let done = 0;
+    setReports([]);
+    setCompleted(0);
+
+    async function worker() {
+      while (seq === request.current) {
+        const index = next++;
+        if (index >= targets.length) return;
+        const target = targets[index];
+        const options = { signal: controller.signal };
+        const [trend, knowledge] = await Promise.all([
+          fetchJson<StudentTrendPoint[]>(`/api/analysis/students/${target.studentId}/trend`, options).catch(() => []),
+          fetchJson<{ weaknesses: WeakRow[] }>(`/api/analysis/knowledge-points/${target.examId}/students/${target.studentId}`, options)
+            .then((data) => data?.weaknesses ?? [])
+            .catch(() => []),
+        ]);
+        if (seq !== request.current) return;
+        loaded[index] = { target, trend, weak: knowledge };
+        done += 1;
+        setCompleted(done);
+      }
+    }
+
+    void Promise.all(Array.from({ length: Math.min(4, targets.length) }, () => worker())).then(() => {
+      if (seq === request.current) setReports(loaded.filter(Boolean));
+    });
+    return () => {
+      request.current += 1;
+      controller.abort();
+    };
+    // targets is supplied as a stable snapshot by callers; the key also protects
+    // against an equivalent inline array causing another load on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetKey]);
+
+  return { reports, completed, loading: completed < targets.length };
+}
+
+function ReportDialog({ targets, onClose }: { targets: StudentReportTarget[]; onClose: () => void }) {
+  const { reports, completed, loading } = useStudentReports(targets);
+  return (
+    <>
+      <Dialog open onOpenChange={(open) => { if (!open && !loading) onClose(); }}>
+        <DialogContent size="lg" className="report-no-print max-h-[90vh]">
+          <DialogHeader>
+            <DialogTitle>成绩报告单预览</DialogTitle>
+            <DialogDescription>
+              已加载 {completed} / {targets.length} 份；全部加载完成后一次打印，每份报告单独分页。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="bg-secondary">
+            {loading ? (
+              <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
+                <Spinner /> 正在加载报告数据…
+              </div>
+            ) : (
+              <div className="mx-auto flex w-full max-w-[210mm] flex-col gap-4">
+                {reports.map((report) => (
+                  <div key={`${report.target.examId}:${report.target.studentId}`} className="overflow-hidden rounded border border-border-subtle bg-white shadow-1">
+                    <ReportBody {...reportBodyProps(report)} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="outline" icon={<X />} onClick={onClose}>关闭</Button>
+            <Button variant="primary" icon={<Printer />} disabled={loading} onClick={() => window.print()}>
+              打印（可另存为 PDF）
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {!loading && (
+        <div className="report-print hidden print:block" aria-hidden>
+          {reports.map((report) => (
+            <div className="report-print-page" key={`${report.target.examId}:${report.target.studentId}`}>
+              <ReportBody {...reportBodyProps(report)} />
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** 单人报告单入口，保持现有调用方 API。 */
 export function StudentReportPrint({
   examId,
   studentId,
@@ -22,112 +170,25 @@ export function StudentReportPrint({
   objectiveScore,
   subjectiveScore,
   onClose,
-}: {
-  examId: number;
-  studentId: number;
-  studentName: string;
-  studentNumber: string;
-  examName: string;
-  totalScore: number;
-  objectiveScore: number;
-  subjectiveScore: number;
-  onClose: () => void;
-}) {
-  const [trend, setTrend] = useState<StudentTrendPoint[] | null>(null);
-  const [weak, setWeak] = useState<WeakRow[] | null>(null);
-
-  useEffect(() => {
-    fetchJson<StudentTrendPoint[]>(`/api/analysis/students/${studentId}/trend`)
-      .then(setTrend)
-      .catch(() => setTrend([]));
-    fetchJson<{ weaknesses: WeakRow[] }>(`/api/analysis/knowledge-points/${examId}/students/${studentId}`)
-      .then((d) => setWeak(d?.weaknesses ?? []))
-      .catch(() => setWeak([]));
-  }, [examId, studentId]);
-
-  // 报告单必须描述「所选的那一场」：打印历史考试时若固定取趋势数组的最后两项，
-  // 表头和总分是所选场，排名/得分率/较上次却描述更晚的考试（评审 P2）。
-  const pair = trend ? examPairInTrend(trend, examId) : null;
-  const current = pair?.current ?? null;
-  const previous = pair?.previous ?? null;
-  const scoreChange = current && previous ? Math.round((current.totalScore - previous.totalScore) * 10) / 10 : null;
-  // issue #345：两场考试满分不同则绝对分不可比，进退步按得分率变化（百分点）
-  const scoreRateDelta = scoreRateChange(current?.scoreRate, previous?.scoreRate);
-  const rankChange = current && previous && previous.rank > 0 ? previous.rank - current.rank : null;
-  const previousName = previous?.examName ?? null;
-
-  const weakRows = (weak ?? []).slice(0, 8);
-
-  const bodyProps = {
-    examName, studentName, studentNumber,
+}: StudentReportTarget & { onClose: () => void }) {
+  const targets = useMemo(() => [{
+    examId, examName, studentId, studentName, studentNumber,
     totalScore, objectiveScore, subjectiveScore,
-    current, previousName, scoreChange, scoreRateDelta, rankChange, weakRows,
-  };
+  }], [examId, examName, studentId, studentName, studentNumber, totalScore, objectiveScore, subjectiveScore]);
+  return <ReportDialog targets={targets} onClose={onClose} />;
+}
 
-  return (
-    <>
-      <style>{`
-        @media print {
-          body * { visibility: hidden !important; }
-          .report-print, .report-print * { visibility: visible !important; }
-          .report-print { position: absolute; left: 0; top: 0; width: 100%; z-index: 9999; }
-          .report-no-print { display: none !important; }
-        }
-      `}</style>
-
-      {/* 预览 + 打印控制（屏幕显示，打印时隐藏） */}
-      <div className="report-no-print fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-        <div className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-card">
-          <div className="flex shrink-0 items-center justify-between border-b border-border-subtle px-5 py-3">
-            <span className="text-sm font-semibold text-foreground">成绩报告单预览</span>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => window.print()}
-                className="inline-flex h-control-sm items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground"
-              >
-                <Printer className="size-3.5" aria-hidden />打印（可另存为 PDF）
-              </button>
-              <button
-                type="button"
-                onClick={onClose}
-                className="inline-flex h-control-sm items-center gap-1.5 rounded-md border border-border px-3 text-xs text-secondary-foreground"
-              >
-                <X className="size-3.5" aria-hidden />关闭
-              </button>
-            </div>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            <ReportBody {...bodyProps} />
-          </div>
-        </div>
-      </div>
-
-      {/* 打印内容（A4） */}
-      <div className="report-print hidden print:block" aria-hidden>
-        <ReportBody {...bodyProps} />
-      </div>
-    </>
-  );
+/** 按班级或勾选学生批量打印；只生成一次 window.print 调用。 */
+export function StudentReportPrintBatch({ targets, onClose }: { targets: StudentReportTarget[]; onClose: () => void }) {
+  return <ReportDialog targets={targets} onClose={onClose} />;
 }
 
 export function ReportBody({
   examName, studentName, studentNumber, totalScore, objectiveScore, subjectiveScore,
   current, previousName, scoreChange, scoreRateDelta, rankChange, weakRows,
-}: {
-  examName: string; studentName: string; studentNumber: string;
-  totalScore: number; objectiveScore: number; subjectiveScore: number;
-  current: StudentTrendPoint | null;
-  previousName: string | null;
-  scoreChange: number | null;
-  /** 得分率变化（百分点）；两次考试任一缺满分时为 null，不判定进退步 */
-  scoreRateDelta: number | null;
-  rankChange: number | null;
-  weakRows: WeakRow[];
-}) {
+}: ReportBodyProps) {
   return (
     <div className="bg-white p-8 text-[#111]">
-      {/* 标题 */}
       <div className="flex items-start justify-between border-b-2 border-[#111] pb-3">
         <div>
           <h1 className="m-0 text-xl font-bold">成绩报告单</h1>
@@ -139,7 +200,6 @@ export function ReportBody({
         </div>
       </div>
 
-      {/* 总分与排名 */}
       <div className="mt-5 grid grid-cols-2 gap-3 text-sm">
         <InfoCell label="总分" value={`${formatScore(totalScore)} 分`} big />
         <InfoCell label="客观题得分" value={`${formatScore(objectiveScore)} 分`} />
@@ -155,7 +215,6 @@ export function ReportBody({
         )}
       </div>
 
-      {/* 相对上次 */}
       {(scoreRateDelta != null || scoreChange != null || rankChange != null) && (
         <div className="mt-5 rounded border border-[#ccc] p-3 text-sm">
           <p className="m-0 font-semibold">较上次考试{previousName ? `（${previousName}）` : ""}</p>
@@ -173,7 +232,6 @@ export function ReportBody({
         </div>
       )}
 
-      {/* 薄弱知识点 */}
       <div className="mt-5">
         <h2 className="m-0 text-sm font-bold">薄弱知识点</h2>
         {weakRows.length === 0 ? (
@@ -181,11 +239,11 @@ export function ReportBody({
         ) : (
           <table className="mt-2 w-full border-collapse text-sm">
             <tbody>
-              {weakRows.map((w, i) => (
-                <tr key={`${w.point_text}-${i}`} className="border-b border-[#ddd]">
-                  <td className="py-1.5 pr-2">{w.point_text}</td>
-                  <td className="py-1.5 pr-2 text-[#555]">题 {w.question_numbers}</td>
-                  <td className="py-1.5 text-right tabular-nums">{w.rate}%</td>
+              {weakRows.map((weak, index) => (
+                <tr key={`${weak.point_text}-${index}`} className="border-b border-[#ddd]">
+                  <td className="py-1.5 pr-2">{weak.point_text}</td>
+                  <td className="py-1.5 pr-2 text-[#555]">题 {weak.question_numbers}</td>
+                  <td className="py-1.5 text-right tabular-nums">{weak.rate}%</td>
                 </tr>
               ))}
             </tbody>

@@ -43,10 +43,17 @@ function modeLabel(m: ScoreDisplayMode): string {
   return m === "deviation" ? "偏差值" : m === "zscore" ? "Z值" : "百分位";
 }
 
-/** 与迁移前一致：null/undefined 视作 0 后按数值比较 */
+/** 空值排最后（升序/降序都保持在末尾），避免 null 当 0 后把未排名学生顶到最前 */
 function numericCompare(a: number | null | undefined, b: number | null | undefined): number {
-  return Number(a ?? 0) - Number(b ?? 0);
+  const aMissing = a == null || !Number.isFinite(Number(a));
+  const bMissing = b == null || !Number.isFinite(Number(b));
+  if (aMissing && bMissing) return 0;
+  if (aMissing) return 1;
+  if (bMissing) return -1;
+  return Number(a) - Number(b);
 }
+
+const MOBILE_PAGE_SIZE = 50;
 
 export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRowClick }: Props) {
   const isMobile = useIsMobile();
@@ -58,6 +65,8 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  // Issue #384：移动端不再硬截断前 100 条，改为可继续加载
+  const [mobileLimit, setMobileLimit] = useState(MOBILE_PAGE_SIZE);
 
   // Preview modal state
   const [previewPages, setPreviewPages] = useState<ScanPage[] | null>(null);
@@ -125,6 +134,11 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
       r.className.toLowerCase().includes(q)
     );
   }, [rows, search]);
+
+  // 搜索或数据范围变化后回到首批，避免用户在新结果里看不到前几条
+  useEffect(() => {
+    setMobileLimit(MOBILE_PAGE_SIZE);
+  }, [examId, classId, search]);
 
   function renderChange(change: number | null | undefined) {
     if (change == null) return <span className="text-muted-foreground">—</span>;
@@ -223,18 +237,20 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
       {
         id: "rankChange",
         header: "名次变化",
-        accessorFn: (row) => row.rankChange,
+        accessorFn: (row) => row.rankChange ?? undefined,
         meta: { numeric: true },
         sortDescFirst: false,
+        sortUndefined: "last",
         sortingFn: (a, b) => numericCompare(a.original.rankChange, b.original.rankChange),
         cell: ({ row }) => renderChange(row.original.rankChange),
       },
       {
         id: "displayValue",
         header: displayLabel,
-        accessorFn: (row) => row.displayValue,
+        accessorFn: (row) => row.displayValue ?? undefined,
         meta: { numeric: true },
         sortDescFirst: false,
+        sortUndefined: "last",
         sortingFn: (a, b) => numericCompare(a.original.displayValue, b.original.displayValue),
         cell: ({ row }) => (
           <span className="font-medium">
@@ -303,7 +319,7 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
       {isMobile ? (
         <>
           <DataCardList>
-            {filtered.slice(0, 100).map((row, i) => (
+            {filtered.slice(0, mobileLimit).map((row, i) => (
               <DataCard
                 key={row.studentId}
                 rows={[
@@ -344,10 +360,16 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
               />
             ))}
           </DataCardList>
-          {filtered.length > 100 && (
-            <p className="mt-3 text-center text-sm text-muted-foreground">
-              移动端仅显示前 100 条，请用搜索或切换到桌面版查看全部 {filtered.length} 条
-            </p>
+          {filtered.length > mobileLimit && (
+            <div className="mt-3 flex justify-center">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setMobileLimit((current) => current + MOBILE_PAGE_SIZE)}
+              >
+                加载更多（已显示 {Math.min(mobileLimit, filtered.length)} / {filtered.length} 人）
+              </Button>
+            </div>
           )}
         </>
       ) : (

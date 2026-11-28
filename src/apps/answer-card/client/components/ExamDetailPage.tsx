@@ -9,6 +9,7 @@ import { ReviewTracePage } from "./ReviewTracePage";
 import { GradingConfigPage } from "./GradingConfigPage";
 import { Badge, Button, SegmentedControl, Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/v2";
 import { EXAM_MODE_LABELS, type ExamMode, type ExamRecord } from "../../../../shared/types";
+import type { ArbitrationDisputesResponse } from "../../../../shared/arbitration";
 
 type ExamDetailTab = "review" | "assign" | "disputes" | "trace" | "settings";
 
@@ -47,13 +48,12 @@ export function ExamDetailPage({
   const isAdmin = userRole === "admin";
   const [arbitrationExam, setArbitrationExam] = useState<number | null>(null);
   useEffect(() => {
-    if (isGradeLeader) return;
     let active = true;
-    fetchJson<{ data: unknown[] }>(`/api/review-arbitration/exams/${examId}/disputes`)
-      .then(({ data }) => { if (active) setArbitrationExam(data.length ? examId : null); })
+    fetchJson<ArbitrationDisputesResponse>(`/api/review-arbitration/exams/${examId}/disputes`)
+      .then(({ canArbitrate }) => { if (active) setArbitrationExam(canArbitrate ? examId : null); })
       .catch(() => { if (active) setArbitrationExam(null); });
     return () => { active = false; };
-  }, [examId, teacherId, isGradeLeader]);
+  }, [examId, teacherId]);
 
   useEffect(() => {
     let active = true;
@@ -87,7 +87,9 @@ export function ExamDetailPage({
     return false;
   };
 
-  const visibleTabs = tabs.filter((t) => canSeeTab(t.requiresRole) || (t.key === "disputes" && arbitrationExam === examId));
+  const visibleTabs = tabs.filter((t) => t.key === "disputes"
+    ? arbitrationExam === examId
+    : canSeeTab(t.requiresRole));
   const canSee = (key: ExamDetailTab) => visibleTabs.some((t) => t.key === key);
 
   return (

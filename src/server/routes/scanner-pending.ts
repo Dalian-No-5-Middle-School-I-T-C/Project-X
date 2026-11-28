@@ -9,6 +9,7 @@ import { getAccessibleClassIds } from "./scores";
 import {
   listPendingScans,
   confirmPendingScan,
+  confirmPendingScans,
 } from "../services/scannerPending";
 const router = Router();
 // Scanner keys cannot approve their own uploads. Only authenticated whole-exam teachers can.
@@ -30,6 +31,24 @@ router.get("/:examId/scanner-pending", async (req, res, next) => {
     res.json({ items: await listPendingScans(Number(req.params.examId)) });
   } catch (error) {
     next(error);
+  }
+});
+router.post("/:examId/scanner-pending/batch", async (req, res) => {
+  try {
+    const items = req.body?.items;
+    if (!Array.isArray(items) || items.length === 0 || items.length > 100
+      || items.some((item) => typeof item?.sessionId !== "string" || typeof item?.groupId !== "string"
+        || !["accept", "discard"].includes(item.action) || typeof item.token !== "string")
+      || new Set(items.map((item) => `${item.sessionId}:${item.groupId}`)).size !== items.length) {
+      res.status(400).json({ message: "无效的批量确认请求" });
+      return;
+    }
+    const result = await confirmPendingScans(
+      Number(req.params.examId), items, req.user!.id, await getAccessibleClassIds(req.user),
+    );
+    res.json(result);
+  } catch (error) {
+    res.status(409).json({ message: error instanceof Error ? error.message : "批量确认失败" });
   }
 });
 router.post("/:examId/scanner-pending", async (req, res) => {

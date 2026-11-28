@@ -6,12 +6,11 @@ import { randomUUID } from "node:crypto";
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { blockCropsDir, safeId } from "../../apps/answer-card/server/storage";
-import type { AnswerBlockCrop, AnswerBlockCropSourceType, RecognitionBlockCrop, Rect } from "../../shared/types";
-import { CardRepository } from "../repositories/CardRepository";
-import { objectiveQuestionDefinitions } from "../../shared/grading";
-import type { AnswerCard } from "../../shared/types";
+import type { AnswerBlockCrop, AnswerBlockCropSourceType, RecognitionBlockCrop, Rect, ReviewScoreBreakdownEntry } from "../../shared/types";
 import { loadHalfPointRule } from "./BlockGradingConfigService";
+import { loadReviewQuestionContracts } from "./ReviewQuestionContractService";
 import { examClassPredicate } from "./examClassMemberships";
+import { REVIEW_AMENDMENT_WINDOW_MS } from "../../shared/reviewPoolLimits";
 
 type CropRow = {
   id: string;
@@ -39,6 +38,9 @@ type CropRow = {
   claimed_at?: string | null;
   claim_count?: number;
   review_round?: number | null;
+  score_breakdown?: string | Array<ReviewScoreBreakdownEntry> | null;
+  reviewed_at?: string | null;
+  final_score?: number | null;
 };
 
 export type CropFileMove = { sourcePath: string; targetPath: string; createdDir?: string };
@@ -104,7 +106,10 @@ function toAnswerBlockCrop(row: CropRow): AnswerBlockCrop {
     claimedBy: row.claimed_by ?? null,
     claimedAt: row.claimed_at ?? null,
     claimCount: row.claim_count ?? 0,
-    reviewRound: Number(row.review_round ?? 0)
+    reviewRound: Number(row.review_round ?? 0),
+    scoreBreakdown: parseJson<Array<ReviewScoreBreakdownEntry>>(row.score_breakdown, []),
+    reviewedAt: row.reviewed_at ?? null,
+    finalScore: row.final_score ?? null
   };
 }
 
@@ -397,6 +402,8 @@ export async function listAnswerBlockCropsForStudent(
 export async function listReviewBlockCrops(
   params: {
     examId: number; blockId?: string; blockIds?: string[]; classId?: number; status?: string; cropId?: string;
+    /** 精确读取一组切块（最近已批回看等按需场景，避免整块扫描） */
+    cropIds?: string[];
     /** 逐生分配的可阅范围（评审 B1）：`{sql, params}` 以 `abc` 为切块表别名，null/缺省 = 不追加条件 */
     assignedSlice?: { sql: string; params: unknown[] } | null;
   },
@@ -404,6 +411,11 @@ export async function listReviewBlockCrops(
 ): Promise<AnswerBlockCrop[]> {
   const filters = ["abc.exam_id = ?", reviewUnitPredicate("abc")];
   const values: unknown[] = [params.examId];
+  if (params.cropIds) {
+    if (params.cropIds.length === 0) return [];
+    filters.push(`abc.id IN (${params.cropIds.map(() => "?").join(",")})`);
+    values.push(...params.cropIds);
+  }
   if (params.blockId) {
     filters.push("abc.block_id = ?");
     values.push(params.blockId);
@@ -450,57 +462,62 @@ export async function listReviewBlockCrops(
   });
 }
 
-function blockMaxScoreFromCard(card: AnswerCard): Map<string, number> {
-  const map = new Map<string, number>();
-  for (const block of card.bodyBlocks) {
-    let sum = 0;
-    if (block.type === "objective") {
-      for (const def of objectiveQuestionDefinitions(block)) sum += Number(def.score ?? 0);
-    } else if (block.type === "subjective") {
-      for (const q of block.questions ?? []) sum += Number(q.score ?? 0);
-    }
-    map.set(block.id, sum);
-  }
-  return map;
+function amendmentDeadline(history: ReviewScoreBreakdownEntry[] | undefined): string | null {
+  const last = history?.at(-1);
+  if (!last?.reviewedAt) return null;
+  const reviewedAt = Date.parse(last.reviewedAt);
+  if (!Number.isFinite(reviewedAt)) return null;
+  return new Date(reviewedAt + REVIEW_AMENDMENT_WINDOW_MS).toISOString();
 }
 
 async function withQuestionScores(rows: CropRow[], examId: number, db: DbAdapter): Promise<AnswerBlockCrop[]> {
   if (rows.length === 0) return [];
   const studentIds = Array.from(new Set(rows.map((row) => row.student_id).filter((id): id is number => id != null)));
-  const scoresByStudent = new Map<number, Array<{ question_number: number; score: number | null; max_score: number | null }>>();
+  const scoresByStudent = new Map<number, Array<{ question_number: number; score: number | null; max_score: number | null; block_id: string | null }>>();
 
-  for (const studentId of studentIds) {
-    const scores = await db.all(
-      "SELECT question_number, score, max_score FROM question_scores WHERE exam_id = ? AND student_id = ?",
+  // 一次 IN 批量读取所有切块学生的逐题成绩；分片只用于规避 SQLite/MariaDB 的占位符上限，
+  // 不再为每名学生发起一次查询。
+  for (let offset = 0; offset < studentIds.length; offset += 400) {
+    const chunk = studentIds.slice(offset, offset + 400);
+    const placeholders = chunk.map(() => "?").join(",");
+    const scoreRows = await db.all(
+      `SELECT student_id, block_id, question_number, score, max_score
+       FROM question_scores
+       WHERE exam_id = ? AND student_id IN (${placeholders})`,
       examId,
-      studentId
-    ) as Array<{ question_number: number; score: number | null; max_score: number | null }>;
-    scoresByStudent.set(studentId, scores);
+      ...chunk
+    ) as Array<{ student_id: number; block_id: string | null; question_number: number; score: number | null; max_score: number | null }>;
+    for (const score of scoreRows) {
+      const list = scoresByStudent.get(score.student_id) ?? [];
+      list.push(score);
+      scoresByStudent.set(score.student_id, list);
+    }
   }
 
+  const contracts = await loadReviewQuestionContracts(examId, db, Array.from(new Set(rows.map((row) => row.block_id))));
   const hasHalfPoint = await loadHalfPointRule(examId, db);
-
-  let blockMaxMap: Map<string, number> | null = null;
-  try {
-    const exam = await db.get("SELECT card_id FROM exams WHERE id = ?", examId) as { card_id: string | null } | undefined;
-    if (exam?.card_id) {
-      const card = await new CardRepository().findById(exam.card_id);
-      if (card) blockMaxMap = blockMaxScoreFromCard(card);
-    }
-  } catch { /* 题块权威满分缺失时退回历史行为 */ }
 
   return rows.map((row) => {
     const crop = toAnswerBlockCrop(row);
+    const contract = contracts.get(row.block_id);
     crop.hasHalfPoint = hasHalfPoint(row.block_id);
+    crop.questionMaxScores = Object.fromEntries((contract?.questions ?? []).map((question) => [String(question.questionNumber), question.maxScore]));
+    const cropQuestionScores = crop.questionNumbers
+      .map((questionNumber) => crop.questionMaxScores?.[String(questionNumber)])
+      .filter((score): score is number => typeof score === "number");
+    crop.maxScore = cropQuestionScores.length ? cropQuestionScores.reduce((sum, score) => sum + score, 0) : crop.maxScore ?? 0;
+    crop.amendmentDeadline = amendmentDeadline(crop.scoreBreakdown);
+
     const questionSet = new Set(crop.questionNumbers.map((item) => String(item)));
     const scores = row.student_id != null
-      ? (scoresByStudent.get(row.student_id) ?? []).filter((score) => questionSet.has(String(score.question_number)))
+      ? (scoresByStudent.get(row.student_id) ?? []).filter((score) =>
+          questionSet.has(String(score.question_number)) &&
+          (score.block_id == null || score.block_id === row.block_id)
+        )
       : [];
+    crop.questionScores = Object.fromEntries(scores.map((score) => [String(score.question_number), Number(score.score ?? 0)]));
     if (scores.length > 0) {
       crop.score = scores.reduce((sum, score) => sum + Number(score.score ?? 0), 0);
-      crop.maxScore = scores.reduce((sum, score) => sum + Number(score.max_score ?? 0), 0);
-    } else if (blockMaxMap) {
-      crop.maxScore = blockMaxMap.get(row.block_id) ?? crop.maxScore ?? 0;
     }
     return crop;
   });

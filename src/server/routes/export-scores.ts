@@ -198,7 +198,7 @@ router.post(
             break;
           }
           case "displayValue": exportRow["偏差值/Z值"] = row.displayValue; break;
-          case "needsReview": exportRow["需要复核"] = ""; break;
+          case "needsReview": exportRow["需要复核"] = row.needsReview ? "是" : ""; break;
           case "confidence": exportRow["置信度"] = null; break;
         }
       }
@@ -245,10 +245,13 @@ router.post(
     ws["!cols"] = colWidths.map((w) => ({ wch: w }));
 
     // Side table (top N)
+    // Issue #384：侧表只做附加参照，不能覆盖主表表头（此前把「年排」写成「年级前N名」）。
+    // 单班导出时 rows 已按班级过滤，侧表应标「本班前N名」并展示班排。
     if (sideTableN > 0) {
       const topN = rows.slice(0, sideTableN);
+      const sideRankHeader = classId ? "班排" : "年排";
       const sideData = topN.map((r) => ({
-        "年排": r.gradeRank,
+        [sideRankHeader]: classId ? r.classRank : r.gradeRank,
         "班级": r.className,
         "原始分": r.totalScore
       }));
@@ -264,7 +267,11 @@ router.post(
         ws["!cols"][originCol + i] = { wch: sideWidths[i] };
       }
 
-      XLSX.utils.sheet_add_json(ws, [{ "": `年级前${sideTableN}名` }], { origin: { r: 0, c: originCol }, skipHeader: true });
+      // 标题放在侧表数据下方，避开第 0 行的表头
+      XLSX.utils.sheet_add_json(ws, [{ "": classId ? `本班前${sideTableN}名` : `年级前${sideTableN}名` }], {
+        origin: { r: topN.length + 2, c: originCol },
+        skipHeader: true,
+      });
     }
 
     XLSX.utils.book_append_sheet(wb, ws, "成绩表");

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarDays,
   ClipboardList,
@@ -31,6 +31,8 @@ import {
   StatCardRow,
   type ColumnDef,
   type ExamStatus,
+  type PaginationState,
+  type SortingState,
 } from "./ui/v2";
 import type {
   CrossExamAttendanceMode,
@@ -66,10 +68,66 @@ interface Props {
   onSelectExam: (examId: number) => void;
   onSelectGroup?: (groupId: number) => void;
   refreshKey?: number;
+  cacheKey?: string;
 }
 
 type MainMode = "single" | "group" | "cross" | "audit";
 type CrossMode = "week" | "selected" | "group";
+type TableKey = "single" | "group" | "preview" | "picker" | "cross";
+
+interface TableViewState {
+  sorting: SortingState;
+  pagination: PaginationState;
+}
+
+interface ExamSelectSnapshot {
+  mainMode: MainMode;
+  crossMode: CrossMode;
+  academicYear: string;
+  gradeId: string;
+  subject: string;
+  classId: string;
+  attendanceMode: CrossExamAttendanceMode;
+  startDate: string;
+  endDate: string;
+  selectedExamIds: number[];
+  selectedGroupId: string;
+  groupName: string;
+  crossSearch: string;
+  crossResult: CrossExamTotalResponse | null;
+  tables: Record<TableKey, TableViewState>;
+  scrollTop: number;
+}
+
+const emptyTableState = (): TableViewState => ({ sorting: [], pagination: { pageIndex: 0, pageSize: 20 } });
+const examSelectCache = new Map<string, ExamSelectSnapshot>();
+
+function defaultExamSelectSnapshot(): ExamSelectSnapshot {
+  return {
+    mainMode: "single",
+    crossMode: "week",
+    academicYear: "",
+    gradeId: "",
+    subject: "",
+    classId: "",
+    attendanceMode: "all",
+    startDate: addDays(today(), -6),
+    endDate: today(),
+    selectedExamIds: [],
+    selectedGroupId: "",
+    groupName: "",
+    crossSearch: "",
+    crossResult: null,
+    tables: {
+      single: emptyTableState(),
+      group: emptyTableState(),
+      preview: emptyTableState(),
+      picker: emptyTableState(),
+      cross: emptyTableState(),
+    },
+    scrollTop: 0,
+  };
+}
 
 /** Radix Select 不接受空字符串 value，用哨兵值表示「全部」 */
 const ALL = "__all__";

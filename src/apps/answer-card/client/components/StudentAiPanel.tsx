@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, BrainCircuit, KeyRound, RefreshCw, Sparkles, Trash2 } from "lucide-react";
 import { fetchJson } from "../auth/api";
+import type { StudentExamScore } from "../auth/types";
 import type { AiAnalysisResponse, AiAnalysisStatus, AiProviderConfig } from "../../../../shared/types";
 import {
   Badge,
@@ -40,13 +41,20 @@ const ANALYSIS_MODES: SegmentedItem<AnalysisMode>[] = [
 const BUILTIN_PROVIDER = "0";
 /** 无可用模型时的占位项值，避免 Radix Select 收到空 value。 */
 const NO_MODEL = "__none__";
+const NO_EXAM = "__none__";
 
-export function StudentAiPanel() {
+interface Props {
+  exams: StudentExamScore[];
+  providerId: number;
+  model: string;
+  onSelectionChange: (providerId: number, model: string) => void;
+}
+
+export function StudentAiPanel({ exams, providerId: selectedProviderId, model: selectedModel, onSelectionChange }: Props) {
   const [status, setStatus] = useState<AiAnalysisStatus | null>(null);
   const [providers, setProviders] = useState<AiProviderConfig[]>([]);
-  const [selectedProviderId, setSelectedProviderId] = useState(0);
-  const [selectedModel, setSelectedModel] = useState("");
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("single");
+  const [selectedExamId, setSelectedExamId] = useState<number | null>(null);
   const [analysis, setAnalysis] = useState<AiAnalysisResponse | null>(null);
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -60,6 +68,17 @@ export function StudentAiPanel() {
   const [newBaseUrl, setNewBaseUrl] = useState("");
   const [newModels, setNewModels] = useState("");
   const [saving, setSaving] = useState(false);
+  const selection = useRef({ providerId: selectedProviderId, model: selectedModel });
+  const statusRequest = useRef(0);
+  const statusAbort = useRef<AbortController | null>(null);
+  const generateRequest = useRef(0);
+  const generateAbort = useRef<AbortController | null>(null);
+  selection.current = { providerId: selectedProviderId, model: selectedModel };
+
+  function updateSelection(providerId: number, model: string) {
+    selection.current = { providerId, model };
+    onSelectionChange(providerId, model);
+  }
 
   const presets = useMemo(() => [...Object.values(MODEL_PRESETS)], []);
 
@@ -68,32 +87,52 @@ export function StudentAiPanel() {
     [status]
   );
 
-  const userProviders = providers;
+  const userProviders = providers.filter((provider) => provider.isActive !== false);
   const hasBuiltin = availableModels.length > 0;
   const aiAvailable = status?.available ?? false;
 
   async function loadStatus() {
+    const request = ++statusRequest.current;
+    statusAbort.current?.abort();
+    const controller = new AbortController();
+    statusAbort.current = controller;
     setLoadingStatus(true);
     setError("");
     try {
-      // Fetch both status and user providers
       const [nextStatus, userProv] = await Promise.all([
-        fetchJson<AiAnalysisStatus>("/api/analysis/ai/status"),
-        fetchJson<AiProviderConfig[]>("/api/ai/providers"),
+        fetchJson<AiAnalysisStatus>("/api/analysis/ai/status", { signal: controller.signal }),
+        fetchJson<AiProviderConfig[]>("/api/ai/providers", { signal: controller.signal }),
       ]);
+      if (request !== statusRequest.current) return;
       setStatus(nextStatus);
-      setProviders(Array.isArray(userProv) ? userProv : []);
+      const activeProviders = (Array.isArray(userProv) ? userProv : []).filter((provider) => provider.isActive !== false);
+      setProviders(activeProviders);
 
-      if (userProv.length > 0) {
-        setSelectedProviderId(userProv[0].id);
-        setSelectedModel(userProv[0].models?.[0] ?? "");
-      } else {
-        setSelectedProviderId(0);
-        const preferred = nextStatus.models.find((m) => m.available && m.id === nextStatus.defaultModel)
-          ?? nextStatus.models.find((m) => m.available);
-        setSelectedModel(preferred?.id ?? "");
+      const current = selection.current;
+      const builtinModels = nextStatus.models.filter((item) => item.available);
+      const currentProvider = activeProviders.find((provider) => provider.id === current.providerId);
+      let providerId = 0;
+      let model = "";
+      if (current.providerId === 0 && builtinModels.length > 0) {
+        providerId = 0;
+        model = builtinModels.some((item) => item.id === current.model)
+          ? current.model
+          : (builtinModels.find((item) => item.id === nextStatus.defaultModel) ?? builtinModels[0]).id;
+      } else if (currentProvider) {
+        providerId = currentProvider.id;
+        const configured = currentProvider.models ?? [];
+        model = configured.length === 0 || configured.includes(current.model)
+          ? current.model
+          : configured[0] ?? "";
+      } else if (activeProviders.length > 0) {
+        providerId = activeProviders[0].id;
+        model = activeProviders[0].models?.[0] ?? "";
+      } else if (builtinModels.length > 0) {
+        model = (builtinModels.find((item) => item.id === nextStatus.defaultModel) ?? builtinModels[0]).id;
       }
+      updateSelection(providerId, model);
     } catch (err) {
+      if (request !== statusRequest.current) return;
       setStatus({
         available: false,
         reason: err instanceof Error ? err.message : String(err),
@@ -102,40 +141,56 @@ export function StudentAiPanel() {
         providers: [],
       });
     } finally {
-      setLoadingStatus(false);
+      if (request === statusRequest.current) setLoadingStatus(false);
     }
   }
 
-  useEffect(() => { void loadStatus(); }, []);
+  useEffect(() => {
+    void loadStatus();
+    return () => {
+      statusRequest.current += 1;
+      statusAbort.current?.abort();
+      generateRequest.current += 1;
+      generateAbort.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    const currentStillExists = selectedExamId != null && exams.some((exam) => exam.exam_id === selectedExamId);
+    if (currentStillExists) return;
+    setAnalysis(null);
+    setSelectedExamId(exams[0]?.exam_id ?? null);
+  }, [exams, selectedExamId]);
 
   async function generateAnalysis() {
+    if (analysisMode === "single" && selectedExamId == null) {
+      setError("请选择一场考试后再生成分析");
+      return;
+    }
+    const request = ++generateRequest.current;
+    generateAbort.current?.abort();
+    const controller = new AbortController();
+    generateAbort.current = controller;
     setGenerating(true);
     setError("");
     setAnalysis(null);
     try {
       const body: Record<string, unknown> = { model: selectedModel || undefined };
       if (selectedProviderId > 0) body.providerId = selectedProviderId;
-
-      if (analysisMode === "single") {
-        // Single exam mode: prompt user to select an exam
-        // For now, we'll make it request from the teacher's existing endpoint
-        // In a real implementation, we'd have a dropdown for exam selection
-        setError("请先在「成绩列表」中选择一场考试，然后使用 AI 分析。");
-        setGenerating(false);
-        return;
-      }
-
-      // Overall analysis: new endpoint for student personal analysis
-      const result = await fetchJson<AiAnalysisResponse>("/api/scores/me/ai-analysis", {
+      const endpoint = analysisMode === "single"
+        ? `/api/scores/me/exams/${selectedExamId}/ai-analysis`
+        : "/api/scores/me/ai-analysis";
+      const result = await fetchJson<AiAnalysisResponse>(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
-      setAnalysis(result);
+      if (request === generateRequest.current) setAnalysis(result);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (request === generateRequest.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setGenerating(false);
+      if (request === generateRequest.current) setGenerating(false);
     }
   }
 
@@ -182,14 +237,23 @@ export function StudentAiPanel() {
 
   function handleProviderChange(value: string) {
     const pid = Number(value);
-    setSelectedProviderId(pid);
     if (pid === 0) {
       const preferred = availableModels.find((m) => m.id === status?.defaultModel) ?? availableModels[0];
-      setSelectedModel(preferred?.id ?? "");
+      updateSelection(0, preferred?.id ?? "");
     } else {
-      const prov = userProviders.find((p) => p.id === pid);
-      setSelectedModel(prov?.models?.[0] ?? "");
+      const provider = userProviders.find((p) => p.id === pid);
+      updateSelection(pid, provider?.models?.[0] ?? "");
     }
+  }
+
+  function changeAnalysisMode(mode: AnalysisMode) {
+    if (mode === analysisMode) return;
+    generateRequest.current += 1;
+    generateAbort.current?.abort();
+    setGenerating(false);
+    setAnalysisMode(mode);
+    setAnalysis(null);
+    setError("");
   }
 
   function handlePresetChange(type: string) {
@@ -212,7 +276,12 @@ export function StudentAiPanel() {
   const modelSelectDisabled =
     generating || (selectedProviderId === 0 && availableModels.length === 0);
 
-  const canGenerate = Boolean((aiAvailable || selectedProviderId > 0) && selectedModel && !generating);
+  const canGenerate = Boolean(
+    (aiAvailable || selectedProviderId > 0)
+    && selectedModel
+    && !generating
+    && (analysisMode === "overall" || selectedExamId != null),
+  );
 
   return (
     <div className="flex min-w-0 flex-col gap-3 rounded-lg border border-border-subtle bg-card p-4">
@@ -237,12 +306,39 @@ export function StudentAiPanel() {
       <div className="flex flex-col gap-3 rounded-md border border-border-subtle bg-secondary p-3">
         <SegmentedControl
           value={analysisMode}
-          onValueChange={setAnalysisMode}
-          items={ANALYSIS_MODES}
+          onValueChange={(value) => changeAnalysisMode(value as AnalysisMode)}
+          items={ANALYSIS_MODES.map((item) => ({ ...item, disabled: generating }))}
           size="sm"
           aria-label="分析模式"
           className="self-start"
         />
+
+        {analysisMode === "single" && (
+          <Select
+            value={selectedExamId == null ? NO_EXAM : String(selectedExamId)}
+            onValueChange={(value) => {
+              generateRequest.current += 1;
+              generateAbort.current?.abort();
+              setGenerating(false);
+              setSelectedExamId(value === NO_EXAM ? null : Number(value));
+              setAnalysis(null);
+              setError("");
+            }}
+            disabled={generating}
+          >
+            <SelectTrigger className="w-full sm:w-72" aria-label="选择分析考试">
+              <SelectValue placeholder="请选择一场考试" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={NO_EXAM}>请选择一场考试</SelectItem>
+              {exams.map((exam) => (
+                <SelectItem key={exam.exam_id} value={String(exam.exam_id)}>
+                  {exam.exam_name}（{exam.subject || "综合"}）
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
 
         <div className="flex flex-wrap items-center gap-2">
           <Select
@@ -270,7 +366,7 @@ export function StudentAiPanel() {
 
           <Select
             value={selectedModel || NO_MODEL}
-            onValueChange={(v) => setSelectedModel(v === NO_MODEL ? "" : v)}
+            onValueChange={(value) => updateSelection(selectedProviderId, value === NO_MODEL ? "" : value)}
             disabled={modelSelectDisabled}
           >
             <SelectTrigger className="w-44" aria-label="模型">
@@ -297,13 +393,13 @@ export function StudentAiPanel() {
             disabled={!canGenerate}
             loading={generating}
           >
-            {analysisMode === "single" ? "在成绩列表中选择" : "整体分析"}
+            {analysisMode === "single" ? "生成单场分析" : "整体分析"}
           </Button>
         </div>
 
         {analysisMode === "single" && (
           <p className="m-0 text-xs text-muted-foreground">
-            单场分析：请在「成绩列表」中展开某场考试后，点击该场次的 AI 分析按钮使用。
+            单场分析仅使用所选考试的数据；未选择考试时不能生成。
           </p>
         )}
 

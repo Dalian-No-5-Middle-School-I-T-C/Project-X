@@ -41,6 +41,7 @@ export function AnalysisRoutePage() {
       <section className="col-span-full flex min-h-0 flex-col overflow-y-auto bg-background">
         {analysisTab === "select" && analysisGroupId == null && (
           <ExamSelectPage
+            cacheKey={`analysis:${selectedAnalysisExamId ?? "none"}:${analysisGroupId ?? "none"}`}
             refreshKey={examListRefreshKey}
             onSelectExam={(examId) => {
               setSelectedAnalysisExamId(examId);
@@ -66,7 +67,6 @@ export function AnalysisRoutePage() {
               examName={selectedExam?.name ?? ""}
               subject={selectedExam?.subject ?? null}
               onBack={() => {
-                setSelectedAnalysisExamId(null);
                 setAnalysisTab("select");
               }}
             />

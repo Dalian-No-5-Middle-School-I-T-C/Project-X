@@ -283,7 +283,8 @@ export async function getPoolSummary(
   examId: number,
   blockId: string,
   teacherId?: number,
-  db: DbAdapter = getMysqlDb()
+  db: DbAdapter = getMysqlDb(),
+  exempt = false
 ): Promise<ReviewPoolSummary> {
   const rows = await db.all(
     `SELECT id, status, claimed_by, score_breakdown
@@ -345,6 +346,9 @@ export async function getPoolSummary(
     });
   }
 
+  const held = teacherId
+    ? await countHeldPapers(teacherId, { examId, blockId }, db)
+    : { inBlock: 0, total: 0 };
   return {
     examId,
     blockId,
@@ -355,6 +359,10 @@ export async function getPoolSummary(
     disputedCount,
     pendingCount,
     myClaimedCount,
+    claimLimit: MAX_HELD_PAPERS_PER_BLOCK,
+    heldTotalCount: held.total,
+    canClaimMore: inPoolCount > 0 && (exempt
+      || (held.inBlock < MAX_HELD_PAPERS_PER_BLOCK && held.total < MAX_HELD_PAPERS_TOTAL)),
     assignments: assignmentSummaries
   };
 }

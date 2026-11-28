@@ -51,9 +51,10 @@ router.get(
       const blockId = String(req.params.blockId ?? "");
       const mine = req.query.mine === "1" || req.query.mine === "true";
       const teacherId = (req as any).user?.id;
-      const summary = await getPoolSummary(examId, blockId, teacherId);
+      const privileged = isPrivilegedCaller((req as any).user);
+      const summary = await getPoolSummary(examId, blockId, teacherId, undefined, privileged);
       // 安全 R15：逐生分配的教师列出的是「谁的卷子」清单，不应包含未分配给他的学生
-      const assignedIds = isPrivilegedCaller((req as any).user) || !teacherId
+      const assignedIds = privileged || !teacherId
         ? null
         : await getAssignedStudentIdSet(examId, blockId, Number(teacherId));
       const entries = await getPoolEntries(

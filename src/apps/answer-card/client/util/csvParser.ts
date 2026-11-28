@@ -103,12 +103,12 @@ export async function generateStudentTemplate(): Promise<Blob> {
   const XLSX = await import("xlsx");
   const wb = XLSX.utils.book_new();
   const data = [
-    { "班级": "高一1班", "学号": "24101", "姓名": "张三" },
-    { "班级": "高一2班", "学号": "24201", "姓名": "李四" }
+    { "班级": "高一1班", "学号": "24101", "姓名": "张三", "文理": "理科" },
+    { "班级": "高一2班", "学号": "24201", "姓名": "李四", "文理": "文科" }
   ];
   const ws = XLSX.utils.json_to_sheet(data);
   ws["!cols"] = [
-    { wch: 14 }, { wch: 14 }, { wch: 10 }
+    { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 10 }
   ];
   XLSX.utils.book_append_sheet(wb, ws, "学生导入模板");
   const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });

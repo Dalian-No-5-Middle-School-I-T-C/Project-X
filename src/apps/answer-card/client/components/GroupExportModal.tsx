@@ -53,7 +53,6 @@ export function GroupExportModal({ groupId, onClose }: Props) {
   const [detail, setDetail] = useState<ExamGroupDetail | null>(null);
   const [includeOverview, setIncludeOverview] = useState(true);
   const [subjectExamIds, setSubjectExamIds] = useState<number[]>([]);
-  const [selectAll, setSelectAll] = useState(true);
   const [includeObjSub, setIncludeObjSub] = useState(true);
   const [includeSubjSub, setIncludeSubjSub] = useState(true);
   const [progress, setProgress] = useState<ExportProgress | null>(null);
@@ -83,6 +82,9 @@ export function GroupExportModal({ groupId, onClose }: Props) {
     };
   }, [groupId]);
 
+  const allSubjectsSelected = detail !== null && detail.members.length > 0
+    && detail.members.every((member) => subjectExamIds.includes(member.examId));
+
   const exportItems = useMemo(
     () => buildExportItems(includeOverview, detail?.members ?? [], subjectExamIds),
     [includeOverview, detail, subjectExamIds],
@@ -98,12 +100,7 @@ export function GroupExportModal({ groupId, onClose }: Props) {
 
   function handleSelectAll() {
     if (!detail) return;
-    if (selectAll) {
-      setSubjectExamIds([]);
-    } else {
-      setSubjectExamIds(detail.members.map((m) => m.examId));
-    }
-    setSelectAll(!selectAll);
+    setSubjectExamIds(allSubjectsSelected ? [] : detail.members.map((member) => member.examId));
   }
 
   /**
@@ -133,8 +130,8 @@ export function GroupExportModal({ groupId, onClose }: Props) {
         body: JSON.stringify({
           includeOverview,
           subjectExamIds,
-          includeObjSub,
-          includeSubjSub,
+          includeObjectiveSub: includeObjSub,
+          includeSubjectiveSub: includeSubjSub,
         }),
       });
 
@@ -236,7 +233,7 @@ export function GroupExportModal({ groupId, onClose }: Props) {
                     onClick={handleSelectAll}
                     disabled={exporting}
                   >
-                    {selectAll ? "取消全选" : "全选"}
+                    {allSubjectsSelected ? "取消全选" : "全选"}
                   </Button>
                 </div>
                 <div className="flex flex-wrap gap-2">

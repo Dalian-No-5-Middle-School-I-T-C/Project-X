@@ -10,6 +10,7 @@ type ConfigRow = {
   dispute_threshold: number;
   rounding: string;
   arbitrator_id: number | null;
+  arbitrator_name?: string | null;
   review_mode: number;
   has_half_point: number;
   auto_reassign_no_arb: number;
@@ -28,6 +29,7 @@ function toConfig(row: ConfigRow): BlockGradingConfig {
     disputeThreshold: row.dispute_threshold,
     rounding: row.rounding as RoundingMode,
     arbitratorId: row.arbitrator_id,
+    arbitratorName: row.arbitrator_name ?? null,
     reviewMode: row.review_mode as ReviewMode,
     hasHalfPoint: row.has_half_point ?? 0,
     autoReassignNoArb: row.auto_reassign_no_arb ?? 1,
@@ -38,6 +40,10 @@ function toConfig(row: ConfigRow): BlockGradingConfig {
     updatedAt: row.updated_at
   };
 }
+
+const CONFIG_SELECT = `SELECT bgc.*, arb.name AS arbitrator_name
+  FROM block_grading_config bgc
+  LEFT JOIN users arb ON arb.id = bgc.arbitrator_id`;
 
 /** 根据题块类型和满分推导默认分差阈值 */
 export function defaultDisputeThreshold(blockKind: string, maxScore: number): number {
@@ -60,7 +66,7 @@ export async function getBlockConfig(
   db: DbAdapter = getMysqlDb()
 ): Promise<BlockGradingConfig> {
   const row = await db.get(
-    "SELECT * FROM block_grading_config WHERE exam_id = ? AND block_id = ?",
+    `${CONFIG_SELECT} WHERE bgc.exam_id = ? AND bgc.block_id = ?`,
     examId,
     blockId
   ) as ConfigRow | undefined;
@@ -70,7 +76,7 @@ export async function getBlockConfig(
   // 不存在则返回默认值（不写入数据库）。v1.9.4 设置重构：优先采用本场考试的
   // 「网阅默认」模板（block_id='__default__'），让各考试可独立设定新建题块的默认策略。
   const def = await db.get(
-    "SELECT * FROM block_grading_config WHERE exam_id = ? AND block_id = ?",
+    `${CONFIG_SELECT} WHERE bgc.exam_id = ? AND bgc.block_id = ?`,
     examId,
     "__default__"
   ) as ConfigRow | undefined;
@@ -109,7 +115,7 @@ export async function getExamBlockConfigs(
   db: DbAdapter = getMysqlDb()
 ): Promise<BlockGradingConfig[]> {
   const rows = await db.all(
-    "SELECT * FROM block_grading_config WHERE exam_id = ? ORDER BY block_id",
+    `${CONFIG_SELECT} WHERE bgc.exam_id = ? ORDER BY bgc.block_id`,
     examId
   ) as ConfigRow[];
   return rows.map(toConfig);
@@ -158,6 +164,12 @@ export async function upsertBlockConfig(
   ) {
     throw new Error(`scoreDistribution 取值非法：${updates.scoreDistribution}（仅允许 proportional / equal）`);
   }
+  if (
+    updates.disputeThreshold !== undefined &&
+    (!Number.isFinite(updates.disputeThreshold) || updates.disputeThreshold < 0)
+  ) {
+    throw new Error(`disputeThreshold 取值非法：${updates.disputeThreshold}（须为不小于 0 的数字）`);
+  }
 
   if (existing) {
     const setClauses: string[] = [];
@@ -202,7 +214,7 @@ export async function upsertBlockConfig(
 
     if (setClauses.length === 0) {
       const row = await db.get(
-        "SELECT * FROM block_grading_config WHERE exam_id = ? AND block_id = ?",
+        `${CONFIG_SELECT} WHERE bgc.exam_id = ? AND bgc.block_id = ?`,
         examId,
         blockId
       ) as ConfigRow;
@@ -218,25 +230,34 @@ export async function upsertBlockConfig(
       ...values
     );
   } else {
+    // 未建行时先取本场「网阅默认」：批量修改只提交被改字段，其余字段必须继承
+    // __default__，不能被写死成 2 / ceil / 1 / 0 这类常量而悄悄破坏考试默认配置。
+    const def = blockId === "__default__"
+      ? undefined
+      : await db.get(
+        `${CONFIG_SELECT} WHERE bgc.exam_id = ? AND bgc.block_id = ?`,
+        examId,
+        "__default__"
+      ) as ConfigRow | undefined;
     await db.run(
       `INSERT INTO block_grading_config (exam_id, block_id, dispute_threshold, rounding, arbitrator_id, review_mode, has_half_point, auto_reassign_no_arb, workload_balance_threshold, scoring_mode, score_distribution)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       examId,
       blockId,
-      updates.disputeThreshold ?? 2,
-      updates.rounding ?? "ceil",
-      updates.arbitratorId ?? null,
-      updates.reviewMode ?? 1,
-      updates.hasHalfPoint ?? 0,
-      updates.autoReassignNoArb ?? 1,
-      updates.workloadBalanceThreshold ?? 4,
-      updates.scoringMode ?? "block_total",
-      updates.scoreDistribution ?? "proportional"
+      updates.disputeThreshold ?? def?.dispute_threshold ?? 2,
+      updates.rounding ?? (def?.rounding as RoundingMode | undefined) ?? "ceil",
+      updates.arbitratorId !== undefined ? updates.arbitratorId : null,
+      updates.reviewMode ?? (def?.review_mode as ReviewMode | undefined) ?? 1,
+      updates.hasHalfPoint ?? def?.has_half_point ?? 0,
+      updates.autoReassignNoArb ?? def?.auto_reassign_no_arb ?? 1,
+      updates.workloadBalanceThreshold ?? def?.workload_balance_threshold ?? 4,
+      updates.scoringMode ?? def?.scoring_mode ?? "block_total",
+      updates.scoreDistribution ?? def?.score_distribution ?? "proportional"
     );
   }
 
   const row = await db.get(
-    "SELECT * FROM block_grading_config WHERE exam_id = ? AND block_id = ?",
+    `${CONFIG_SELECT} WHERE bgc.exam_id = ? AND bgc.block_id = ?`,
     examId,
     blockId
   ) as ConfigRow;
