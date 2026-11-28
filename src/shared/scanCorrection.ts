@@ -12,6 +12,9 @@ export type CorrectionPage = {
    * 需要按版本判定能否复用的读取方要把它当「版本未知」拒绝，不能当成匹配。
    */
   cardVersion?: string | null;
+  /** v72 起独立记录；旧行可能为空，必须经过原图与 layout_json 核验才能升级。 */
+  layoutFingerprint?: string | null;
+  gradingVersion?: string | null;
   layout: PageLayout;
   recognition: CombinedRecognitionResult;
   selected: string[];
@@ -19,7 +22,14 @@ export type CorrectionPage = {
   imageUrl: string;
   recovery?: { fingerprint: string; identityMode: "strict" | "legacy"; dpi: number; signature?: string; reason?: "provenance" };
 };
-export type CorrectionDocument = { card: AnswerCard; pages: CorrectionPage[]; version: string };
+export type CorrectionDocument = {
+  card: AnswerCard;
+  pages: CorrectionPage[];
+  /** 历史混合指纹，继续供旧客户端往返；几何校验使用 layoutFingerprint。 */
+  version: string;
+  layoutFingerprint?: string;
+  gradingVersion?: string;
+};
 export type CorrectionEdit = { sourceId: string; revision: number; selected: string[]; touched?: string[]; recovery?: { fingerprint: string; signature?: string; recognition: CombinedRecognitionResult } };
 /**
  * 低置信度客观题被老师处理过时，要记进 touched 的格。

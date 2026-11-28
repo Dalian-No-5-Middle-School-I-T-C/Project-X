@@ -4,7 +4,8 @@ import path from "node:path";
 import { assertScanImageDimensions } from "../lib/scanImageBudget";
 import { z } from "zod";
 import type { DbAdapter } from "../db";
-import { cardFingerprint } from "../../shared/cardVersion";
+import { layoutFingerprint, stableVersionStringify } from "../../shared/cardVersion";
+import { buildLayout } from "../../shared/layout";
 import { parseIdentityMode } from "../../shared/cardIdentity";
 import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
 import { isInsideDir } from "./AnswerBlockCropService";
@@ -40,15 +41,30 @@ export function verifyRecovery(fingerprint: string, recognition: unknown, signat
 
 /** The draft is tied to the original image, layout and stored recognition, not just a record ID. */
 export async function recoverySource(db: DbAdapter, card: AnswerCard, sourceId: string) {
-  const row = await db.get<any>(`SELECT r.*,s.identity_mode,s.dpi,s.card_version,s.status AS session_status,g.objective_json,g.subjective_json
+  const correctionSourceMatch = db.dialect === "mariadb"
+    ? "c.source_id = CONVERT(r.id USING utf8mb4) COLLATE utf8mb4_unicode_ci"
+    : "c.source_id = r.id";
+  const row = await db.get<any>(`SELECT r.*,s.identity_mode,s.dpi,s.card_version,s.layout_fingerprint,s.status AS session_status,g.objective_json,g.subjective_json,
+    c.layout_json,c.recognition_json AS correction_recognition_json
     FROM twain_scan_records r JOIN twain_scan_sessions s ON s.id=r.session_id
-    LEFT JOIN twain_recognition_results g ON g.scan_record_id=r.id WHERE r.id=? AND s.card_id=?`,sourceId,card.id);
+    LEFT JOIN twain_recognition_results g ON g.scan_record_id=r.id
+    LEFT JOIN scan_correction_pages c ON c.source_type='twain_scan_record' AND ${correctionSourceMatch}
+    WHERE r.id=? AND s.card_id=?`,sourceId,card.id);
   if (!row || row.session_status === "scanning") throw new Error("原卷不存在或正在扫描");
-  if (row.card_version && row.card_version !== cardFingerprint(card)) throw new Error("答题卡版式已变化，请核对原卷版本后重新扫描");
+  const geometry = layoutFingerprint(card);
+  if (row.layout_fingerprint && row.layout_fingerprint !== geometry) throw new Error("答题卡版式已变化，请重新识别，无需重新扫描");
+  if (row.layout_json) {
+    const recognition = typeof row.correction_recognition_json === "string" ? JSON.parse(row.correction_recognition_json) : row.correction_recognition_json;
+    const expected = buildLayout(card).pages.find((page) => page.pageNumber === recognition?.pageNumber);
+    const storedLayout = typeof row.layout_json === "string" ? JSON.parse(row.layout_json) : row.layout_json;
+    if (!expected || stableVersionStringify(expected) !== stableVersionStringify(storedLayout)) {
+      throw new Error("答题卡版式已变化，请重新识别，无需重新扫描");
+    }
+  }
   const root = process.env.ANSWER_CARD_DATA_DIR || path.join(process.cwd(),"data","answer-card");
   if (!row.image_path || !isInsideDir(root,path.resolve(row.image_path))) throw new Error("原卷图片不存在");
   const metadata = await assertScanImageDimensions(row.image_path);
-  const hash = createHash("sha256").update(JSON.stringify(row)).update(cardFingerprint(card));
+  const hash = createHash("sha256").update(JSON.stringify(row)).update(geometry);
   for await (const chunk of createReadStream(row.image_path)) hash.update(chunk);
   const fingerprint = hash.digest("hex");
   return { fingerprint, identityMode:parseIdentityMode(row.identity_mode), dpi:parseRecognitionDpi(row.dpi), width:metadata.width,height:metadata.height,imagePath:row.image_path as string };

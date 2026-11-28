@@ -5,6 +5,7 @@ import { examClassJoin, examClassId, examClassJoinedAt } from "../services/examC
 import { ZipArchive } from "archiver";
 import XLSX from "xlsx";
 import { competitionRank } from "../../shared/ranking";
+import { buildExamGroupExportOverview, selectExamGroupExportMembers, type ExamGroupExportScore } from "../services/examGroupExport";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
 import { getAnalysisThresholds } from "../services/analysisConfig";
 import { decryptField } from "../lib/field-crypto";
@@ -503,11 +504,15 @@ router.post("/export", requireReadableGroup, requireGroupViewScores, async (req:
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
-    const { includeOverview = true, subjectExamIds = [], includeObjectiveSub = true, includeSubjectiveSub = true }
-      = req.body as {
-        includeOverview?: boolean; subjectExamIds?: number[];
-        includeObjectiveSub?: boolean; includeSubjectiveSub?: boolean;
-      };
+    const input = (req.body ?? {}) as {
+      includeOverview?: boolean; subjectExamIds?: number[];
+      includeObjectiveSub?: boolean; includeSubjectiveSub?: boolean;
+    };
+    const {
+      includeOverview = true,
+      includeObjectiveSub = true,
+      includeSubjectiveSub = true,
+    } = input;
 
     const group = await db.get(`
       SELECT eg.name, eg.total_score_mode
@@ -516,17 +521,24 @@ router.post("/export", requireReadableGroup, requireGroupViewScores, async (req:
     if (!group) { res.status(404).json({ message: "大考不存在" }); return; }
 
     const members = await db.all(`
-      SELECT egm.exam_id, e.name as exam_name, e.subject as subject, egm.sort_order
+      SELECT egm.exam_id, e.name as exam_name, e.subject as subject, egm.sort_order, e.assigned_formula
       FROM exam_group_members egm
       JOIN exams e ON e.id = egm.exam_id
       WHERE egm.group_id = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}
       ORDER BY egm.sort_order, egm.id
-    `, groupId) as Array<{ exam_id: number; exam_name: string; subject: string | null; sort_order: number }>;
+    `, groupId) as Array<{ exam_id: number; exam_name: string; subject: string | null; sort_order: number; assigned_formula: string | null }>;
 
     if (members.length === 0) {
       res.status(400).json({ message: "大考中没有关联考试" });
       return;
     }
+
+    const selection = selectExamGroupExportMembers(members, input.subjectExamIds);
+    if (!selection.ok) {
+      res.status(400).json({ message: selection.message });
+      return;
+    }
+    const selectedExamIds = new Set(selection.examIds);
 
     // Set headers for ZIP
     const safeName = group.name.replace(/[\\/:*?"<>|]/g, "_");
@@ -543,7 +555,7 @@ router.post("/export", requireReadableGroup, requireGroupViewScores, async (req:
         SELECT
           ss.student_id, ss.exam_id, ss.total_score, ss.assigned_score,
           u.student_number, u.name,
-          c.name as class_name
+          c.id as class_id, c.name as class_name
         FROM student_scores ss
         JOIN users u ON u.id = ss.student_id
         ${examClassJoin("ss.student_id", "ss.exam_id")}
@@ -551,89 +563,14 @@ router.post("/export", requireReadableGroup, requireGroupViewScores, async (req:
         LEFT JOIN grades g ON g.id = c.grade_id
         WHERE ss.exam_id IN (${memberIds.map(() => "?").join(",")})
         ORDER BY (c.id IS NOT NULL AND c.archived_at IS NULL AND g.archived_at IS NULL) DESC, ${examClassJoinedAt()} DESC, c.id DESC
-      `, ...memberIds) as Array<{
-        student_id: number; exam_id: number; total_score: number; assigned_score: number | null;
-        student_number: string; name: string; class_name: string | null;
-      }>;
+      `, ...memberIds) as ExamGroupExportScore[];
 
       allScores.sort((a, b) => memberIds.indexOf(a.exam_id) - memberIds.indexOf(b.exam_id));
-
-      // Build student map
-      const stuMap = new Map<number, { number: string; name: string; className: string; exams: Map<number, { raw: number; assigned: number | null }> }>();
-      for (const s of allScores) {
-        if (!stuMap.has(s.student_id)) {
-          stuMap.set(s.student_id, {
-            number: s.student_number, name: s.name,
-            className: s.class_name || "未知班级", exams: new Map()
-          });
-        }
-        stuMap.get(s.student_id)!.exams.set(s.exam_id, { raw: s.total_score, assigned: s.assigned_score });
-      }
-
-      // Build overview rows
-      const overviewHeaders = ["班级", "姓名", "总分", "总分年排", "总分班排"];
-      for (const m of members) {
-        const sub = m.subject || `科目${m.exam_id}`;
-        overviewHeaders.push(`${sub}原始分`, `${sub}年排`, `${sub}班排`);
-      }
-
-      const overviewRows: Record<string, string | number>[] = [];
-      for (const [, stu] of stuMap) {
-        let totalRaw = 0;
-        for (const m of members) {
-          const score = stu.exams.get(m.exam_id);
-          totalRaw += score?.raw ?? 0;
-        }
-
-        const row: Record<string, string | number> = {
-          "班级": stu.className, "姓名": stu.name, "总分": totalRaw
-        };
-        for (const m of members) {
-          const score = stu.exams.get(m.exam_id);
-          const sub = m.subject || `科目${m.exam_id}`;
-          row[`${sub}原始分`] = score?.raw ?? "";
-          row[`${sub}年排`] = "";
-          row[`${sub}班排`] = "";
-        }
-        overviewRows.push(row);
-      }
-
-      // Sort by total descending
-      overviewRows.sort((a, b) => (b["总分"] as number) - (a["总分"] as number));
-
-      // Fill ranks — dense ranking
-      competitionRank(overviewRows, (r) => r["总分"] as number, (r, rank) => { r["总分年排"] = rank; });
-      const cgMap = new Map<string, typeof overviewRows>();
-      for (const r of overviewRows) {
-        const key = r["班级"] as string;
-        if (!cgMap.has(key)) cgMap.set(key, []);
-        cgMap.get(key)!.push(r);
-      }
-      for (const cg of cgMap.values()) {
-        competitionRank(cg, (r) => r["总分"] as number, (r, rank) => { r["总分班排"] = rank; });
-      }
-
-      // Fill per-subject ranks
-      for (const m of members) {
-        const sub = m.subject || `科目${m.exam_id}`;
-        const rawKey = `${sub}原始分`;
-        const grKey = `${sub}年排`;
-        const crKey = `${sub}班排`;
-
-        const sorted = [...overviewRows].sort((a, b) => (b[rawKey] as number || 0) - (a[rawKey] as number || 0));
-        const withScore = sorted.filter((r) => r[rawKey] !== "");
-        competitionRank(withScore, (r) => r[rawKey] as number, (r, rank) => { r[grKey] = rank; });
-
-        const classSorted = new Map<string, typeof withScore>();
-        for (const r of withScore) {
-          const key = r["班级"] as string;
-          if (!classSorted.has(key)) classSorted.set(key, []);
-          classSorted.get(key)!.push(r);
-        }
-        for (const cs of classSorted.values()) {
-          competitionRank(cs, (r) => r[rawKey] as number, (r, rank) => { r[crKey] = rank; });
-        }
-      }
+      const { headers: overviewHeaders, rows: overviewRows } = buildExamGroupExportOverview(
+        members,
+        allScores,
+        group.total_score_mode === "assigned" ? "assigned" : "raw",
+      );
 
       const wsOverview = XLSX.utils.json_to_sheet(overviewRows, { header: overviewHeaders });
       const overviewWb = XLSX.utils.book_new();
@@ -643,9 +580,7 @@ router.post("/export", requireReadableGroup, requireGroupViewScores, async (req:
     }
 
     // ── 2. Per-subject sheets ──
-    const exportExams = subjectExamIds.length > 0
-      ? members.filter((m) => subjectExamIds.includes(m.exam_id))
-      : members;
+    const exportExams = members.filter((m) => selectedExamIds.has(m.exam_id));
 
     for (const m of exportExams) {
       // Get question scores

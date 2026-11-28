@@ -1,5 +1,5 @@
 import { AlertCircle, BrainCircuit, RefreshCw, Sparkles } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchJson } from "../auth/api";
 import type {
   AiAnalysisResponse, AiAnalysisStatus, AiJobCreateResponse, AiJobPollResponse,
@@ -70,9 +70,21 @@ function AnalysisAiPanelContent({ examId, groupId, classId = "" }: Props) {
   const [jobId, setJobId] = useState<number | null>(null);
   const [polling, setPolling] = useState(false);
   const [restoring, setRestoring] = useState(true);
+  const selection = useRef({ providerId: selectedProviderId, model: selectedModel });
+  const statusRequest = useRef(0);
+  const statusAbort = useRef<AbortController | null>(null);
+  const generateRequest = useRef(0);
+  const generateAbort = useRef<AbortController | null>(null);
+  selection.current = { providerId: selectedProviderId, model: selectedModel };
+
+  function updateSelection(providerId: number, model: string) {
+    selection.current = { providerId, model };
+    setSelectedProviderId(providerId);
+    setSelectedModel(model);
+  }
 
   const userProviders = useMemo(
-    () => status?.providers ?? [],
+    () => (status?.providers ?? []).filter((provider) => provider.isActive !== false),
     [status]
   );
 
@@ -91,24 +103,41 @@ function AnalysisAiPanelContent({ examId, groupId, classId = "" }: Props) {
   }, [selectedProviderId, userProviders, availableModels]);
 
   async function loadStatus() {
+    const request = ++statusRequest.current;
+    statusAbort.current?.abort();
+    const controller = new AbortController();
+    statusAbort.current = controller;
     setLoadingStatus(true);
     setError("");
     try {
-      const nextStatus = await fetchJson<AiAnalysisStatus>("/api/analysis/ai/status");
+      const nextStatus = await fetchJson<AiAnalysisStatus>("/api/analysis/ai/status", { signal: controller.signal });
+      if (request !== statusRequest.current) return;
       setStatus(nextStatus);
-
-      // Select provider: prefer first user provider, else built-in
-      if (nextStatus.providers && nextStatus.providers.length > 0) {
-        setSelectedProviderId(nextStatus.providers[0].id);
-        const firstProviderModels = nextStatus.providers[0].models;
-        setSelectedModel(firstProviderModels && firstProviderModels.length > 0 ? firstProviderModels[0] : "");
-      } else {
-        setSelectedProviderId(0);
-        const preferred = nextStatus.models.find((model) => model.available && model.id === nextStatus.defaultModel)
-          ?? nextStatus.models.find((model) => model.available);
-        setSelectedModel(preferred?.id ?? "");
+      const activeProviders = (nextStatus.providers ?? []).filter((provider) => provider.isActive !== false);
+      const builtinModels = nextStatus.models.filter((model) => model.available);
+      const current = selection.current;
+      const currentProvider = activeProviders.find((provider) => provider.id === current.providerId);
+      let providerId = 0;
+      let model = "";
+      if (current.providerId === 0 && builtinModels.length > 0) {
+        model = builtinModels.some((item) => item.id === current.model)
+          ? current.model
+          : (builtinModels.find((item) => item.id === nextStatus.defaultModel) ?? builtinModels[0]).id;
+      } else if (currentProvider) {
+        providerId = currentProvider.id;
+        const configured = currentProvider.models ?? [];
+        model = configured.length === 0 || configured.includes(current.model)
+          ? current.model
+          : configured[0] ?? "";
+      } else if (activeProviders.length > 0) {
+        providerId = activeProviders[0].id;
+        model = activeProviders[0].models?.[0] ?? "";
+      } else if (builtinModels.length > 0) {
+        model = (builtinModels.find((item) => item.id === nextStatus.defaultModel) ?? builtinModels[0]).id;
       }
+      updateSelection(providerId, model);
     } catch (err) {
+      if (request !== statusRequest.current) return;
       setStatus({
         available: false,
         reason: err instanceof Error ? err.message : String(err),
@@ -117,35 +146,48 @@ function AnalysisAiPanelContent({ examId, groupId, classId = "" }: Props) {
         providers: []
       });
     } finally {
-      setLoadingStatus(false);
+      if (request === statusRequest.current) setLoadingStatus(false);
     }
   }
 
-  // 轮询任务状态（建议 5）：提交后每 1.5s 查询一次，直到 done/error
+  // 请求完成后再安排下一次轮询，慢响应不会重叠；响应任务 ID 必须匹配当前任务。
   useEffect(() => {
     if (jobId == null) return;
     let cancelled = false;
+    let timer: number | undefined;
+    const controller = new AbortController();
     setPolling(true);
-    const timer = setInterval(async () => {
+
+    async function poll() {
       try {
-        const job = await fetchJson<AiJobPollResponse>(`/api/analysis/ai-analysis/jobs/${jobId}`);
-        if (cancelled) return;
+        const job = await fetchJson<AiJobPollResponse>(`/api/analysis/ai-analysis/jobs/${jobId}`, { signal: controller.signal });
+        if (cancelled || job.id !== jobId) return;
         if (job.status === "done") {
           setAnalysis(job.result ?? null);
           setError("");
           setPolling(false);
           setJobId(null);
-        } else if (job.status === "error") {
+          return;
+        }
+        if (job.status === "error") {
           setError(job.error ?? "AI 分析失败");
           setAnalysis(null);
           setPolling(false);
           setJobId(null);
+          return;
         }
       } catch {
-        // 网络抖动继续轮询
+        // 网络抖动继续轮询；取消由 cleanup 中的 AbortController 处理。
       }
-    }, 1500);
-    return () => { cancelled = true; clearInterval(timer); };
+      if (!cancelled) timer = window.setTimeout(() => void poll(), 1500);
+    }
+
+    timer = window.setTimeout(() => void poll(), 1500);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [jobId]);
 
   useEffect(() => {
@@ -168,12 +210,23 @@ function AnalysisAiPanelContent({ examId, groupId, classId = "" }: Props) {
         if (!cancelled) setError(`恢复分析失败：${err instanceof Error ? err.message : String(err)}`);
       })
       .finally(() => { if (!cancelled) setRestoring(false); });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      statusRequest.current += 1;
+      statusAbort.current?.abort();
+      generateRequest.current += 1;
+      generateAbort.current?.abort();
+    };
   }, [examId, groupId, classId]);
 
   async function generateAnalysis() {
+    const request = ++generateRequest.current;
+    generateAbort.current?.abort();
+    const controller = new AbortController();
+    generateAbort.current = controller;
     setGenerating(true);
     setError("");
+    setAnalysis(null);
     try {
       const body: Record<string, unknown> = { model: selectedModel || undefined };
       if (classId !== "") body.classId = Number(classId);
@@ -181,32 +234,28 @@ function AnalysisAiPanelContent({ examId, groupId, classId = "" }: Props) {
       const endpoint = groupId
         ? `/api/exam-groups/${groupId}/ai-analysis`
         : `/api/analysis/exams/${examId}/ai-analysis`;
-      // 立即拿到 jobId，不再同步等待 LLM（最长 120s 的阻塞移入后台串行队列）
       const created = await fetchJson<AiJobCreateResponse>(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal: controller.signal,
       });
-      setJobId(created.jobId);
+      if (request === generateRequest.current) setJobId(created.jobId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (request === generateRequest.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setGenerating(false);
+      if (request === generateRequest.current) setGenerating(false);
     }
   }
 
   function handleProviderChange(value: string) {
     const pid = Number(value);
-    setSelectedProviderId(pid);
     if (pid === 0) {
-      // Built-in: use default model
-      const preferred = availableModels.find((m) => m.id === status?.defaultModel)
-        ?? availableModels[0];
-      setSelectedModel(preferred?.id ?? "");
+      const preferred = availableModels.find((m) => m.id === status?.defaultModel) ?? availableModels[0];
+      updateSelection(0, preferred?.id ?? "");
     } else {
-      // User provider: pick first configured model or empty
-      const prov = userProviders.find((p) => p.id === pid);
-      setSelectedModel(prov?.models?.[0] ?? "");
+      const provider = userProviders.find((p) => p.id === pid);
+      updateSelection(pid, provider?.models?.[0] ?? "");
     }
   }
 

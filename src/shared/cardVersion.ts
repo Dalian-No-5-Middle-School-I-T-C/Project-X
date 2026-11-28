@@ -1,4 +1,6 @@
 import type { AnswerCard } from "./types";
+import { buildLayout } from "./layout";
+import { objectiveQuestionDefinitions } from "./grading";
 
 /**
  * 答题卡版本指纹（安全 R35）。
@@ -42,18 +44,18 @@ export function canonicalCardForVersion(card: AnswerCard): Record<string, unknow
  * 普通客观题卡与主观题卡都在上传时 409 `CARD_VERSION_MISMATCH`。
  * 指纹是「两边是不是同一版」的唯一依据，这种差异等于把校验本身变成故障源。
  */
-function stableStringify(value: unknown): string {
+export function stableVersionStringify(value: unknown): string {
   if (value === undefined) return "null";
   if (value === null || typeof value !== "object") {
     // 数字 NaN/Infinity 经 JSON 也是 null；字符串/数字/布尔按 JSON 的转义与格式产出。
     return JSON.stringify(value) ?? "null";
   }
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (Array.isArray(value)) return `[${value.map(stableVersionStringify).join(",")}]`;
   const record = value as Record<string, unknown>;
   return `{${Object.keys(record)
     .filter((key) => record[key] !== undefined)
     .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .map((key) => `${JSON.stringify(key)}:${stableVersionStringify(record[key])}`)
     .join(",")}}`;
 }
 
@@ -66,14 +68,63 @@ function hash32(text: string, basis: number, prime: number): number {
   return hash >>> 0;
 }
 
-/** 24 位十六进制（96 bit）。三段用不同基/乘子，其中一段混入长度，避免「前缀相同就相近」。 */
-export function cardFingerprint(card: AnswerCard): string {
-  const canonical = stableStringify(canonicalCardForVersion(card));
+function hashCanonical(canonical: string): string {
   const a = hash32(canonical, 0x811c9dc5, 0x01000193);
   const b = hash32(canonical, 0x00001505, 0x01000193);
   const c = hash32(`${canonical.length}:${a.toString(16)}:${b.toString(16)}`, 0x9e3779b9, 0x85ebca6b);
   return [a, b, c].map((part) => part.toString(16).padStart(8, "0")).join("");
 }
+
+/** 96-bit 历史混合指纹：仅保留作 provenance，不能再代表几何兼容性。 */
+export function cardFingerprint(card: AnswerCard): string {
+  return hashCanonical(stableVersionStringify(canonicalCardForVersion(card)));
+}
+
+/**
+ * 几何事实源只有 buildLayout：包含页数、题号、选项格、主观题作答区和分数格。
+ * 单独带 sided/layoutVersion，避免相同页面意外跨单双面或布局代际复用。
+ */
+export function canonicalLayoutForVersion(card: AnswerCard): Record<string, unknown> {
+  return { sided: card.sided, layoutVersion: card.layoutVersion, layout: buildLayout(card) };
+}
+
+export function layoutFingerprint(card: AnswerCard): string {
+  return hashCanonical(stableVersionStringify(canonicalLayoutForVersion(card)));
+}
+
+/**
+ * 仅判分语义：有效逐题答案、分值、评分规则和主观题满分。
+ * 不包含题干文字或答案显示等不改变 OMR 几何的内容。
+ */
+export function canonicalGradingForVersion(card: AnswerCard): Record<string, unknown> {
+  return {
+    id: card.id,
+    bodyBlocks: card.bodyBlocks.map((block) => block.type === "objective" ? {
+      id: block.id,
+      type: block.type,
+      questions: objectiveQuestionDefinitions(block).map((question) => ({
+        questionNumber: question.questionNumber,
+        mode: question.mode,
+        score: question.score,
+        answerKey: question.answerKey ?? [],
+        scoringRule: question.scoringRule ?? null,
+      })),
+    } : {
+      id: block.id,
+      type: block.type,
+      questions: block.questions.map((question) => ({
+        id: question.id,
+        number: question.number,
+        score: question.score,
+      })),
+    }),
+  };
+}
+
+export function gradingVersion(card: AnswerCard): string {
+  return hashCanonical(stableVersionStringify(canonicalGradingForVersion(card)));
+}
+
 
 /** 给人看的短版本（界面提示、日志）：完整指纹太长，前 12 位足以让老师确认「两边是不是同一版」。 */
 export function shortCardVersion(card: AnswerCard): string {

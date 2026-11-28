@@ -78,6 +78,20 @@ async function main(): Promise<void> {
     assert.deepEqual(await db.all("SELECT version, name FROM schema_migrations ORDER BY version"), migrations);
     console.log("PASS: fresh schema, migrations, repeated initialization");
 
+    {
+      await db.exec("ALTER TABLE twain_scan_sessions DROP COLUMN layout_fingerprint, DROP COLUMN grading_version");
+      await db.exec("DROP TABLE scan_correction_pages");
+      await db.run("DELETE FROM schema_migrations WHERE version IN (62, 64, 72)");
+      const migrationConnection = await (await import("mysql2/promise")).createConnection(getMariadbConfig());
+      try { await runMariadbMigrations(migrationConnection); } finally { await migrationConnection.end(); }
+      assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'layout_fingerprint'"));
+      assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'grading_version'"));
+      assert.ok(await db.get("SHOW COLUMNS FROM scan_correction_pages LIKE 'layout_fingerprint'"));
+      assert.ok(await db.get("SHOW COLUMNS FROM scan_correction_pages LIKE 'grading_version'"));
+      assert.ok(await db.get("SELECT version FROM schema_migrations WHERE version = 72"));
+      console.log("PASS: v61 upgrade adds independent layout and grading versions exactly once");
+    }
+
     // v69 backfill must not join text identifiers across mixed collations (PR #373 P1).
     {
       const recordId = "v69-mixed-collation-record";

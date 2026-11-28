@@ -92,8 +92,13 @@ assert.equal(byId.get("3")!.conflicts.length, 2);
 assert.deepEqual(byId.get("4")!.issues, ["missing_page"]);
 assert.deepEqual(byId.get("4")!.missingLayoutPages, [2]);
 const queue = buildPostprocessQueue(groups);
-assert.deepEqual(queue.map(q => q.kind), ["duplicate", "student_id", "missing_page", "low_confidence"]);
-assert.equal(queue[0].groupId, "3");
+assert.deepEqual(queue.map(q => q.kind), ["student_id", "low_confidence", "duplicate", "missing_page"]);
+assert.deepEqual(queue.map(q => q.groupId), ["1", "2", "3", "4"]);
+const interleaved = buildPostprocessQueue(groups.map((group, index) => ({
+  ...group, sessionId: index < 2 ? "scan_a" : index < 4 ? "scan_b" : "scan_a",
+})));
+assert.deepEqual(interleaved.map(item => item.sessionId), ["scan_a", "scan_b", "scan_b", "scan_a"],
+  "队列按会话首次出现的批次顺序收拢，不因 groups 交错而把同批拆散");
 
 // ── 历史遗留卷（其他会话的 reviewCards）不收编 ──
 const withForeignReviewCard: ScanBatchResponse = {

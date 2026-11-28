@@ -1287,6 +1287,15 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "UPDATE answer_block_crops SET correction_revision = NULL WHERE correction_revision IS NOT NULL",
   ] });
 
+  // v72: geometry and grading versions are independent. Never backfill the
+  // historical mixed fingerprint into a geometry-only column.
+  mariadbMigrations.push({ version: 72, name: "scanner-layout-grading-versions", sqls: [
+    "ALTER TABLE twain_scan_sessions ADD COLUMN layout_fingerprint VARCHAR(24)",
+    "ALTER TABLE twain_scan_sessions ADD COLUMN grading_version VARCHAR(24)",
+    "ALTER TABLE scan_correction_pages ADD COLUMN layout_fingerprint VARCHAR(24)",
+    "ALTER TABLE scan_correction_pages ADD COLUMN grading_version VARCHAR(24)",
+  ] });
+
   for (const m of mariadbMigrations) {
     if (applied.has(m.version)) continue;
     for (const sql of m.sqls) {

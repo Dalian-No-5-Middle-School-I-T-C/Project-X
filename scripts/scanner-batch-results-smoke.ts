@@ -457,7 +457,7 @@ try {
   assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, historicalUser.lastInsertRowid), null);
   await db.run("UPDATE scanner_submissions SET state='discarded' WHERE session_id=?", redundant.id);
   await db.run("UPDATE scanner_submissions SET state='pending' WHERE session_id=?", historical.id);
-  await db.run("UPDATE twain_scan_sessions SET card_version=NULL,version_source='legacy' WHERE id=?", historical.id);
+  await db.run("UPDATE twain_scan_sessions SET card_version=NULL,layout_fingerprint=NULL,grading_version=NULL,version_source='legacy' WHERE id=?", historical.id);
   assert.equal((await remote(historical.id, "complete", {})).status, 409, "Unknown historical versions cannot be inferred from the current card");
   assert.equal((await remote(historical.id, "complete", { cardVersion })).status, 409, "A caller fingerprint cannot establish historical provenance");
   assert.deepEqual(await db.get("SELECT card_version,version_source FROM twain_scan_sessions WHERE id=?", historical.id),

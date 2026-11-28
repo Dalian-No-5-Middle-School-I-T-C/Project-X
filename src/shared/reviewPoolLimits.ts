@@ -110,6 +110,9 @@ export const MAX_HELD_PAPERS_TOTAL = resolved.limits.maxHeldPapersTotal;
 /** 领取临界区的命名锁等待预算（毫秒），超时返回 409 让客户端重试 */
 export const CLAIM_LOCK_TIMEOUT_MS = resolved.limits.claimLockTimeoutMs;
 
+/** 最近一次已批提交后允许修订本人选票的时间窗口；服务端为最终判据 */
+export const REVIEW_AMENDMENT_WINDOW_MS = 10 * 60 * 1000;
+
 /** 当前生效的试卷池闸门，用于启动日志 */
 export function describeReviewPoolLimits(): string {
   return LIMIT_DEFS

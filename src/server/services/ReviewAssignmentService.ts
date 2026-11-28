@@ -1,9 +1,13 @@
-import { reviewUnitPredicate } from "./essayReview";
-import { getMysqlDb } from "../db";
+import { essayReviewIssue, loadEssayReviews, reviewUnitPredicate } from "./essayReview";
+import { buildUpsertSQL, getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { randomDistribute } from "./RandomDistributionService";
 import { getBlockConfig } from "./BlockGradingConfigService";
 import { getPermittedBlocks, isPrivilegedGrader } from "../../apps/answer-card/server/middleware";
+import {
+  MAX_HELD_PAPERS_PER_BLOCK,
+  MAX_HELD_PAPERS_TOTAL
+} from "../../shared/reviewPoolLimits";
 import type { ReviewAssignment, TeacherBlockAssignment } from "../../shared/types";
 
 type AssignmentRow = {
@@ -25,6 +29,26 @@ function parseAssignedIds(value: string | null): number[] {
     return [];
   }
 }
+
+/** 评分历史里是否已有该教师的任一票（首评 pending 也算，进度按个人记录统计）。 */
+function hasReviewerVote(raw: string | null | undefined, teacherId: number): boolean {
+  if (!raw) return false;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.some((entry) =>
+      Number((entry as { reviewerId?: number }).reviewerId) === teacherId
+    );
+  } catch {
+    return false;
+  }
+}
+
+export type AssignmentCreateOptions = {
+  /** replace=清空后重新分配；append=保留现有分配，只分配尚未归属的学生 */
+  mode?: "replace" | "append";
+  /** random=按填写份数随机；equal=忽略份数，把待分配学生均分给所选教师 */
+  split?: "random" | "equal";
+};
 
 function toReviewAssignment(row: AssignmentRow, teacherName?: string): ReviewAssignment {
   return {
@@ -92,58 +116,103 @@ export async function getAssignmentsByTeacher(
   return rows.map((r) => toReviewAssignment(r));
 }
 
-/** 批量创建分配（年级组长操作） */
+/** 批量创建/追加分配（年级组长操作） */
 export async function createAssignments(
   examId: number,
   blockId: string,
   teacherCounts: Map<number, number>,
   userId: number,
-  db: DbAdapter = getMysqlDb()
+  db: DbAdapter = getMysqlDb(),
+  options: AssignmentCreateOptions = {}
 ): Promise<ReviewAssignment[]> {
-  // 获取该考试的全部学生
-  const studentRows = await db.all(
-    `SELECT DISTINCT ss.student_id
-     FROM student_scores ss
-     WHERE ss.exam_id = ?
-     ORDER BY ss.student_id`,
-    examId
-  ) as Array<{ student_id: number }>;
-  const allStudentIds = studentRows.map((r) => r.student_id);
+  const mode = options.mode === "append" ? "append" : "replace";
+  const split = options.split === "equal" ? "equal" : "random";
+  const teacherIds = Array.from(teacherCounts.keys());
+  if (teacherIds.length === 0) throw new Error("请至少选择一位阅卷教师");
 
-  const totalRequested = Array.from(teacherCounts.values()).reduce((a, b) => a + b, 0);
-  if (totalRequested > allStudentIds.length) {
-    throw new Error(`分配总数(${totalRequested})超过考生总数(${allStudentIds.length})`);
+  // 阅卷任务以题块实际切块为准；没有切块时才回退到成绩名单（演示/旧数据）。
+  const cropRows = await db.all(
+    `SELECT DISTINCT student_id FROM answer_block_crops a
+     WHERE a.exam_id = ? AND a.block_id = ? AND a.student_id IS NOT NULL AND ${reviewUnitPredicate("a")}
+     ORDER BY a.student_id`,
+    examId,
+    blockId
+  ) as Array<{ student_id: number }>;
+  let allStudentIds = cropRows.map((row) => Number(row.student_id));
+  if (allStudentIds.length === 0) {
+    const studentRows = await db.all(
+      `SELECT DISTINCT ss.student_id
+       FROM student_scores ss
+       WHERE ss.exam_id = ?
+       ORDER BY ss.student_id`,
+      examId
+    ) as Array<{ student_id: number }>;
+    allStudentIds = studentRows.map((r) => r.student_id);
   }
 
-  const seed = `${examId}_${blockId}_${Date.now()}`;
-  const distribution = randomDistribute(allStudentIds, teacherCounts, seed);
+  const existing = mode === "append" ? await getAssignmentsByBlock(examId, blockId, db) : [];
+  const assignedIds = new Set<number>();
+  for (const assignment of existing) for (const id of assignment.assignedStudentIds) assignedIds.add(id);
+  const candidates = allStudentIds.filter((id) => !assignedIds.has(id));
+  if (candidates.length === 0) {
+    throw new Error(mode === "append" ? "本题块没有尚未分配的学生可追加" : "本题块没有可分配的学生");
+  }
 
-  const assignments: ReviewAssignment[] = [];
+  let distribution: Map<number, number[]>;
+  if (split === "equal") {
+    distribution = new Map();
+    const base = Math.floor(candidates.length / teacherIds.length);
+    const remainder = candidates.length % teacherIds.length;
+    let cursor = 0;
+    teacherIds.forEach((teacherId, index) => {
+      const count = base + (index < remainder ? 1 : 0);
+      distribution.set(teacherId, candidates.slice(cursor, cursor + count));
+      cursor += count;
+    });
+  } else {
+    const totalRequested = studentsRequested(teacherCounts);
+    if (totalRequested > candidates.length) {
+      throw new Error(
+        mode === "append"
+          ? `追加总数(${totalRequested})超过未分配学生数(${candidates.length})`
+          : `分配总数(${totalRequested})超过考生总数(${allStudentIds.length})`
+      );
+    }
+    const seed = `${examId}_${blockId}_${Date.now()}`;
+    distribution = randomDistribute(candidates, teacherCounts, seed);
+  }
+
+  const upsertSQL = buildUpsertSQL(
+    db.dialect,
+    "review_assignments",
+    ["exam_id", "block_id", "teacher_id", "student_count", "assigned_student_ids", "auto_assigned"],
+    ["exam_id", "block_id", "teacher_id"],
+    ["student_count", "assigned_student_ids", "auto_assigned"]
+  );
+
   await db.transaction(async (tx) => {
-    // 先删除旧分配
-    await tx.run("DELETE FROM review_assignments WHERE exam_id = ? AND block_id = ?", examId, blockId);
+    // 覆盖模式先清空；追加模式保留旧分配并与同教师的新份数合并。
+    if (mode === "replace") {
+      await tx.run("DELETE FROM review_assignments WHERE exam_id = ? AND block_id = ?", examId, blockId);
+    }
 
     for (const [teacherId, studentIds] of distribution) {
-      await tx.run(
-        `INSERT INTO review_assignments (exam_id, block_id, teacher_id, student_count, assigned_student_ids, auto_assigned)
-         VALUES (?, ?, ?, ?, ?, 0)`,
-        examId,
-        blockId,
-        teacherId,
-        studentIds.length,
-        JSON.stringify(studentIds)
-      );
-
-      assignments.push({
-        id: 0,
-        examId,
-        blockId,
-        teacherId,
-        studentCount: studentIds.length,
-        assignedStudentIds: studentIds,
-        autoAssigned: 0,
-        createdAt: new Date().toISOString()
-      });
+      if (studentIds.length === 0) continue;
+      if (mode === "append") {
+        const previous = existing.find((assignment) => assignment.teacherId === teacherId);
+        const merged = Array.from(new Set([...(previous?.assignedStudentIds ?? []), ...studentIds]));
+        await tx.run(upsertSQL, examId, blockId, teacherId, merged.length, JSON.stringify(merged), 0);
+      } else {
+        await tx.run(
+          `INSERT INTO review_assignments (exam_id, block_id, teacher_id, student_count, assigned_student_ids, auto_assigned)
+           VALUES (?, ?, ?, ?, ?, 0)`,
+          examId,
+          blockId,
+          teacherId,
+          studentIds.length,
+          JSON.stringify(studentIds)
+        );
+      }
     }
   });
 
@@ -151,6 +220,15 @@ export async function createAssignments(
   await rebalanceWorkload(examId, blockId, db);
 
   return getAssignmentsByBlock(examId, blockId, db);
+}
+
+function studentsRequested(teacherCounts: Map<number, number>): number {
+  let total = 0;
+  for (const count of teacherCounts.values()) {
+    if (!Number.isInteger(count) || count < 0) throw new Error("分配份数必须是非负整数");
+    total += count;
+  }
+  return total;
 }
 
 /**
@@ -262,60 +340,106 @@ export async function getAvailableBlocksForTeacher(
   const examRow = await db.get("SELECT card_id FROM exams WHERE id = ?", examId) as { card_id: string | null } | undefined;
   if (!examRow?.card_id) return [];
 
-  const cropBlocks = await db.all(
-    `SELECT DISTINCT block_id, block_title, block_type
-     FROM answer_block_crops
-     WHERE exam_id = ?
-     ORDER BY block_id`,
+  const cropRows = await db.all(
+    `SELECT a.id, a.block_id, a.block_title, a.block_type, a.student_id, a.status,
+            a.claimed_by, a.review_round, a.score_breakdown
+     FROM answer_block_crops a
+     WHERE a.exam_id = ? AND ${reviewUnitPredicate("a")}
+     ORDER BY a.block_id`,
     examId
-  ) as Array<{ block_id: string; block_title: string | null; block_type: string }>;
+  ) as Array<{
+    id: string;
+    block_id: string;
+    block_title: string | null;
+    block_type: string;
+    student_id: number | null;
+    status: string | null;
+    claimed_by: number | null;
+    review_round: number | null;
+    score_breakdown: string | null;
+  }>;
+  const blockIds = Array.from(new Set(cropRows.map((row) => row.block_id)));
+  if (blockIds.length === 0) return [];
 
   // #24: 教师可见题块与权限矩阵绑定 —— 有约束时仅保留该教师可阅的题块；
   // getPermittedBlocks 在无任何分配/授予时返回 null（全部可见，向后兼容）。
   // 特权阅卷人（管理员/学年主任）不参与过滤，全部可见（L5 修复：避免伪造 user 丢失特权身份）。
-  let blocks = cropBlocks;
-  const isPrivileged = user ? isPrivilegedGrader(user as any) : false;
+  let visibleBlockIds = blockIds;
+  const isPrivileged = user ? isPrivilegedGrader(user as { role_id?: number; role_name?: string; teacher_role?: string | null }) : false;
   if (!isPrivileged) {
-    const permitted = await getPermittedBlocks({ id: teacherId } as any, examId);
+    const permitted = await getPermittedBlocks({ id: teacherId } as { id?: number }, examId);
     if (permitted !== null) {
       const set = new Set(permitted);
-      blocks = cropBlocks.filter((b) => set.has(b.block_id));
+      visibleBlockIds = blockIds.filter((id) => set.has(id));
     }
   }
 
-  // 获取教师分配
   const assignments = await getAssignmentsByTeacher(examId, teacherId, db);
+  const heldTotalRow = await db.get<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM answer_block_crops a WHERE a.claimed_by = ? AND ${reviewUnitPredicate("a")}`,
+    teacherId
+  );
 
-  // Batch query actual reviewed counts
-  let reviewedMap = new Map<string, number>();
-  if (assignments.length > 0) {
-    const blockIds = assignments.map(a => a.blockId);
-    const placeholders = blockIds.map(() => '?').join(',');
-    const reviewedCounts = await db.all(
-      `SELECT abc.block_id, COUNT(*) AS cnt
-       FROM answer_block_crops abc
-       WHERE abc.exam_id = ? AND abc.block_id IN (${placeholders})
-         AND abc.status = 'reviewed' AND abc.reviewer_id = ? AND ${reviewUnitPredicate("abc")}
-       GROUP BY abc.block_id`,
-      examId, ...blockIds, teacherId
-    ) as Array<{ block_id: string; cnt: number }>;
-    reviewedMap = new Map(reviewedCounts.map(r => [r.block_id, r.cnt]));
-  }
+  return Promise.all(visibleBlockIds.map(async (blockId) => {
+    const blockCrops = cropRows.filter((row) => row.block_id === blockId);
+    const first = blockCrops[0];
+    const assignment = assignments.find((item) => item.blockId === blockId);
+    const votedStudentIds = new Set<number>();
+    for (const crop of blockCrops) {
+      if (crop.student_id != null && hasReviewerVote(crop.score_breakdown, teacherId)) {
+        votedStudentIds.add(Number(crop.student_id));
+      }
+    }
+    const heldCount = blockCrops.filter((crop) => crop.claimed_by === teacherId).length;
+    const quotaLeft = Math.max(0, MAX_HELD_PAPERS_PER_BLOCK - heldCount);
+    const globalLeft = Math.max(0, MAX_HELD_PAPERS_TOTAL - Number(heldTotalRow?.n ?? 0));
 
-  return blocks.map((block) => {
-    const assignment = assignments.find((a) => a.blockId === block.block_id);
-    const totalCount = assignment?.studentCount ?? 0;
-    const reviewed = reviewedMap.get(block.block_id) ?? 0;
+    // 池中可领：未被领取、仍可评分、且本人还没投过票（同卷复核由其他人承接）。
+    // 作文切图不完整的单元不算可领，避免把「能看见但领不了」的份数展示成进度。
+    const essays = await loadEssayReviews(db, examId, blockId);
+    const claimableCount = blockCrops.filter((crop) => {
+      if (crop.claimed_by != null) return false;
+      const status = crop.status ?? "ready";
+      if (status !== "ready" && status !== "pending" && status !== "disputed") return false;
+      if (crop.student_id != null && votedStudentIds.has(Number(crop.student_id))) return false;
+      return !essayReviewIssue(essays.get(crop.id), crop.id);
+    }).length;
+    const claimableNow = Math.min(claimableCount, quotaLeft, globalLeft);
+
+    let totalCount: number;
+    let assignedToMe: number;
+    let remainingForMe: number;
+    let assignMode: "assigned" | "pool";
+    if (assignment) {
+      const assignedIds = assignment.assignedStudentIds.length > 0
+        ? assignment.assignedStudentIds
+        : blockCrops.map((crop) => Number(crop.student_id)).filter(Number.isFinite);
+      const remainingAssigned = assignedIds.filter((studentId) => !votedStudentIds.has(Number(studentId))).length;
+      totalCount = assignment.studentCount || assignedIds.length;
+      assignedToMe = totalCount;
+      remainingForMe = remainingAssigned;
+      assignMode = "assigned";
+    } else {
+      totalCount = blockCrops.length;
+      assignedToMe = 0;
+      remainingForMe = claimableNow + heldCount;
+      assignMode = "pool";
+    }
 
     return {
-      blockId: block.block_id,
-      blockTitle: block.block_title ?? block.block_id,
-      blockType: block.block_type,
+      blockId,
+      blockTitle: first.block_title ?? blockId,
+      blockType: first.block_type,
       totalCount,
-      assignedToMe: totalCount,
-      remainingForMe: Math.max(0, totalCount - reviewed),
-      isSelected: assignments.some((a) => a.blockId === block.block_id),
-      questions: []
+      assignedToMe,
+      remainingForMe,
+      isSelected: Boolean(assignment),
+      questions: [],
+      assignMode,
+      canEnter: isPrivileged || remainingForMe > 0 || heldCount > 0,
+      claimableCount: claimableNow,
+      heldCount,
+      privileged: isPrivileged
     };
-  });
+  }));
 }

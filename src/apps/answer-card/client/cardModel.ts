@@ -17,6 +17,7 @@ import type {
 import { createBlockId } from "../../../shared/defaultCard";
 import { formatBlankLabel } from "../../../shared/blankLabels";
 import { ESSAY_DEFAULT_LINE_COLOR } from "../../../shared/essayGrid";
+import { objectiveQuestionDefinitions } from "../../../shared/grading";
 
 const modeLabels: Record<ObjectiveMode, string> = {
   single: "单选",
@@ -127,19 +128,32 @@ function defaultSubjective(nextNumber: number): SubjectiveBlock {
     type: "subjective",
     blockKind: "answer",
     title: "解答题",
-    questions: [
-      {
-        id: createBlockId("q"),
-        number: nextNumber,
-        score: 12,
-        style: "manual_score_grid",
-        kind: "lined_answer",
-        lineGrid: { enabled: true, lineSpacingMm: 7, fixedLineCount: 5, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 4, insetRightMm: 4 },
-        scoreGrid: { enabled: true, strokeColor: "#999", strokeWidthMm: 0.15, fillColor: "#fff", fontSize: 2.8, dividerColor: "#ccc", dividerWidthMm: 0.1, showLabel: true },
-        images: [],
-        minHeightMm: 49   // 14 + 5×7
-      }
-    ]
+    questions: [defaultSubjectiveQuestion(nextNumber)]
+  };
+}
+
+/** 单题构造器独立导出，新增解答题小题时继承线格、分数格与高度。 */
+export function defaultSubjectiveQuestion(nextNumber: number, source?: SubjectiveQuestion): SubjectiveQuestion {
+  if (source) {
+    return {
+      ...JSON.parse(JSON.stringify(source)) as SubjectiveQuestion,
+      id: createBlockId("q"),
+      number: nextNumber,
+      images: [],
+      annotation: undefined,
+      blanks: source.blanks ? JSON.parse(JSON.stringify(source.blanks)) : undefined
+    };
+  }
+  return {
+    id: createBlockId("q"),
+    number: nextNumber,
+    score: 12,
+    style: "manual_score_grid",
+    kind: "lined_answer",
+    lineGrid: { enabled: true, lineSpacingMm: 7, fixedLineCount: 5, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 4, insetRightMm: 4 },
+    scoreGrid: { enabled: true, strokeColor: "#999", strokeWidthMm: 0.15, fillColor: "#fff", fontSize: 2.8, dividerColor: "#ccc", dividerWidthMm: 0.1, showLabel: true },
+    images: [],
+    minHeightMm: 49   // 14 + 5×7
   };
 }
 
@@ -155,7 +169,7 @@ function defaultBlankBlock(nextNumber: number): SubjectiveBlock {
   };
 }
 
-function defaultEssayBlock(nextNumber: number): SubjectiveBlock {
+function defaultEssayBlock(nextNumber: number, score = 0): SubjectiveBlock {
   return {
     id: createBlockId("subj"),
     type: "subjective",
@@ -164,7 +178,7 @@ function defaultEssayBlock(nextNumber: number): SubjectiveBlock {
     questions: [{
       id: createBlockId("q"),
       number: nextNumber,
-      score: 60,
+      score,
       style: "manual_score_grid",
       kind: "plain_box",
       lineGrid: { enabled: false, lineSpacingMm: 7, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 4, insetRightMm: 4 },
@@ -221,7 +235,10 @@ function numericQuestionValue(value: string | number): number {
 function findNextQuestionNumber(card: AnswerCard): number {
   let max = 0;
   for (const block of card.bodyBlocks) {
-    if (block.type === "objective") max = Math.max(max, block.questionStart + block.questionCount - 1);
+    if (block.type === "objective") {
+      // 已物化的逐题题号可能不连续，块级起止值不能代表实际最大题号。
+      for (const question of objectiveQuestionDefinitions(block)) max = Math.max(max, question.questionNumber);
+    }
     if (block.type === "subjective") {
       for (const question of block.questions) max = Math.max(max, numericQuestionValue(question.number));
     }

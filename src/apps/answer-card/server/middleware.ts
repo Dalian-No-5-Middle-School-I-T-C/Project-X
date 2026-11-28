@@ -794,7 +794,7 @@ export async function requireWholeExamGradingAccessForExam(
  * 的整卷权限行），这道门只在「确实被限制在若干题块上」时才生效。
  */
 export async function isBlockedToOwnGradingBlocks(
-  user: express.Request["user"],
+  user: PermissionUser,
   examId: number
 ): Promise<string[] | null> {
   if (!user || user.role_name !== "teacher") return null;
@@ -807,10 +807,20 @@ export async function isBlockedToOwnGradingBlocks(
 // ── Grading scope (题块级正向授权 · 防 IDOR) ──────────────
 
 /**
+ * 阅卷权限判定只需要身份与角色字段；服务层内部复评使用精简 actor 时也可直接传入。
+ */
+type PermissionUser = {
+  id?: number;
+  role_id?: number;
+  role_name?: string;
+  teacher_role?: string | null;
+} | null | undefined;
+
+/**
  * 特权阅卷人：管理员(role_id=1) 或 学年主任(grade_leader)。
  * 与 submit/release 既有规则一致，可代交 / 强制处理任意题块。
  */
-export function isPrivilegedGrader(user: express.Request["user"]): boolean {
+export function isPrivilegedGrader(user: PermissionUser): boolean {
   if (!user) return false;
   const u = user as { role_id?: number; role_name?: string; teacher_role?: string | null };
   return u.role_id === 1 || (u.role_name === "teacher" && u.teacher_role === "grade_leader");
@@ -827,49 +837,14 @@ export function isPrivilegedGrader(user: express.Request["user"]): boolean {
  * 返回 true=允许。
  */
 export async function canGradeBlock(
-  user: express.Request["user"],
+  user: PermissionUser,
   examId: number,
-  blockId: string
+  blockId: string,
+  db: DbAdapter = getMysqlDb()
 ): Promise<boolean> {
   if (!user) return false;
-  if (isPrivilegedGrader(user)) return true;
-  const teacherId = (user as { id?: number }).id;
-  if (!teacherId) return false;
-  const db = getMysqlDb();
-  const assigned = await db.get(
-    "SELECT 1 FROM review_assignments WHERE exam_id = ? AND block_id = ? AND teacher_id = ? LIMIT 1",
-    examId, blockId, teacherId
-  );
-  if (assigned) return true;
-  // v37: 细粒度权限授予 —— 作为追加放行路径（绝不引入新拒绝，确保既有部署零回归）。
-  // 匹配规则：can_grade=1 且 (grade_id 为空或匹配考试年级) 且 (block_id 为空或匹配)
-  // 且 (subject 为空或匹配考试学科) 且 (class_id 为空或匹配考试班级)。
-  if (await hasTable(db, "teacher_permissions")) {
-    const granted = await db.get(
-      `SELECT 1 FROM teacher_permissions
-       WHERE teacher_id = ? AND can_grade = 1
-         AND (grade_id IS NULL OR grade_id = (SELECT grade_id FROM exams WHERE id = ?))
-         AND (block_id IS NULL OR block_id = ?)
-         AND (subject IS NULL OR subject = (SELECT subject FROM exams WHERE id = ?))
-         AND (class_id IS NULL OR class_id = (SELECT class_id FROM exams WHERE id = ?))
-       LIMIT 1`,
-      teacherId, examId, blockId, examId, examId
-    );
-    if (granted) return true;
-  }
-  // 若该 (exam, block) 没有任何分配记录，且该教师完全未配置权限矩阵 → 放行
-  // （向后兼容旧部署）。已配置矩阵的教师不享受此回退（#246 正向授权不被绕过）。
-  const anyAssignment = await db.get(
-    "SELECT 1 FROM review_assignments WHERE exam_id = ? AND block_id = ? LIMIT 1",
-    examId, blockId
-  );
-  if (anyAssignment) return false;
-  if (!(await hasTable(db, "teacher_permissions"))) return true;
-  const anyPermRow = await db.get(
-    "SELECT 1 FROM teacher_permissions WHERE teacher_id = ? LIMIT 1",
-    teacherId
-  );
-  return !anyPermRow;
+  const permitted = await getPermittedBlocks(user, examId, db);
+  return permitted === null || permitted.includes(blockId);
 }
 
 /**
@@ -879,14 +854,14 @@ export async function canGradeBlock(
  * 供工作量分配（#24）与权限配置面板（#25）消费。
  */
 export async function getPermittedBlocks(
-  user: express.Request["user"],
-  examId: number
+  user: PermissionUser,
+  examId: number,
+  db: DbAdapter = getMysqlDb()
 ): Promise<string[] | null> {
   if (!user) return null;
   if (isPrivilegedGrader(user)) return null; // 特权阅卷人：全部
   const teacherId = (user as { id?: number }).id;
   if (!teacherId) return null;
-  const db = getMysqlDb();
 
   // 1) 显式分配
   const assignedRows = await db.all<{ block_id: string }>(

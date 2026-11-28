@@ -3,13 +3,16 @@ import { databaseTimestamp } from "../db/timestamp";
 import { getMysqlDb, buildUpsertSQL } from "../db";
 import type { DbAdapter } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
-import { recomputeExamRankings, roundScore } from "./rankingUpdate";
+import { recomputeExamRankingsCoalesced, roundScore } from "./rankingUpdate";
 import { markScoreMutated } from "./examPublishEvents";
+import { canGradeBlock } from "../../apps/answer-card/server/middleware";
 import {
   listReviewBlockCrops
 } from "./AnswerBlockCropService";
 import { computeMultiReviewResult } from "./ArbitrationService";
 import { getBlockConfig, loadHalfPointRule } from "./BlockGradingConfigService";
+import { loadReviewQuestionContracts } from "./ReviewQuestionContractService";
+import { REVIEW_AMENDMENT_WINDOW_MS } from "../../shared/reviewPoolLimits";
 import { validateScoringModeConsistency, validateBlockTotalCoverage, type ScoringMode } from "./scoringModeValidator";
 import type {
   ReviewBlockCropItem,
@@ -17,9 +20,10 @@ import type {
   ReviewSubmitResult,
   ReviewSubmitScoreInput,
   ReviewTraceItem,
-  ReviewRoundDetail
+  ReviewRoundDetail,
+  ReviewScoreBreakdownEntry,
+  RecentReviewedCrop
 } from "../../shared/types";
-import { objectiveQuestionDefinitions } from "../../shared/grading";
 
 export class ReviewValidationError extends Error {
   constructor(message: string) {
@@ -45,7 +49,12 @@ async function recomputeStudentTotals(
   tx: DbAdapter,
   examId: number,
   studentId: number
-): Promise<number> {
+): Promise<{ totalScore: number; changed: boolean }> {
+  const previous = await tx.get<{ total_score: number | null }>(
+    "SELECT total_score FROM student_scores WHERE exam_id = ? AND student_id = ?",
+    examId,
+    studentId
+  );
   const rows = await tx.all(
     "SELECT score, score_type FROM question_scores WHERE exam_id = ? AND student_id = ?",
     examId,
@@ -74,7 +83,10 @@ async function recomputeStudentTotals(
     studentId
   );
 
-  return newTotal;
+  return {
+    totalScore: newTotal,
+    changed: previous == null || roundScore(Number(previous.total_score ?? 0)) !== newTotal
+  };
 }
 
 export async function listReviewBlocks(
@@ -111,11 +123,8 @@ export async function listReviewBlocks(
 
   if (rows.length === 0) return [];
 
-  // 题块满分 = 该题块内各小题权威满分之和。
-  // 原先实现为「相关子查询里再套派生表」，MariaDB 的派生表不能引用外层 abc.*
-  // （ERROR 1054 Unknown column 'abc.exam_id'），而 SQLite 又不要求派生表别名，
-  // 两方言的写法无法统一；改为独立查询按 (block_id, question_number) 聚合后在内存合并。
-  const maxScoreByBlock = await loadBlockMaxScores(examId, db);
+  // 逐题满分契约由统一规则生成：答题卡优先，question_scores 仅作旧卡兜底。
+  const contracts = await loadReviewQuestionContracts(examId, db, rows.map((row) => row.blockId));
   const hasHalfPoint = await loadHalfPointRule(examId, db);
 
   return rows.map((row) => ({
@@ -126,39 +135,16 @@ export async function listReviewBlocks(
     pendingCount: Number(row.pendingCount),
     reviewedCount: Number(row.reviewedCount),
     hasHalfPoint: hasHalfPoint(row.blockId),
-    maxScore: maxScoreByBlock.get(row.blockId) ?? 0
+    maxScore: contracts.get(row.blockId)?.maxScore ?? 0,
+    questions: contracts.get(row.blockId)?.questions ?? []
   }));
-}
-
-/** 按题块汇总满分（question_scores 为权威满分落库表）；dialect-agnostic 写法 */
-async function loadBlockMaxScores(
-  examId: number,
-  db: DbAdapter
-): Promise<Map<string, number>> {
-  const rows = await db.all(
-    `SELECT sub.block_id AS blockId, SUM(sub.mx) AS maxScore
-     FROM (
-       SELECT block_id, question_number, MAX(max_score) AS mx
-       FROM question_scores
-       WHERE exam_id = ?
-       GROUP BY block_id, question_number
-     ) sub
-     WHERE sub.block_id IS NOT NULL
-     GROUP BY sub.block_id`,
-    examId
-  ) as Array<{ blockId: string | null; maxScore: number | null }>;
-  const maxScoreByBlock = new Map<string, number>();
-  for (const row of rows) {
-    if (row.blockId == null) continue;
-    const maxScore = Number(row.maxScore ?? 0);
-    if (Number.isFinite(maxScore)) maxScoreByBlock.set(row.blockId, maxScore);
-  }
-  return maxScoreByBlock;
 }
 
 export async function listReviewBlockCropItems(
   params: {
     examId: number; blockId?: string; blockIds?: string[]; classId?: number; status?: string;
+    /** 精确读取一组切块（最近已批回看等按需场景） */
+    cropIds?: string[];
     /** 逐生分配切片（评审 B1），透传给 `listReviewBlockCrops` */
     assignedSlice?: { sql: string; params: unknown[] } | null;
   },
@@ -182,6 +168,74 @@ export async function listReviewBlockCropItems(
     ...crop,
     studentName: crop.studentId != null ? (nameById.get(crop.studentId) ?? null) : null
   }));
+}
+
+/**
+ * 本人最近已批的记录（最后一票属于本人、卷仍在已批状态）。
+ *
+ * 用于限时改票与回看：只按 reviewed_at 倒序取一页候选，再在内存里核对
+ * score_breakdown 的最后一条，避免把「已由他人终评」的卷子误当成可改。
+ */
+export async function listRecentReviewedCrops(
+  examId: number,
+  blockId: string,
+  teacherId: number,
+  limit: number = 20,
+  db: DbAdapter = getMysqlDb()
+): Promise<RecentReviewedCrop[]> {
+  const candidateLimit = Math.max(limit * 5, 60);
+  const rows = await db.all(
+    `SELECT id, score_breakdown, reviewed_at
+     FROM answer_block_crops
+     WHERE exam_id = ? AND block_id = ? AND status = 'reviewed' AND review_round > 0
+     ORDER BY reviewed_at DESC
+     LIMIT ?`,
+    examId,
+    blockId,
+    candidateLimit
+  ) as Array<{ id: string; score_breakdown: string | Array<ReviewScoreBreakdownEntry> | null; reviewed_at: string | null }>;
+
+  const eligible: Array<{
+    cropId: string;
+    vote: ReviewScoreBreakdownEntry;
+    deadline: number;
+  }> = [];
+  for (const row of rows) {
+    let breakdown: ReviewScoreBreakdownEntry[] = [];
+    try {
+      const parsed: unknown = typeof row.score_breakdown === "string"
+        ? JSON.parse(row.score_breakdown)
+        : row.score_breakdown;
+      if (Array.isArray(parsed)) breakdown = parsed as ReviewScoreBreakdownEntry[];
+    } catch {
+      continue;
+    }
+    const last = breakdown.at(-1);
+    if (!last || Number(last.reviewerId) !== teacherId) continue;
+    const reviewedAt = Date.parse(last.reviewedAt);
+    if (!Number.isFinite(reviewedAt)) continue;
+    eligible.push({ cropId: row.id, vote: last, deadline: reviewedAt + REVIEW_AMENDMENT_WINDOW_MS });
+    if (eligible.length >= limit) break;
+  }
+  if (eligible.length === 0) return [];
+
+  const items = await listReviewBlockCropItems({
+    examId,
+    blockId,
+    cropIds: eligible.map((entry) => entry.cropId)
+  }, db);
+  const byId = new Map(items.map((item) => [item.id, item]));
+  return eligible.flatMap((entry) => {
+    const item = byId.get(entry.cropId);
+    if (!item) return [];
+    return [{
+      ...item,
+      myLastVote: entry.vote,
+      expectedVersion: `${entry.vote.round}:${entry.vote.reviewedAt}`,
+      amendmentDeadline: new Date(entry.deadline).toISOString(),
+      canAmend: Date.now() <= entry.deadline
+    }];
+  });
 }
 
 /**
@@ -281,13 +335,7 @@ function splitAboveStepMaxima(maxima: number[], step: number, total: number): nu
 }
 
 /** `answer_block_crops.score_breakdown` 的单条评阅记录（落库结构，与 demo/reviewDemo.ts 保持一致） */
-interface ReviewBreakdownEntry {
-  round: number;
-  reviewerId: number;
-  score: number;
-  reviewedAt: string;
-  questionScores?: Record<string, number>;
-}
+type ReviewBreakdownEntry = ReviewScoreBreakdownEntry;
 
 /**
  * 安全 R47：把评阅历史收敛为「每位评阅人的最后一票」。
@@ -314,7 +362,14 @@ function isOnScoreStep(score: number, step: number): boolean {
   return Math.abs(score - Math.round(score / step) * step) <= 1e-9;
 }
 
-export async function submitReviewCropScores(params: {
+type ReviewActor = {
+  id: number;
+  role_id?: number;
+  role_name?: string;
+  teacher_role?: string | null;
+};
+
+type ReviewSubmissionParams = {
   examId: number;
   cropId: string;
   scores: ReviewSubmitScoreInput[];
@@ -324,7 +379,14 @@ export async function submitReviewCropScores(params: {
   blockTotalScore?: number;
   /** Issue #174: 管理员提交他人已领取试卷时放行（一般由强制释放流程处理） */
   isAdmin?: boolean;
-}, db: DbAdapter = getMysqlDb()): Promise<ReviewSubmitResult> {
+  amendment?: {
+    expectedVersion: string;
+    user: ReviewActor;
+  };
+};
+
+async function persistReviewVote(params: ReviewSubmissionParams, db: DbAdapter): Promise<ReviewSubmitResult> {
+  const amendment = params.amendment;
   const crop = await db.get(
     "SELECT * FROM answer_block_crops WHERE id = ? AND exam_id = ?",
     params.cropId,
@@ -333,8 +395,8 @@ export async function submitReviewCropScores(params: {
   if (!crop) throw new Error("作答切块不存在");
   if (!crop.student_id) throw new Error("该切块未关联学生，无法阅卷");
 
-  // Issue #174: 已领取的试卷只能由领取人提交（管理员除外），防止并发冲突覆盖
-  if (!params.isAdmin && crop.claimed_by !== params.userId) {
+  // 普通提交必须持有试卷；限时改票面向已批回看，不重新领取。
+  if (!amendment && !params.isAdmin && crop.claimed_by !== params.userId) {
     throw new ReviewValidationError(crop.claimed_by == null
       ? "该试卷尚未领取，无法提交；请先从试卷池领取"
       : "该试卷已被其他教师领取，无法提交；请先从试卷池领取");
@@ -350,59 +412,15 @@ export async function submitReviewCropScores(params: {
   // 读取评分配置（含 reviewMode）
   const blockType = crop.block_type ?? "subjective";
   const targetBlockId = crop.block_id ?? "";
-  // 仅取当前题块计算满分，避免把整张答题卡的满分当作单题块满分。
-  // 兜底：若按 block_id 找不到（答题卡被替换/编辑而 crop 未重建的异常态），
-  // 退回同类型首个题块，避免整批改卷因硬抛错而全部失败。
+  // 仅取当前题块计算满分；与汇总、队列共用同一份权威契约。
   const targetBlock =
     card.bodyBlocks.find((b) => b.id === targetBlockId) ??
     card.bodyBlocks.find((b) => b.type === blockType);
-  let maxBlockScore = 0;
-  const maxScoreByQuestion = new Map<number, number>();
-  // 满分记 0 的小题（填空块把块总分记在首个空上，其余小空不带分）不是可评分对象：
-  // 识别切块的题号清单会列出块内全部小空，网阅面板也照样提交，
-  // 若按「不在答题卡题目范围内」拒绝，整块卷子就再也交不出去了（#351 模板改动后必然发生）。
-  const zeroMaxQuestions = new Set<number>();
-  if (targetBlock) {
-    if (targetBlock.type === "objective") {
-      for (const def of objectiveQuestionDefinitions(targetBlock)) {
-        const max = Number(def.score ?? 0);
-        if (max > 0) maxScoreByQuestion.set(def.questionNumber, max);
-        else zeroMaxQuestions.add(def.questionNumber);
-      }
-    } else if (targetBlock.type === "subjective") {
-      for (const question of targetBlock.questions ?? []) {
-        const qNum = typeof question.number === "number" ? question.number : parseInt(String(question.number), 10);
-        if (!Number.isFinite(qNum)) continue;
-        const max = Number(question.score ?? 0);
-        if (max > 0) maxScoreByQuestion.set(qNum, max);
-        else zeroMaxQuestions.add(qNum);
-      }
-    }
-  }
-  maxBlockScore = Array.from(maxScoreByQuestion.values()).reduce((a, b) => a + b, 0);
+  const contract = (await loadReviewQuestionContracts(params.examId, db, [targetBlockId])).get(targetBlockId);
+  const maxScoreByQuestion = new Map<number, number>((contract?.questions ?? []).map((question) => [question.questionNumber, question.maxScore]));
+  const zeroMaxQuestions = contract?.zeroQuestionNumbers ?? new Set<number>();
+  const maxBlockScore = contract?.maxScore ?? 0;
   const scores = params.scores.filter(item => !zeroMaxQuestions.has(Number(item.questionNumber)));
-
-  // 兜底：卡内题块缺失（演示数据 / 答题卡被编辑后旧切块未重建）时，
-  // 以落库的逐题满分作为权威满分，避免整块卷子因「题号不在范围」而无法提交。
-  if (maxScoreByQuestion.size === 0) {
-    const qsRows = await db.all(
-      `SELECT question_number, MAX(max_score) AS max_score
-       FROM question_scores
-       WHERE exam_id = ? AND student_id = ? AND block_id = ?
-       GROUP BY question_number`,
-      params.examId,
-      crop.student_id,
-      crop.block_id ?? ""
-    ) as Array<{ question_number: number; max_score: number | null }>;
-    for (const row of qsRows) {
-      const qNum = Number(row.question_number);
-      const max = Number(row.max_score);
-      if (Number.isFinite(qNum) && Number.isFinite(max) && max > 0) {
-        maxScoreByQuestion.set(qNum, max);
-      }
-    }
-    maxBlockScore = Array.from(maxScoreByQuestion.values()).reduce((a, b) => a + b, 0);
-  }
 
   if (targetBlock?.type === "subjective" && targetBlock.blockKind === "essay"
     && (scores.length !== 1 || Number(scores[0].questionNumber) !== Number(targetBlock.questions[0]?.number)
@@ -465,6 +483,11 @@ export async function submitReviewCropScores(params: {
   const hasBlockTotalScore = Number.isFinite(blockTotalScoreNum);
   const consistency = validateScoringModeConsistency(scoringMode, hasBlockTotalScore);
   if (!consistency.ok) throw new ReviewValidationError(consistency.error);
+  const authoritativeNums = Array.from(maxScoreByQuestion.keys());
+  if (scoringMode === "per_question") {
+    const coverage = validateBlockTotalCoverage(authoritativeNums, scores);
+    if (!coverage.ok) throw new ReviewValidationError(coverage.error);
+  }
   const submittedScores: Array<{ questionNumber: number; scoreType: string; score: number; maxScore: number }> =
     params.blockTotalScore != null
       ? (() => {
@@ -479,7 +502,6 @@ export async function submitReviewCropScores(params: {
           }
           // 题号集合校验：题块总分代表整个题块，提交项必须恰好覆盖本题块的权威小题，
           // 且每题只允许出现一次（否则 totalScore 虚高且 scoreBreakdown 内部不一致）。
-          const authoritativeNums = Array.from(maxScoreByQuestion.keys());
           const coverage = validateBlockTotalCoverage(authoritativeNums, scores);
           if (!coverage.ok) throw new ReviewValidationError(coverage.error);
           const split = splitBlockTotal(
@@ -513,10 +535,12 @@ export async function submitReviewCropScores(params: {
         });
   let totalScore = 0;
   let finalReviewRound = 0;
+  let reachedFinalRound = false;
   let scoreBreakdown: ReviewBreakdownEntry[] = [];
   let disputed = false;
   let disputeReason = "";
   let finalScore: number | null = null;
+  let formalTotalChanged = false;
 
   // P0-2: 争议检测 + 状态更新全部在事务内执行
   await db.transaction(async (tx) => {
@@ -527,39 +551,84 @@ export async function submitReviewCropScores(params: {
       const issue = unit ? essayReviewIssue(unit, params.cropId) : "作文切图归属已变更，请重新领取";
       if (issue) throw new ReviewValidationError(issue);
     }
-    // 评分历史必须在事务内读取和追加；事务外快照会在并发提交时覆盖另一位教师的记录。
+    // 评分历史、改票版本、领取/完成状态与题块归属必须在同一事务内复核。
     const freshCrop = await tx.get(
-      "SELECT review_round, score_breakdown, status, claimed_by FROM answer_block_crops WHERE id = ?",
+      `SELECT exam_id, block_id, review_round, score_breakdown, status, claimed_by
+       FROM answer_block_crops WHERE id = ?`,
       params.cropId
-    ) as { review_round: number; score_breakdown: string | null; status: string | null; claimed_by: number | null } | undefined;
+    ) as {
+      exam_id: number | null;
+      block_id: string;
+      review_round: number;
+      score_breakdown: string | Array<ReviewBreakdownEntry> | null;
+      status: string | null;
+      claimed_by: number | null;
+    } | undefined;
     const currentRound = freshCrop?.review_round ?? 0;
     if (!freshCrop) throw new Error("作答切块不存在");
-    if (!params.isAdmin && freshCrop.claimed_by !== params.userId) {
+    if (freshCrop.exam_id !== params.examId || freshCrop.block_id !== targetBlockId) {
+      throw new ReviewValidationError("试卷题块归属已变更，请刷新后重试");
+    }
+    if (amendment) {
+      if (!(await canGradeBlock(amendment.user, params.examId, targetBlockId, tx))) {
+        throw new ReviewValidationError("权限不足：你当前不可阅此题块");
+      }
+      if (freshCrop.status !== "reviewed" || freshCrop.claimed_by != null) {
+        throw new ReviewValidationError("该卷当前不是可改票的已批状态");
+      }
+    } else if (!params.isAdmin && freshCrop.claimed_by !== params.userId) {
       throw new ReviewValidationError("试卷领取状态已变更，请刷新后重新领取");
     }
-    try { scoreBreakdown = freshCrop.score_breakdown ? JSON.parse(freshCrop.score_breakdown) : []; } catch { scoreBreakdown = []; }
+    try {
+      const parsed: unknown = typeof freshCrop.score_breakdown === "string"
+        ? JSON.parse(freshCrop.score_breakdown)
+        : freshCrop.score_breakdown;
+      scoreBreakdown = Array.isArray(parsed) ? parsed as ReviewBreakdownEntry[] : [];
+    } catch {
+      scoreBreakdown = [];
+    }
 
     const reviewerIds = new Set(scoreBreakdown.map((b) => b.reviewerId));
-    // 争议卷回退给原老师时（含自动回退），允许其追加复评以打破僵局；其余情况禁止重复提交
-    if (reviewerIds.has(params.userId) && freshCrop.status !== "disputed") {
-      throw new Error("您已对该题块评分，请勿重复提交");
+    if (amendment) {
+      const last = scoreBreakdown.at(-1);
+      if (!last || last.reviewerId !== params.userId) {
+        throw new ReviewValidationError("该卷已有其他评阅人的更新，不能修改旧票");
+      }
+      const version = `${last.round}:${last.reviewedAt}`;
+      if (amendment.expectedVersion !== version) {
+        throw new ReviewValidationError("改票版本已过期，请刷新最近已批记录后重试");
+      }
+      const reviewedAt = Date.parse(last.reviewedAt);
+      const nowMs = Date.parse(now);
+      if (!Number.isFinite(reviewedAt) || !Number.isFinite(nowMs) || nowMs > reviewedAt + REVIEW_AMENDMENT_WINDOW_MS) {
+        throw new ReviewValidationError("已超过限时改票窗口，不能再修改此票");
+      }
+    } else {
+      // 争议卷回退给原老师时（含自动回退），允许其追加复评以打破僵局；其余情况禁止重复提交
+      if (reviewerIds.has(params.userId) && freshCrop.status !== "disputed") {
+        throw new Error("您已对该题块评分，请勿重复提交");
+      }
+      // 争议卷（含自动改派/回退给原老师）允许追加复评以打破僵局；
+      // 限制最多比正常模式多 2 轮，避免两教师在争议卷上无限互评
+      const maxDisputedRounds = reviewMode + 2;
+      const isDisputedRereview = freshCrop.status === "disputed" && scoreBreakdown.length < maxDisputedRounds;
+      if ((reviewerIds.size >= reviewMode || currentRound >= reviewMode) && !isDisputedRereview) {
+        throw new Error("该题块已达到评分上限，请刷新后重试");
+      }
     }
     if (config.arbitratorId != null && config.arbitratorId === params.userId) throw new ReviewValidationError("您是该题块的仲裁人，不能参与初评");
     if (config.arbitratorId != null && reviewerIds.has(config.arbitratorId)) throw new Error("该题块的仲裁人已参与评分，需要更换仲裁人");
-
-    // 争议卷（含自动改派/回退给原老师）允许追加复评以打破僵局；
-    // 限制最多比正常模式多 2 轮，避免两教师在争议卷上无限互评
-    const maxDisputedRounds = reviewMode + 2;
-    const isDisputedRereview = freshCrop.status === "disputed" && scoreBreakdown.length < maxDisputedRounds;
-    if ((scoreBreakdown.length >= reviewMode || currentRound >= reviewMode) && !isDisputedRereview) {
-      throw new Error("该题块已达到评分上限，请刷新后重试");
-    }
 
     totalScore = submittedScores.reduce((sum, item) => sum + item.score, 0);
     finalReviewRound = currentRound + 1;
     const questionScores = Object.fromEntries(submittedScores.map((item) => [String(item.questionNumber), item.score]));
 
     scoreBreakdown.push({ round: finalReviewRound, reviewerId: params.userId, score: totalScore, reviewedAt: now, questionScores });
+
+    // R47：票数按评阅人去重（每人取其最后一轮），改票/复评不叠加票数，
+    // 也不能因为历史行数达到评阅轮数就提前写正式分。
+    const effectiveVotes = latestVotesByReviewer(scoreBreakdown);
+    reachedFinalRound = effectiveVotes.length >= reviewMode;
 
     // 仅在所有轮次完成且无争议后才写正式分数，避免最后一评的分数提前影响排名。
     // Issue #174: 提交后清空领取标记。
@@ -569,9 +638,7 @@ export async function submitReviewCropScores(params: {
       params.cropId
     );
 
-    if (scoreBreakdown.length >= reviewMode) {
-      // R47：票数按评阅人去重（每人取其最后一轮），复评不叠加票数
-      const effectiveVotes = latestVotesByReviewer(scoreBreakdown);
+    if (reachedFinalRound) {
       const allScores = effectiveVotes.map((b) => b.score);
       const disputeResult = computeMultiReviewResult(allScores, config.disputeThreshold, config.rounding);
       disputed = disputeResult.disputed;
@@ -595,7 +662,9 @@ export async function submitReviewCropScores(params: {
           for (const resolved of resolvedQuestionScores) {
             await tx.run(upsertSQL, params.examId, crop.student_id, resolved.item.questionNumber, null, crop.block_id, resolved.score, resolved.item.maxScore, resolved.item.scoreType, 1, params.userId, now);
           }
-          totalScore = await recomputeStudentTotals(tx, params.examId, crop.student_id!);
+          const totals = await recomputeStudentTotals(tx, params.examId, crop.student_id!);
+          totalScore = totals.totalScore;
+          formalTotalChanged = totals.changed;
           // 评审 P1：仅当本轮评阅写下正式分数并重算总分时才视为成绩变更 →
           // 同一事务内按管理员策略处理公布状态
           await markScoreMutated(tx, params.examId, params.userId, "review_submit");
@@ -604,7 +673,7 @@ export async function submitReviewCropScores(params: {
     }
 
     // 确定下一状态
-    const nextStatus = scoreBreakdown.length >= reviewMode
+    const nextStatus = reachedFinalRound
       ? (params.status ?? "reviewed")
       : "pending";
 
@@ -613,7 +682,7 @@ export async function submitReviewCropScores(params: {
       `UPDATE answer_block_crops
        SET status = ?, reviewer_id = ?, reviewed_at = ?, review_round = ?,
            score_breakdown = ?
-       WHERE id = ? AND review_round = ?`,
+       WHERE id = ? AND review_round = ?${amendment ? " AND status = 'reviewed' AND claimed_by IS NULL" : ""}`,
       nextStatus,
       params.userId,
       now,
@@ -627,7 +696,7 @@ export async function submitReviewCropScores(params: {
       throw new Error("该切块已被其他老师批阅，请刷新后重试");
     }
 
-    if (scoreBreakdown.length >= reviewMode) {
+    if (reachedFinalRound) {
       if (disputed) {
         await tx.run("UPDATE answer_block_crops SET status = ? WHERE id = ?", "disputed", params.cropId);
         // 无仲裁人时，把争议卷自动改派：优先「已分配本题块且未评过该生」的教师，不足则回退原老师（自动过程）
@@ -650,10 +719,12 @@ export async function submitReviewCropScores(params: {
   let assignedScoresRecalculated = true;
   let assignedScoreError: string | undefined;
   try {
-    const recalc = await recomputeExamRankings(db, params.examId);
-    rankingsRecalculated = recalc.rankingsRecalculated;
-    assignedScoresRecalculated = recalc.assignedScoresRecalculated;
-    assignedScoreError = recalc.assignedScoreError;
+    if (formalTotalChanged) {
+      const recalc = await recomputeExamRankingsCoalesced(db, params.examId);
+      rankingsRecalculated = recalc.rankingsRecalculated;
+      assignedScoresRecalculated = recalc.assignedScoresRecalculated;
+      assignedScoreError = recalc.assignedScoreError;
+    }
   } catch (err) {
     rankingsRecalculated = false;
     rankingError = err instanceof Error ? err.message : String(err);
@@ -665,7 +736,7 @@ export async function submitReviewCropScores(params: {
   return {
     ok: true,
     cropId: params.cropId,
-    status: disputed ? "disputed" : (scoreBreakdown.length >= reviewMode ? "reviewed" : "pending"),
+    status: disputed ? "disputed" : (reachedFinalRound ? "reviewed" : "pending"),
     totalScore,
     disputed,
     disputeReason,
@@ -674,8 +745,32 @@ export async function submitReviewCropScores(params: {
     rankingsRecalculated,
     rankingError,
     assignedScoresRecalculated,
-    assignedScoreError
+    assignedScoreError,
+    amendmentDeadline: amendment ? new Date(Date.parse(now) + REVIEW_AMENDMENT_WINDOW_MS).toISOString() : undefined
   };
+}
+
+export type SubmitReviewCropScoresParams = Omit<ReviewSubmissionParams, "amendment">;
+
+export async function submitReviewCropScores(
+  params: SubmitReviewCropScoresParams,
+  db: DbAdapter = getMysqlDb()
+): Promise<ReviewSubmitResult> {
+  return persistReviewVote(params, db);
+}
+
+/** 最近已批的限时改票：保留历史票，追加同一评阅人的修订票。 */
+export async function amendReviewCropScores(
+  params: Omit<SubmitReviewCropScoresParams, "status" | "isAdmin"> & {
+    expectedVersion: string;
+    user: ReviewActor;
+  },
+  db: DbAdapter = getMysqlDb()
+): Promise<ReviewSubmitResult> {
+  return persistReviewVote({
+    ...params,
+    amendment: { expectedVersion: params.expectedVersion, user: params.user }
+  }, db);
 }
 
 /**

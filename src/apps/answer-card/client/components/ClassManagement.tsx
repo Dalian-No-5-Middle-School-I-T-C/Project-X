@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowRightLeft, Download, Pencil, Plus, RefreshCw, Search, Trash2, Upload, UserMinus, UserPlus, X } from "lucide-react";
 import { fetchJson, authFetch } from "../auth/api";
-import type { ClassRecord, ClassStudent, GradeRecord, TeacherRecord, UserListItem, UsersListResponse } from "../auth/types";
+import type { ClassRecord, ClassStudent, CsvImportResult, GradeRecord, TeacherRecord, UserListItem, UsersListResponse } from "../auth/types";
 import { TEACHER_SUBJECTS } from "../../../../shared/subjects";
 import { cn } from "../lib/utils";
 import { currentStage } from "../util/gradeStage";
@@ -557,11 +557,11 @@ export function ClassManagement() {
   }
 
   // ── v1.1 CSV 批量导入 ────────────────────────────────
-  async function handleCsvImport(csvText: string) {
+  async function handleCsvImport(csvText: string): Promise<CsvImportResult> {
     setBusy(true);
     setError("");
     try {
-      await fetchJson("/api/users/import-csv", {
+      const result = await fetchJson<CsvImportResult>("/api/users/import-csv", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ csvText })
@@ -569,6 +569,7 @@ export function ClassManagement() {
       await loadGrades();
       if (selectedGradeId) await loadClasses(selectedGradeId);
       if (selectedClassId) await loadRoster(selectedClassId);
+      return result;
     } catch (err) {
       setError(err instanceof Error ? err.message : "导入失败");
       throw err;

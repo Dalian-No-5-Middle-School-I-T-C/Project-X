@@ -7,7 +7,7 @@ import { getMysqlDb } from "../../../../server/db";
 import { isInsideDir } from "../../../../server/services/AnswerBlockCropService";
 import type { ScanPageScope } from "../../../../server/middleware/scanner-scope";
 import { findCardForLayout } from "../card-layout";
-import { cardFingerprint } from "../../../../shared/cardVersion";
+import { cardFingerprint, gradingVersion, layoutFingerprint, stableVersionStringify } from "../../../../shared/cardVersion";
 import { buildLayout } from "../../../../shared/layout";
 import { blockCropsDir } from "../storage";
 import type {
@@ -21,7 +21,13 @@ import type {
 
 export type ScanUploadCropImage = Omit<RecognitionBlockCrop, "path"> & { dataBase64: string };
 
-export type ScanUploadPayload = CombinedRecognitionResult & { cropImages: ScanUploadCropImage[]; cardVersion?: string; correctionRevision?: number };
+export type ScanUploadPayload = CombinedRecognitionResult & {
+  cropImages: ScanUploadCropImage[];
+  cardVersion?: string;
+  layoutFingerprint?: string;
+  gradingVersion?: string;
+  correctionRevision?: number;
+};
 
 /**
  * Expected croppable segment: mirrors native `block_crops_from_page` in layout_io.cpp
@@ -276,7 +282,14 @@ async function readScanUploadPayload(recordId: string): Promise<ScanUploadPayloa
     // 让扫描端按现行版式重新识别，避免出现「按旧版卡识别的分数进了新版卡的正式成绩」。
     const card = await findCardForLayout(record.card_id);
     if (!card) return null;
-    if (!correction.cardVersion || correction.cardVersion !== cardFingerprint(card)) return null;
+    const geometry = layoutFingerprint(card);
+    const expectedLayout = buildLayout(card).pages.find((page) => page.pageNumber === correction.layout.pageNumber);
+    const session = await adapter.get<{ card_version: string | null; layout_fingerprint: string | null }>(
+      "SELECT card_version,layout_fingerprint FROM twain_scan_sessions WHERE id=?", record.session_id);
+    const layoutMatches = correction.layoutFingerprint ? correction.layoutFingerprint === geometry
+      : expectedLayout && stableVersionStringify(correction.layout) === stableVersionStringify(expectedLayout)
+        && Boolean(session?.layout_fingerprint === geometry || session?.card_version === cardFingerprint(card));
+    if (!layoutMatches) return null;
 
     const layoutPageNumber = correction.layout.pageNumber;
     const expectedCorrectionRevision = Number(correction.revision);
@@ -381,7 +394,8 @@ async function readScanUploadPayload(recordId: string): Promise<ScanUploadPayloa
     const payloadStudent = recognition.studentId?.value ? String(recognition.studentId.value) : null;
     if (recordStudentSettled && payloadStudent && recordStudentSettled !== payloadStudent) return null;
     if (settledStudent && payloadStudent && settledStudent !== payloadStudent) return null;
-    return { ...recognition, cropImages, cardVersion: correction.cardVersion, correctionRevision: correction.revision };
+    return { ...recognition, cropImages, cardVersion: correction.cardVersion ?? undefined,
+      layoutFingerprint: geometry, gradingVersion: gradingVersion(card), correctionRevision: correction.revision };
   };
 
   // Pairing is enforced via correction_revision on crop rows (not a long-lived read txn:

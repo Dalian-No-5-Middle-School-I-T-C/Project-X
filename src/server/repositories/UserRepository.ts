@@ -32,15 +32,64 @@ export interface UpdateUserParams {
   track?: string | null;
 }
 
-export interface BatchStudentInput { username: string; name: string; student_number: string; password?: string; }
+export interface BatchStudentInput {
+  username: string;
+  name: string;
+  student_number: string;
+  password?: string;
+  track?: string | null;
+  rowNumber?: number;
+}
+
+export interface CreatedStudentAccount {
+  id: number;
+  username: string;
+  name: string;
+  studentNumber: string;
+  initialPassword: string;
+  rowNumber: number;
+}
 
 export interface BatchImportResult {
-  created: number; skipped: number; errors: Array<{ row: BatchStudentInput; message: string }>; createdIds: number[];
+  created: number;
+  skipped: number;
+  errors: Array<{ row: BatchStudentInput; rowNumber: number; message: string }>;
+  createdIds: number[];
+  createdAccounts: CreatedStudentAccount[];
+}
+
+export interface CsvRowError {
+  row: string[];
+  rowNumber: number;
+  message: string;
+}
+
+export interface CsvImportResult {
+  students: {
+    created: number;
+    linked: number;
+    skipped: number;
+    errors: CsvRowError[];
+    createdAccounts: CreatedStudentAccount[];
+  };
+  teachers: {
+    created: number;
+    skipped: number;
+    errors: CsvRowError[];
+    createdAccounts: Array<{ id: number; username: string; name: string; initialPassword: string; rowNumber: number }>;
+  };
 }
 
 export class UserRepository {
+  /** 每次取当前连接；显式传入事务连接时固定使用该连接。 */
+  private readonly bound?: DbAdapter;
+
+  constructor(db?: DbAdapter) {
+    this.bound = db;
+  }
+
   /** 每次取当前连接。恢复备份会关掉旧库并重置适配器，启动时缓存的实例不能继续用。 */
-  private get db(): DbAdapter { return getMysqlDb(); }
+  private get db(): DbAdapter { return this.bound ?? getMysqlDb(); }
 
   async findByUsername(username: string): Promise<UserRecord | null> {
     return await this.db.get(`SELECT u.*, r.name as role_name, r.display_name as role_display_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.username = ? AND u.is_active = 1`, username);
@@ -54,11 +103,11 @@ export class UserRepository {
     return await this.db.get(`SELECT u.*, r.name as role_name, r.display_name as role_display_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ? AND u.is_active = 1`, id);
   }
 
-  async createUser(params: CreateUserParams): Promise<UserRecord> {
-    const passwordHash = await hashPassword(params.password);
+  async createUser(params: CreateUserParams, passwordHash?: string): Promise<UserRecord> {
+    const effectiveHash = passwordHash ?? await hashPassword(params.password);
     const result = await this.db.run(
       `INSERT INTO users (username, password_hash, name, role_id, student_number, track, subject, teacher_role, initial_password, email, phone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      params.username, passwordHash, params.name, params.role_id, params.student_number ?? null,
+      params.username, effectiveHash, params.name, params.role_id, params.student_number ?? null,
       params.track ?? null, params.subject ?? null, params.teacher_role ?? null, encryptField(params.initial_password ?? null),
       params.email ?? null, params.phone ?? null
     );
@@ -109,6 +158,11 @@ export class UserRepository {
     return await this.db.get(`SELECT u.*, r.name as role_name, r.display_name as role_display_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?`, id);
   }
 
+  async countActiveAdmins(): Promise<number> {
+    const row = await this.db.get("SELECT COUNT(*) AS total FROM users WHERE role_id = 1 AND is_active = 1") as { total: number };
+    return Number(row?.total ?? 0);
+  }
+
   async usernameExists(username: string): Promise<boolean> {
     const row = await this.db.get("SELECT 1 FROM users WHERE username = ? LIMIT 1", username);
     return Boolean(row);
@@ -142,26 +196,44 @@ export class UserRepository {
   }
 
   async batchCreateStudents(rows: BatchStudentInput[]): Promise<BatchImportResult> {
-    const result: BatchImportResult = { created: 0, skipped: 0, errors: [], createdIds: [] };
+    const result: BatchImportResult = { created: 0, skipped: 0, errors: [], createdIds: [], createdAccounts: [] };
     const prepared: Array<{ row: BatchStudentInput; username: string; hash: string; initialPassword: string }> = [];
-    for (const row of rows) {
-      const username = (row.username || row.student_number || "").trim();
+    for (const [index, row] of rows.entries()) {
       const studentNumber = (row.student_number || "").trim();
-      if (!username || !studentNumber || !row.name) { result.errors.push({ row, message: "缺少用户名/学号/姓名" }); continue; }
-      if (await this.usernameExists(username) || await this.studentNumberExists(studentNumber)) { result.skipped++; result.errors.push({ row, message: "用户名或学号已存在" }); continue; }
+      const username = `P${studentNumber}`;
+      const rowNumber = row.rowNumber ?? index + 2;
+      const normalizedRow = { ...row, username, student_number: studentNumber, rowNumber };
+      if (!studentNumber || !row.name?.trim()) { result.errors.push({ row: normalizedRow, rowNumber, message: "缺少学号/姓名" }); continue; }
+      if (row.track !== undefined && row.track !== null && row.track !== "" && !["arts", "science"].includes(String(row.track))) {
+        result.errors.push({ row: normalizedRow, rowNumber, message: "无效的文理分科，仅支持 arts（文科）/ science（理科）" });
+        continue;
+      }
+      if (await this.usernameExists(username) || await this.studentNumberExists(studentNumber)) { result.skipped++; result.errors.push({ row: normalizedRow, rowNumber, message: "用户名或学号已存在" }); continue; }
       // 显式密码优先；缺失时生成不可推导随机初始密码（不再以学号兜底）
       const initialPassword = row.password || generateRandomInitialPassword();
       const passwordError = validateInitialPassword({ password: initialPassword, isStudent: true, studentNumber });
-      if (passwordError) { result.errors.push({ row, message: passwordError }); continue; }
-      prepared.push({ row: { ...row, username, student_number: studentNumber }, username, hash: await hashPassword(initialPassword), initialPassword });
+      if (passwordError) { result.errors.push({ row: normalizedRow, rowNumber, message: passwordError }); continue; }
+      prepared.push({ row: normalizedRow, username, hash: await hashPassword(initialPassword), initialPassword });
     }
     await this.db.transaction(async (tx) => {
       for (const item of prepared) {
         try {
-          const insertResult = await tx.run("INSERT INTO users (username, password_hash, name, role_id, student_number, initial_password) VALUES (?, ?, ?, 3, ?, ?)", item.username, item.hash, item.row.name, item.row.student_number, encryptField(item.initialPassword));
+          const insertResult = await tx.run(
+            "INSERT INTO users (username, password_hash, name, role_id, student_number, track, initial_password) VALUES (?, ?, ?, 3, ?, ?, ?)",
+            item.username, item.hash, item.row.name.trim(), item.row.student_number,
+            item.row.track || null, encryptField(item.initialPassword)
+          );
           result.created++;
           result.createdIds.push(insertResult.lastInsertRowid);
-        } catch (err) { result.errors.push({ row: item.row, message: err instanceof Error ? err.message : String(err) }); }
+          result.createdAccounts.push({
+            id: insertResult.lastInsertRowid,
+            username: item.username,
+            name: item.row.name.trim(),
+            studentNumber: item.row.student_number,
+            initialPassword: item.initialPassword,
+            rowNumber: item.row.rowNumber ?? 0,
+          });
+        } catch (err) { result.errors.push({ row: item.row, rowNumber: item.row.rowNumber ?? 0, message: err instanceof Error ? err.message : String(err) }); }
       }
     });
     return result;
@@ -180,16 +252,16 @@ export class UserRepository {
     return String(crypto.randomInt(100000, 1000000));
   }
 
-  async listTeachers(options: { keyword?: string; page?: number; pageSize?: number } = {}): Promise<{ teachers: UserRecord[]; total: number }> {
-    const page = options.page && options.page > 0 ? options.page : 1;
-    const pageSize = options.pageSize && options.pageSize > 0 ? options.pageSize : 50;
+  async listTeachers(options: { keyword?: string; page?: number; pageSize?: number; isActive?: boolean } = {}): Promise<{ teachers: UserRecord[]; total: number }> {
+    const page = options.page && Number.isInteger(options.page) && options.page > 0 ? options.page : 1;
+    const pageSize = options.pageSize && Number.isInteger(options.pageSize) && options.pageSize > 0 ? options.pageSize : 50;
     const offset = (page - 1) * pageSize;
-    let where = "WHERE u.role_id = 2 AND u.is_active = 1";
+    let where = "WHERE u.role_id = 2";
     const params: unknown[] = [];
-    if (options.keyword) { where += " AND (u.name LIKE ? OR u.username LIKE ? OR u.subject LIKE ?)"; const like = `%${options.keyword}%`; params.push(like, like, like); }
-    const teachers = await this.db.all(`SELECT u.*, r.name as role_name, r.display_name as role_display_name FROM users u JOIN roles r ON r.id = u.role_id ${where} ORDER BY u.created_at ASC LIMIT ? OFFSET ?`, ...params, pageSize, offset);
-    const kw = options.keyword;
-    const { total } = await this.db.get(`SELECT COUNT(*) as total FROM users u WHERE u.role_id = 2 AND u.is_active = 1 ${kw ? "AND (u.name LIKE ? OR u.username LIKE ? OR u.subject LIKE ?)" : ""}`, ...(kw ? [`%${kw}%`, `%${kw}%`, `%${kw}%`] : [])) as { total: number };
+    if (options.isActive !== undefined) { where += " AND u.is_active = ?"; params.push(options.isActive ? 1 : 0); }
+    if (options.keyword?.trim()) { where += " AND (u.name LIKE ? OR u.username LIKE ? OR u.subject LIKE ?)"; const like = `%${options.keyword.trim()}%`; params.push(like, like, like); }
+    const teachers = await this.db.all(`SELECT u.*, r.name as role_name, r.display_name as role_display_name FROM users u JOIN roles r ON r.id = u.role_id ${where} ORDER BY u.created_at ASC, u.id ASC LIMIT ? OFFSET ?`, ...params, pageSize, offset);
+    const { total } = await this.db.get(`SELECT COUNT(*) as total FROM users u ${where}`, ...params) as { total: number };
     return { teachers: teachers as UserRecord[], total };
   }
 
@@ -240,28 +312,37 @@ export class UserRepository {
     return "\uFEFF" + [header, ...teachers.map((t: any) => [csvCell(t.subject), csvCell(t.name), csvCell(t.username), csvCell(decryptField(t.initial_password))].join(","))].join("\n");
   }
 
-  async batchImportFromCsv(rows: string[][]): Promise<{
-    students: { created: number; linked: number; skipped: number; errors: Array<{ row: string[]; message: string }> };
-    teachers: { created: number; skipped: number; errors: Array<{ row: string[]; message: string }> };
-  }> {
-    const result = { students: { created: 0, linked: 0, skipped: 0, errors: [] as any[] }, teachers: { created: 0, skipped: 0, errors: [] as any[] } };
+  async batchImportFromCsv(rows: string[][], rowNumbers?: number[]): Promise<CsvImportResult> {
+    const result: CsvImportResult = {
+      students: { created: 0, linked: 0, skipped: 0, errors: [], createdAccounts: [] },
+      teachers: { created: 0, skipped: 0, errors: [], createdAccounts: [] },
+    };
     if (rows.length < 2) return result;
     const header = rows[0].map(c => c.toLowerCase().replace(/[_\s]+/g, ""));
-    const dataRows = rows.slice(1).filter(r => r.some(c => c.trim()));
+    const dataRows = rows.slice(1)
+      .map((row, index) => ({ row, rowNumber: rowNumbers?.[index + 1] ?? index + 2 }))
+      .filter(entry => entry.row.some(c => c.trim()));
     const isStudent = header.some((h: string) => /班级|class/.test(h));
     const isTeacher = header.some((h: string) => /科目|subject/.test(h)) && !isStudent;
+    const normalizeTrack = (value: string): string | null => {
+      const normalized = value.trim().toLowerCase();
+      if (!normalized) return null;
+      const aliases: Record<string, string> = { arts: "arts", science: "science", 文科: "arts", 理科: "science", 文: "arts", 理: "science" };
+      return aliases[normalized] ?? "";
+    };
 
     if (isStudent) {
       const gradeIdx = header.findIndex((h: string) => /年级|grade/.test(h));
       const classIdx = header.findIndex((h: string) => /班级|class/.test(h));
       const numberIdx = header.findIndex((h: string) => /学号|student_number|考号/.test(h));
       const nameIdx = header.findIndex((h: string) => /姓名|name/.test(h));
-      if (classIdx < 0 || numberIdx < 0 || nameIdx < 0) { result.students.errors.push({ row: header, message: "表头不完整" }); return result; }
+      const trackIdx = header.findIndex((h: string) => /文理|track/.test(h));
+      if (classIdx < 0 || numberIdx < 0 || nameIdx < 0) { result.students.errors.push({ row: header, rowNumber: 1, message: "表头不完整" }); return result; }
       const hasSeparateGrade = gradeIdx >= 0;
       const parseGradeFromClass = (cn: string): string => { const m = cn.match(/^(?:高|初|小?)([一二三四五六]+)/); return m ? m[0] : cn; };
       let currentGradeName = "", currentClassName = "";
 
-      for (const row of dataRows) {
+      for (const { row, rowNumber } of dataRows) {
         try {
           const rawClassName = (row[classIdx] ?? "").trim();
           let rawGradeName: string;
@@ -271,19 +352,21 @@ export class UserRepository {
           const gradeName = currentGradeName, className = currentClassName;
           const studentNumber = (row[numberIdx] ?? "").trim(), studentName = (row[nameIdx] ?? "").trim();
           if (!studentNumber && !studentName) continue;
-          if (!studentNumber || !studentName) { result.students.errors.push({ row, message: "缺少学号/姓名" }); continue; }
+          if (!studentNumber || !studentName) { result.students.errors.push({ row, rowNumber, message: "缺少学号/姓名" }); continue; }
+          const track = normalizeTrack(trackIdx >= 0 ? (row[trackIdx] ?? "") : "");
+          if (track === "") { result.students.errors.push({ row, rowNumber, message: "无效的文理分科，仅支持文科/理科/arts/science" }); continue; }
           const username = `P${studentNumber}`, password = generateRandomInitialPassword();
-          if (!gradeName || !className) { result.students.errors.push({ row, message: "缺少年级/班级" }); continue; }
+          if (!gradeName || !className) { result.students.errors.push({ row, rowNumber, message: "缺少年级/班级" }); continue; }
 
           const existingStudent = await this.findByStudentNumber(studentNumber);
           if (existingStudent) {
-            if (existingStudent.role_id !== 3) { result.students.skipped++; result.students.errors.push({ row, message: "学号已被非学生账号占用" }); continue; }
+            if (existingStudent.role_id !== 3) { result.students.skipped++; result.students.errors.push({ row, rowNumber, message: "学号已被非学生账号占用" }); continue; }
             await this.db.transaction(async (tx) => {
               let grade = await tx.get("SELECT id FROM grades WHERE name = ? AND archived_at IS NULL", gradeName) as { id: number } | null;
               if (!grade) { const gr = await tx.run("INSERT INTO grades (name) VALUES (?)", gradeName); grade = { id: gr.lastInsertRowid }; }
               let cls = await tx.get("SELECT id FROM classes WHERE grade_id = ? AND name = ? AND archived_at IS NULL", grade.id, className) as { id: number } | null;
               if (!cls) { const cr = await tx.run("INSERT INTO classes (grade_id, name) VALUES (?, ?)", grade.id, className); cls = { id: cr.lastInsertRowid }; }
-              await tx.run("UPDATE users SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND role_id = 3", studentName, existingStudent.id);
+              await tx.run("UPDATE users SET name = ?, track = COALESCE(?, track), updated_at = CURRENT_TIMESTAMP WHERE id = ? AND role_id = 3", studentName, track, existingStudent.id);
               // B12（评审修订）：重导入按花名册**纯增量**补班级关联（INSERT IGNORE）。
               // 多班在读成员是合法状态（#308），此前「先清空当前归属再绑回花名册班级」
               // 会把学生同时就读的其他在读班当脏数据抹掉。新增关联即回溯考试归属（#347）：
@@ -298,7 +381,7 @@ export class UserRepository {
             result.students.linked++; continue;
           }
 
-          if (await this.usernameExists(username) || await this.studentNumberExists(studentNumber)) { result.students.skipped++; result.students.errors.push({ row, message: "用户名或学号已存在" }); continue; }
+          if (await this.usernameExists(username) || await this.studentNumberExists(studentNumber)) { result.students.skipped++; result.students.errors.push({ row, rowNumber, message: "用户名或学号已存在" }); continue; }
           const hash = await hashPassword(password);
 
           await this.db.transaction(async (tx) => {
@@ -306,27 +389,32 @@ export class UserRepository {
             if (!grade) { const gr = await tx.run("INSERT INTO grades (name) VALUES (?)", gradeName); grade = { id: gr.lastInsertRowid }; }
             let cls = await tx.get("SELECT id FROM classes WHERE grade_id = ? AND name = ? AND archived_at IS NULL", grade.id, className) as { id: number } | null;
             if (!cls) { const cr = await tx.run("INSERT INTO classes (grade_id, name) VALUES (?, ?)", grade.id, className); cls = { id: cr.lastInsertRowid }; }
-            const ins = await tx.run("INSERT INTO users (username, password_hash, name, role_id, student_number, initial_password) VALUES (?, ?, ?, 3, ?, ?)", username, hash, studentName, studentNumber, encryptField(password));
+            const ins = await tx.run(
+              "INSERT INTO users (username, password_hash, name, role_id, student_number, track, initial_password) VALUES (?, ?, ?, 3, ?, ?, ?)",
+              username, hash, studentName, studentNumber, track, encryptField(password)
+            );
             const linkSql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
             await tx.run(linkSql, cls.id, ins.lastInsertRowid);
+            result.students.createdAccounts.push({ id: ins.lastInsertRowid, username, name: studentName, studentNumber, initialPassword: password, rowNumber });
           });
           result.students.created++;
-        } catch (err) { result.students.errors.push({ row, message: err instanceof Error ? err.message : String(err) }); }
+        } catch (err) { result.students.errors.push({ row, rowNumber, message: err instanceof Error ? err.message : String(err) }); }
       }
     } else if (isTeacher) {
       const subjectIdx = header.findIndex((h: string) => /科目|subject/.test(h));
       const nameIdx = header.findIndex((h: string) => /姓名|name/.test(h));
-      if (subjectIdx < 0 || nameIdx < 0) { result.teachers.errors.push({ row: header, message: "表头不完整" }); return result; }
-      for (const row of dataRows.filter(r => r[nameIdx]?.trim() || r[subjectIdx]?.trim())) {
+      if (subjectIdx < 0 || nameIdx < 0) { result.teachers.errors.push({ row: header, rowNumber: 1, message: "表头不完整" }); return result; }
+      for (const { row, rowNumber } of dataRows.filter(entry => entry.row[nameIdx]?.trim() || entry.row[subjectIdx]?.trim())) {
         try {
           const subject = (row[subjectIdx] ?? "").trim(), teacherName = (row[nameIdx] ?? "").trim();
-          if (!subject || !teacherName) { result.teachers.errors.push({ row, message: "缺少科目或姓名" }); continue; }
+          if (!subject || !teacherName) { result.teachers.errors.push({ row, rowNumber, message: "缺少科目或姓名" }); continue; }
           const username = await this.generateTeacherUsername(), password = this.generateTeacherPassword();
-          await this.db.run("INSERT INTO users (username, password_hash, name, role_id, subject, initial_password) VALUES (?, ?, ?, 2, ?, ?)", username, await hashPassword(password), teacherName, subject, encryptField(password));
+          const inserted = await this.db.run("INSERT INTO users (username, password_hash, name, role_id, subject, initial_password) VALUES (?, ?, ?, 2, ?, ?)", username, await hashPassword(password), teacherName, subject, encryptField(password));
           result.teachers.created++;
-        } catch (err) { result.teachers.errors.push({ row, message: err instanceof Error ? err.message : String(err) }); }
+          result.teachers.createdAccounts.push({ id: inserted.lastInsertRowid, username, name: teacherName, initialPassword: password, rowNumber });
+        } catch (err) { result.teachers.errors.push({ row, rowNumber, message: err instanceof Error ? err.message : String(err) }); }
       }
-    } else { result.students.errors.push({ row: header, message: "无法识别 CSV 类型" }); }
+    } else { result.students.errors.push({ row: header, rowNumber: 1, message: "无法识别 CSV 类型" }); }
     return result;
   }
 }

@@ -12,7 +12,7 @@ import {
   legacySessionBlockReason,
 } from "../../apps/answer-card/server/scanner/session-results";
 import type { ScanRecordWithResult } from "../../apps/answer-card/server/database/scan-store";
-import { cardFingerprint } from "../../shared/cardVersion";
+import { gradingVersion, layoutFingerprint } from "../../shared/cardVersion";
 import {
   ensureExamParticipants,
   isExamParticipant,
@@ -38,7 +38,7 @@ type PendingRow = {
 type SessionEvidence = {
   exam: { card_id: string; class_id: number | null; grade_id: number | null } | null;
   card: AnswerCard | null;
-  session: { card_id: string; card_version: string | null; version_source: string } | null;
+  session: { card_id: string; card_version: string | null; layout_fingerprint: string | null; version_source: string } | null;
   raw: Array<ScanRecordWithResult & { objective_json: string | null; subjective_json: string | null }>;
   grouped?: ReturnType<typeof groupSessionPages>;
 };
@@ -54,9 +54,10 @@ async function loadSessionEvidence(db: DbAdapter, row: PendingRow): Promise<Sess
   const session = await db.get<{
     card_id: string;
     card_version: string | null;
+    layout_fingerprint: string | null;
     version_source: string;
   }>(
-    "SELECT card_id,card_version,version_source FROM twain_scan_sessions WHERE id=?",
+    "SELECT card_id,card_version,layout_fingerprint,version_source FROM twain_scan_sessions WHERE id=?",
     row.session_id,
   );
   const raw = await db.all<
@@ -147,7 +148,7 @@ async function evidence(db: DbAdapter, row: PendingRow, cache?: EvidenceCache) {
         score,
         questions,
         related,
-        version: cardFingerprint(card),
+        version: { layoutFingerprint: layoutFingerprint(card), gradingVersion: gradingVersion(card) },
         session,
         recoveryFingerprints,
       }),
@@ -178,6 +179,24 @@ export async function listPendingScans(examId: number) {
       };
     }),
   );
+}
+export async function confirmPendingScans(
+  examId: number,
+  items: Array<{ sessionId: string; groupId: string; action: "accept" | "discard"; token: string }>,
+  userId: number,
+  accessibleClassIds: number[] | null,
+) {
+  const results: Array<{ sessionId: string; groupId: string; ok: boolean; message?: string }> = [];
+  for (const item of items) {
+    try {
+      await confirmPendingScan(examId, item.sessionId, item.groupId, item.action, item.token, userId, accessibleClassIds);
+      results.push({ sessionId: item.sessionId, groupId: item.groupId, ok: true });
+    } catch (error) {
+      results.push({ sessionId: item.sessionId, groupId: item.groupId, ok: false,
+        message: error instanceof Error ? error.message : "确认失败" });
+    }
+  }
+  return { ok: results.every((result) => result.ok), results };
 }
 export async function confirmPendingScan(
   examId: number,

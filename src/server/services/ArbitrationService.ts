@@ -1,9 +1,16 @@
+import { existsSync, realpathSync } from "node:fs";
+import path from "node:path";
 import { essayReviewIssue, loadEssayReviews, reviewUnitPredicate } from "./essayReview";
-import { cropQuestionNumbers } from "./AnswerBlockCropService";
+import { cropQuestionNumbers, isInsideDir } from "./AnswerBlockCropService";
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
-import { getBlockConfig } from "./BlockGradingConfigService";
-import type { DisputeItem, ArbitratorCandidate } from "../../shared/types";
+import { getBlockConfig, loadHalfPointRule } from "./BlockGradingConfigService";
+import type { ArbitratorCandidate, ReviewImage } from "../../shared/types";
+import type { ArbitrationDisputeItem, ArbitrationQuestionRule } from "../../shared/arbitration";
+import { objectiveQuestionDefinitions } from "../../shared/grading";
+import type { ScanBatchPage } from "../../shared/scanPages";
+import { CardRepository } from "../repositories/CardRepository";
+import { dataDir } from "../../apps/answer-card/server/storage";
 
 /**
  * 争议检测结果
@@ -180,18 +187,144 @@ export async function checkDisputeOnSubmit(
   return { ...result, arbitratorId };
 }
 
-/**
- * 获取争议列表
- */
+/** Capability is independent of whether any disputed crop currently exists. */
+export async function canArbitrate(
+  examId: number,
+  userId: number,
+  db: DbAdapter = getMysqlDb()
+): Promise<boolean> {
+  const row = await db.get(
+    "SELECT 1 AS allowed FROM block_grading_config WHERE exam_id=? AND arbitrator_id=? AND block_id<>'__default__' LIMIT 1",
+    examId, userId
+  );
+  return Boolean(row);
+}
+
+type ArbitrationCropRow = {
+  id: string;
+  card_id: string;
+  exam_id: number;
+  student_id: number;
+  student_number: string | null;
+  block_id: string;
+  page_number: number;
+  source_type: string;
+  source_record_id: string;
+};
+
+async function originalPageRows(db: DbAdapter, cropId: string): Promise<ArbitrationCropRow[]> {
+  const crop = await db.get<ArbitrationCropRow>(
+    "SELECT id,card_id,exam_id,student_id,student_number,block_id,page_number,source_type,source_record_id FROM answer_block_crops WHERE id=?",
+    cropId
+  );
+  if (!crop || crop.exam_id == null || crop.student_id == null) return [];
+  const block = await db.get<{ block_kind: string }>(
+    "SELECT block_kind FROM subjective_blocks WHERE card_id=? AND id=?", crop.card_id, crop.block_id
+  );
+  if (block?.block_kind !== "essay") return [crop];
+  const essays = await loadEssayReviews(db, Number(crop.exam_id), crop.block_id, Number(crop.student_id));
+  const unit = essays.get(cropId);
+  if (!unit || essayReviewIssue(unit, cropId)) return [];
+  const ids = unit.images.map(image => image.id);
+  if (!ids.length) return [];
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = await db.all<ArbitrationCropRow>(
+    `SELECT id,card_id,exam_id,student_id,student_number,block_id,page_number,source_type,source_record_id
+     FROM answer_block_crops WHERE id IN (${placeholders}) AND exam_id=? AND student_id=? AND card_id=? AND block_id=?`,
+    ...ids, crop.exam_id, crop.student_id, crop.card_id, crop.block_id
+  );
+  return rows;
+}
+
+function safeOriginalFile(filePath: string | null): string | null {
+  if (!filePath || !/\.(jpe?g|png|webp|bmp)$/i.test(filePath)) return null;
+  const resolved = path.resolve(filePath);
+  if (!isInsideDir(path.resolve(dataDir), resolved) || !existsSync(resolved)) return null;
+  try {
+    const realPath = realpathSync(resolved);
+    return isInsideDir(path.resolve(dataDir), realPath) ? realPath : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Revalidate the crop's persisted exam/student binding and the exact source page. */
+async function resolveOriginalPageFile(db: DbAdapter, crop: ArbitrationCropRow): Promise<string | null> {
+  if (crop.source_type === "scan_record") {
+    const row = await db.get<{ file_path: string | null }>(
+      `SELECT r.file_path FROM scan_records r JOIN scan_batches b ON b.id=r.batch_id
+       WHERE r.id=? AND r.student_id=? AND b.exam_id=? AND b.status IN ('done','partial')`,
+      crop.source_record_id, crop.student_id, crop.exam_id
+    );
+    return row ? safeOriginalFile(row.file_path) : null;
+  }
+  if (crop.source_type !== "twain_scan_record") return null;
+  const record = await db.get<{ id: string; card_id: string; session_id: string; student_id: string | null; page_num: number }>(
+    "SELECT id,card_id,session_id,student_id,page_num FROM twain_scan_records WHERE id=?",
+    crop.source_record_id
+  );
+  if (!record || record.card_id !== crop.card_id || record.student_id !== crop.student_number) return null;
+  const receipts = await db.all<{ pages_json: string }>(
+    "SELECT pages_json FROM scanner_submissions WHERE exam_id=? AND session_id=? AND student_number=? AND state='saved'",
+    crop.exam_id, record.session_id, crop.student_number
+  );
+  const owned = receipts.some(receipt => {
+    let pages: ScanBatchPage[] = [];
+    try { pages = JSON.parse(receipt.pages_json) as ScanBatchPage[]; } catch { return false; }
+    return pages.some(page => page.recordId === record.id
+      && Number(page.layoutPage) === Number(crop.page_number)
+      && Number(page.pageNum) === Number(record.page_num));
+  });
+  if (!owned) return null;
+  const row = await db.get<{ image_path: string }>(
+    "SELECT image_path FROM twain_scan_records WHERE id=? AND card_id=? AND session_id=? AND student_id=?",
+    crop.source_record_id, record.card_id, record.session_id, record.student_id
+  );
+  return row ? safeOriginalFile(row.image_path) : null;
+}
+
+/** Return only source-verified page references; no record IDs or filesystem paths escape. */
+export async function getArbitrationOriginalPages(
+  db: DbAdapter,
+  cropId: string
+): Promise<Array<{ pageNumber: number; imageUrl: string }>> {
+  const rows = await originalPageRows(db, cropId);
+  const byPage = new Map<number, string | null>();
+  for (const crop of rows) {
+    const page = Number(crop.page_number);
+    if (!Number.isInteger(page) || page < 1 || byPage.has(page)) continue;
+    byPage.set(page, await resolveOriginalPageFile(db, crop));
+  }
+  return [...byPage.entries()]
+    .filter((entry): entry is [number, string] => Boolean(entry[1]))
+    .sort((a, b) => a[0] - b[0])
+    .map(([pageNumber]) => ({
+      pageNumber,
+      imageUrl: `/api/review-arbitration/crops/${encodeURIComponent(cropId)}/original-pages/${pageNumber}/image`,
+    }));
+}
+
+/** Resolve one page for the route; the caller still performs actor/arbitrator checks. */
+export async function getArbitrationOriginalPageFile(
+  db: DbAdapter,
+  cropId: string,
+  pageNumber: number
+): Promise<string | null> {
+  const rows = await originalPageRows(db, cropId);
+  const crop = rows.find(row => Number(row.page_number) === pageNumber);
+  return crop ? resolveOriginalPageFile(db, crop) : null;
+}
+
+/** 获取争议列表。调用方必须传入当前用户，不能由角色豁免指定仲裁人限制。 */
 export async function getDisputes(
   examId: number,
   blockId: string | undefined,
   db: DbAdapter = getMysqlDb(),
   arbitratorId?: number
-): Promise<DisputeItem[]> {
+): Promise<ArbitrationDisputeItem[]> {
   let query = `
-    SELECT abc.id AS crop_id, abc.student_id, u.name AS student_name, u.student_number,
-           abc.block_id, abc.block_title, abc.status, abc.score_breakdown, abc.question_numbers,
+    SELECT abc.id AS crop_id, abc.card_id, abc.student_id, abc.student_number, u.name AS student_name,
+           abc.block_id, abc.block_title, abc.page_number, abc.image_path, abc.status, abc.score_breakdown, abc.question_numbers,
            bgc.dispute_threshold, bgc.arbitrator_id,
            arb.name AS arbitrator_name
     FROM answer_block_crops abc
@@ -206,46 +339,105 @@ export async function getDisputes(
     query += " AND abc.block_id = ?";
     params.push(blockId);
   }
-
   if (arbitratorId != null) {
     query += " AND bgc.arbitrator_id = ?";
     params.push(arbitratorId);
   }
-  query += " ORDER BY abc.student_number";
+  query += " ORDER BY abc.student_number, abc.id";
   const rows = await db.all(query, ...params) as Array<{
     crop_id: string;
+    card_id: string;
     question_numbers: string | Array<number | string>;
     student_id: number;
-    student_name: string;
     student_number: string | null;
+    student_name: string;
     block_id: string;
     block_title: string | null;
+    page_number: number;
+    image_path: string | null;
     status: string;
     score_breakdown: string | null;
     dispute_threshold: number | null;
-    arbitrator_id: number | null;
     arbitrator_name: string | null;
   }>;
-
   if (!rows.length) return [];
+
   const essays = await loadEssayReviews(db, examId, blockId);
-  return rows.map((row) => {
-    const essay = essays.get(row.crop_id);
-    const issue = essayReviewIssue(essay, row.crop_id);
+  const halfPointRule = await loadHalfPointRule(examId, db);
+  const reviewerIds = new Set<number>();
+  const breakdowns = new Map<string, Array<{ reviewerId?: number; reviewerName?: string; score: number }>>();
+  for (const row of rows) {
     const breakdown: Array<{ reviewerId?: number; reviewerName?: string; score: number }> = [];
     if (row.score_breakdown) {
-      try { breakdown.push(...JSON.parse(row.score_breakdown)); } catch { /* ignore */ }
+      try { breakdown.push(...JSON.parse(row.score_breakdown)); } catch { /* ignore corrupt JSON */ }
     }
+    for (const entry of breakdown) if (entry.reviewerId != null) reviewerIds.add(entry.reviewerId);
+    breakdowns.set(row.crop_id, breakdown);
+  }
+  const reviewerNames = new Map<number, string>();
+  if (reviewerIds.size) {
+    const ids = [...reviewerIds];
+    const users = await db.all<{ id: number; name: string }>(
+      `SELECT id,name FROM users WHERE id IN (${ids.map(() => "?").join(",")})`, ...ids
+    );
+    for (const user of users) reviewerNames.set(user.id, user.name || "评阅人");
+  }
 
-    const scores = breakdown.map((b) => ({ reviewerName: b.reviewerName ?? `教师${b.reviewerId}`, score: b.score }));
-    const scoreDiff = scores.length >= 2 ? Math.max(...scores.map((s) => s.score)) - Math.min(...scores.map((s) => s.score)) : 0;
+  const cards = new Map<string, Map<number, number>>();
+  for (const cardId of new Set(rows.map(row => row.card_id))) {
+    const card = await new CardRepository(db).findById(cardId);
+    const definitions = new Map<number, number>();
+    if (card) for (const block of card.bodyBlocks) {
+      if (block.type === "objective") {
+        for (const question of objectiveQuestionDefinitions(block)) definitions.set(question.questionNumber, question.score);
+      } else {
+        for (const question of block.questions) definitions.set(Number(question.number), question.score);
+      }
+    }
+    cards.set(cardId, definitions);
+  }
+  const studentIds = [...new Set(rows.map(row => Number(row.student_id)))];
+  const questionNumbers = [...new Set(rows.flatMap(row => cropQuestionNumbers(row.question_numbers)))];
+  const previousMax = new Map<string, number>();
+  if (studentIds.length && questionNumbers.length) {
+    const marks = await db.all<{ student_id: number; question_number: number; max_score: number }>(
+      `SELECT student_id,question_number,max_score FROM question_scores WHERE exam_id=? AND student_id IN (${studentIds.map(() => "?").join(",")})
+       AND question_number IN (${questionNumbers.map(() => "?").join(",")})`,
+      examId, ...studentIds, ...questionNumbers
+    );
+    for (const mark of marks) previousMax.set(`${Number(mark.student_id)}:${Number(mark.question_number)}`, Number(mark.max_score));
+  }
 
+  return Promise.all(rows.map(async row => {
+    const essay = essays.get(row.crop_id);
+    const issue = essayReviewIssue(essay, row.crop_id);
+    const breakdown = breakdowns.get(row.crop_id) ?? [];
+    const scores = breakdown.map(entry => ({
+      reviewerName: entry.reviewerId != null
+        ? reviewerNames.get(entry.reviewerId) ?? "评阅人"
+        : entry.reviewerName?.trim() || "评阅人",
+      score: Number(entry.score),
+    }));
+    const scoreDiff = scores.length >= 2 ? Math.max(...scores.map(s => s.score)) - Math.min(...scores.map(s => s.score)) : 0;
+    const numbers = cropQuestionNumbers(row.question_numbers);
+    const step = halfPointRule(row.block_id) ? 0.5 : 1;
+    const definitions = cards.get(row.card_id) ?? new Map<number, number>();
+    const questions: ArbitrationQuestionRule[] = numbers.map(number => ({
+      number,
+      maxScore: definitions.get(number) ?? previousMax.get(`${Number(row.student_id)}:${number}`) ?? 0,
+      step,
+    }));
+    const originalPages = await getArbitrationOriginalPages(db, row.crop_id);
+    const cropIssue = !issue && (!row.image_path || !existsSync(row.image_path)) ? "作答切图文件缺失，请恢复原图后再仲裁" : issue;
+    const images: ReviewImage[] | undefined = essay && !issue ? essay.images : undefined;
     return {
       cropId: row.crop_id,
-      reviewImages: issue ? [] : essay?.images,
-      reviewIssue: issue,
-      questionNumbers: cropQuestionNumbers(row.question_numbers),
-      studentId: row.student_id,
+      cropImageUrl: `/api/answer-block-crops/${encodeURIComponent(row.crop_id)}/image`,
+      reviewImages: images,
+      reviewIssue: cropIssue,
+      questionNumbers: numbers,
+      questions,
+      originalPages,
       studentName: row.student_name,
       studentNumber: row.student_number ?? "",
       blockId: row.block_id,
@@ -254,9 +446,9 @@ export async function getDisputes(
       scoreDiff,
       threshold: row.dispute_threshold ?? 2,
       status: row.status === "disputed" ? "pending" as const : "arbitrated" as const,
-      arbitratorName: row.arbitrator_name
+      arbitratorName: row.arbitrator_name,
     };
-  });
+  }));
 }
 
 /**

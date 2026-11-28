@@ -1,7 +1,7 @@
 // ExamManagePage — 从 App.tsx 抽出的「考试管理」页面（B2：改由 useWorkspace 消费共享状态）。
 // P4/T5：整页迁移到 v2 视觉体系（Button / SegmentedControl / Table / ExamStatusBadge / EmptyState）。
 // 行为与迁移前完全一致：API 端点、请求体、路由与权限判断零改动。
-import { CalendarDays, CalendarX2, ClipboardList, FileText, Layers, Megaphone, Plus, Search, Trash2, UserRoundPlus, Users } from "lucide-react";
+import { CalendarDays, CalendarX2, ClipboardList, FileText, Layers, Megaphone, Pencil, Plus, Search, Trash2, Undo2, UserRoundPlus, Users } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { fetchJson } from "../auth/api";
 import { useWorkspace } from "../WorkspaceContext";
@@ -171,8 +171,17 @@ export function ExamManagePage() {
   const [batchPublishOpen, setBatchPublishOpen] = useState(false);
   const [unpublishTarget, setUnpublishTarget] = useState<ExamRecord | null>(null);
   const [unpublishReason, setUnpublishReason] = useState("");
+  const [batchUnpublishOpen, setBatchUnpublishOpen] = useState(false);
+  const [batchUnpublishReason, setBatchUnpublishReason] = useState("");
   const [publishing, setPublishing] = useState(false);
   const [publicationError, setPublicationError] = useState<string | null>(null);
+  // Issue #384：考试信息编辑入口（后端 PATCH /api/exams/:examId 已有）
+  const [editTarget, setEditTarget] = useState<ExamRecord | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editSubject, setEditSubject] = useState("");
+  const [editMode, setEditMode] = useState<ExamMode>("formal");
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   // v54: 公布表单的「公布后显示原卷」勾选（默认勾选，随公布请求一并提交）+ 原卷/答案配置面板
   const [publishShowPaper, setPublishShowPaper] = useState(true);
   const [batchPublishShowPaper, setBatchPublishShowPaper] = useState(true);
@@ -327,6 +336,23 @@ export function ExamManagePage() {
     return matchesSearch && (examStatusFilter === "all" || exam.status === examStatusFilter);
   }), [exams, examSearch, examStatusFilter]);
 
+  /**
+   * Issue #384：批量操作只认当前可见考试。
+   * 搜索/状态筛选变化会清空已选（见下方两个 handler），列表刷新后也把已不存在的
+   * 考试从选中集合中剔除，避免「搜索后排除了大部分考试，点全选却把隐藏考试一起选中」。
+   */
+  /** 搜索条件变化：旧勾选已不可见，立即清空，防止混入批量删除/公布 */
+  function handleExamSearchChange(value: string) {
+    setExamSearch(value);
+    setSelectedExamIds(new Set());
+  }
+
+  /** 状态筛选变化：同上，只允许对当前筛选结果做批量操作 */
+  function handleStatusFilterChange(value: ExamStatusFilter) {
+    setExamStatusFilter(value);
+    setSelectedExamIds(new Set());
+  }
+
   /** 日历角标：日期 → 当天考试数 */
   const examDateMarks = useMemo(() => {
     const marks = new Map<string, number>();
@@ -342,6 +368,22 @@ export function ExamManagePage() {
     [exams, selectedCalendarDate],
   );
 
+  /** 当前视图真正可见的考试：列表=搜索/筛选结果，日历=当天考试 */
+  const scopeExams = examView === "calendar" ? examsOnDate : visibleExams;
+  const selectedVisibleExams = useMemo(
+    () => scopeExams.filter((exam) => selectedExamIds.has(exam.id)),
+    [scopeExams, selectedExamIds],
+  );
+
+  useEffect(() => {
+    if (examManageMode !== "single") return;
+    const visibleIds = new Set(scopeExams.map((exam) => exam.id));
+    setSelectedExamIds((previous) => {
+      const next = new Set([...previous].filter((id) => visibleIds.has(id)));
+      return next.size === previous.size ? previous : next;
+    });
+  }, [scopeExams, examManageMode, setSelectedExamIds]);
+
   const cardSelectValue = newExamCardId || card?.id || CARD_PLACEHOLDER;
 
   function toggleExamSelected(examId: number) {
@@ -353,7 +395,7 @@ export function ExamManagePage() {
   /** 删除勾选考试所用的答题卡：先只读预检引用，确认后再解绑删除。 */
   async function deleteSelectedCards() {
     if (deletingSelectedCards) return;
-    const selected = exams.filter((exam) => selectedExamIds.has(exam.id));
+    const selected = selectedVisibleExams;
     const uniqueCards = new Map<string, string>();
     for (const exam of selected) {
       if (exam.card_id && !uniqueCards.has(exam.card_id)) {
@@ -481,15 +523,15 @@ export function ExamManagePage() {
 
   /** v41: 批量成绩公布 */
   async function handlePublishBatch() {
-    if (publishing || selectedExamIds.size === 0) return;
-    const count = selectedExamIds.size;
+    if (publishing || selectedVisibleExams.length === 0) return;
+    const count = selectedVisibleExams.length;
     setPublishing(true);
     setPublicationError(null);
     try {
       await fetchJson("/api/exams/publish-batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ examIds: Array.from(selectedExamIds), showOriginalPaper: batchPublishShowPaper }),
+        body: JSON.stringify({ examIds: selectedVisibleExams.map((exam) => exam.id), showOriginalPaper: batchPublishShowPaper }),
       });
       setBatchPublishOpen(false);
       setSelectedExamIds(new Set());
@@ -533,6 +575,73 @@ export function ExamManagePage() {
       setStatus(message);
     } finally {
       setPublishing(false);
+    }
+  }
+
+  /** Issue #384：批量撤回公布（后端 POST /api/exams/unpublish-batch 已有） */
+  async function handleUnpublishBatch() {
+    if (publishing || selectedVisibleExams.length === 0) return;
+    const count = selectedVisibleExams.length;
+    setPublishing(true);
+    setPublicationError(null);
+    try {
+      const result = await fetchJson<{ unpublishedCount?: number; skippedCount?: number }>("/api/exams/unpublish-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          examIds: selectedVisibleExams.map((exam) => exam.id),
+          reason: batchUnpublishReason.trim() || undefined,
+        }),
+      });
+      const unpublished = Number(result.unpublishedCount ?? 0);
+      const skipped = Number(result.skippedCount ?? 0);
+      setBatchUnpublishOpen(false);
+      setBatchUnpublishReason("");
+      setSelectedExamIds(new Set());
+      setStatus(skipped > 0
+        ? `已撤回 ${unpublished} 场公布（${skipped} 场本就未公布，已跳过）`
+        : `已批量撤回 ${count} 场考试的公布`);
+      await loadExams();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "批量撤回失败";
+      setPublicationError(message);
+      setStatus(message);
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  /** Issue #384：打开考试信息编辑 */
+  function openExamEdit(exam: ExamRecord) {
+    setEditTarget(exam);
+    setEditName(exam.name);
+    setEditSubject(exam.subject ?? "");
+    setEditMode(exam.exam_mode === "quiz" ? "quiz" : "formal");
+    setEditError(null);
+  }
+
+  async function handleSaveExamInfo() {
+    if (!editTarget || editSaving) return;
+    const name = editName.trim();
+    if (!name) {
+      setEditError("考试名称不能为空");
+      return;
+    }
+    setEditSaving(true);
+    setEditError(null);
+    try {
+      await fetchJson(`/api/exams/${editTarget.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, subject: editSubject.trim(), mode: editMode }),
+      });
+      setEditTarget(null);
+      setStatus("考试信息已保存");
+      await loadExams();
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : "保存失败");
+    } finally {
+      setEditSaving(false);
     }
   }
 
@@ -597,10 +706,11 @@ export function ExamManagePage() {
     }
   }
 
-  /** 考试列表渲染（移动端卡片 / 桌面表格），列表与日历视图共用 */
-  function renderExamList(items: ExamRecord[], allItems: ExamRecord[]) {
+  /** 考试列表渲染（移动端卡片 / 桌面表格），列表与日历视图共用。
+   *  Issue #384：全选与批量操作只作用于传入的当前可见列表（items），不再混入隐藏考试。 */
+  function renderExamList(items: ExamRecord[]) {
     // 全选判定必须按考试 ID 逐一比对：仅比数量会让「两天各有相同场次」时的隐藏选中误判为全选
-    const allSelected = allItems.length > 0 && allItems.every((exam) => selectedExamIds.has(exam.id));
+    const allSelected = items.length > 0 && items.every((exam) => selectedExamIds.has(exam.id));
     if (isMobile) {
       return (
         <div className="flex flex-col gap-3">
@@ -637,6 +747,7 @@ export function ExamManagePage() {
                 <Button variant="ghost" size="sm" className="text-info-foreground" onClick={() => setSelectedExamId(exam.id)}>网阅</Button>
                 <Button variant="ghost" size="sm" className="text-info-foreground" icon={<Users />} onClick={() => void openRosterModal(exam)}>应考名单</Button>
                 <Button variant="ghost" size="sm" className="text-info-foreground" icon={<FileText />} onClick={() => setAnswerKeyExam(exam)}>原卷答案</Button>
+                <Button variant="ghost" size="sm" icon={<Pencil />} onClick={() => openExamEdit(exam)}>编辑</Button>
                 <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</Button>
                 <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</Button>
                 {exam.score_published === 1 ? (
@@ -662,7 +773,7 @@ export function ExamManagePage() {
                   aria-label="全选考试"
                   checked={allSelected}
                   onCheckedChange={(checked) => {
-                    if (checked === true) setSelectedExamIds(new Set(allItems.map((ex) => ex.id)));
+                    if (checked === true) setSelectedExamIds(new Set(items.map((ex) => ex.id)));
                     else setSelectedExamIds(new Set());
                   }}
                 />
@@ -709,6 +820,7 @@ export function ExamManagePage() {
                     <Button variant="ghost" size="sm" className="text-info-foreground" onClick={() => setSelectedExamId(exam.id)}>网阅</Button>
                     <Button variant="ghost" size="sm" className="text-info-foreground" icon={<Users />} onClick={() => void openRosterModal(exam)}>应考名单</Button>
                     <Button variant="ghost" size="sm" className="text-info-foreground" icon={<FileText />} onClick={() => setAnswerKeyExam(exam)}>原卷答案</Button>
+                    <Button variant="ghost" size="sm" icon={<Pencil />} onClick={() => openExamEdit(exam)}>编辑</Button>
                     <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</Button>
                     <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</Button>
                     {exam.score_published === 1 ? (
@@ -746,30 +858,40 @@ export function ExamManagePage() {
                 新建大考
               </Button>
             )}
-            {examManageMode === "single" && selectedExamIds.size > 0 && (
+            {examManageMode === "single" && selectedVisibleExams.length > 0 && (
               <Button
                 variant="ghost"
                 icon={<Megaphone />}
                 className="text-success-foreground"
                 onClick={() => { setPublicationError(null); setBatchPublishShowPaper(true); setBatchPublishOpen(true); }}
               >
-                批量公布 ({selectedExamIds.size})
+                批量公布 ({selectedVisibleExams.length})
               </Button>
             )}
-            {examManageMode === "single" && selectedExamIds.size > 0 && (
+            {examManageMode === "single" && selectedVisibleExams.length > 0 && (
+              <Button
+                variant="ghost"
+                icon={<Undo2 />}
+                className="text-destructive-fg"
+                onClick={() => { setPublicationError(null); setBatchUnpublishReason(""); setBatchUnpublishOpen(true); }}
+              >
+                批量撤回公布 ({selectedVisibleExams.length})
+              </Button>
+            )}
+            {examManageMode === "single" && selectedVisibleExams.length > 0 && (
               <Button
                 variant="ghost"
                 icon={<Trash2 />}
                 className="text-destructive-fg"
                 onClick={() => setExamDeleteTarget({
-                  exams: exams.filter((exam) => selectedExamIds.has(exam.id)),
+                  exams: selectedVisibleExams,
                   deleteLinkedCards: false
                 })}
               >
-                删除选中 ({selectedExamIds.size})
+                删除选中 ({selectedVisibleExams.length})
               </Button>
             )}
-            {examManageMode === "single" && selectedExamIds.size > 0 && (
+            {examManageMode === "single" && selectedVisibleExams.length > 0 && (
               <Button
                 variant="ghost"
                 icon={<Trash2 />}
@@ -790,7 +912,7 @@ export function ExamManagePage() {
                   size="sm"
                   aria-label="考试状态筛选"
                   value={examStatusFilter}
-                  onValueChange={setExamStatusFilter}
+                  onValueChange={handleStatusFilterChange}
                   items={STATUS_FILTER_ITEMS}
                 />
                 <div className="relative">
@@ -798,7 +920,7 @@ export function ExamManagePage() {
                   <Input
                     className="w-56 pl-8"
                     value={examSearch}
-                    onChange={(event) => setExamSearch(event.target.value)}
+                    onChange={(event) => handleExamSearchChange(event.target.value)}
                     placeholder="搜索考试名称"
                     aria-label="搜索考试名称"
                   />
@@ -924,7 +1046,7 @@ export function ExamManagePage() {
                   description="点击日历中带角标的日期，查看当天对应考试。"
                 />
               ) : (
-                renderExamList(examsOnDate, examsOnDate)
+                renderExamList(examsOnDate)
               )}
             </>
           )}
@@ -938,7 +1060,7 @@ export function ExamManagePage() {
           )}
 
           {examManageMode === "single" && examView === "list" && exams.length > 0 && (
-            renderExamList(visibleExams, exams)
+            renderExamList(visibleExams)
           )}
 
           {/* Exam group list */}
@@ -1076,7 +1198,7 @@ export function ExamManagePage() {
           <DialogHeader>
             <DialogTitle>批量公布成绩</DialogTitle>
             <DialogDescription>
-              确认公布选中的 {selectedExamIds.size} 场考试的成绩？将公布当前已录入的成绩，后续补录或改分默认保持公布。
+              确认公布选中的 {selectedVisibleExams.length} 场考试的成绩？将公布当前已录入的成绩，后续补录或改分默认保持公布。
             </DialogDescription>
           </DialogHeader>
           <DialogBody className="flex flex-col gap-3">
@@ -1091,7 +1213,7 @@ export function ExamManagePage() {
                 />
               }
               label="公布后显示原卷"
-              description={`对本批 ${selectedExamIds.size} 场考试统一生效；没有上传原卷的考试，学生仍会看到「原卷未上传」。`}
+              description={`对本批 ${selectedVisibleExams.length} 场考试统一生效；没有上传原卷的考试，学生仍会看到「原卷未上传」。`}
             />
           </DialogBody>
           <DialogFooter>
@@ -1123,6 +1245,72 @@ export function ExamManagePage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setUnpublishTarget(null)} disabled={publishing}>取消</Button>
             <Button variant="destructive" loading={publishing} onClick={() => unpublishTarget && void handleUnpublishExam(unpublishTarget.id)}>确认撤回</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Issue #384: 批量撤回公布确认框（后端 unpublish-batch 已有） */}
+      <Dialog open={batchUnpublishOpen} onOpenChange={(open: boolean) => { if (!open && !publishing) setBatchUnpublishOpen(false); }}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>批量撤回公布</DialogTitle>
+            <DialogDescription>
+              确认撤回选中的 {selectedVisibleExams.length} 场考试的成绩公布？撤回后学生将无法查看这些考试的成绩；本就未公布的考试会自动跳过。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="flex flex-col gap-3">
+            {publicationError && <p role="alert" className="m-0 text-sm text-destructive-fg">{publicationError}</p>}
+            <Input
+              value={batchUnpublishReason}
+              onChange={(event) => setBatchUnpublishReason(event.target.value)}
+              placeholder="撤回原因（选填，将记录在审计日志中）"
+              maxLength={500}
+              aria-label="批量撤回原因"
+            />
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBatchUnpublishOpen(false)} disabled={publishing}>取消</Button>
+            <Button variant="destructive" loading={publishing} onClick={() => void handleUnpublishBatch()}>确认批量撤回</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Issue #384: 考试信息编辑（复用 PATCH /api/exams/:examId） */}
+      <Dialog open={editTarget !== null} onOpenChange={(open: boolean) => { if (!open && !editSaving) setEditTarget(null); }}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>编辑考试</DialogTitle>
+            <DialogDescription>修改考试名称、科目与考试类型。应考范围与名单请使用「应考名单」入口。</DialogDescription>
+          </DialogHeader>
+          <DialogBody className="flex flex-col gap-3">
+            {editError && <p role="alert" className="m-0 text-sm text-destructive-fg">{editError}</p>}
+            <Input
+              value={editName}
+              onChange={(event) => setEditName(event.target.value)}
+              placeholder="考试名称"
+              aria-label="考试名称"
+              maxLength={120}
+            />
+            <Input
+              value={editSubject}
+              onChange={(event) => setEditSubject(event.target.value)}
+              placeholder="科目（可留空）"
+              aria-label="考试科目"
+              maxLength={40}
+            />
+            <Select value={editMode} onValueChange={(value) => setEditMode(value === "quiz" ? "quiz" : "formal")}>
+              <SelectTrigger aria-label="考试类型">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="quiz">{EXAM_MODE_LABELS.quiz}（教师全量可见）</SelectItem>
+                <SelectItem value="formal">{EXAM_MODE_LABELS.formal}（精细权限）</SelectItem>
+              </SelectContent>
+            </Select>
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditTarget(null)} disabled={editSaving}>取消</Button>
+            <Button variant="primary" loading={editSaving} onClick={() => void handleSaveExamInfo()}>保存</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

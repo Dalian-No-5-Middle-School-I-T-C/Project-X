@@ -117,7 +117,10 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
       const savedIndex = entries.findIndex(entry => entry.id === data?.positionJson?.cropId);
       setQueue(entries);
       setCurrentIndex(savedIndex >= 0 ? savedIndex : Math.max(0, Math.min(data?.currentIndex ?? 0, entries.length - 1)));
-      setDraftScores(data?.draftScores ?? {});
+      const loadedDrafts = data?.draftScores ?? {};
+      setDraftScores(Object.fromEntries(
+        Object.entries(loadedDrafts).filter((entry): entry is [string, number] => typeof entry[1] === "number")
+      ));
     }).catch((err: Error) => {
       if (active) { setError(err.message); setErrorTone("error"); }
     }).finally(() => { if (active) setSessionLoaded(true); });

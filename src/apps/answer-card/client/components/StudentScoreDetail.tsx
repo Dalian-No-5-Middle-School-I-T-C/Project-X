@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, ImageOff, Printer } from "lucide-react";
+import { ArrowLeft, ImageOff, Pencil, Printer } from "lucide-react";
+import { useAuth } from "../auth/AuthContext";
+import { PERMISSIONS } from "../auth/types";
 import { fetchJson } from "../auth/api";
 import { cn } from "../lib/utils";
 import { isManuallyModified } from "../util/score";
@@ -39,6 +41,7 @@ interface Props {
   studentNumber: string;
   examName: string;
   onBack: () => void;
+  onEditScore?: () => void;
 }
 
 interface ClassQStat { avgScore: number; maxScore: number; count: number }
@@ -67,7 +70,9 @@ function rateTone(rate: number): ProgressTone {
   return "destructive";
 }
 
-export function StudentScoreDetail({ examId, studentId, studentName, studentNumber, examName, onBack }: Props) {
+export function StudentScoreDetail({ examId, studentId, studentName, studentNumber, examName, onBack, onEditScore }: Props) {
+  const { hasPermission } = useAuth();
+  const canEditScore = hasPermission(PERMISSIONS.GRADE_WRITE);
   const [data, setData] = useState<StudentScore | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -138,6 +143,11 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
             <span>主观: <strong className="tabular-nums">{data.totalScore.subjectiveScore}</strong></span>
             <span className="text-base font-bold tabular-nums text-primary">{data.totalScore.totalScore}</span>
           </div>
+        )}
+        {canEditScore && onEditScore && (
+          <Button variant="primary" size="sm" icon={<Pencil />} onClick={onEditScore}>
+            修改成绩
+          </Button>
         )}
         <Button variant="outline" size="sm" icon={<Printer />} onClick={() => setPrintOpen(true)} disabled={!data?.totalScore}>
           打印报告单

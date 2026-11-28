@@ -11,7 +11,9 @@ import { optionalPositiveNumber } from "../../apps/answer-card/server/helpers";
 import {
   listReviewBlockCropItems,
   listReviewBlocks,
+  listRecentReviewedCrops,
   submitReviewCropScores,
+  amendReviewCropScores,
   ReviewValidationError
 } from "../services/ReviewService";
 import { getReviewTrace } from "../services/ReviewService";
@@ -121,6 +123,34 @@ router.get("/exams/:examId/block-crops", requireExamAccess, async (req, res, nex
   }
 });
 
+// GET /api/review/exams/:examId/blocks/:blockId/recent-reviewed — 本人最近已批记录
+router.get(
+  "/exams/:examId/blocks/:blockId/recent-reviewed",
+  requireExamAccess,
+  requirePermission(PERMISSIONS.GRADE_READ),
+  requireGradingScope,
+  async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      const blockId = String(req.params.blockId ?? "").trim();
+      if (!Number.isFinite(examId) || !blockId) {
+        res.status(400).json({ message: "参数无效" });
+        return;
+      }
+      const permitted = await getPermittedBlocks(req.user, examId);
+      if (permitted && !permitted.includes(blockId)) {
+        res.status(403).json({ message: `权限不足：未获分配题块 ${blockId}` });
+        return;
+      }
+      const limit = optionalPositiveNumber(req.query.limit) ?? 20;
+      const rows = await listRecentReviewedCrops(examId, blockId, req.user!.id, Math.min(limit, 50));
+      res.json({ ok: true, data: rows });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 router.post(
   "/exams/:examId/block-crops/:cropId/submit",
   requireExamAccess,
@@ -164,6 +194,52 @@ router.post(
         userId: req.user!.id,
         // 管理员与学年主任均可代交/强制处理他人已领取的试卷
         isAdmin: isAdmin || isGradeLeader
+      });
+      res.json(result);
+    } catch (error) {
+      if (error instanceof ReviewValidationError) {
+        res.status(422).json({ message: error.message });
+        return;
+      }
+      if (error instanceof Error && /不存在|未关联/.test(error.message)) {
+        res.status(404).json({ message: error.message });
+        return;
+      }
+      next(error);
+    }
+  }
+);
+
+// POST /api/review/exams/:examId/block-crops/:cropId/amend — 限时改票（保留旧票，追加修订票）
+router.post(
+  "/exams/:examId/block-crops/:cropId/amend",
+  requireExamAccess,
+  requirePermission(PERMISSIONS.GRADE_WRITE),
+  requireGradingScope,
+  async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      const cropId = String(req.params.cropId ?? "").trim();
+      const expectedVersion = typeof req.body?.expectedVersion === "string" ? req.body.expectedVersion.trim() : "";
+      if (!Number.isFinite(examId) || !cropId || !expectedVersion) {
+        res.status(400).json({ message: "参数无效" });
+        return;
+      }
+      const scores = req.body?.scores as ReviewSubmitScoreInput[] | undefined;
+      if (!Array.isArray(scores) || scores.length === 0) {
+        res.status(400).json({ message: "请提供分数数据" });
+        return;
+      }
+      const blockTotalScore =
+        typeof req.body?.blockTotalScore === "number" ? req.body.blockTotalScore : undefined;
+      const result = await amendReviewCropScores({
+        examId,
+        cropId,
+        scores,
+        blockTotalScore,
+        userId: req.user!.id,
+        expectedVersion,
+        user: req.user as { id: number; role_id?: number; role_name?: string; teacher_role?: string | null }
       });
       res.json(result);
     } catch (error) {

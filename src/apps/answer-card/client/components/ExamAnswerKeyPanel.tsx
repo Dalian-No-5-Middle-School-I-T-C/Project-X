@@ -3,7 +3,7 @@
 // 只做展示配置：面板不判对错，也不与 question_scores 交互。
 // v66: answer_key_mode 决定学生端看到哪一套数据 —— 'text' 看逐题文字（需 OCR 后保存），
 //      'file' 直接看到上传的答案原文件；两套数据都保留，切换不销毁。
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FileSearch, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { authFetch, fetchJson, mediaUrl } from "../auth/api";
 import {
@@ -15,6 +15,7 @@ import {
 import {
   Badge,
   Button,
+  ConfirmDialog,
   ControlRow,
   Dialog,
   DialogBody,
@@ -41,7 +42,19 @@ const MAX_ANSWER_TEXT_LENGTH = 500;
 const PAGE_NONE = "__none__";
 
 type PaperPage = { pageIndex: number; filename: string; mimeType: string; isImage: boolean };
-type AnswerRow = { questionNumber: string; answerText: string; pageIndex: number | null };
+type AnswerRow = { id: string; questionNumber: string; answerText: string; pageIndex: number | null };
+
+let answerRowSequence = 0;
+function createAnswerRow(questionNumber: string, answerText: string, pageIndex: number | null): AnswerRow {
+  answerRowSequence += 1;
+  return {
+    id: `answer-row-${Date.now().toString(36)}-${answerRowSequence}`,
+    questionNumber,
+    answerText,
+    pageIndex,
+  };
+}
+
 
 type AnswerKeyPayload = {
   examId: number;
@@ -86,7 +99,7 @@ function mergeDrafts(rows: AnswerRow[], drafts: Array<{ questionNumber: number; 
       if (!existing.answerText.trim()) existing.answerText = draft.answerText;
       continue;
     }
-    next.push({ questionNumber: String(draft.questionNumber), answerText: draft.answerText, pageIndex: null });
+    next.push(createAnswerRow(String(draft.questionNumber), draft.answerText, null));
   }
   return next.sort(byQuestionNumber);
 }
@@ -106,6 +119,40 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
   const [ocrBusyPage, setOcrBusyPage] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedCount, setSavedCount] = useState<number | null>(null);
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [pendingDeletePage, setPendingDeletePage] = useState<number | null>(null);
+  const [focusRowId, setFocusRowId] = useState<string | null>(null);
+  const rowsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!focusRowId) return;
+    const input = rowsRef.current?.querySelector<HTMLInputElement>(`[data-answer-row="${focusRowId}"] input`);
+    input?.scrollIntoView({ block: "nearest" });
+    input?.focus();
+    setFocusRowId(null);
+  }, [focusRowId, rows.length]);
+
+  const savedSignature = useMemo(
+    () => (data?.answers ?? [])
+      .map((answer) => `${answer.questionNumber}|${answer.answerText}|${answer.pageIndex ?? ""}`)
+      .sort()
+      .join("\n"),
+    [data],
+  );
+  const draftSignature = useMemo(
+    () => rows.map((row) => `${Number(row.questionNumber) || 0}|${row.answerText}|${row.pageIndex ?? ""}`).sort().join("\n"),
+    [rows],
+  );
+  const hasDraftChanges = data !== null && savedSignature !== draftSignature;
+
+  const requestClose = useCallback(() => {
+    if (saving || uploading) return;
+    if (hasDraftChanges) {
+      setConfirmClose(true);
+      return;
+    }
+    onClose();
+  }, [hasDraftChanges, onClose, saving, uploading]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -115,7 +162,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
       setData(payload);
       setShowPaper(payload.showOriginalPaper === 1);
       setMode(normalizeAnswerKeyMode(payload.answerKeyMode));
-      setRows(payload.answers.map((a) => ({ questionNumber: String(a.questionNumber), answerText: a.answerText, pageIndex: a.pageIndex })));
+      setRows(payload.answers.map((a) => createAnswerRow(String(a.questionNumber), a.answerText, a.pageIndex)));
       setSavedCount(payload.answers.length);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "加载答案配置失败");
@@ -236,7 +283,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
     }
   }
 
-  async function deletePage(pageIndex: number) {
+  async function performDeletePage(pageIndex: number) {
     setPanelError(null);
     try {
       const res = await authFetch(`/api/exams/${examId}/answer-key/pages/${pageIndex}`, { method: "DELETE" });
@@ -293,7 +340,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ answers: cleaned }),
       });
-      setRows(res.answers.map((a) => ({ questionNumber: String(a.questionNumber), answerText: a.answerText, pageIndex: a.pageIndex })));
+      setRows(res.answers.map((a) => createAnswerRow(String(a.questionNumber), a.answerText, a.pageIndex)));
       setSavedCount(res.saved);
       setData((cur) => (cur ? { ...cur, answers: res.answers } : cur));
     } catch (err) {
@@ -304,7 +351,8 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next: boolean) => { if (!next && !saving && !uploading) onClose(); }}>
+    <>
+    <Dialog open={open} onOpenChange={(next: boolean) => { if (!next) requestClose(); }}>
       <DialogContent size="lg">
         <DialogHeader>
           <DialogTitle>原卷与答案解析 — {examName}</DialogTitle>
@@ -473,7 +521,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
                               重新识别
                             </Button>
                           )}
-                          <Button size="sm" variant="ghost" className="text-destructive-fg" onClick={() => void deletePage(page.pageIndex)}>
+                          <Button size="sm" variant="ghost" className="text-destructive-fg" onClick={() => setPendingDeletePage(page.pageIndex)}>
                             删除
                           </Button>
                         </div>
@@ -493,7 +541,12 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
                     size="sm"
                     variant="outline"
                     icon={<Plus />}
-                    onClick={() => setRows((cur) => [...cur, { questionNumber: "", answerText: "", pageIndex: null }].sort(byQuestionNumber))}
+                    onClick={() => {
+                      const nextNumber = Math.max(0, ...rows.map((row) => Number(row.questionNumber) || 0)) + 1;
+                      const row = createAnswerRow(String(nextNumber), "", null);
+                      setRows((cur) => [...cur, row].sort(byQuestionNumber));
+                      setFocusRowId(row.id);
+                    }}
                   >
                     添加一题
                   </Button>
@@ -506,9 +559,9 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
                 {rows.length === 0 ? (
                   <p className="m-0 py-4 text-center text-sm text-muted-foreground">还没有答案，可上传后 OCR，或点击「添加一题」手动录入。</p>
                 ) : (
-                  <div className="flex max-h-96 flex-col gap-2 overflow-auto pr-1">
+                  <div ref={rowsRef} className="flex max-h-96 flex-col gap-2 overflow-auto pr-1">
                     {rows.map((row, index) => (
-                      <div key={`${index}-${row.questionNumber}`} className="flex items-start gap-2">
+                      <div key={row.id} className="flex items-start gap-2" data-answer-row={row.id}>
                         <Input
                           className="w-20 shrink-0 tabular-nums"
                           inputMode="numeric"
@@ -564,7 +617,7 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
               ? "答案配置加载失败，保存已禁用"
               : savedCount !== null ? `已保存 ${savedCount} 题答案` : "尚未保存"}
           </span>
-          <Button variant="outline" onClick={onClose} disabled={saving || uploading}>关闭</Button>
+          <Button variant="outline" onClick={requestClose} disabled={saving || uploading}>关闭</Button>
           <Button
             variant="primary"
             loading={saving}
@@ -576,5 +629,31 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
         </DialogFooter>
       </DialogContent>
     </Dialog>
+    <ConfirmDialog
+      open={confirmClose}
+      onOpenChange={setConfirmClose}
+      title="放弃未保存的答案修改？"
+      description="逐题答案表中有尚未保存的改动，关闭后将丢失这些草稿。"
+      confirmLabel="放弃并关闭"
+      tone="danger"
+      onConfirm={() => {
+        setConfirmClose(false);
+        onClose();
+      }}
+    />
+    <ConfirmDialog
+      open={pendingDeletePage !== null}
+      onOpenChange={(next) => { if (!next) setPendingDeletePage(null); }}
+      title="删除答案页"
+      description={pendingDeletePage === null ? "" : `确认删除第 ${pendingDeletePage} 页答案文件？该页的 OCR 草稿不会自动删除，学生端将不再显示该页。`}
+      confirmLabel="删除"
+      tone="danger"
+      onConfirm={() => {
+        const pageIndex = pendingDeletePage;
+        setPendingDeletePage(null);
+        if (pageIndex !== null) void performDeletePage(pageIndex);
+      }}
+    />
+    </>
   );
 }

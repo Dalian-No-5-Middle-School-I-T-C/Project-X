@@ -5,9 +5,9 @@ import { dataDir } from "../storage";
 import {
   createSession, createScanRecord, getSession, getScanRecord, listScanRecords,
   updateScanOcrResult, updateScanQuality, updateSessionStatus,
-  incrementPageCount, upsertRecognitionResult, rememberSessionCardVersion
+  incrementPageCount, upsertRecognitionResult, recordSessionRecognitionVersions
 } from "../database/scan-store";
-import { cardFingerprint } from "../../../../shared/cardVersion";
+import { cardFingerprint, gradingVersion, layoutFingerprint } from "../../../../shared/cardVersion";
 import type { ScanProgressEvent, ScanSessionConfig } from "./scanner-types";
 import { markSessionTerminal } from "./sessionWarnings";
 import { beginScanWorker, endScanWorker } from "./scanWorkers";
@@ -242,7 +242,9 @@ export async function runOcrOnSession(
   }
   const { card, layout, layoutPath: currentLayoutPath } = prepared;
   // 识别用的就是这一版卡。补传若改报「现在库里的卡」，版本守卫会把旧版面识别当成新版放行。
-  await enqueueScannerSubmission(() => rememberSessionCardVersion(sessionId, cardFingerprint(card)));
+  await enqueueScannerSubmission(() => recordSessionRecognitionVersions(sessionId, {
+    cardVersion: cardFingerprint(card), layoutFingerprint: layoutFingerprint(card), gradingVersion: gradingVersion(card),
+  }));
   const session = await getSession(sessionId);
   const studentIdsByGroup = new Map<number, string>();
   // ③（issue #331）：整批一张红笔分数都没读到，说明色彩模式或笔迹出了问题，
@@ -267,7 +269,7 @@ export async function runOcrOnSession(
         const record = await getScanRecord(listedRecord.id);
         if (!record || record.session_id !== sessionId || !record.image_path) continue;
         const currentCard = await findCardForLayout(cardId);
-        if (!currentCard || cardFingerprint(currentCard) !== cardFingerprint(card)) throw new Error("识别期间答题卡版本已变化，请重新识别");
+        if (!currentCard || layoutFingerprint(currentCard) !== layoutFingerprint(card)) throw new Error("识别期间答题卡版式已变化，请重新识别");
         const { groupIndex, layoutPage, unusedSide } = mapScanPageToLayout(
           record.page_num,
           record.side,

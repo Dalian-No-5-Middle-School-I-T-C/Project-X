@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import sharp from "sharp";
@@ -9,6 +9,7 @@ import { buildLayout } from "../src/shared/layout";
 import { createDefaultCard } from "../src/shared/defaultCard";
 
 const temp = await mkdtemp(path.join(tmpdir(), "projectx-essay-review-"));
+const originalCwd = process.cwd();
 process.chdir(temp);
 process.env.PROJECTX_DB_PATH = path.join(temp, "review.db");
 process.env.ANSWER_CARD_DATA_DIR = path.join(temp, "data");
@@ -108,6 +109,17 @@ try {
   const pages = [...new Set(parts.map(p => p.page))].map(page => ({ recordId: source(page), pageNum: page, layoutPage: page, side: "front" }));
   const receipt = (pages: object[]) => db.run("UPDATE scanner_submissions SET pages_json=? WHERE exam_id=? AND group_id='first'", JSON.stringify(pages), exam);
   await db.run("INSERT INTO scanner_submissions(exam_id,session_id,group_id,student_number,state,pages_json) VALUES (?,'scanner','first','80001','saved',?)",exam,JSON.stringify(pages));
+  const originalDir = path.join(temp, "data", "scanner");
+  await mkdir(originalDir, { recursive: true });
+  await db.run(`INSERT INTO twain_scan_sessions(id,card_id,name,status,page_count) VALUES ('scanner',?,'作文原卷','completed',?)`, card.id, pages.length);
+  const originalFiles = new Map<number, string>();
+  for (const page of pages) {
+    const originalPath = path.join(originalDir, `original-${page.pageNum}.png`);
+    await sharp({ create: { width: 40 + page.layoutPage, height: 60, channels: 3, background: "#DDEeff" } }).png().toFile(originalPath);
+    originalFiles.set(page.layoutPage, originalPath);
+    await db.run(`INSERT INTO twain_scan_records(id,session_id,card_id,student_id,image_path,page_num,side,ocr_status)
+      VALUES (?,?,?,?,?,?,?,'done')`, page.recordId, "scanner", card.id, "80001", originalPath, page.pageNum, page.side);
+  }
   const [first, ...rest] = parts;
   for (const p of [...rest].reverse()) await insert(p.id, p.page, p.segment);
   const pool = () => getPoolSummary(exam, essayId, a, db);
@@ -184,6 +196,16 @@ try {
   const vote = await db.get("SELECT score_breakdown FROM answer_block_crops WHERE id=?", last.id);
   assert.equal(JSON.parse(vote.score_breakdown)[0].questionScores["1"], 20.5);
   await upsertBlockConfig(exam, essayId, { reviewMode: 2, scoringMode: "per_question", disputeThreshold: 1, arbitratorId: arb, hasHalfPoint: 0 }, db);
+  const disputesRoute = `/api/review-arbitration/exams/${exam}/disputes`;
+  const zeroDisputes = await (await request("arbitrator", disputesRoute)).json();
+  assert.equal(zeroDisputes.canArbitrate, true, "零争议时仍返回指定仲裁能力");
+  assert.deepEqual(zeroDisputes.data, []);
+  const nonArbitratorList = await request("first", disputesRoute);
+  assert.equal(nonArbitratorList.status, 200);
+  const nonArbitratorBody = await nonArbitratorList.json();
+  assert.equal(nonArbitratorBody.canArbitrate, false);
+  assert.deepEqual(nonArbitratorBody.data, [], "普通阅卷人只读取自己被指定仲裁的争议");
+  assert.equal((await request("pupil", disputesRoute)).status, 403, "学生即使考试可见也无 GRADE_READ 列表权限");
   assert.equal((await listReviewBlocks(exam, db)).find(r => r.blockId === essayId)?.hasHalfPoint, 0);
   for (const image of images) assert.equal((await request("second", image.imageUrl)).status, 200, "复核教师可阅读全文");
   const secondReview = await claimNextPaper(exam, essayId, b, db);
@@ -191,15 +213,32 @@ try {
   assert.equal(secondReview.hasHalfPoint, 0, "题块显式关闭半分覆盖考试默认设置");
   await rejectDraft("second", 42.5);
   assert.equal((await submit(last.id, b, 40)).status, "disputed");
-  const disputesRoute = `/api/review-arbitration/exams/${exam}/disputes`;
   const disputes = (await (await request("arbitrator", disputesRoute)).json()).data;
   assert.deepEqual(disputes.map((d: { cropId: string }) => d.cropId), [last.id]);
+  assert.equal(disputes[0].canArbitrate, undefined);
+  assert.equal("studentId" in disputes[0], false, "争议响应不暴露无关学生 ID");
+  assert.deepEqual(disputes[0].questions, [{ number: 1, maxScore: 60, step: 1 }], "每题返回权威满分与步长");
+  assert.deepEqual(disputes[0].scores.map((s: { reviewerName: string }) => s.reviewerName), ["first", "second"]);
+  assert.equal(disputes[0].scores.some((s: object) => "reviewerId" in s), false, "响应只返回评阅人姓名");
+  assert.equal(disputes[0].cropImageUrl, `/api/answer-block-crops/${last.id}/image`);
   assert.deepEqual(disputes[0].reviewImages.map((p: { id: string }) => p.id), parts.map(p => p.id));
+  const expectedOriginalPages = [...new Set(parts.map(p => p.page))].sort((a, b) => a - b);
+  assert.deepEqual(disputes[0].originalPages.map((p: { pageNumber: number }) => p.pageNumber), expectedOriginalPages);
   for (const image of images) assert.equal((await request("arbitrator", image.imageUrl)).status, 200, "指定仲裁人可阅读全文");
+  for (const page of disputes[0].originalPages) {
+    const response = await request("arbitrator", page.imageUrl);
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), await readFile(originalFiles.get(page.pageNumber)!));
+    assert.equal((await request("first", page.imageUrl)).status, 403, "非指定仲裁人不能读取争议原卷页");
+    assert.equal((await request("another", page.imageUrl)).status, 403, "其他学生不能读取争议原卷页");
+  }
+  const lastOriginal = disputes[0].originalPages.at(-1).imageUrl;
+  assert.equal((await request("arbitrator", `/api/review-arbitration/crops/${last.id}/original-pages/999/image`)).status, 404, "不能按页码跨卷读取原卷");
   const resolve = (id: string) => request("arbitrator", `/api/review-arbitration/crops/${id}/resolve`, { questionScores: { 1: 32 } });
   assert.equal((await resolve(first.id)).status, 409);
   const resolved = await resolve(last.id);
   assert.equal(resolved.status, 200, await resolved.clone().text());
+  assert.equal((await request("arbitrator", lastOriginal)).status, 409, "争议处理完成后原卷页入口关闭");
   assert.equal((await resolved.json()).finalScore, 32);
   assert.deepEqual(await db.all("SELECT question_number,score FROM question_scores WHERE exam_id=? AND student_id=?", exam, student), [{ question_number: 1, score: 32 }]);
   assert.equal((await db.get("SELECT total_score FROM student_scores WHERE exam_id=? AND student_id=?", exam, student)).total_score, 32);
@@ -224,9 +263,10 @@ try {
   const secondFull = await submitFull("second");
   assert.equal(secondFull.status, 200, await secondFull.clone().text());
   const readShortScores = () => db.all("SELECT question_number,score,max_score FROM question_scores WHERE exam_id=? AND student_id=? AND question_number IN (2,3) ORDER BY question_number", exam, student);
-  async function verifyShortTotals(result: { finalScore: number; totalScore: number }, cropId: string, expected: number) {
+  async function verifyShortTotals(result: { finalScore: number; totalScore: number | { totalScore: number } }, cropId: string, expected: number) {
+    const resultTotal = typeof result.totalScore === "number" ? result.totalScore : result.totalScore.totalScore;
     assert.equal(result.finalScore, expected);
-    assert.equal(result.totalScore, 32 + expected);
+    assert.equal(resultTotal, 32 + expected);
     assert.equal((await db.get("SELECT final_score FROM answer_block_crops WHERE id=?", cropId)).final_score, expected);
     assert.equal((await db.get("SELECT total_score FROM student_scores WHERE exam_id=? AND student_id=?", exam, student)).total_score, 32 + expected);
   }
@@ -315,5 +355,7 @@ try {
   await once(server, "close");
   if (mariadb) await (await import("../src/server/db/mysql")).closeAdapter();
   else closeDatabase();
+  process.chdir(originalCwd);
+  await new Promise(resolve => setTimeout(resolve, 20));
   await rm(temp, { recursive: true, force: true });
 }

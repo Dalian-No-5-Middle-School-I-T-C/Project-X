@@ -15,7 +15,7 @@ import { databaseTimestamp } from "../db/timestamp";
 import express from "express";
 import type { Request, Response } from "express";
 import path from "node:path";
-import { getMysqlDb, buildUpsertSQL } from "../db";
+import { getMysqlDb } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
 import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropService";
 import { recomputeExamRankings, roundScore } from "../services/rankingUpdate";
@@ -26,17 +26,61 @@ import {
   makeViewPermissionGate,
   requirePermissionCompat,
   requireWholeExamGradingAccess,
+  requireWholeExamGradingAccessForExam,
   isBlockedToOwnGradingBlocks,
 } from "../../apps/answer-card/server/middleware";
 import { PERMISSIONS } from "../auth/permissions";
 import { markScoreMutated } from "../services/examPublishEvents";
 import {
   objectiveQuestionDefinitions,
+  objectiveScoreCandidates,
   gradeObjectiveQuestion,
+  isLegalObjectiveScore,
 } from "../../shared/grading";
 import type { AnswerCard, ObjectiveRecognitionQuestion } from "../../shared/types";
 
 const router = express.Router();
+
+type ObjectiveDefinition = ReturnType<typeof objectiveQuestionDefinitions>[number];
+
+function objectiveStep(definition: ObjectiveDefinition): number {
+  if (!definition.scoringRule) return definition.score / (definition.optionCount || 1);
+  if (definition.scoringRule.type === "fixed_partial") return definition.scoringRule.partialScore;
+  return definition.score / (definition.optionCount || 1);
+}
+
+function objectiveDefinitions(card: AnswerCard): Map<number, { blockId: string; definition: ObjectiveDefinition }> {
+  const definitions = new Map<number, { blockId: string; definition: ObjectiveDefinition }>();
+  for (const block of card.bodyBlocks) {
+    if (block.type !== "objective") continue;
+    for (const definition of objectiveQuestionDefinitions(block)) {
+      definitions.set(definition.questionNumber, { blockId: block.id, definition });
+    }
+  }
+  return definitions;
+}
+
+function canonicalAnswer(options: string[], optionCount: number, mode: string): string[] {
+  const allowed = new Set("ABCDEFGHIJKLMNOPQRSTUVWXYZ".slice(0, optionCount).split(""));
+  const normalized = [...new Set(options.map((option) => option.toUpperCase()).filter((option) => allowed.has(option)))].sort();
+  return mode === "single" ? normalized.slice(0, 1) : normalized;
+}
+
+function sameAnswer(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((option, index) => option === right[index]);
+}
+
+function isObjectiveScoreType(scoreType: string): boolean {
+  return scoreType === "objective";
+}
+
+class ScoreBatchValidationError extends Error {
+  readonly status: 400 | 404 | 409;
+  constructor(status: 400 | 404 | 409, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
 
 /**
  * 安全（R08）：学生读「本人逐题明细」是小程序成绩详情的既有契约（PR #232），而学生角色
@@ -200,15 +244,10 @@ router.get(
   for (const block of card.bodyBlocks) {
     if (block.type === "objective") {
       for (const def of objectiveQuestionDefinitions(block)) {
-        const step = (() => {
-          if (!def.scoringRule) return def.score / (def.optionCount || 1);
-          if (def.scoringRule.type === "fixed_partial") return def.scoringRule.partialScore;
-          return def.score / (def.optionCount || 1);
-        })();
         questionDefMap.set(def.questionNumber, {
           mode: def.mode, optionCount: def.optionCount,
           answerKey: def.answerKey ?? [], scoringRule: def.scoringRule ?? null,
-          step, blockType: "objective"
+          step: objectiveStep(def), blockType: "objective"
         });
       }
     } else if (block.type === "subjective") {
@@ -352,17 +391,23 @@ router.put(
 
   const exam = await db.get("SELECT card_id FROM exams WHERE id = ?", examId) as { card_id: string | null } | undefined;
   if (!exam) { res.status(404).json({ message: "考试不存在" }); return; }
+  if (!exam.card_id) { res.status(404).json({ message: "考试未关联答题卡" }); return; }
+  const card = await new CardRepository().findById(exam.card_id);
+  if (!card) { res.status(404).json({ message: "答题卡数据不存在" }); return; }
+  const definitions = objectiveDefinitions(card);
 
-  // 校验每道题存在且分数在 [0, max_score] 内，防止负数/超满分写入成绩
+  // 校验每道题存在且分数在 [0, max_score] 内；客观题还必须符合共享候选分值规则。
   const scoreRows = await db.all(
     "SELECT question_number, score_type, max_score FROM question_scores WHERE exam_id = ? AND student_id = ?",
     examId, studentId
   ) as Array<{ question_number: number; score_type: string; max_score: number }>;
   const maxByKey = new Map<string, number>();
   for (const row of scoreRows) maxByKey.set(`${row.question_number}_${row.score_type}`, Number(row.max_score));
+  const updatesByKey = new Map<string, { questionNumber: number; scoreType: string; score: number }>();
   for (const u of updates) {
-    const max = maxByKey.get(`${u.questionNumber}_${u.scoreType}`);
-    if (max == null) {
+    const key = `${u.questionNumber}_${u.scoreType}`;
+    const max = maxByKey.get(key);
+    if (max == null || !Number.isFinite(max)) {
       res.status(400).json({ message: `题号 ${u.questionNumber}（${u.scoreType}）不存在或尚未评分` });
       return;
     }
@@ -370,34 +415,48 @@ router.put(
       res.status(400).json({ message: `题号 ${u.questionNumber} 的分数需在 [0, ${max}] 范围内` });
       return;
     }
+    if (isObjectiveScoreType(u.scoreType)) {
+      const target = definitions.get(u.questionNumber);
+      if (!target) {
+        res.status(400).json({ message: `题号 ${u.questionNumber} 不在当前答题卡的客观题范围内` });
+        return;
+      }
+      if (!isLegalObjectiveScore(u.score, max, objectiveStep(target.definition), target.definition.mode)) {
+        const candidates = objectiveScoreCandidates(max, objectiveStep(target.definition), target.definition.mode);
+        res.status(400).json({ message: `题号 ${u.questionNumber} 的合法分值为 ${candidates.join("、")}` });
+        return;
+      }
+    }
+    updatesByKey.set(key, u);
   }
+  const validatedUpdates = [...updatesByKey.values()];
 
   let assignedScoreWarning: string | undefined;
+  let updatedCount = 0;
   await db.transaction(async (tx) => {
-    let scoresChanged = false;
-    for (const u of updates) {
+    for (const u of validatedUpdates) {
       const existing = await tx.get(
         "SELECT id, score, max_score FROM question_scores WHERE exam_id = ? AND student_id = ? AND question_number = ? AND score_type = ?",
         examId, studentId, u.questionNumber, u.scoreType
       ) as { id: number; score: number; max_score: number } | undefined;
+      if (!existing) throw new Error(`题号 ${u.questionNumber} 的成绩在提交前被删除`);
+      if (Number(existing.score) === u.score) continue;
 
-      if (existing) {
-        // P1-7: 分数未变时不标记 manually_modified
-        const scoreChanged = existing.score !== u.score;
-        if (scoreChanged) scoresChanged = true;
-        await tx.run(
-          `UPDATE question_scores SET score = ?, manually_modified = ?, modified_by = ?, modified_at = ?
-           WHERE exam_id = ? AND student_id = ? AND question_number = ? AND score_type = ?`,
-          u.score, scoreChanged ? 1 : 0, userId, now, examId, studentId, u.questionNumber, u.scoreType
-        );
-        await tx.run(
-          `INSERT INTO answer_overrides (exam_id, card_id, question_number, score_type, override_type, old_value, new_value, created_by, created_at)
-           VALUES (?, ?, ?, ?, 'score', ?, ?, ?, ?)`,
-          examId, exam.card_id, u.questionNumber, u.scoreType,
-          JSON.stringify(existing.score), JSON.stringify(u.score), userId, now
-        );
-      }
+      await tx.run(
+        `UPDATE question_scores SET score = ?, manually_modified = 1, modified_by = ?, modified_at = ?
+         WHERE exam_id = ? AND student_id = ? AND question_number = ? AND score_type = ?`,
+        u.score, userId, now, examId, studentId, u.questionNumber, u.scoreType
+      );
+      await tx.run(
+        `INSERT INTO answer_overrides (exam_id, card_id, question_number, score_type, override_type, old_value, new_value, created_by, created_at)
+         VALUES (?, ?, ?, ?, 'score', ?, ?, ?, ?)`,
+        examId, exam.card_id, u.questionNumber, u.scoreType,
+        JSON.stringify(existing.score), JSON.stringify(u.score), userId, now
+      );
+      updatedCount += 1;
     }
+
+    if (updatedCount === 0) return;
 
     const rows = await tx.all(
       "SELECT score, score_type FROM question_scores WHERE exam_id = ? AND student_id = ?",
@@ -406,8 +465,8 @@ router.put(
 
     let totalObjective = 0, totalSubjective = 0;
     for (const s of rows) {
-      if (s.score_type === "objective") totalObjective += s.score;
-      else totalSubjective += s.score;
+      if (s.score_type === "objective") totalObjective += Number(s.score ?? 0);
+      else totalSubjective += Number(s.score ?? 0);
     }
     totalObjective = roundScore(totalObjective);
     totalSubjective = roundScore(totalSubjective);
@@ -419,22 +478,239 @@ router.put(
       WHERE exam_id = ? AND student_id = ?
     `, totalObjective, totalSubjective, newTotal, userId, now, examId, studentId);
 
-    // 评审 P1：已公布考试的成绩被实际修改（有分数变化）→ 同一事务内按管理员策略处理公布状态
-    if (scoresChanged) {
-      await markScoreMutated(tx, examId, userId, "score_edit");
-    }
-    // P1-8: 排名重算在事务内执行，确保数据一致性
+    await markScoreMutated(tx, examId, userId, "score_edit");
     const recalc = await recomputeExamRankings(tx, examId);
     if (recalc.assignedScoresRecalculated === false) {
       assignedScoreWarning = recalc.assignedScoreError;
     }
   });
 
-  // 分析结果缓存精准失效（建议 6）
-  analysisCache.invalidateExam(examId);
+  if (updatedCount > 0) analysisCache.invalidateExam(examId);
 
   res.json({
     ok: true,
+    updatedCount,
+    ...(assignedScoreWarning ? { warnings: { assignedScoreError: assignedScoreWarning } } : {})
+  });
+});
+
+// ── 批量送分 / 加分 ────────────────────────────────
+// 所有学生、题目与目标分先在命名锁事务内完成校验；任一缺成绩或非法操作整批回滚。
+// 写分、审计、总分、排名与公布策略共用同一事务，且整场最多执行一次后两项。
+router.post(
+  "/:examId/scores/batch",
+  requireExamAccess,
+  requirePermissionCompat(PERMISSIONS.GRADE_WRITE),
+  (req, res, next) => requireWholeExamGradingAccessForExam(req, res, next, Number(req.params.examId)),
+  async (req: Request, res: Response) => {
+  const examId = Number(req.params.examId);
+  if (!Number.isFinite(examId)) {
+    res.status(400).json({ message: "非法考试 ID" });
+    return;
+  }
+
+  const studentIdsRaw = req.body?.studentIds;
+  const scoresRaw = req.body?.scores;
+  if (!Array.isArray(studentIdsRaw) || studentIdsRaw.length === 0 ||
+      !studentIdsRaw.every((id: unknown) => typeof id === "number" && Number.isInteger(id) && id > 0)) {
+    res.status(400).json({ message: "请至少选择一名有效学生" });
+    return;
+  }
+  if (!Array.isArray(scoresRaw) || scoresRaw.length === 0) {
+    res.status(400).json({ message: "未提供批量操作数据" });
+    return;
+  }
+
+  const operationsByKey = new Map<string, {
+    questionNumber: number;
+    scoreType: "objective" | "subjective";
+    operation: "full" | "add";
+    amount?: number;
+  }>();
+  for (const item of scoresRaw) {
+    if (!item || typeof item !== "object" ||
+        typeof item.questionNumber !== "number" || !Number.isInteger(item.questionNumber) || item.questionNumber <= 0 ||
+        (item.scoreType !== "objective" && item.scoreType !== "subjective") ||
+        (item.operation !== "full" && item.operation !== "add")) {
+      res.status(400).json({ message: "批量操作数据格式非法" });
+      return;
+    }
+    if (item.operation === "add" && (typeof item.amount !== "number" || !Number.isFinite(item.amount) || item.amount <= 0)) {
+      res.status(400).json({ message: "加分操作的加分值必须为正数" });
+      return;
+    }
+    const key = `${item.questionNumber}_${item.scoreType}`;
+    if (operationsByKey.has(key)) {
+      res.status(400).json({ message: `题号 ${item.questionNumber} 包含重复操作` });
+      return;
+    }
+    operationsByKey.set(key, {
+      questionNumber: item.questionNumber,
+      scoreType: item.scoreType,
+      operation: item.operation,
+      ...(item.operation === "add" ? { amount: item.amount } : {})
+    });
+  }
+  const operations = [...operationsByKey.values()];
+  const studentIds = [...new Set(studentIdsRaw as number[])];
+
+  const db = getMysqlDb();
+  const exam = await db.get("SELECT card_id FROM exams WHERE id = ?", examId) as { card_id: string | null } | undefined;
+  if (!exam) { res.status(404).json({ message: "考试不存在" }); return; }
+  if (!exam.card_id) { res.status(404).json({ message: "考试未关联答题卡" }); return; }
+  const card = await new CardRepository().findById(exam.card_id);
+  if (!card) { res.status(404).json({ message: "答题卡数据不存在" }); return; }
+
+  const definitions = objectiveDefinitions(card);
+  const subjectiveDefinitions = new Map<number, number>();
+  for (const block of card.bodyBlocks) {
+    if (block.type !== "subjective") continue;
+    for (const question of block.questions) {
+      const questionNumber = typeof question.number === "number"
+        ? question.number : parseInt(String(question.number), 10);
+      if (Number.isFinite(questionNumber)) subjectiveDefinitions.set(questionNumber, question.score);
+    }
+  }
+  for (const operation of operations) {
+    if (operation.scoreType === "objective" && !definitions.has(operation.questionNumber)) {
+      res.status(400).json({ message: `题号 ${operation.questionNumber} 不在当前答题卡的客观题范围内` });
+      return;
+    }
+    if (operation.scoreType === "subjective" && !subjectiveDefinitions.has(operation.questionNumber)) {
+      res.status(400).json({ message: `题号 ${operation.questionNumber} 不在当前答题卡的主观题范围内` });
+      return;
+    }
+  }
+
+  const userId = req.user!.id;
+  const now = databaseTimestamp();
+  let updatedCount = 0;
+  let updatedStudents = 0;
+  let assignedScoreWarning: string | undefined;
+
+  try {
+    await db.transactionWithNamedLock(`projectx:exam-scores:${examId}`, 10_000, async (tx) => {
+      type PlannedChange = {
+        studentId: number;
+        questionNumber: number;
+        scoreType: "objective" | "subjective";
+        oldScore: number;
+        newScore: number;
+        maxScore: number;
+      };
+      const plannedChanges: PlannedChange[] = [];
+
+      // 第一阶段只读并校验，不产生任何写入。
+      for (const studentId of studentIds) {
+        const studentScore = await tx.get(
+          "SELECT id FROM student_scores WHERE exam_id = ? AND student_id = ?",
+          examId, studentId
+        );
+        if (!studentScore) {
+          throw new ScoreBatchValidationError(404, `学生 ${studentId} 缺少本场成绩记录`);
+        }
+        for (const operation of operations) {
+          const existing = await tx.get(
+            `SELECT id, score, max_score FROM question_scores
+             WHERE exam_id = ? AND student_id = ? AND question_number = ? AND score_type = ?`,
+            examId, studentId, operation.questionNumber, operation.scoreType
+          ) as { id: number; score: number; max_score: number } | undefined;
+          if (!existing) {
+            throw new ScoreBatchValidationError(404,
+              `学生 ${studentId} 的题号 ${operation.questionNumber} 缺少成绩记录`);
+          }
+          const maxScore = Number(existing.max_score);
+          const oldScore = Number(existing.score);
+          if (!Number.isFinite(maxScore) || maxScore < 0 || !Number.isFinite(oldScore) || oldScore < 0 || oldScore > maxScore) {
+            throw new ScoreBatchValidationError(409,
+              `学生 ${studentId} 的题号 ${operation.questionNumber} 成绩数据异常`);
+          }
+          const targetScore = operation.operation === "full"
+            ? maxScore
+            : roundScore(Math.min(maxScore, oldScore + operation.amount!));
+          if (targetScore < 0 || targetScore > maxScore) {
+            throw new ScoreBatchValidationError(400,
+              `学生 ${studentId} 的题号 ${operation.questionNumber} 目标分超出范围`);
+          }
+          if (operation.scoreType === "objective") {
+            const definition = definitions.get(operation.questionNumber)!.definition;
+            if (!isLegalObjectiveScore(targetScore, maxScore, objectiveStep(definition), definition.mode)) {
+              const candidates = objectiveScoreCandidates(maxScore, objectiveStep(definition), definition.mode);
+              throw new ScoreBatchValidationError(400,
+                `学生 ${studentId} 的题号 ${operation.questionNumber} 目标分不属于合法分值：${candidates.join("、")}`);
+            }
+          }
+          plannedChanges.push({
+            studentId, questionNumber: operation.questionNumber, scoreType: operation.scoreType,
+            oldScore, newScore: targetScore, maxScore
+          });
+        }
+      }
+
+      // 第二阶段统一提交；前面的任何异常都会由事务回滚。
+      const changedStudents = new Set<number>();
+      for (const change of plannedChanges) {
+        if (change.oldScore === change.newScore) continue;
+        await tx.run(
+          `UPDATE question_scores SET score = ?, manually_modified = 1, modified_by = ?, modified_at = ?
+           WHERE exam_id = ? AND student_id = ? AND question_number = ? AND score_type = ?`,
+          change.newScore, userId, now, examId, change.studentId,
+          change.questionNumber, change.scoreType
+        );
+        await tx.run(
+          `INSERT INTO answer_overrides
+           (exam_id, card_id, question_number, score_type, override_type, old_value, new_value, created_by, created_at)
+           VALUES (?, ?, ?, ?, 'score', ?, ?, ?, ?)`,
+          examId, exam.card_id, change.questionNumber, change.scoreType,
+          JSON.stringify(change.oldScore), JSON.stringify(change.newScore), userId, now
+        );
+        updatedCount += 1;
+        changedStudents.add(change.studentId);
+      }
+
+      for (const studentId of changedStudents) {
+        const rows = await tx.all(
+          "SELECT score, score_type FROM question_scores WHERE exam_id = ? AND student_id = ?",
+          examId, studentId
+        ) as Array<{ score: number | null; score_type: string }>;
+        let objectiveScore = 0;
+        let subjectiveScore = 0;
+        for (const row of rows) {
+          if (row.score_type === "objective") objectiveScore += Number(row.score ?? 0);
+          else subjectiveScore += Number(row.score ?? 0);
+        }
+        objectiveScore = roundScore(objectiveScore);
+        subjectiveScore = roundScore(subjectiveScore);
+        await tx.run(`
+          UPDATE student_scores SET objective_score = ?, subjective_score = ?, total_score = ?,
+            manually_modified = 1, modified_by = ?, modified_at = ?
+          WHERE exam_id = ? AND student_id = ?
+        `, objectiveScore, subjectiveScore, roundScore(objectiveScore + subjectiveScore),
+          userId, now, examId, studentId);
+      }
+      updatedStudents = changedStudents.size;
+
+      if (updatedStudents > 0) {
+        const recalc = await recomputeExamRankings(tx, examId);
+        if (recalc.assignedScoresRecalculated === false) {
+          assignedScoreWarning = recalc.assignedScoreError;
+        }
+        await markScoreMutated(tx, examId, userId, "score_edit");
+      }
+    });
+  } catch (error) {
+    if (error instanceof ScoreBatchValidationError) {
+      res.status(error.status).json({ message: error.message });
+      return;
+    }
+    throw error;
+  }
+
+  if (updatedStudents > 0) analysisCache.invalidateExam(examId);
+  res.json({
+    ok: true,
+    updatedCount,
+    updatedStudents,
     ...(assignedScoreWarning ? { warnings: { assignedScoreError: assignedScoreWarning } } : {})
   });
 });
@@ -528,7 +804,19 @@ router.put(
   const card = await cardRepo.findById(exam.card_id);
   if (!card) { res.status(404).json({ message: "答题卡数据不存在" }); return; }
 
-  const oldAnswers: Record<string, string[]> = {};
+  const definitions = objectiveDefinitions(card);
+  for (const [key] of answerEntries) {
+    if (!definitions.has(Number(key))) {
+      res.status(400).json({ message: `题号 ${key} 不在当前答题卡的客观题范围内` });
+      return;
+    }
+  }
+
+  const changedQuestions = new Map<number, {
+    blockId: string;
+    oldAnswer: string[];
+    newAnswer: string[];
+  }>();
 
   for (const block of card.bodyBlocks) {
     if (block.type !== "objective") continue;
@@ -536,70 +824,67 @@ router.put(
     if (block.questions && block.questions.length > 0) {
       for (const q of block.questions) {
         const key = String(q.questionNumber);
-        if (answerUpdates[key]) {
-          oldAnswers[key] = [...(q.answerKey ?? [])];
-          q.answerKey = answerUpdates[key];
+        if (!(key in answerUpdates)) continue;
+        const target = definitions.get(q.questionNumber)!;
+        const oldAnswer = canonicalAnswer(q.answerKey ?? [], target.definition.optionCount, target.definition.mode);
+        const newAnswer = canonicalAnswer(answerUpdates[key], target.definition.optionCount, target.definition.mode);
+        if (!sameAnswer(oldAnswer, newAnswer)) {
+          changedQuestions.set(q.questionNumber, {
+            blockId: block.id, oldAnswer, newAnswer
+          });
         }
+        q.answerKey = newAnswer;
       }
     } else {
       for (const key of Object.keys(answerUpdates)) {
         const qNum = Number(key);
-        if (qNum >= block.questionStart && qNum < block.questionStart + block.questionCount) {
-          oldAnswers[key] = [...(answers[qNum] ?? [])];
-          (answers as any)[qNum] = answerUpdates[key];
+        if (qNum < block.questionStart || qNum >= block.questionStart + block.questionCount) continue;
+        const target = definitions.get(qNum)!;
+        const oldAnswer = canonicalAnswer(answers[qNum] ?? [], target.definition.optionCount, target.definition.mode);
+        const newAnswer = canonicalAnswer(answerUpdates[key], target.definition.optionCount, target.definition.mode);
+        if (!sameAnswer(oldAnswer, newAnswer)) {
+          changedQuestions.set(qNum, { blockId: block.id, oldAnswer, newAnswer });
         }
+        answers[qNum] = newAnswer;
       }
-      (block as any).answerKey = answers;
+      block.answerKey = answers;
     }
   }
 
-  // 评审 P1：仅当题目实际存在且答案确实被改写时才视为「成绩变更」（按配置决定是否撤回）；
-  // 题号不匹配答案（旧答案未收集到）或答案相同均不算变更，避免误撤回。
-  const hasAnswerChange = answerEntries.some(
-    ([key, newKey]) => key in oldAnswers && JSON.stringify(oldAnswers[key]) !== JSON.stringify(newKey)
-  );
+  if (changedQuestions.size === 0) {
+    res.json({ ok: true, updatedCount: 0, modifiedAnswers: 0 });
+    return;
+  }
 
-  const students = await db.all("SELECT student_id FROM student_scores WHERE exam_id = ?", examId) as Array<{ student_id: number }>;
   let updatedCount = 0;
   const confidenceThreshold = await resolveReviewConfidenceThreshold(req.user?.id);
-
-  // Build cross-platform upsert SQL for question_scores
-  const upsertCols = ["exam_id", "student_id", "question_number", "question_id", "block_id", "score", "max_score", "score_type", "manually_modified", "modified_by", "modified_at", "selected_options"];
-  const conflictCols = ["exam_id", "student_id", "question_number", "score_type"];
-  const updateCols = ["score", "max_score", "manually_modified", "modified_by", "modified_at", "selected_options"];
-  const upsertSQL = buildUpsertSQL(db.dialect, "question_scores", upsertCols, conflictCols, updateCols);
-
   let assignedScoreWarning: string | undefined;
   await db.transaction(async (tx) => {
-    // 答案与重算同事务：任一步失败整体回滚，避免“答案已改但分数未重算”的半更新状态
     await cardRepo.updateCardInTx(card, tx);
 
-    for (const [qNum, newKey] of Object.entries(answerUpdates)) {
+    for (const [questionNumber, changed] of changedQuestions) {
       await tx.run(
         `INSERT INTO answer_overrides (exam_id, card_id, question_number, score_type, override_type, old_value, new_value, created_by, created_at)
          VALUES (?, ?, ?, 'objective', 'answer', ?, ?, ?, ?)`,
-        examId, exam.card_id, Number(qNum),
-        JSON.stringify(oldAnswers[qNum] ?? []), JSON.stringify(newKey), userId, now
+        examId, exam.card_id, questionNumber,
+        JSON.stringify(changed.oldAnswer), JSON.stringify(changed.newAnswer), userId, now
       );
     }
 
+    const students = await tx.all("SELECT student_id FROM student_scores WHERE exam_id = ?", examId) as Array<{ student_id: number }>;
     for (const { student_id: studentId } of students) {
-      // v29: 学生所选选项改从 question_scores.selected_options 读取
-      // （objective_recognitions 在主流程中从未写入，重评分会把全体学生当未作答）
       const optionRows = await tx.all(`
         SELECT question_number, selected_options
         FROM question_scores
         WHERE exam_id = ? AND student_id = ? AND score_type = 'objective' AND selected_options IS NOT NULL
       `, examId, studentId) as any[];
-
       const recognitionMap = new Map<number, { selectedOptions: string[]; confidence: number }>();
-      for (const r of optionRows) {
-        let opts: string[] = [];
-        try { opts = r.selected_options ? JSON.parse(r.selected_options) : []; } catch { opts = []; }
-        recognitionMap.set(r.question_number, { selectedOptions: opts, confidence: 1 });
+      for (const row of optionRows) {
+        let options: string[] = [];
+        try { options = row.selected_options ? JSON.parse(row.selected_options) : []; } catch { options = []; }
+        recognitionMap.set(row.question_number, { selectedOptions: options, confidence: 1 });
       }
 
-      // 回退：历史遗留的 objective_recognitions 数据（若存在）
       if (recognitionMap.size === 0) {
         const recognitionRows = await tx.all(`
           SELECT orr.question_number, orr.selected_options, orr.confidence
@@ -609,76 +894,97 @@ router.put(
           WHERE sb.exam_id = ? AND sr.student_id = ?
           ORDER BY orr.confidence DESC
         `, examId, studentId) as any[];
-
-        for (const r of recognitionRows) {
-          const existing = recognitionMap.get(r.question_number);
-          if (!existing || r.confidence > existing.confidence) {
-            recognitionMap.set(r.question_number, {
-              selectedOptions: r.selected_options ? JSON.parse(r.selected_options) : [],
-              confidence: r.confidence
+        for (const row of recognitionRows) {
+          const existing = recognitionMap.get(row.question_number);
+          if (!existing || row.confidence > existing.confidence) {
+            recognitionMap.set(row.question_number, {
+              selectedOptions: row.selected_options ? JSON.parse(row.selected_options) : [],
+              confidence: row.confidence
             });
           }
         }
       }
 
-      let totalObj = 0;
-      for (const block of card.bodyBlocks) {
-        if (block.type !== "objective") continue;
-        for (const def of objectiveQuestionDefinitions(block)) {
-          const rec = recognitionMap.get(def.questionNumber);
-          const grade = gradeObjectiveQuestion(card, {
-            questionNumber: def.questionNumber,
-            selectedOptions: rec?.selectedOptions ?? [],
-            confidence: rec?.confidence ?? 0,
-          } as ObjectiveRecognitionQuestion, confidenceThreshold);
-
-          await tx.run(upsertSQL,
-            examId, studentId, def.questionNumber, null, block.id,
-            grade.score, grade.maxScore, "objective",
-            0, userId, now, // Bugfix: 答案key变更触发的自动重评分不应标记 manually_modified=1
-            JSON.stringify(rec?.selectedOptions ?? [])
-          );
-          totalObj += grade.score;
+      for (const [questionNumber, changed] of changedQuestions) {
+        const existing = await tx.get(
+          `SELECT id, score, max_score, selected_options, manually_modified
+           FROM question_scores
+           WHERE exam_id = ? AND student_id = ? AND question_number = ? AND score_type = 'objective'`,
+          examId, studentId, questionNumber
+        ) as { id: number; score: number; max_score: number; selected_options: string | null; manually_modified: number } | undefined;
+        let selectedOptions = recognitionMap.get(questionNumber)?.selectedOptions ?? [];
+        if (existing?.selected_options != null) {
+          try { selectedOptions = JSON.parse(existing.selected_options); } catch { selectedOptions = []; }
         }
+        const recognition = recognitionMap.get(questionNumber);
+        const grade = gradeObjectiveQuestion(card, {
+          questionNumber,
+          selectedOptions,
+          confidence: recognition?.confidence ?? 1,
+        } as ObjectiveRecognitionQuestion, confidenceThreshold);
+
+        if (existing) {
+          await tx.run(
+            `UPDATE question_scores SET score = ?, max_score = ?, manually_modified = 0, modified_by = ?, modified_at = ?
+             WHERE id = ?`,
+            grade.score, grade.maxScore, userId, now, existing.id
+          );
+        } else {
+          await tx.run(
+            `INSERT INTO question_scores
+             (exam_id, student_id, question_number, question_id, block_id, score, max_score, score_type,
+              manually_modified, modified_by, modified_at, selected_options)
+             VALUES (?, ?, ?, NULL, ?, ?, ?, 'objective', 0, ?, ?, ?)`,
+            examId, studentId, questionNumber, changed.blockId, grade.score, grade.maxScore,
+            userId, now, JSON.stringify(selectedOptions)
+          );
+        }
+
+        await tx.run(
+          `INSERT INTO answer_overrides
+           (exam_id, card_id, question_number, score_type, override_type, old_value, new_value, created_by, created_at)
+           VALUES (?, ?, ?, 'objective', 'score', ?, ?, ?, ?)`,
+          examId, exam.card_id, questionNumber,
+          JSON.stringify(existing?.score ?? null), JSON.stringify(grade.score), userId, now
+        );
       }
 
-      const subjScore = await tx.get(
-        "SELECT COALESCE(SUM(score), 0) as total FROM question_scores WHERE exam_id = ? AND student_id = ? AND score_type = 'subjective'",
+      const rows = await tx.all(
+        "SELECT score, score_type FROM question_scores WHERE exam_id = ? AND student_id = ?",
         examId, studentId
-      ) as { total: number };
-
-      const roundedObj = roundScore(totalObj);
-      const roundedSubj = roundScore(Number(subjScore.total ?? 0));
-      const totalScore = roundScore(roundedObj + roundedSubj);
-      // 答案变更触发的自动重评分不标记 manually_modified（与上方 question_scores 的
-      // 0 标记保持一致，避免把整场学生误标为“手动修改”）。
+      ) as Array<{ score: number | null; score_type: string }>;
+      let objectiveScore = 0;
+      let subjectiveScore = 0;
+      for (const row of rows) {
+        if (row.score_type === "objective") objectiveScore += Number(row.score ?? 0);
+        else subjectiveScore += Number(row.score ?? 0);
+      }
+      objectiveScore = roundScore(objectiveScore);
+      subjectiveScore = roundScore(subjectiveScore);
       await tx.run(`
         UPDATE student_scores SET objective_score = ?, subjective_score = ?, total_score = ?,
           modified_by = ?, modified_at = ?
         WHERE exam_id = ? AND student_id = ?
-      `, roundedObj, roundedSubj, totalScore, userId, now, examId, studentId);
-
-      updatedCount++;
+      `, objectiveScore, subjectiveScore, roundScore(objectiveScore + subjectiveScore),
+        userId, now, examId, studentId);
+      updatedCount += 1;
     }
 
-    // P1-8: 排名重算在事务内执行
-    const recalc = await recomputeExamRankings(tx, examId);
-    if (recalc.assignedScoresRecalculated === false) {
-      assignedScoreWarning = recalc.assignedScoreError;
-    }
-    // 评审 P1：已公布考试的答案被修改（全体重评）→ 同一事务内按管理员策略处理公布状态
-    if (hasAnswerChange) {
+    if (updatedCount > 0) {
+      const recalc = await recomputeExamRankings(tx, examId);
+      if (recalc.assignedScoresRecalculated === false) {
+        assignedScoreWarning = recalc.assignedScoreError;
+      }
       await markScoreMutated(tx, examId, userId, "answer_edit");
     }
   });
 
-  // 分析结果缓存精准失效（建议 6）
-  analysisCache.invalidateExam(examId);
+  if (updatedCount > 0) analysisCache.invalidateExam(examId);
 
   res.json({
     ok: true,
     updatedCount,
-    modifiedAnswers: Object.keys(answerUpdates).length,
+    modifiedAnswers: changedQuestions.size,
     ...(assignedScoreWarning ? { warnings: { assignedScoreError: assignedScoreWarning } } : {})
   });
 });

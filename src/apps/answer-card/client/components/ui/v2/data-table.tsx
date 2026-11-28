@@ -70,6 +70,14 @@ export interface DataTableProps<T> {
   paginationExtra?: React.ReactNode;
   /** 初始排序 */
   initialSorting?: SortingState;
+  /** 受控排序；传入后排序状态由调用方保存 */
+  sorting?: SortingState;
+  onSortingChange?: (updater: SortingState | ((previous: SortingState) => SortingState)) => void;
+  /** 受控分页；与 pageSize 一起使用 */
+  pagination?: PaginationState;
+  onPaginationChange?: (updater: PaginationState | ((previous: PaginationState) => PaginationState)) => void;
+  /** 默认在数据变化时回到第一页；恢复历史分页时可关闭并由调用方处理搜索重置 */
+  autoResetPageIndex?: boolean;
   /** 表格外层高度限制（如 "max-h-[560px]"），配合 sticky 表头 */
   wrapClassName?: string;
   className?: string;
@@ -92,15 +100,42 @@ export function DataTable<T>({
   pageSizeOptions,
   paginationExtra,
   initialSorting = [],
+  sorting: controlledSorting,
+  onSortingChange,
+  pagination: controlledPagination,
+  onPaginationChange,
+  autoResetPageIndex = true,
   wrapClassName,
   className,
   tableRef,
 }: DataTableProps<T>) {
-  const [sorting, setSorting] = React.useState<SortingState>(initialSorting);
-  const [pagination, setPagination] = React.useState<PaginationState>({
+  const [internalSorting, setInternalSorting] = React.useState<SortingState>(initialSorting);
+  const [internalPagination, setInternalPagination] = React.useState<PaginationState>({
     pageIndex: 0,
     pageSize: pageSize ?? 0,
   });
+  const sorting = controlledSorting ?? internalSorting;
+  const pagination = controlledPagination ?? internalPagination;
+  const setSorting = onSortingChange ?? setInternalSorting;
+  const setPagination = onPaginationChange ?? setInternalPagination;
+  const resolveSorting = React.useCallback(
+    (updater: SortingState | ((previous: SortingState) => SortingState)) =>
+      typeof updater === "function" ? updater(sorting) : updater,
+    [sorting],
+  );
+  const resolvePagination = React.useCallback(
+    (updater: PaginationState | ((previous: PaginationState) => PaginationState)) =>
+      typeof updater === "function" ? updater(pagination) : updater,
+    [pagination],
+  );
+  const changeSorting = React.useCallback(
+    (updater: SortingState | ((previous: SortingState) => SortingState)) => setSorting(resolveSorting(updater)),
+    [setSorting, resolveSorting],
+  );
+  const changePagination = React.useCallback(
+    (updater: PaginationState | ((previous: PaginationState) => PaginationState)) => setPagination(resolvePagination(updater)),
+    [setPagination, resolvePagination],
+  );
 
   const paginated = Boolean(pageSize);
 
@@ -111,10 +146,11 @@ export function DataTable<T>({
       sorting,
       ...(paginated ? { pagination } : {}),
     },
-    onSortingChange: setSorting,
+    onSortingChange: changeSorting,
     // 受控分页 + onPaginationChange：data 变化时 TanStack 的 autoResetPageIndex
     // 才能把页码写回组件状态（PR #239 评审 P1：搜索缩小结果后停留在空页）。
-    onPaginationChange: paginated ? setPagination : undefined,
+    onPaginationChange: paginated ? changePagination : undefined,
+    autoResetPageIndex,
     getRowId,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
@@ -125,6 +161,14 @@ export function DataTable<T>({
   React.useEffect(() => {
     tableRef?.(table);
   }, [table, tableRef]);
+
+  React.useEffect(() => {
+    if (!paginated || loading || data.length === 0 || pagination.pageSize <= 0) return;
+    const lastPage = Math.max(0, Math.ceil(data.length / pagination.pageSize) - 1);
+    if (pagination.pageIndex > lastPage) {
+      changePagination({ ...pagination, pageIndex: lastPage });
+    }
+  }, [paginated, loading, data.length, pagination, changePagination]);
 
   const headerGroups = table.getHeaderGroups();
   const rows = table.getRowModel().rows;
@@ -261,12 +305,12 @@ export function DataTable<T>({
           total={data.length}
           page={pagination.pageIndex + 1}
           pageSize={pagination.pageSize}
-          onPageChange={(p) => setPagination((prev) => ({ ...prev, pageIndex: p - 1 }))}
+          onPageChange={(p) => changePagination((prev) => ({ ...prev, pageIndex: p - 1 }))}
           pageSizeOptions={pageSizeOptions}
           onPageSizeChange={
             pageSizeOptions
               ? (next) => {
-                  setPagination({ pageIndex: 0, pageSize: next });
+                  changePagination({ pageIndex: 0, pageSize: next });
                 }
               : undefined
           }
@@ -277,4 +321,4 @@ export function DataTable<T>({
   );
 }
 
-export type { ColumnDef, SortingState };
+export type { ColumnDef, SortingState, PaginationState };

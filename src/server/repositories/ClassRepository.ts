@@ -231,6 +231,57 @@ export class ClassRepository {
     analysisCache.clear();
   }
 
+  /** 批量调班：先在同一事务内核验全部学生与班级，再统一写入并回溯考试归属。 */
+  async batchMoveStudents(fromClassId: number, toClassId: number, studentIds: number[]): Promise<void> {
+    if (fromClassId === toClassId) throw Object.assign(new Error("源班级与目标班级相同，无需调班"), { status: 400 });
+    await this.db.transaction(async (tx) => {
+      const repo = new ClassRepository(tx);
+      const source = await repo.findClassById(fromClassId);
+      const target = await repo.findClassById(toClassId);
+      if (!source || !target) throw Object.assign(new Error("源班级或目标班级不存在"), { status: 400 });
+      for (const studentId of studentIds) {
+        const student = await tx.get<{ role_id: number; is_active: number }>("SELECT role_id, is_active FROM users WHERE id = ?", studentId);
+        if (!student || student.role_id !== 3 || student.is_active !== 1) {
+          throw Object.assign(new Error(`学生账号 ${studentId} 不存在或已停用`), { status: 400 });
+        }
+        if (!await repo.isStudentInClass(fromClassId, studentId)) {
+          throw Object.assign(new Error(`学生 ${studentId} 不在源班级`), { status: 400 });
+        }
+      }
+      const linkSql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
+      for (const studentId of studentIds) {
+        await preserveStudentExamHistory(tx, studentId);
+        await tx.run("DELETE FROM class_students WHERE class_id = ? AND student_id = ?", fromClassId, studentId);
+        await tx.run(linkSql, toClassId, studentId);
+        await reanchorStudentExamClasses(tx, studentId);
+      }
+    });
+    analysisCache.clear();
+  }
+
+  /** 批量移出：核验全部账号与来源关系后，在同一事务内删除并回溯考试归属。 */
+  async batchRemoveStudents(classId: number, studentIds: number[]): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const repo = new ClassRepository(tx);
+      if (!await repo.findClassById(classId)) throw Object.assign(new Error("源班级不存在"), { status: 400 });
+      for (const studentId of studentIds) {
+        const student = await tx.get<{ role_id: number; is_active: number }>("SELECT role_id, is_active FROM users WHERE id = ?", studentId);
+        if (!student || student.role_id !== 3 || student.is_active !== 1) {
+          throw Object.assign(new Error(`学生账号 ${studentId} 不存在或已停用`), { status: 400 });
+        }
+        if (!await repo.isStudentInClass(classId, studentId)) {
+          throw Object.assign(new Error(`学生 ${studentId} 不在源班级`), { status: 400 });
+        }
+      }
+      for (const studentId of studentIds) {
+        await preserveStudentExamHistory(tx, studentId);
+        await tx.run("DELETE FROM class_students WHERE class_id = ? AND student_id = ?", classId, studentId);
+        await reanchorStudentExamClasses(tx, studentId);
+      }
+    });
+    analysisCache.clear();
+  }
+
   async isStudentInClass(classId: number, studentId: number): Promise<boolean> {
     const row = await this.db.get("SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ? LIMIT 1", classId, studentId);
     return Boolean(row);

@@ -221,6 +221,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   const bands = useBands();
   const [subTab, setSubTab] = useState<SubTab>("overview");
   const [showFixPage, setShowFixPage] = useState(false);
+  const [fixStudent, setFixStudent] = useState<{ id: number; name: string; number: string } | null>(null);
   const [selectedStudent, setSelectedStudent] = useState<{ id: number; name: string; number: string } | null>(null);
   const [classId, setClassId] = useState("");
   const [showExport, setShowExport] = useState(false);
@@ -292,6 +293,31 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
     } catch { setMetrics(null); }
   }
 
+  function refreshAfterScoreFix() {
+    setScoreTableKey((key) => key + 1);
+    setKpRefreshKey((key) => key + 1);
+    void loadOverview();
+    void loadRanking();
+    void loadQuestions();
+    void loadMetrics();
+    void loadProgressRankings();
+    void loadPreviousComparison();
+  }
+
+  function openScoreFix(student: { id: number; name: string; number: string } | null = null) {
+    setFixStudent(student);
+    setSelectedStudent(null);
+    setShowFixPage(true);
+  }
+
+  function closeScoreFix() {
+    const returnStudent = fixStudent;
+    setShowFixPage(false);
+    setFixStudent(null);
+    if (returnStudent) setSelectedStudent(returnStudent);
+    refreshAfterScoreFix();
+  }
+
   const subTabConfigs = useMemo(() => [
     { key: "overview" as SubTab, label: "概况", icon: FileText },
     { key: "scores" as SubTab, label: "成绩", icon: Users },
@@ -327,12 +353,26 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   }, [overview, ranking]);
 
   // Overlay: fix page
-  if (showFixPage) return <ScoreFixPage examId={examId} examName={examName} subject={subject} onBack={() => setShowFixPage(false)} />;
+  if (showFixPage) return (
+    <ScoreFixPage
+      examId={examId}
+      examName={examName}
+      subject={subject}
+      initialStudent={fixStudent ? {
+        id: fixStudent.id,
+        name: fixStudent.name,
+        studentNumber: fixStudent.number
+      } : undefined}
+      onBack={closeScoreFix}
+    />
+  );
 
   // Overlay: student detail
   if (selectedStudent) return (
     <StudentScoreDetail examId={examId} studentId={selectedStudent.id} studentName={selectedStudent.name}
-      studentNumber={selectedStudent.number} examName={examName} onBack={() => setSelectedStudent(null)} />
+      studentNumber={selectedStudent.number} examName={examName}
+      onBack={() => setSelectedStudent(null)}
+      onEditScore={() => openScoreFix(selectedStudent)} />
   );
 
   return (
@@ -419,7 +459,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
             ))}
           </TabsList>
           {isTeacher && (
-            <Button variant="outline" size="sm" icon={<Wrench />} onClick={() => setShowFixPage(true)}>
+            <Button variant="outline" size="sm" icon={<Wrench />} onClick={() => openScoreFix()}>
               分数有问题？
             </Button>
           )}

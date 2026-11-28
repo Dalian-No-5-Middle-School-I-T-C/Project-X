@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, BarChart3, BrainCircuit, CalendarRange, ChevronDown, FileText, LineChart, Radar, RefreshCw, Shield, Sparkles, TrendingUp } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { StudentExamScore, StudentQuestionScore } from "../auth/types";
@@ -50,48 +50,79 @@ export function StudentScores() {
   const [examDetails, setExamDetails] = useState<Record<number, StudentQuestionScore[]>>({});
   const [trends, setTrends] = useState<StudentTrendPoint[]>([]);
   const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [trendError, setTrendError] = useState("");
+  const [aiProviderId, setAiProviderId] = useState(0);
+  const [aiModel, setAiModel] = useState("");
+  const [aiResults, setAiResults] = useState<Record<number, AiAnalysisResponse>>({});
+  const scoreRequest = useRef(0);
+  const scoreAbort = useRef<AbortController | null>(null);
+  const detailRequest = useRef(0);
+  const detailAbort = useRef<AbortController | null>(null);
   const sortedExams = data
     ? [...data.scores].sort((a, b) => String(b.graded_at).localeCompare(String(a.graded_at)))
     : [];
 
-  const loadScores = useCallback(async () => {
-    setBusy(true);
+  const loadScores = useCallback(async (mode: "initial" | "silent" = "silent") => {
+    const request = ++scoreRequest.current;
+    scoreAbort.current?.abort();
+    const controller = new AbortController();
+    scoreAbort.current = controller;
+    if (mode === "initial") setBusy(true);
+    else setRefreshing(true);
     setError("");
     try {
-      const scoreResult = await fetchJson<ScoresResponse>("/api/scores/me");
+      const scoreResult = await fetchJson<ScoresResponse>("/api/scores/me", { signal: controller.signal });
+      if (request !== scoreRequest.current) return;
       setData(scoreResult);
-      setExamDetails({});
-      setExpandedExamId(null);
-      try {
-        const trendResult = await fetchJson<StudentTrendPoint[]>("/api/scores/me/trends");
-        setTrends(Array.isArray(trendResult) ? trendResult : []);
-        setTrendError("");
-      } catch (err) {
-        setTrends([]);
-        setTrendError(err instanceof Error ? err.message : "趋势数据加载失败");
-      }
+      const validExamIds = new Set(scoreResult.scores.map((exam) => exam.exam_id));
+      setExamDetails((previous) => Object.fromEntries(
+        Object.entries(previous).filter(([id]) => validExamIds.has(Number(id))),
+      ));
+      setAiResults((previous) => Object.fromEntries(
+        Object.entries(previous).filter(([id]) => validExamIds.has(Number(id))),
+      ));
+      setExpandedExamId((previous) => previous !== null && validExamIds.has(previous) ? previous : null);
     } catch (err) {
+      if (request !== scoreRequest.current) return;
       setError(err instanceof Error ? err.message : "加载成绩失败");
-      setData(null);
+      if (mode === "initial") setData(null);
+    }
+
+    try {
+      const trendResult = await fetchJson<StudentTrendPoint[]>("/api/scores/me/trends", { signal: controller.signal });
+      if (request !== scoreRequest.current) return;
+      setTrends(Array.isArray(trendResult) ? trendResult : []);
+      setTrendError("");
+    } catch (err) {
+      if (request !== scoreRequest.current) return;
+      if (mode === "initial") setTrends([]);
+      setTrendError(err instanceof Error ? err.message : "趋势数据加载失败");
     } finally {
-      setBusy(false);
+      if (request === scoreRequest.current) {
+        setBusy(false);
+        setRefreshing(false);
+      }
     }
   }, []);
 
   useEffect(() => {
-    void loadScores();
+    void loadScores("initial");
     const refreshWhenVisible = () => {
-      if (document.visibilityState === "visible") void loadScores();
+      if (document.visibilityState === "visible") void loadScores("silent");
     };
-    const refreshOnFocus = () => void loadScores();
+    const refreshOnFocus = () => void loadScores("silent");
     document.addEventListener("visibilitychange", refreshWhenVisible);
     window.addEventListener("focus", refreshOnFocus);
     const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") void loadScores();
+      if (document.visibilityState === "visible") void loadScores("silent");
     }, 30_000);
     return () => {
+      scoreRequest.current += 1;
+      scoreAbort.current?.abort();
+      detailRequest.current += 1;
+      detailAbort.current?.abort();
       document.removeEventListener("visibilitychange", refreshWhenVisible);
       window.removeEventListener("focus", refreshOnFocus);
       window.clearInterval(timer);
@@ -105,11 +136,15 @@ export function StudentScores() {
     }
     setExpandedExamId(examId);
     if (examDetails[examId]) return;
+    const request = ++detailRequest.current;
+    detailAbort.current?.abort();
+    const controller = new AbortController();
+    detailAbort.current = controller;
     try {
-      const detail = await fetchJson<ExamDetailResponse>(`/api/scores/me/exams/${examId}`);
-      setExamDetails((prev) => ({ ...prev, [examId]: detail.questions }));
+      const detail = await fetchJson<ExamDetailResponse>(`/api/scores/me/exams/${examId}`, { signal: controller.signal });
+      if (request === detailRequest.current) setExamDetails((prev) => ({ ...prev, [examId]: detail.questions }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载明细失败");
+      if (request === detailRequest.current) setError(err instanceof Error ? err.message : "加载明细失败");
     }
   }
 
@@ -135,7 +170,9 @@ export function StudentScores() {
       <div className="flex flex-col gap-5">
         <div className="flex items-center justify-between rounded-lg border border-border-subtle bg-card px-4 py-3 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-2"><Shield size={14} />仅展示本人成绩</span>
-          <Button variant="ghost" size="sm" onClick={() => void loadScores()} disabled={busy}><RefreshCw size={16} />刷新</Button>
+          <Button variant="ghost" size="sm" onClick={() => void loadScores(data ? "silent" : "initial")} disabled={busy || refreshing}>
+            <RefreshCw size={16} />{refreshing ? "刷新中…" : "刷新"}
+          </Button>
         </div>
         {error && <div className="rounded-md border border-destructive-border bg-destructive-soft px-3 py-2 text-sm text-destructive-fg">{error}</div>}
         {trendError && <div className="rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-sm text-warning-foreground">趋势数据暂时不可用：{trendError}</div>}
@@ -196,7 +233,14 @@ export function StudentScores() {
               <TabsContent value="trend"><StudentTrendChart trends={trends} /></TabsContent>
               <TabsContent value="subjects"><StudentSubjectRadar /></TabsContent>
               <TabsContent value="semester"><StudentSemesterComparison /></TabsContent>
-              <TabsContent value="ai"><StudentAiPanel /></TabsContent>
+              <TabsContent value="ai">
+                <StudentAiPanel
+                  exams={sortedExams}
+                  providerId={aiProviderId}
+                  model={aiModel}
+                  onSelectionChange={(providerId, model) => { setAiProviderId(providerId); setAiModel(model); }}
+                />
+              </TabsContent>
               <TabsContent value="ladder"><GradeLadder /></TabsContent>
             </Tabs>
           </>
@@ -270,7 +314,16 @@ export function StudentScores() {
                 <TableHeader><TableRow><TableHead>题号</TableHead><TableHead numeric>得分</TableHead><TableHead numeric>满分</TableHead><TableHead>类型</TableHead></TableRow></TableHeader>
                 <TableBody>{examDetails[selectedExam.exam_id].map((q, i) => <TableRow key={`${q.question_id ?? q.question_number}_${i}`}><TableCell>{q.question_number ?? q.question_id ?? "—"}</TableCell><TableCell numeric>{q.score}</TableCell><TableCell numeric>{q.max_score}</TableCell><TableCell>{q.score_type}</TableCell></TableRow>)}</TableBody>
               </Table>
-              <div className="mt-3"><AiAnalysisForExam examId={selectedExam.exam_id} examName={selectedExam.exam_name} /></div>
+              <div className="mt-3">
+                <AiAnalysisForExam
+                  key={selectedExam.exam_id}
+                  examId={selectedExam.exam_id}
+                  providerId={aiProviderId}
+                  model={aiModel}
+                  result={aiResults[selectedExam.exam_id]}
+                  onResult={(value) => setAiResults((previous) => ({ ...previous, [selectedExam.exam_id]: value }))}
+                />
+              </div>
             </div>
           )}
         </CardContent>
@@ -280,11 +333,23 @@ export function StudentScores() {
 }
 
 /** 内联的按考试 AI 分析组件 */
-function AiAnalysisForExam({ examId, examName }: { examId: number; examName: string }) {
-  const [result, setResult] = useState<AiAnalysisResponse | null>(null);
+function AiAnalysisForExam({ examId, providerId, model, result, onResult }: {
+  examId: number;
+  providerId: number;
+  model: string;
+  result?: AiAnalysisResponse;
+  onResult: (value: AiAnalysisResponse) => void;
+}) {
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(false);
+  const request = useRef(0);
+  const abort = useRef<AbortController | null>(null);
+
+  useEffect(() => () => {
+    request.current += 1;
+    abort.current?.abort();
+  }, []);
 
   async function generate() {
     if (result && !expanded) {
@@ -292,20 +357,29 @@ function AiAnalysisForExam({ examId, examName }: { examId: number; examName: str
       return;
     }
     if (generating) return;
+    const seq = ++request.current;
+    abort.current?.abort();
+    const controller = new AbortController();
+    abort.current = controller;
     setGenerating(true);
     setError("");
     try {
-      const res = await fetchJson<AiAnalysisResponse>(`/api/scores/me/exams/${examId}/ai-analysis`, {
+      const body: Record<string, unknown> = { model: model || undefined };
+      if (providerId > 0) body.providerId = providerId;
+      const value = await fetchJson<AiAnalysisResponse>(`/api/scores/me/exams/${examId}/ai-analysis`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify(body),
+        signal: controller.signal,
       });
-      setResult(res);
-      setExpanded(true);
+      if (seq === request.current) {
+        onResult(value);
+        setExpanded(true);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (seq === request.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setGenerating(false);
+      if (seq === request.current) setGenerating(false);
     }
   }
 
@@ -316,7 +390,7 @@ function AiAnalysisForExam({ examId, examName }: { examId: number; examName: str
         size="sm"
         type="button"
         onClick={() => void generate()}
-        disabled={generating}
+        disabled={generating || !model}
         loading={generating}
         icon={<BrainCircuit className="size-4" />}
         className="self-start"

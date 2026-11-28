@@ -251,3 +251,45 @@
   --container-content: var(--px-content-max-w);
   --container-content-wide: var(--px-content-max-w-wide);
 }
+
+/* 报告单打印：打印容器在屏幕上隐藏，但打印时必须覆盖 display:none。
+   每份报告独立分页，预览弹层不进入打印输出。 */
+@media print {
+  html,
+  body,
+  #root {
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+  body * {
+    visibility: hidden !important;
+  }
+  .report-no-print {
+    display: none !important;
+  }
+  .report-print {
+    display: block !important;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    background: #fff;
+  }
+  .report-print,
+  .report-print * {
+    visibility: visible !important;
+  }
+  .report-print-page {
+    break-after: page;
+    page-break-after: always;
+  }
+  .report-print-page:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+  .report-print-page > div {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+}

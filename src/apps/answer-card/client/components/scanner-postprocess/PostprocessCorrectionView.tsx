@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Save } from "lucide-react";
+import { Save, SkipForward } from "lucide-react";
 import {
   Badge, Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
   Spinner, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableWrap, Tip,
@@ -18,6 +18,13 @@ import { findObjectiveQuestion, gradeCombinedRecognition, gradeSubjectiveRecogni
 import { isMultiSelectMode, objectiveModeLabel } from "../../../../../shared/objectiveMode";
 import type { CombinedRecognitionResult, SubjectiveQuestionNumber } from "../../../../../shared/types";
 import { clearCorrectionDraft, draftMatchesDocument, readCorrectionDraft, writeCorrectionDraft } from "../../lib/correctionDraft";
+import { readPostprocessRotation, writePostprocessRotation } from "../../lib/postprocessResume";
+
+/** 保存成功后交给页面用于同步远端：以提交前的文档为基准计算逐题变化。 */
+export interface CorrectionSaved {
+  document: CorrectionDocument;
+  edits: CorrectionEdit[];
+}
 
 export interface PostprocessCorrectionViewProps {
   channel: PostprocessChannel;
@@ -31,9 +38,14 @@ export interface PostprocessCorrectionViewProps {
   highlightQuestion?: SubjectiveQuestionNumber | null;
   /** 本编辑器当前是否可见：隐藏期间考号面板可能改了共享草稿，重新显示时要先同步。 */
   visible?: boolean;
+  /** 本卡是否还有上一份 / 下一份；工具栏据此提供换卷入口。 */
+  hasPrevGroup?: boolean;
+  hasNextGroup?: boolean;
+  onNavigateGroup?: (direction: -1 | 1) => void;
   /** 放弃半成品续传成功后回调：调用方要清掉自己的「已入队」标记，否则改完不会再整卷上传 */
   onUploadAbandoned?: () => void;
-  onSaved: () => void | Promise<void>;
+  /** 保存成功后的同步回调：返回字符串会显示在状态栏（远端同步失败也必须如实显示）。 */
+  onSaved: (saved?: CorrectionSaved) => void | string | Promise<void | string>;
 }
 
 interface Row {
@@ -87,7 +99,70 @@ function optionLetters(count: number | undefined): string[] {
   return Array.from({ length: Math.max(0, count ?? 0) }, (_, index) => String.fromCharCode(65 + index));
 }
 
-export function PostprocessCorrectionView({ channel, sessionId, groupId, initialSaved = false, draftOnly = false, highlightQuestion, visible = true, onUploadAbandoned, onSaved }: PostprocessCorrectionViewProps) {
+/**
+ * 主观题分数输入：编辑期间只维护字符串草稿，允许退格清空、两位数与小数完整敲完，
+ * 失焦或回车时才解析校验。直接把 Number(value) 写进判分会让「15」在敲下 1 的瞬间
+ * 变成 1 分并触发整行重排。
+ */
+function SubjectiveScoreInput({ row, disabled, onCommit }: {
+  row: Row;
+  disabled: boolean;
+  onCommit: (score: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(row.score));
+  const [editing, setEditing] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    // 未在编辑时跟随判分结果；编辑期间不能被外部重算覆盖正在输入的文本。
+    if (!editing) {
+      setDraft(String(row.score));
+      setError("");
+    }
+  }, [row.score, editing]);
+
+  function commit() {
+    setEditing(false);
+    const text = draft.trim();
+    if (!text) {
+      setError("请输入分数");
+      setDraft(String(row.score));
+      return;
+    }
+    const value = Number(text);
+    if (!Number.isFinite(value) || value < 0 || value > row.maxScore) {
+      setError(`请输入 0–${row.maxScore} 的分数`);
+      return;
+    }
+    setError("");
+    if (value !== row.score) onCommit(value);
+  }
+
+  return (
+    <span className="flex flex-col gap-0.5">
+      <Input
+        inputMode="decimal"
+        value={draft}
+        disabled={disabled}
+        className="h-control-sm w-20 text-sm tabular-nums"
+        onFocus={() => setEditing(true)}
+        onChange={event => { setEditing(true); setDraft(event.target.value); setError(""); }}
+        onBlur={commit}
+        onKeyDown={event => {
+          if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); }
+          if (event.key === "Escape") { setDraft(String(row.score)); setError(""); event.currentTarget.blur(); }
+        }}
+        aria-label={`第 ${row.questionNumber} 题得分`}
+        aria-invalid={!!error}
+      />
+      {error && <span role="alert" className="text-[11px] text-destructive-fg">{error}</span>}
+    </span>
+  );
+}
+
+export function PostprocessCorrectionView({
+  channel, sessionId, groupId, initialSaved = false, draftOnly = false, highlightQuestion, visible = true,
+  hasPrevGroup = false, hasNextGroup = false, onNavigateGroup, onUploadAbandoned, onSaved,
+}: PostprocessCorrectionViewProps) {
   const url = channel.correctionUrl(sessionId, groupId);
   const [document, setDocument] = useState<CorrectionDocument | null>(null);
   const [edits, setEdits] = useState<CorrectionEdit[]>([]);
@@ -130,6 +205,8 @@ export function PostprocessCorrectionView({ channel, sessionId, groupId, initial
         const doc = data as CorrectionDocument;
         if (!alive) return;
         setDocument(doc);
+        // 同一张卡上一份卷转过的角度要沿用：横向扫描件每换一张都回 0° 会逼老师重复点。
+        setRotation(readPostprocessRotation(doc.card.id));
         const baseEdits = doc.pages.map(p => ({ sourceId: p.sourceId, revision: p.revision, selected: [...p.selected], touched: [] }));
         const draft = readCorrectionDraft(doc.card.id, sessionId, groupId);
         if (draft && draftMatchesDocument(draft, doc)) {

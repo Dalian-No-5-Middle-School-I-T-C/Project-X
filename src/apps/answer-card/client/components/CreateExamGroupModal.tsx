@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, Search, Trash2 } from "lucide-react";
 import { authFetch, fetchJson } from "../auth/api";
 import type { ExamFilterItem, ExamGroupMember } from "../../../../shared/types";
@@ -30,8 +30,8 @@ interface Props {
   onClose: () => void;
   onCreated?: (groupId: number) => void;
   existingGroup?: {
-    id: number; name: string; description?: string;
-    grade_id?: number | null; tag?: string;
+    id: number; name: string; description?: string | null;
+    grade_id?: number | null; tag?: string | null;
     is_official?: number;
     total_score_mode?: string; only_full_participants?: number;
   };
@@ -63,6 +63,8 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
   const [grades, setGrades] = useState<Array<{ id: number; name: string }>>([]);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
+  const pickerRequest = useRef(0);
+  const pickerAbort = useRef<AbortController | null>(null);
 
   const isEdit = !!existingGroup;
 
@@ -72,27 +74,28 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
       .catch(() => setGrades([]));
   }, []);
 
-  // Preload exams for picker
-  useEffect(() => {
-    loadPickerExams();
-  }, []);
-
-  useEffect(() => {
-    if (showPicker && pickerSubject) {
-      loadPickerExams();
-    }
-  }, [pickerSubject]);
-
-  async function loadPickerExams() {
+  const loadPickerExams = useCallback(async () => {
+    const request = ++pickerRequest.current;
+    pickerAbort.current?.abort();
+    const controller = new AbortController();
+    pickerAbort.current = controller;
     setPickerLoading(true);
     try {
       const params = new URLSearchParams({ selection: "1" });
       if (pickerSubject) params.set("subject", pickerSubject);
-      const data = await fetchJson<ExamFilterItem[]>(`/api/exams?${params.toString()}`);
-      setPickerExams(data);
-    } catch { setPickerExams([]); }
-    finally { setPickerLoading(false); }
-  }
+      const data = await fetchJson<ExamFilterItem[]>(`/api/exams?${params.toString()}`, { signal: controller.signal });
+      if (request === pickerRequest.current) setPickerExams(data);
+    } catch {
+      if (request === pickerRequest.current) setPickerExams([]);
+    } finally {
+      if (request === pickerRequest.current) setPickerLoading(false);
+    }
+  }, [pickerSubject]);
+
+  useEffect(() => {
+    if (showPicker) void loadPickerExams();
+    return () => pickerAbort.current?.abort();
+  }, [showPicker, loadPickerExams]);
 
   async function handleSubmit() {
     if (creating) return;
@@ -329,7 +332,7 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
                   </div>
                 ) : (
                   <div className="flex flex-col gap-1">
-                    {filteredPicker.slice(0, 30).map((exam) => {
+                    {filteredPicker.map((exam) => {
                       const alreadyAdded = selectedExams.some((e) => e.examId === exam.id);
                       return (
                         <button
